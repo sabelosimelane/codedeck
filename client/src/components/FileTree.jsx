@@ -1,8 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { ChevronRight, ChevronDown, File, Folder } from 'lucide-react';
 
-function TreeNode({ node, onOpenFile, depth = 0 }) {
-  const [expanded, setExpanded] = useState(depth < 1);
+function collectDirectoryPaths(nodes) {
+  const paths = [];
+
+  for (const node of nodes) {
+    if (node.type !== 'dir') continue;
+    paths.push(node.path);
+    if (node.children?.length) {
+      paths.push(...collectDirectoryPaths(node.children));
+    }
+  }
+
+  return paths;
+}
+
+function TreeNode({ node, expandedPaths, onOpenFile, onToggleDir, depth = 0 }) {
+  const expanded = expandedPaths.has(node.path);
 
   if (node.type === 'file') {
     return (
@@ -34,7 +48,7 @@ function TreeNode({ node, onOpenFile, depth = 0 }) {
   return (
     <div>
       <div
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => onToggleDir(node.path)}
         style={{
           padding: '3px 8px 3px ' + (8 + depth * 16) + 'px',
           display: 'flex',
@@ -54,7 +68,14 @@ function TreeNode({ node, onOpenFile, depth = 0 }) {
         <span>{node.name}</span>
       </div>
       {expanded && node.children?.map(child => (
-        <TreeNode key={child.path} node={child} onOpenFile={onOpenFile} depth={depth + 1} />
+        <TreeNode
+          key={child.path}
+          node={child}
+          expandedPaths={expandedPaths}
+          onOpenFile={onOpenFile}
+          onToggleDir={onToggleDir}
+          depth={depth + 1}
+        />
       ))}
     </div>
   );
@@ -63,14 +84,36 @@ function TreeNode({ node, onOpenFile, depth = 0 }) {
 export default function FileTree({ root, onOpenFile }) {
   const [tree, setTree] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [expandedPaths, setExpandedPaths] = useState(() => new Set());
 
   useEffect(() => {
     setLoading(true);
     fetch(`/api/files?root=${encodeURIComponent(root)}`)
       .then(r => r.json())
-      .then(data => { setTree(data); setLoading(false); })
+      .then(data => {
+        setTree(data);
+        setExpandedPaths(new Set());
+        setLoading(false);
+      })
       .catch(() => { setTree([]); setLoading(false); });
   }, [root]);
+
+  const handleToggleDir = (dirPath) => {
+    setExpandedPaths(prev => {
+      const next = new Set(prev);
+      if (next.has(dirPath)) next.delete(dirPath);
+      else next.add(dirPath);
+      return next;
+    });
+  };
+
+  const handleExpandAll = () => {
+    setExpandedPaths(new Set(collectDirectoryPaths(tree)));
+  };
+
+  const handleFoldAll = () => {
+    setExpandedPaths(new Set());
+  };
 
   return (
     <div style={{
@@ -83,19 +126,53 @@ export default function FileTree({ root, onOpenFile }) {
     }}>
       <div style={{
         padding: '12px 12px 8px',
-        fontSize: '10px',
-        fontFamily: 'var(--font-mono)',
-        color: 'var(--text-muted)',
-        textTransform: 'uppercase',
-        letterSpacing: '0.8px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
       }}>
-        Files
+        <div style={{
+          fontSize: '10px',
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.8px',
+        }}>
+          Files
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" style={treeControlBtnStyle} onClick={handleExpandAll}>
+            Expand
+          </button>
+          <button type="button" style={treeControlBtnStyle} onClick={handleFoldAll}>
+            Fold
+          </button>
+        </div>
       </div>
       {loading ? (
         <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>
       ) : (
-        tree.map(node => <TreeNode key={node.path} node={node} onOpenFile={onOpenFile} />)
+        tree.map(node => (
+          <TreeNode
+            key={node.path}
+            node={node}
+            expandedPaths={expandedPaths}
+            onOpenFile={onOpenFile}
+            onToggleDir={handleToggleDir}
+          />
+        ))
       )}
     </div>
   );
 }
+
+const treeControlBtnStyle = {
+  border: '1px solid var(--border)',
+  background: 'transparent',
+  color: 'var(--text-secondary)',
+  borderRadius: 6,
+  padding: '2px 6px',
+  fontSize: '10px',
+  fontFamily: 'var(--font-mono)',
+  cursor: 'pointer',
+};

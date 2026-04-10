@@ -8,6 +8,7 @@ import { spawn } from 'node-pty';
 import { exec } from 'child_process';
 import db from './db.js';
 import { handleWsConnection } from './ws-handler.js';
+import { readTree } from './file-tree.js';
 
 const app = express();
 app.use(express.json());
@@ -119,34 +120,6 @@ app.get('/api/config', (req, res) => {
 // -------------------------------------------------------------------
 // REST API: File tree
 // -------------------------------------------------------------------
-const IGNORED = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'target', '.idea', '__pycache__', '.DS_Store']);
-
-async function readTree(dir, depth = 0, maxDepth = 3) {
-  if (depth >= maxDepth) return [];
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const result = [];
-
-  for (const entry of entries) {
-    if (IGNORED.has(entry.name) || entry.name.startsWith('.')) continue;
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      result.push({
-        name: entry.name,
-        type: 'dir',
-        path: fullPath,
-        children: await readTree(fullPath, depth + 1, maxDepth),
-      });
-    } else {
-      result.push({ name: entry.name, type: 'file', path: fullPath });
-    }
-  }
-
-  return result.sort((a, b) => {
-    if (a.type === b.type) return a.name.localeCompare(b.name);
-    return a.type === 'dir' ? -1 : 1;
-  });
-}
-
 app.get('/api/files', async (req, res) => {
   const { root } = req.query;
   if (!root || !existsSync(root)) return res.status(400).json({ error: 'invalid root' });

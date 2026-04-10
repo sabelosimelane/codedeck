@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff } from 'lucide-react';
+import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
@@ -62,6 +62,9 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [isCompact, setIsCompact] = useState(() => {
+    return localStorage.getItem('codedeck-sidebar-compact') === 'true';
+  });
   const [shelfExpanded, setShelfExpanded] = useState(() => {
     return localStorage.getItem('codedeck-shelf-expanded') === 'true';
   });
@@ -214,13 +217,22 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
     });
   };
 
+  const toggleCompact = () => {
+    setIsCompact(prev => {
+      const next = !prev;
+      localStorage.setItem('codedeck-sidebar-compact', String(next));
+      return next;
+    });
+  };
+
   const totalProjects = activeProjects.length + shelvedProjects.length;
+  const sidebarWidth = isCompact ? 72 : 220;
 
   return (
     <>
       <div style={{
-        width: 220,
-        minWidth: 220,
+        width: sidebarWidth,
+        minWidth: sidebarWidth,
         background: 'var(--bg-sidebar)',
         borderRight: '1px solid var(--border)',
         display: 'flex',
@@ -230,22 +242,37 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
       }}>
         {/* Header */}
         <div style={{
-          padding: '16px 16px 12px',
+          padding: isCompact ? '14px 10px 12px' : '16px 16px 12px',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
+          justifyContent: isCompact ? 'center' : 'space-between',
           borderBottom: '1px solid var(--border)',
         }}>
-          <span style={{
-            fontFamily: 'var(--font-mono)',
-            fontWeight: 600,
-            fontSize: '13px',
-            letterSpacing: '0.5px',
-            color: 'var(--accent)',
-          }}>
-            CODEDECK
-          </span>
-          <div style={{ display: 'flex', gap: 4 }}>
+          {!isCompact && (
+            <span style={{
+              fontFamily: 'var(--font-mono)',
+              fontWeight: 600,
+              fontSize: '13px',
+              letterSpacing: '0.5px',
+              color: 'var(--accent)',
+            }}>
+              CODEDECK
+            </span>
+          )}
+          <div style={{ display: 'flex', gap: 4, flexDirection: isCompact ? 'column' : 'row' }}>
+            <button
+              onClick={toggleCompact}
+              title={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
+              style={{
+                padding: 4,
+                borderRadius: 4,
+                color: isCompact ? 'var(--accent)' : 'var(--text-muted)',
+                background: isCompact ? 'var(--accent-dim)' : 'transparent',
+              }}
+            >
+              {isCompact ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            </button>
             <button
               onClick={onToggleFiles}
               title="Toggle file tree"
@@ -276,14 +303,18 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
           {activeProjects.length === 0 && shelvedProjects.length === 0 && (
             <div style={{
-              padding: '24px 16px',
+              padding: isCompact ? '24px 10px' : '24px 16px',
               color: 'var(--text-muted)',
               fontSize: '12px',
               textAlign: 'center',
               fontFamily: 'var(--font-mono)',
             }}>
-              No projects yet.
-              <br />Click + to add one.
+              {isCompact ? 'No projects' : (
+                <>
+                  No projects yet.
+                  <br />Click + to add one.
+                </>
+              )}
             </div>
           )}
 
@@ -298,8 +329,9 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                 key={project.name}
                 onClick={() => { if (!isRenaming) onSelect(project); }}
                 className="project-row"
+                title={project.name}
                 style={{
-                  padding: '8px 16px',
+                  padding: isCompact ? '10px 12px' : '8px 16px',
                   cursor: isRenaming ? 'default' : 'pointer',
                   background: isActive ? 'var(--bg-active)' : 'transparent',
                   borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
@@ -309,7 +341,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
               >
                 {/* Row 1: status dot + project name (full width) */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: isCompact ? 'center' : 'flex-start' }}>
                   {status !== 'none' ? (
                     <span style={{
                       width: 8,
@@ -321,7 +353,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                   ) : (
                     <FolderOpen size={14} style={{ color: isActive ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
                   )}
-                  {isRenaming ? (
+                  {!isCompact && isRenaming ? (
                     <input
                       ref={renameInputRef}
                       value={renameValue}
@@ -346,7 +378,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                         minWidth: 0,
                       }}
                     />
-                  ) : (
+                  ) : !isCompact && (
                     <span style={{
                       flex: 1,
                       fontSize: '13px',
@@ -362,52 +394,54 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                 </div>
 
                 {/* Row 2: action buttons — revealed on hover */}
-                <div className="project-actions" style={{
-                  display: 'flex',
-                  gap: 2,
-                  marginLeft: 22,
-                }}>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onBrowseFiles(project); }}
-                    className="project-action-btn"
-                    title="Browse files"
-                  >
-                    <FolderSearch size={14} />
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onShelve(project.name); }}
-                    className="project-action-btn"
-                    title="Shelve project"
-                    aria-label="Shelve project"
-                  >
-                    <Archive size={14} />
-                  </button>
-                  <button
-                    onClick={(e) => startRename(e, project)}
-                    className="project-action-btn"
-                    title="Rename project"
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onRemove(project.name); }}
-                    className="project-action-btn danger"
-                    title="Remove project"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                  <button
-                    onClick={(e) => toggleMute(e, project.name)}
-                    className="project-action-btn"
-                    title={mutedProjects.includes(project.name) ? 'Unmute notifications' : 'Mute notifications'}
-                    aria-label={mutedProjects.includes(project.name) ? `Unmute notifications for ${project.name}` : `Mute notifications for ${project.name}`}
-                  >
-                    {mutedProjects.includes(project.name) ? <BellOff size={14} /> : <Bell size={14} />}
-                  </button>
-                </div>
+                {!isCompact && (
+                  <div className="project-actions" style={{
+                    display: 'flex',
+                    gap: 2,
+                    marginLeft: 22,
+                  }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onBrowseFiles(project); }}
+                      className="project-action-btn"
+                      title="Browse files"
+                    >
+                      <FolderSearch size={14} />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onShelve(project.name); }}
+                      className="project-action-btn"
+                      title="Shelve project"
+                      aria-label="Shelve project"
+                    >
+                      <Archive size={14} />
+                    </button>
+                    <button
+                      onClick={(e) => startRename(e, project)}
+                      className="project-action-btn"
+                      title="Rename project"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onRemove(project.name); }}
+                      className="project-action-btn danger"
+                      title="Remove project"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                    <button
+                      onClick={(e) => toggleMute(e, project.name)}
+                      className="project-action-btn"
+                      title={mutedProjects.includes(project.name) ? 'Unmute notifications' : 'Mute notifications'}
+                      aria-label={mutedProjects.includes(project.name) ? `Unmute notifications for ${project.name}` : `Mute notifications for ${project.name}`}
+                    >
+                      {mutedProjects.includes(project.name) ? <BellOff size={14} /> : <Bell size={14} />}
+                    </button>
+                  </div>
+                )}
 
                 {/* Terminal count + elapsed */}
-                {count > 0 && (
+                {!isCompact && count > 0 && (
                   <div style={{
                     marginTop: 3,
                     marginLeft: 22,
@@ -420,7 +454,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                 )}
 
                 {/* Per-session details */}
-                {projSessions.length > 0 && projSessions.map(session => {
+                {!isCompact && projSessions.length > 0 && projSessions.map(session => {
                   const termStatus = getTerminalStatus(session);
                   const timeSince = formatTimeSince(session.lastOutputAt);
                   const dotColor = termStatus === 'busy'
@@ -477,6 +511,36 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
         {/* Shelf — pinned to bottom, above footer */}
         {shelvedProjects.length > 0 && (() => {
           const searchActive = shelfSearch.trim() !== '';
+          if (isCompact) {
+            return (
+              <div style={{ flexShrink: 0 }}>
+                <div style={{ height: 1, background: 'var(--border)' }} />
+                <div style={{
+                  padding: '10px 0',
+                  display: 'flex',
+                  justifyContent: 'center',
+                }}>
+                  <button
+                    onClick={toggleShelf}
+                    title={`Shelved projects (${shelvedProjects.length})`}
+                    aria-label={`Shelved projects (${shelvedProjects.length})`}
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 10,
+                      color: shelfExpanded ? 'var(--accent)' : 'var(--text-muted)',
+                      background: shelfExpanded ? 'var(--accent-dim)' : 'transparent',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Archive size={16} />
+                  </button>
+                </div>
+              </div>
+            );
+          }
           const showSearch = shelfExpanded && shelvedProjects.length > 5;
           const displayedProjects = searchActive
             ? shelvedProjects
@@ -627,7 +691,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
 
         {/* Footer */}
         <div style={{
-          padding: '10px 16px',
+          padding: isCompact ? '10px 8px' : '10px 16px',
           borderTop: '1px solid var(--border)',
           fontSize: '11px',
           color: 'var(--text-muted)',
@@ -636,7 +700,9 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
           alignItems: 'center',
           justifyContent: 'space-between',
         }}>
-          <span>{totalProjects} project{totalProjects !== 1 ? 's' : ''}</span>
+          {!isCompact && (
+            <span>{totalProjects} project{totalProjects !== 1 ? 's' : ''}</span>
+          )}
           <button
             onClick={() => setShowSettings(true)}
             title="Settings"
@@ -646,6 +712,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
               color: 'var(--text-muted)',
               display: 'flex',
               alignItems: 'center',
+              margin: isCompact ? '0 auto' : undefined,
             }}
           >
             <Settings size={14} />
