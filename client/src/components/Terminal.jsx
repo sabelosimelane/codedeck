@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
+import { ChevronsDown } from 'lucide-react';
 
 const MAX_RETRIES = 10;
 const BASE_DELAY = 1000;
@@ -18,6 +19,8 @@ export default function Terminal({ sessionId, cwd, isVisible }) {
   const retryTimerRef = useRef(null);
   const mountedRef = useRef(true);
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connected' | 'connecting' | 'disconnected' | 'failed'
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const userScrolledUpRef = useRef(false);
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -64,6 +67,14 @@ export default function Terminal({ sessionId, cwd, isVisible }) {
     fitAddon.fit();
     fitRef.current = fitAddon;
     termRef.current = term;
+
+    // Track scroll position — detect when user scrolls away from bottom
+    term.onScroll(() => {
+      const buffer = term.buffer.active;
+      const atBottom = buffer.viewportY >= buffer.baseY;
+      userScrolledUpRef.current = !atBottom;
+      setShowScrollBtn(!atBottom);
+    });
 
     // Prevent browser from stealing terminal shortcuts (Ctrl+R, Ctrl+W, etc.)
     // We intercept these keys, block both browser and xterm default handling,
@@ -124,6 +135,10 @@ export default function Terminal({ sessionId, cwd, isVisible }) {
           const msg = JSON.parse(event.data);
           if (msg.type === 'output') {
             term.write(msg.data);
+            // Force scroll to bottom if user hasn't scrolled up
+            if (!userScrolledUpRef.current) {
+              term.scrollToBottom();
+            }
           } else if (msg.type === 'spawn_error') {
             spawnFailed = true;
             term.write(msg.data);
@@ -221,9 +236,45 @@ export default function Terminal({ sessionId, cwd, isVisible }) {
           padding: '4px 0 0 8px',
         }}
       />
+      {/* Scroll to bottom button */}
+      {showScrollBtn && (
+        <button
+          onClick={() => {
+            if (termRef.current) {
+              termRef.current.scrollToBottom();
+              userScrolledUpRef.current = false;
+              setShowScrollBtn(false);
+            }
+          }}
+          style={scrollBtnStyle}
+          title="Scroll to bottom"
+        >
+          <ChevronsDown size={14} />
+          <span>Latest</span>
+        </button>
+      )}
     </div>
   );
 }
+
+const scrollBtnStyle = {
+  position: 'absolute',
+  bottom: 16,
+  right: 16,
+  zIndex: 10,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '6px 12px',
+  fontSize: '11px',
+  fontFamily: 'var(--font-mono)',
+  background: 'var(--bg-sidebar)',
+  color: 'var(--accent)',
+  border: '1px solid var(--accent)',
+  borderRadius: 6,
+  cursor: 'pointer',
+  boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+};
 
 const bannerStyle = {
   position: 'absolute',
