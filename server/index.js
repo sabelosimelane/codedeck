@@ -9,6 +9,7 @@ import { exec } from 'child_process';
 import db from './db.js';
 import { handleWsConnection } from './ws-handler.js';
 import { readTree } from './file-tree.js';
+import { buildShellEnv } from './shell-env.js';
 
 const app = express();
 app.use(express.json());
@@ -235,7 +236,7 @@ function spawnPty({ cwd, cols, rows }) {
     cols,
     rows,
     cwd,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    env: buildShellEnv(shell, process.env),
   });
 }
 

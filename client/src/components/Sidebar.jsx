@@ -4,6 +4,8 @@ import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
 
+const SIDEBAR_ACTIVITY_WINDOW_MS = 45000;
+
 function formatElapsed(timestamp) {
   if (!timestamp || isNaN(timestamp)) return null;
   const mins = Math.floor((Date.now() - timestamp) / 60000);
@@ -17,7 +19,7 @@ function formatElapsed(timestamp) {
 function getTerminalStatus(session) {
   if (!session.alive) return 'dead';
   const age = Date.now() - new Date(session.lastOutputAt).getTime();
-  return age < 5000 ? 'busy' : 'idle';
+  return age < SIDEBAR_ACTIVITY_WINDOW_MS ? 'busy' : 'idle';
 }
 
 function formatTimeSince(isoString) {
@@ -37,7 +39,9 @@ function getProjectStatus(sessions) {
   if (count === 0) return { status: 'dead', count: 0, elapsed: null };
 
   const now = Date.now();
-  const anyActive = alive.some(s => now - new Date(s.lastOutputAt).getTime() < 10000);
+  const anyActive = alive.some(
+    s => now - new Date(s.lastOutputAt).getTime() < SIDEBAR_ACTIVITY_WINDOW_MS
+  );
   const earliest = alive.reduce((min, s) => {
     const t = new Date(s.startedAt).getTime();
     return t < min ? t : min;

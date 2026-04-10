@@ -1,0 +1,82 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: CODEDECK
+      - generic [ref=e7]:
+        - button "Collapse sidebar" [ref=e8] [cursor=pointer]:
+          - img [ref=e9]
+        - button "Toggle file tree" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+        - button "Add project" [ref=e18] [cursor=pointer]:
+          - img [ref=e19]
+    - generic "sentinel" [ref=e21] [cursor=pointer]:
+      - generic [ref=e22]:
+        - 'generic "Status: active" [ref=e308]'
+        - generic [ref=e24]: sentinel
+      - generic:
+        - button "Browse files" [ref=e25]:
+          - img [ref=e26]
+        - button "Shelve project" [ref=e30]:
+          - img [ref=e31]
+        - button "Rename project" [ref=e34]:
+          - img [ref=e35]
+        - button "Remove project" [ref=e38]:
+          - img [ref=e39]
+        - button "Mute notifications for sentinel" [ref=e42]:
+          - img [ref=e43]
+      - generic [ref=e46]: 3 terminals · 36m
+      - generic [ref=e47]:
+        - generic [ref=e48]:
+          - 'generic "Terminal sentinel-1: busy" [ref=e309]'
+          - generic [ref=e50]: sentinel-1
+          - generic [ref=e51]: · 23s ago
+        - generic [ref=e52]: sabside@MacBook-Pro sentinel % sdf
+      - generic [ref=e257]:
+        - generic [ref=e258]:
+          - 'generic "Terminal sentinel-2: busy" [ref=e400]'
+          - generic [ref=e260]: sentinel-2
+          - generic [ref=e261]: · 23s ago
+        - generic [ref=e262]: sabside@MacBook-Pro sentinel % fresh
+      - generic [ref=e401]:
+        - generic [ref=e402]:
+          - 'generic "Terminal sentinel-3: busy" [ref=e403]'
+          - generic [ref=e404]: sentinel-3
+          - generic [ref=e405]: · 23s ago
+        - generic [ref=e406]: sabside@MacBook-Pro sentinel %
+    - button "Shelved (6)" [ref=e55] [cursor=pointer]:
+      - img [ref=e56]
+      - generic [ref=e58]: Shelved (6)
+    - generic [ref=e59]:
+      - generic [ref=e60]: 7 projects
+      - button "Settings" [ref=e61] [cursor=pointer]:
+        - img [ref=e62]
+  - generic [ref=e68]:
+    - generic [ref=e69]:
+      - generic [ref=e70]: sentinel
+      - generic [ref=e71]:
+        - button "Terminal 1" [ref=e72] [cursor=pointer]:
+          - text: Terminal 1
+          - img [ref=e170]
+        - button "Terminal 2" [ref=e173] [cursor=pointer]:
+          - text: Terminal 2
+          - img [ref=e175]
+        - button "Terminal 3" [ref=e316] [cursor=pointer]:
+          - text: Terminal 3
+          - img [ref=e318]
+      - button "Split right" [ref=e73] [cursor=pointer]:
+        - img [ref=e74]
+      - button "New tab" [ref=e76] [cursor=pointer]:
+        - img [ref=e77]
+    - generic [ref=e323]:
+      - generic [ref=e324]:
+        - generic [ref=e325]:
+          - generic [ref=e328]: sentinel-3
+          - generic [ref=e329]: Live terminal attached
+        - generic [ref=e330]:
+          - button "Clear terminal" [ref=e331] [cursor=pointer]:
+            - img [ref=e332]
+          - button "Disconnect terminal" [ref=e335] [cursor=pointer]:
+            - img [ref=e336]
+      - generic [ref=e421]:
+        - textbox "Terminal input" [active] [ref=e422]
+        - generic [ref=e474]: sabside@MacBook-Pro sentinel %

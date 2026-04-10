@@ -1,0 +1,61 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: CODEDECK
+      - generic [ref=e7]:
+        - button "Collapse sidebar" [ref=e8] [cursor=pointer]:
+          - img [ref=e9]
+        - button "Toggle file tree" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+        - button "Add project" [ref=e18] [cursor=pointer]:
+          - img [ref=e19]
+    - generic "sentinel" [ref=e21] [cursor=pointer]:
+      - generic [ref=e22]:
+        - 'generic "Status: idle" [ref=e23]'
+        - generic [ref=e24]: sentinel
+      - generic [ref=e67]:
+        - button "Browse files" [ref=e25]:
+          - img [ref=e26]
+        - button "Shelve project" [ref=e30]:
+          - img [ref=e31]
+        - button "Rename project" [ref=e34]:
+          - img [ref=e35]
+        - button "Remove project" [ref=e38]:
+          - img [ref=e39]
+        - button "Mute notifications for sentinel" [ref=e42]:
+          - img [ref=e43]
+      - generic [ref=e46]: 1 terminal · 27m
+      - generic [ref=e47]:
+        - generic [ref=e48]:
+          - 'generic "Terminal sentinel-1: idle" [ref=e49]'
+          - generic [ref=e50]: sentinel-1
+          - generic [ref=e51]: · 1m ago
+        - generic [ref=e52]: "sabside@MacBook-Pro sentinel % \x1b[?2004h"
+    - button "Shelved (6)" [ref=e55] [cursor=pointer]:
+      - img [ref=e56]
+      - generic [ref=e58]: Shelved (6)
+    - generic [ref=e59]:
+      - generic [ref=e60]: 7 projects
+      - button "Settings" [ref=e61] [cursor=pointer]:
+        - img [ref=e62]
+  - generic [ref=e68]:
+    - generic [ref=e69]:
+      - generic [ref=e70]: sentinel
+      - button "Terminal 1" [ref=e72] [cursor=pointer]
+      - button "Split right" [ref=e73] [cursor=pointer]:
+        - img [ref=e74]
+      - button "New tab" [ref=e76] [cursor=pointer]:
+        - img [ref=e77]
+    - generic [ref=e80]:
+      - generic [ref=e81]:
+        - generic [ref=e82]:
+          - generic [ref=e85]: sentinel-1
+          - generic [ref=e86]: Live terminal attached
+        - generic [ref=e87]:
+          - button "Clear terminal" [ref=e88] [cursor=pointer]:
+            - img [ref=e89]
+          - button "Disconnect terminal" [ref=e92] [cursor=pointer]:
+            - img [ref=e93]
+      - generic [ref=e104]:
+        - textbox "Terminal input" [ref=e105]
+        - generic [ref=e108]: sabside@MacBook-Pro sentinel %
