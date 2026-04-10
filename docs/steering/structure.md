@@ -24,22 +24,27 @@ client/ (React + Vite)               server/ (Express + node-pty)
 │ App.jsx              │            │ index.js                 │
 │  ├─ Sidebar          │  REST     │  ├─ REST routes (/api/*) │
 │  ├─ TerminalArea     │◄────────►│  ├─ WebSocket server     │
-│  │   ├─ Terminal(s)  │  WS       │  │   └─ PTY pool (Map)   │
-│  │   └─ tabs/panes   │◄────────►│  └─ file tree reads      │
-│  └─ FileTree         │            │                          │
-└──────────────────────┘            │ db.js                    │
-                                    │  └─ SQLite (~/.codedeck) │
+│  │   ├─ Terminal(s)  │  WS       │  │   └─ ws-handler.js    │
+│  │   └─ tabs/panes   │◄────────►│  │       └─ PTY pool     │
+│  └─ FileTree         │            │  └─ file tree reads      │
+│  └─ FileBrowserPanel │            │                          │
+│  └─ ToastContext     │            │ db.js                    │
+└──────────────────────┘            │  └─ SQLite (~/.codedeck) │
                                     └──────────────────────────┘
 ```
 
-The backend is a single Express app in one file (`server/index.js`). No router modules, no service layer extraction yet. When it grows past ~400 lines, extract route groups into `server/routes/`.
+The backend is an Express app in `server/index.js` with WebSocket connection handling extracted to `server/ws-handler.js`. Route handlers remain in `index.js`. If it grows past ~400 lines, extract route groups into `server/routes/`.
 
 ## Directory Layout
 ```
 codedeck/
 ├── server/
-│   ├── index.js          # All routes, WebSocket server, PTY management
-│   └── db.js             # SQLite connection, schema, WAL mode
+│   ├── index.js          # REST routes, WebSocket server, PTY spawn factory
+│   ├── ws-handler.js     # WebSocket connection handler (extracted for testability)
+│   ├── db.js             # SQLite connection, schema, WAL mode
+│   ├── vitest.config.js  # Server-side test configuration
+│   └── __tests__/
+│       └── ws-handler.test.js  # Unit tests for WebSocket handler (23 tests)
 ├── client/
 │   ├── index.html        # Vite entry
 │   ├── vite.config.js    # Dev server, proxy config
@@ -47,11 +52,14 @@ codedeck/
 │       ├── main.jsx      # React root
 │       ├── App.jsx       # Top-level state, project CRUD, layout
 │       ├── components/
-│       │   ├── Sidebar.jsx           # Project list, add/rename/delete
-│       │   ├── TerminalArea.jsx      # Tab bar, pane layout
-│       │   ├── Terminal.jsx          # xterm.js + WebSocket per session
+│       │   ├── Sidebar.jsx           # Project list, status cockpit, file browse trigger
+│       │   ├── TerminalArea.jsx      # Tab bar, N-pane layout, localStorage persistence
+│       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, keyboard shortcuts
+│       │   ├── PaneDivider.jsx       # Draggable vertical divider between terminal panes
 │       │   ├── FileTree.jsx          # Directory tree renderer
-│       │   ├── DirectoryBrowser.jsx  # Modal filesystem navigator
+│       │   ├── FileBrowserPanel.jsx  # Modal overlay for per-project file browsing
+│       │   ├── DirectoryBrowser.jsx  # Modal filesystem navigator (project picker)
+│       │   ├── ToastContext.jsx      # Toast notification context, hook, and container
 │       │   └── SettingsPanel.jsx     # Settings modal
 │       └── styles/
 │           └── global.css            # CSS custom properties theme
@@ -62,7 +70,7 @@ codedeck/
 │   └── todos/            # Implementation tracking
 ├── start.sh              # Launches both servers (foreground)
 ├── server.sh             # Service manager (background start/stop/status)
-└── package.json          # Workspace root
+└── package.json          # Workspace root (devDependencies: vitest, supertest)
 ```
 
 ## Component Conventions
@@ -82,10 +90,12 @@ codedeck/
 - Consistent border radius: 4px for small elements, 6px for inputs, 8-12px for panels
 
 ### Backend Patterns
-- All routes in `server/index.js` — grouped by concern with comment headers
+- REST routes in `server/index.js` — grouped by concern with comment headers
+- WebSocket connection handling extracted to `server/ws-handler.js` — receives `(ws, req, sessions, spawnPty)` for testability via dependency injection
 - Synchronous SQLite via better-sqlite3 (no async/await needed for DB calls)
-- PTY sessions stored in a `Map<sessionId, pty>` in memory
-- WebSocket messages are JSON: `{ type: 'input'|'output'|'resize'|'session', ... }`
+- PTY sessions stored in a `Map<sessionId, { pty, ws, cwd, startedAt, lastOutputAt, alive }>` in memory
+- PTY listeners (onData, onExit) registered ONCE per PTY at creation — they read `entry.ws` to route to the current WebSocket, avoiding stale closure references on reconnect
+- WebSocket messages are JSON: `{ type: 'input'|'output'|'resize'|'session'|'spawn_error', ... }`
 - File tree reads are depth-limited (3 levels) and skip: `node_modules`, `.git`, `.next`, `dist`, `build`, `target`, `.idea`, `__pycache__`, `.DS_Store`
 
 ## API Conventions
@@ -103,10 +113,11 @@ codedeck/
 - No `catch(() => {})` or `catch {}` — errors must be handled or surfaced
 
 ## Testing Conventions
-- Framework: Vitest (not yet set up — tests to be added with workspace enhancements)
-- Always run with `--maxWorkers=1` (OOM prevention on this machine)
-- Server tests: Vitest + supertest for API integration tests
-- Client tests: Vitest + React Testing Library for component tests
+- Framework: Vitest + supertest (installed as devDependencies at workspace root)
+- Server test config: `server/vitest.config.js` with `maxWorkers: 1`
+- Run server tests: `cd server && npx vitest --maxWorkers=1`
+- Existing tests: `server/__tests__/ws-handler.test.js` — 23 unit tests covering listener registration, WebSocket reference tracking, PTY output routing, exit handling, input forwarding, and spawn failure
+- Client tests: Vitest + React Testing Library for component tests (not yet set up)
 - See `docs/guidelines/testing.md` for full testing strategy
 
 ## Architectural Rules

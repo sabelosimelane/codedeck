@@ -23,11 +23,12 @@ For detailed patterns and code examples, read these when relevant:
 - Logs: `./server.sh logs`
 - Build client: `cd client && npx vite build`
 - Install deps: `npm install` (workspace root — installs both server and client)
+- Run server tests: `cd server && npx vitest --maxWorkers=1`
 
 ## Current Work
-- Active todo: `docs/todos/workspace-enhancements.md` — Phase 1 complete (toast system, error handling)
+- Completed: `docs/todos/workspace-enhancements.md` — all 5 phases done (toast system, flexible panes, sidebar cockpit, per-project file browsing, cleanup)
 - Spec: `docs/specifications/workspace-enhancements-spec.md`
-- Remaining phases: flexible panes, sidebar cockpit, per-project file browsing
+- Run server tests: `cd server && npx vitest --maxWorkers=1`
 
 ## Rules — IMPORTANT
 - NEVER let the frontend hold authoritative state — backend (SQLite) is the source of truth
@@ -37,7 +38,7 @@ For detailed patterns and code examples, read these when relevant:
 - ALWAYS handle fetch errors — every `fetch()` needs try/catch and `res.ok` check
 - ALWAYS start the backend via `./server.sh start` — never run `node server/index.js` directly (blocks terminal)
 - ALWAYS run Vitest with `--maxWorkers=1` to avoid OOM on this machine
-- Server is a single-file Express app (`server/index.js`) — no router modules yet. If it grows past ~400 lines, extract route groups into `server/routes/`.
+- Server routes live in `server/index.js`, WebSocket handler extracted to `server/ws-handler.js`. If route handlers grow past ~400 lines, extract into `server/routes/`.
 
 ## References
 See @README.md for setup and usage instructions

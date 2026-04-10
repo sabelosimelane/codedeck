@@ -20,6 +20,10 @@
 - **xterm.js**: terminal emulator in the browser. Addons: `@xterm/addon-fit` (auto-resize), `@xterm/addon-web-links` (clickable URLs).
 - **ws**: WebSocket server mounted at `/ws/terminal` for PTY I/O.
 
+## Dev Dependencies
+- **vitest** (4.1.x): test runner for server-side unit tests. Config at `server/vitest.config.js`.
+- **supertest** (7.2.x): HTTP assertion library for API integration tests.
+
 ## Development Setup
 
 Prerequisites: Node.js 22+, npm 10+
@@ -47,7 +51,7 @@ Open `http://localhost:3000` in the browser.
 - Start backend only: `cd server && node index.js`
 - Start frontend only: `cd client && npx vite`
 - Build client: `cd client && npx vite build`
-- Test (when tests exist): `npx vitest --maxWorkers=1` (OOM prevention)
+- Run server tests: `cd server && npx vitest --maxWorkers=1` (OOM prevention)
 
 ## Infrastructure
 - **SQLite**: embedded, file-based at `~/.codedeck.db`. WAL mode enabled, foreign keys on. No migration tool — schema created via `CREATE TABLE IF NOT EXISTS` in `server/db.js`.

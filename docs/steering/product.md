@@ -13,18 +13,16 @@ Solo developer (Sabelo) who juggles multiple codebases daily. The core pain poin
 
 **Implemented:**
 - Project management — add, rename, delete projects (directories on disk)
-- Terminal multiplexing — multiple terminal tabs per project, side-by-side split
+- Terminal multiplexing — multiple terminal tabs per project, N side-by-side panes with draggable dividers
 - File tree browsing — view project files, click to open in system editor (VS Code, etc.)
+- Per-project file browsing — scoped file tree panel decoupled from active project
 - Directory browser — filesystem navigator for adding projects
 - Settings panel — configurable default path for project picker
-- PTY session persistence — terminals survive WebSocket reconnects
-
-**In Progress (workspace-enhancements):**
-- Flexible terminal panes — N side-by-side panes with draggable dividers (replacing 2-max split)
+- PTY session persistence — terminals survive WebSocket reconnects, layout restored from localStorage
 - Live sidebar cockpit — per-project status (active/idle/dead), terminal count, elapsed time
-- Per-project file browsing — scoped file tree panel decoupled from active project
 - Toast notification system — success/error feedback on all actions
-- Connection awareness — detect backend unreachable, show reconnection banner
+- Connection awareness — detect backend unreachable, show reconnection banner with exponential backoff
+- Keyboard shortcut passthrough — Ctrl+R/W/T/N forwarded to PTY instead of browser
 
 **Future (not yet specified):**
 - Workflow panel for orchestrating tasks across projects
