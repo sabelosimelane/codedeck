@@ -116,6 +116,7 @@ app.get('/api/files', async (req, res) => {
 // -------------------------------------------------------------------
 app.get('/api/browse', async (req, res) => {
   const dir = req.query.path || process.env.HOME || '/';
+  const filter = (req.query.filter || '').toLowerCase();
   if (!existsSync(dir)) return res.status(400).json({ error: 'path does not exist' });
 
   try {
@@ -128,6 +129,8 @@ app.get('/api/browse', async (req, res) => {
     for (const entry of entries) {
       // Skip hidden files/dirs (starting with .)
       if (entry.name.startsWith('.')) continue;
+      // Apply server-side filter if provided
+      if (filter && !entry.name.toLowerCase().includes(filter)) continue;
       const fullPath = path.join(dir, entry.name);
       result.push({
         name: entry.name,

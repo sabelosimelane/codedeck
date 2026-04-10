@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Folder,
   File,
@@ -9,7 +9,6 @@ import {
   ArrowUp,
   HardDrive,
   FolderOpen,
-  Search,
 } from 'lucide-react';
 
 export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
@@ -19,27 +18,28 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [pathInput, setPathInput] = useState('');
-  const [filterText, setFilterText] = useState('');
   const [hoveredEntry, setHoveredEntry] = useState(null);
+  const debounceRef = useRef(null);
 
-  const browse = useCallback(async (dir) => {
+  // Fetch entries from backend — never touches pathInput
+  const fetchEntries = useCallback(async (dir, filter) => {
     setLoading(true);
     setError(null);
-    setFilterText('');
     try {
-      const url = dir
-        ? `/api/browse?path=${encodeURIComponent(dir)}`
-        : '/api/browse';
+      const params = new URLSearchParams();
+      if (dir) params.set('path', dir);
+      if (filter) params.set('filter', filter);
+      const qs = params.toString();
+      const url = qs ? `/api/browse?${qs}` : '/api/browse';
       const res = await fetch(url);
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Failed to browse');
-      }
-      const data = await res.json();
+      const text = await res.text();
+      if (!text) return;
+      const data = JSON.parse(text);
+      if (!res.ok) throw new Error(data.error || 'Failed to browse');
       setCurrent(data.current);
       setParent(data.parent);
       setEntries(data.entries);
-      setPathInput(data.current);
+      return data;
     } catch (err) {
       setError(err.message);
     } finally {
@@ -47,20 +47,37 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
     }
   }, []);
 
+  // Full navigation — updates pathInput (used by buttons, Enter, init)
+  const browse = useCallback(async (dir) => {
+    const data = await fetchEntries(dir);
+    if (data) setPathInput(data.current);
+  }, [fetchEntries]);
+
   useEffect(() => {
     browse(initialPath || undefined);
   }, [browse, initialPath]);
 
+  // Debounced handler — reacts to typing, never overwrites the input
+  const handlePathInputChange = (value) => {
+    setPathInput(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const lastSlash = value.lastIndexOf('/');
+      if (lastSlash === -1) return;
+      const dir = value.slice(0, lastSlash) || '/';
+      const filter = value.slice(lastSlash + 1);
+      fetchEntries(dir, filter);
+    }, 250);
+  };
+
   const handlePathSubmit = (e) => {
     e.preventDefault();
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     if (pathInput.trim()) browse(pathInput.trim());
   };
 
-  const filtered = filterText
-    ? entries.filter(e => e.name.toLowerCase().includes(filterText.toLowerCase()))
-    : entries;
-  const dirs = filtered.filter(e => e.type === 'dir');
-  const files = filtered.filter(e => e.type === 'file');
+  const dirs = entries.filter(e => e.type === 'dir');
+  const files = entries.filter(e => e.type === 'file');
 
   return (
     <div style={overlayStyle}>
@@ -107,7 +124,7 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
           <form onSubmit={handlePathSubmit} style={{ flex: 1, display: 'flex' }}>
             <input
               value={pathInput}
-              onChange={e => setPathInput(e.target.value)}
+              onChange={e => handlePathInputChange(e.target.value)}
               style={pathInputStyle}
               spellCheck={false}
             />
@@ -129,37 +146,6 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
           </span>
         </div>
 
-        {/* Filter input */}
-        <div style={filterBarStyle}>
-          <Search size={13} style={{ color: filterText ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
-          <input
-            value={filterText}
-            onChange={e => setFilterText(e.target.value)}
-            placeholder="Filter entries…"
-            style={filterInputStyle}
-            spellCheck={false}
-          />
-          {filterText && (
-            <button
-              onClick={() => setFilterText('')}
-              style={{ ...iconBtnStyle, padding: 3 }}
-              title="Clear filter"
-            >
-              <X size={12} />
-            </button>
-          )}
-          {filterText && (
-            <span style={{
-              fontSize: '10px',
-              fontFamily: 'var(--font-mono)',
-              color: 'var(--text-muted)',
-              whiteSpace: 'nowrap',
-            }}>
-              {filtered.length} match{filtered.length !== 1 ? 'es' : ''}
-            </span>
-          )}
-        </div>
-
         {/* Content area */}
         <div style={contentStyle}>
           {loading && (
@@ -176,11 +162,7 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
           )}
 
           {!loading && !error && entries.length === 0 && (
-            <div style={emptyStyle}>Empty directory</div>
-          )}
-
-          {!loading && !error && entries.length > 0 && filtered.length === 0 && (
-            <div style={emptyStyle}>No matches for "{filterText}"</div>
+            <div style={emptyStyle}>No matches</div>
           )}
 
           {!loading && !error && (
@@ -358,26 +340,6 @@ const selectionBarStyle = {
   padding: '8px 16px',
   background: 'var(--accent-dim)',
   borderBottom: '1px solid var(--border)',
-};
-
-const filterBarStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  padding: '8px 14px',
-  borderBottom: '1px solid var(--border)',
-  background: 'var(--bg-sidebar)',
-};
-
-const filterInputStyle = {
-  flex: 1,
-  background: 'transparent',
-  border: 'none',
-  padding: '2px 0',
-  fontSize: '12px',
-  fontFamily: 'var(--font-mono)',
-  color: 'var(--text-primary)',
-  outline: 'none',
 };
 
 const contentStyle = {
