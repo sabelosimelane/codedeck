@@ -1,0 +1,55 @@
+When implementing functionality, decompose by **vertical feature slices** — each slice is a single capability built end-to-end. Within each slice, work layer by layer in this order:
+
+1. **Domain objects** — value objects, entities, domain types
+2. **Data layer** — DAO interfaces, then concrete implementations
+3. **Business logic** — commands, handlers, events, domain services. Core logic MUST be infrastructure-free: pure domain objects in, pure domain objects out. The service layer orchestrates (fetches data, calls pure logic, persists/publishes).
+4. **Unit tests** — exhaustive edge-case coverage on the pure logic (no containers, no mocks on the logic itself)
+5. **API layer** — controllers, DTOs, request/response mapping
+6. **Integration tests** — real infrastructure via Testcontainers, verifying the orchestration end-to-end
+
+Each slice closes completely before moving on. Front-load the riskiest, most rule-heavy slices first.
+
+## When Pure Logic Needs External State
+
+The "pure core logic" rule says: domain objects in, domain objects out — no infrastructure calls inside evaluators/processors. This works cleanly when the data needed is known upfront. It creates tension when business rules need to query state mid-computation (e.g., "reject if the customer has more than 3 pending transactions today").
+
+### Preferred: Pre-fetch into a context record
+The service layer gathers all the data the logic will need and passes it as a single context object. The logic remains pure.
+
+```java
+// Service layer — orchestrates
+EvaluationContext ctx = new EvaluationContext(
+    account,
+    pendingTransactionCount,     // pre-fetched
+    dailyWithdrawalTotal         // pre-fetched
+);
+WithdrawalDecision decision = withdrawalEvaluator.evaluate(command, ctx);
+```
+
+This works when:
+- The set of data the logic needs is **known and bounded** at the call site
+- The context does not grow beyond ~5-7 fields (if it does, your aggregate boundary may be wrong)
+
+### Escape hatch: Pass a query interface
+When the logic's data needs are **conditional** (e.g., only fetch fraud history if the amount exceeds a threshold), pre-fetching everything is wasteful or impossible. Pass a domain-defined query interface — **not** a repository, but a narrow functional interface that the service layer implements.
+
+```java
+// Domain layer — defines what it needs, not how to get it
+@FunctionalInterface
+public interface FraudHistoryLookup {
+    FraudHistory forCustomer(CustomerId id);
+}
+
+// Pure logic uses it — still testable with a lambda
+public WithdrawalDecision evaluate(WithdrawCommand cmd, FraudHistoryLookup lookup) {
+    if (cmd.amount().exceeds(THRESHOLD)) {
+        FraudHistory history = lookup.forCustomer(cmd.customerId());
+        // ...
+    }
+}
+
+// Service layer — provides the implementation
+withdrawalEvaluator.evaluate(command, customerId -> fraudRepository.findByCustomer(customerId));
+```
+
+This preserves testability (pass a lambda in tests) while acknowledging that not all data can be pre-fetched. Use this sparingly — if most of your evaluators need query interfaces, the "pure logic" boundary may be drawn in the wrong place.
