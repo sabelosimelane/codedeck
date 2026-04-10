@@ -8,7 +8,7 @@ A lightweight multi-project terminal workspace. No IDE overhead — just your pr
 # Install dependencies (from project root — workspace monorepo)
 npm install
 
-# Start both servers (backend :3001, frontend :3000)
+# Start both servers (backend :43001, frontend :43000)
 ./server.sh start
 
 # Or manage individually
@@ -18,7 +18,7 @@ npm install
 ./server.sh logs     # Tail logs
 ```
 
-Open `http://localhost:3000` in your browser.
+Open `http://localhost:43000` in your browser.
 
 ## Usage
 

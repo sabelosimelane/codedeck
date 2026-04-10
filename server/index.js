@@ -258,7 +258,7 @@ app.delete('/api/terminal/:sessionId', (req, res) => {
 // -------------------------------------------------------------------
 // Start
 // -------------------------------------------------------------------
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 43001;
 server.listen(PORT, () => {
   console.log(`CodeDeck server running on http://localhost:${PORT}`);
 });

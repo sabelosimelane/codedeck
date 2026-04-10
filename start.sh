@@ -21,11 +21,11 @@ echo "🚀 Starting CodeDeck..."
 echo ""
 
 # Start backend
-echo "🖥  Backend  → http://localhost:3001  (server/)"
+echo "🖥  Backend  → http://localhost:43001  (server/)"
 cd "$ROOT_DIR/server" && npm run dev &
 
 # Start frontend
-echo "🌐 Frontend → http://localhost:3000  (client/)"
+echo "🌐 Frontend → http://localhost:43000  (client/)"
 cd "$ROOT_DIR/client" && npm run dev &
 
 echo ""

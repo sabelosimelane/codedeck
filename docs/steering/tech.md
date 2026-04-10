@@ -32,7 +32,7 @@ Prerequisites: Node.js 22+, npm 10+
 # Install all dependencies (workspace root installs both server and client)
 npm install
 
-# Start both servers (backend :3001, frontend :3000)
+# Start both servers (backend :43001, frontend :43000)
 ./start.sh
 
 # Or use server.sh for background management
@@ -43,7 +43,7 @@ npm install
 ./server.sh logs     # Show recent logs
 ```
 
-Open `http://localhost:3000` in the browser.
+Open `http://localhost:43000` in the browser.
 
 ## Build & Run Commands
 - Install deps: `npm install` (from project root)
@@ -55,13 +55,13 @@ Open `http://localhost:3000` in the browser.
 
 ## Infrastructure
 - **SQLite**: embedded, file-based at `~/.codedeck.db`. WAL mode enabled, foreign keys on. No migration tool — schema created via `CREATE TABLE IF NOT EXISTS` in `server/db.js`.
-- **Vite dev server**: runs on `:3000`, proxies `/api/*` and `/ws/*` to Express on `:3001`.
+- **Vite dev server**: runs on `:43000`, proxies `/api/*` and `/ws/*` to Express on `:43001`.
 - **No Docker**: runs directly on the local machine. No containerization needed.
 - **No CI/CD**: personal project, deployed locally only.
 
 ## Environment & Configuration
 - No environment variables required for basic operation
-- `PORT` env var optionally overrides backend port (default: 3001)
+- `PORT` env var optionally overrides backend port (default: 43001)
 - Application config stored in SQLite `configs` table (key-value pairs)
 - `~/.codedeck.db` is the sole persistent state file
 
