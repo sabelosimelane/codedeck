@@ -2,56 +2,127 @@ import React, { useState, useEffect, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
 import FileTree from './components/FileTree';
+import FileBrowserPanel from './components/FileBrowserPanel';
+import { ToastProvider, useToast } from './components/ToastContext';
 
 export default function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
+  );
+}
+
+function AppContent() {
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState(null);
   const [showFileTree, setShowFileTree] = useState(false);
+  const [sessionStatus, setSessionStatus] = useState([]);
+  const [fileBrowserProject, setFileBrowserProject] = useState(null);
+  const { showToast } = useToast();
 
   const fetchProjects = useCallback(async () => {
-    const res = await fetch('/api/projects');
-    const data = await res.json();
-    setProjects(data);
-  }, []);
+    try {
+      const res = await fetch('/api/projects');
+      if (!res.ok) {
+        showToast({ type: 'error', message: 'Failed to load projects' });
+        return;
+      }
+      const data = await res.json();
+      setProjects(data);
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
+  }, [showToast]);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
 
+  // Poll session status every 5 seconds for sidebar cockpit
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/sessions');
+        if (res.ok) setSessionStatus(await res.json());
+      } catch {
+        // Silent — polling failure is not user-actionable
+      }
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, []);
+
   const addProject = async (name, path) => {
-    await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, path }),
-    });
-    await fetchProjects();
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, path }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: err.error || 'Failed to add project' });
+        return;
+      }
+      showToast({ type: 'success', message: `Project "${name}" added` });
+      await fetchProjects();
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
   };
 
   const renameProject = async (oldName, newName) => {
     const project = projects.find(p => p.name === oldName);
     if (!project) return;
-    const res = await fetch(`/api/projects/${encodeURIComponent(oldName)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newName, path: project.path }),
-    });
-    if (res.ok) {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(oldName)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName, path: project.path }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: err.error || 'Failed to rename project' });
+        return;
+      }
       const updated = await res.json();
       if (activeProject?.name === oldName) setActiveProject(updated);
+      showToast({ type: 'success', message: `Project renamed to "${newName}"` });
       await fetchProjects();
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
     }
   };
 
   const removeProject = async (name) => {
-    await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
-    if (activeProject?.name === name) setActiveProject(null);
-    await fetchProjects();
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        showToast({ type: 'error', message: 'Failed to remove project' });
+        return;
+      }
+      if (activeProject?.name === name) setActiveProject(null);
+      showToast({ type: 'success', message: `Project "${name}" removed` });
+      await fetchProjects();
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
   };
 
   const openFile = async (filePath) => {
-    await fetch('/api/open', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath }),
-    });
+    try {
+      const res = await fetch('/api/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: err.error || 'Failed to open file' });
+      }
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
   };
 
   return (
@@ -65,6 +136,8 @@ export default function App() {
         onRename={renameProject}
         onToggleFiles={() => setShowFileTree(prev => !prev)}
         showFileTree={showFileTree}
+        sessionStatus={sessionStatus}
+        onBrowseFiles={setFileBrowserProject}
       />
       {showFileTree && activeProject && (
         <FileTree root={activeProject.path} onOpenFile={openFile} />
@@ -86,6 +159,12 @@ export default function App() {
           </div>
         )}
       </div>
+      {fileBrowserProject && (
+        <FileBrowserPanel
+          project={fileBrowserProject}
+          onClose={() => setFileBrowserProject(null)}
+        />
+      )}
     </div>
   );
 }

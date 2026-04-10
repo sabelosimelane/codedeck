@@ -7,6 +7,7 @@ import path from 'path';
 import { spawn } from 'node-pty';
 import { exec } from 'child_process';
 import db from './db.js';
+import { handleWsConnection } from './ws-handler.js';
 
 const app = express();
 app.use(express.json());
@@ -206,78 +207,63 @@ app.post('/api/open-vscode', (req, res) => {
 });
 
 // -------------------------------------------------------------------
+// REST API: Session status (for sidebar cockpit)
+// -------------------------------------------------------------------
+app.get('/api/sessions', (req, res) => {
+  const result = [];
+  for (const [sessionId, entry] of sessions) {
+    result.push({
+      sessionId,
+      cwd: entry.cwd,
+      startedAt: entry.startedAt,
+      lastOutputAt: entry.lastOutputAt,
+      alive: entry.alive,
+    });
+  }
+  res.json(result);
+});
+
+// -------------------------------------------------------------------
+// REST API: Health check
+// -------------------------------------------------------------------
+const startedAt = Date.now();
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', uptime: Math.floor((Date.now() - startedAt) / 1000) });
+});
+
+// -------------------------------------------------------------------
 // WebSocket: Terminal (PTY) sessions
 // -------------------------------------------------------------------
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws/terminal' });
 
-// Active PTY sessions: Map<string, pty>
+// Active PTY sessions: Map<string, { pty, ws, cwd, startedAt, lastOutputAt, alive }>
 const sessions = new Map();
 
+// PTY spawn factory — wraps node-pty spawn for dependency injection in tests
+function spawnPty({ cwd, cols, rows }) {
+  const shell = process.env.SHELL || '/bin/zsh';
+  return spawn(shell, [], {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd,
+    env: { ...process.env, TERM: 'xterm-256color' },
+  });
+}
+
 wss.on('connection', (ws, req) => {
-  const params = new URL(req.url, 'http://localhost').searchParams;
-  const cwd = params.get('cwd') || process.env.HOME;
-  const sessionId = params.get('sessionId') || `s-${Date.now()}`;
-  const cols = parseInt(params.get('cols') || '120');
-  const rows = parseInt(params.get('rows') || '30');
-
-  let ptyProcess = sessions.get(sessionId);
-
-  if (!ptyProcess) {
-    const shell = process.env.SHELL || '/bin/zsh';
-    ptyProcess = spawn(shell, [], {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      cwd,
-      env: { ...process.env, TERM: 'xterm-256color' },
-    });
-
-    sessions.set(sessionId, ptyProcess);
-
-    ptyProcess.onExit(() => {
-      sessions.delete(sessionId);
-      ws.close();
-    });
-  }
-
-  // PTY → Browser
-  ptyProcess.onData((data) => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify({ type: 'output', data }));
-    }
-  });
-
-  // Browser → PTY
-  ws.on('message', (msg) => {
-    try {
-      const parsed = JSON.parse(msg.toString());
-      if (parsed.type === 'input') {
-        ptyProcess.write(parsed.data);
-      } else if (parsed.type === 'resize') {
-        ptyProcess.resize(parsed.cols, parsed.rows);
-      }
-    } catch {
-      // Raw string input fallback
-      ptyProcess.write(msg.toString());
-    }
-  });
-
-  ws.on('close', () => {
-    // Keep PTY alive for reconnection — only kill on explicit close
-  });
-
-  // Send session info
-  ws.send(JSON.stringify({ type: 'session', sessionId }));
+  handleWsConnection(ws, req, sessions, spawnPty);
 });
 
 // -------------------------------------------------------------------
 // Kill a terminal session explicitly
 // -------------------------------------------------------------------
 app.delete('/api/terminal/:sessionId', (req, res) => {
-  const pty = sessions.get(req.params.sessionId);
-  if (pty) {
-    pty.kill();
+  const entry = sessions.get(req.params.sessionId);
+  if (entry) {
+    entry.pty.kill();
     sessions.delete(req.params.sessionId);
   }
   res.json({ ok: true });

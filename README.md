@@ -5,15 +5,17 @@ A lightweight multi-project terminal workspace. No IDE overhead — just your pr
 ## Setup
 
 ```bash
-# Install dependencies
-cd server && npm install
-cd ../client && npm install
+# Install dependencies (from project root — workspace monorepo)
+npm install
 
-# Start the backend (runs on :3001)
-cd server && npm run dev
+# Start both servers (backend :3001, frontend :3000)
+./server.sh start
 
-# In another terminal, start the frontend (runs on :3000)
-cd client && npm run dev
+# Or manage individually
+./server.sh stop     # Stop gracefully
+./server.sh restart  # Restart
+./server.sh status   # Check status
+./server.sh logs     # Tail logs
 ```
 
 Open `http://localhost:3000` in your browser.
@@ -22,35 +24,29 @@ Open `http://localhost:3000` in your browser.
 
 1. Click **+** in the sidebar to add a project (give it a name and the absolute path).
 2. Click a project to open a terminal scoped to that directory.
-3. Use the **+** in the terminal bar to open more terminals, or the split button for side-by-side.
-4. Toggle the **file tree** icon in the sidebar header to browse files — clicking a file opens it in your default editor (VS Code, etc.).
+3. Use **Split right** (columns icon) to add side-by-side terminal panes — drag dividers to resize, double-click to reset.
+4. Use **+** in the tab bar to open new terminal tabs. Each tab has its own set of panes.
+5. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
+6. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your default editor.
+7. Toast notifications confirm every action and surface errors.
 
 ## Config
 
-Projects are stored in `~/.codedeck.json`. You can edit this file directly if you prefer.
-
-```json
-{
-  "projects": [
-    { "name": "message-triage", "path": "/Users/sabside/code/message-triage" },
-    { "name": "gateway", "path": "/Users/sabside/code/gateway" },
-    { "name": "luna", "path": "/Users/sabside/code/luna" }
-  ]
-}
-```
+Projects are stored in SQLite at `~/.codedeck.db`.
 
 ## Architecture
 
 ```
 Browser (React + xterm.js)
   ↕ WebSocket (terminal I/O)
-  ↕ REST (projects, files, open)
+  ↕ REST (projects, files, sessions, health)
 Node.js server (Express + node-pty)
-  ↕ PTY pool (one per terminal tab)
+  ↕ PTY pool (one per terminal pane)
+  ↕ SQLite (project config)
   ↕ fs (file tree reads)
-  ↕ exec('open') → default editor
+  ↕ child_process (open files in editor)
 ```
 
-## Phase 2 (planned)
+## Future (planned)
 
 Workflow panel above the terminal area for orchestrating tasks across projects.

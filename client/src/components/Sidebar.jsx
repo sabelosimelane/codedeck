@@ -1,15 +1,62 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings } from 'lucide-react';
+import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
+import { useToast } from './ToastContext';
 
-export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRemove, onRename, onToggleFiles, showFileTree }) {
+function formatElapsed(timestamp) {
+  if (!timestamp || isNaN(timestamp)) return null;
+  const mins = Math.floor((Date.now() - timestamp) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function getProjectStatus(sessions) {
+  if (!sessions || sessions.length === 0) return { status: 'none', count: 0, elapsed: null };
+  const alive = sessions.filter(s => s.alive);
+  const count = alive.length;
+  if (count === 0) return { status: 'dead', count: 0, elapsed: null };
+
+  const now = Date.now();
+  const anyActive = alive.some(s => now - new Date(s.lastOutputAt).getTime() < 10000);
+  const earliest = alive.reduce((min, s) => {
+    const t = new Date(s.startedAt).getTime();
+    return t < min ? t : min;
+  }, Infinity);
+
+  return {
+    status: anyActive ? 'active' : 'idle',
+    count,
+    elapsed: formatElapsed(earliest),
+  };
+}
+
+const STATUS_COLORS = {
+  active: 'var(--accent)',
+  idle: 'var(--text-muted)',
+  dead: 'var(--danger)',
+};
+
+export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRemove, onRename, onToggleFiles, showFileTree, sessionStatus, onBrowseFiles }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const renameInputRef = useRef(null);
+  const { showToast } = useToast();
+
+  // Map sessions to projects by sessionId prefix or cwd match
+  const getProjectSessions = (project) => {
+    if (!sessionStatus || sessionStatus.length === 0) return [];
+    const prefix = `${project.name}-`;
+    return sessionStatus.filter(s =>
+      s.sessionId.startsWith(prefix) || s.cwd === project.path
+    );
+  };
 
   const handleAddClick = async () => {
     try {
@@ -18,7 +65,9 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
         const data = await res.json();
         setDefaultPath(data.value);
       }
-    } catch {}
+    } catch {
+      showToast({ type: 'error', message: 'Failed to load default path' });
+    }
     setShowBrowser(true);
   };
 
@@ -127,15 +176,14 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
           {projects.map(project => {
             const isActive = activeProject?.name === project.name;
             const isRenaming = renamingProject === project.name;
+            const projSessions = getProjectSessions(project);
+            const { status, count, elapsed } = getProjectStatus(projSessions);
             return (
               <div
                 key={project.name}
                 onClick={() => { if (!isRenaming) onSelect(project); }}
                 style={{
                   padding: '8px 16px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
                   cursor: isRenaming ? 'default' : 'pointer',
                   background: isActive ? 'var(--bg-active)' : 'transparent',
                   borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
@@ -144,69 +192,104 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)'; }}
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
               >
-                <FolderOpen size={14} style={{ color: isActive ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
-                {isRenaming ? (
-                  <input
-                    ref={renameInputRef}
-                    value={renameValue}
-                    onChange={e => setRenameValue(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') commitRename();
-                      if (e.key === 'Escape') cancelRename();
-                    }}
-                    onBlur={commitRename}
-                    onClick={e => e.stopPropagation()}
-                    spellCheck={false}
-                    style={{
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {status !== 'none' ? (
+                    <span style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: STATUS_COLORS[status],
+                      flexShrink: 0,
+                    }} title={`Status: ${status}`} />
+                  ) : (
+                    <FolderOpen size={14} style={{ color: isActive ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
+                  )}
+                  {isRenaming ? (
+                    <input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={e => setRenameValue(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') commitRename();
+                        if (e.key === 'Escape') cancelRename();
+                      }}
+                      onBlur={commitRename}
+                      onClick={e => e.stopPropagation()}
+                      spellCheck={false}
+                      style={{
+                        flex: 1,
+                        fontSize: '13px',
+                        fontFamily: 'var(--font-mono)',
+                        padding: '2px 6px',
+                        background: 'var(--bg-surface)',
+                        border: '1px solid var(--accent)',
+                        borderRadius: 4,
+                        color: 'var(--text-primary)',
+                        outline: 'none',
+                        minWidth: 0,
+                      }}
+                    />
+                  ) : (
+                    <span style={{
                       flex: 1,
                       fontSize: '13px',
-                      fontFamily: 'var(--font-mono)',
-                      padding: '2px 6px',
-                      background: 'var(--bg-surface)',
-                      border: '1px solid var(--accent)',
-                      borderRadius: 4,
-                      color: 'var(--text-primary)',
-                      outline: 'none',
-                      minWidth: 0,
+                      fontWeight: isActive ? 500 : 400,
+                      color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {project.name}
+                    </span>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onBrowseFiles(project); }}
+                    style={{
+                      padding: 2,
+                      color: 'var(--text-muted)',
+                      opacity: 0.5,
+                      borderRadius: 3,
                     }}
-                  />
-                ) : (
-                  <span style={{
-                    flex: 1,
-                    fontSize: '13px',
-                    fontWeight: isActive ? 500 : 400,
-                    color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
+                    title="Browse files"
+                  >
+                    <FolderSearch size={12} />
+                  </button>
+                  <button
+                    onClick={(e) => startRename(e, project)}
+                    style={{
+                      padding: 2,
+                      color: 'var(--text-muted)',
+                      opacity: 0.5,
+                      borderRadius: 3,
+                    }}
+                    title="Rename project"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onRemove(project.name); }}
+                    style={{
+                      padding: 2,
+                      color: 'var(--text-muted)',
+                      opacity: 0.5,
+                      borderRadius: 3,
+                    }}
+                    title="Remove project"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+                {count > 0 && (
+                  <div style={{
+                    marginTop: 3,
+                    marginLeft: 22,
+                    fontSize: '11px',
+                    fontFamily: 'var(--font-mono)',
+                    color: 'var(--text-muted)',
                   }}>
-                    {project.name}
-                  </span>
+                    {count} terminal{count !== 1 ? 's' : ''}{elapsed ? ` · ${elapsed}` : ''}
+                  </div>
                 )}
-                <button
-                  onClick={(e) => startRename(e, project)}
-                  style={{
-                    padding: 2,
-                    color: 'var(--text-muted)',
-                    opacity: 0.5,
-                    borderRadius: 3,
-                  }}
-                  title="Rename project"
-                >
-                  <Pencil size={12} />
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); onRemove(project.name); }}
-                  style={{
-                    padding: 2,
-                    color: 'var(--text-muted)',
-                    opacity: 0.5,
-                    borderRadius: 3,
-                  }}
-                  title="Remove project"
-                >
-                  <Trash2 size={12} />
-                </button>
               </div>
             );
           })}

@@ -82,3 +82,24 @@ input:focus {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* ─── Pane divider & close button ────────────────────────────── */
+.pane-divider {
+  background: var(--border);
+  transition: background 0.15s;
+}
+.pane-divider:hover {
+  background: var(--accent);
+}
+
+.pane-wrapper:hover .pane-close-btn {
+  opacity: 0.6;
+}
+.pane-close-btn:hover {
+  opacity: 1 !important;
+}

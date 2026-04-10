@@ -69,7 +69,7 @@ export default function FileTree({ root, onOpenFile }) {
     fetch(`/api/files?root=${encodeURIComponent(root)}`)
       .then(r => r.json())
       .then(data => { setTree(data); setLoading(false); })
-      .catch(() => setLoading(false));
+      .catch(() => { setTree([]); setLoading(false); });
   }, [root]);
 
   return (

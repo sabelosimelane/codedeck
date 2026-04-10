@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Settings, FolderOpen, RotateCcw, Save } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
+import { useToast } from './ToastContext';
 
 export default function SettingsPanel({ onClose }) {
   const [defaultPath, setDefaultPath] = useState('');
@@ -8,6 +9,7 @@ export default function SettingsPanel({ onClose }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const { showToast } = useToast();
 
   useEffect(() => {
     fetch('/api/config/defaultPath')
@@ -17,8 +19,10 @@ export default function SettingsPanel({ onClose }) {
         setDefaultPath(val);
         setSavedPath(val);
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => {
+        showToast({ type: 'error', message: 'Failed to load settings' });
+      });
+  }, [showToast]);
 
   useEffect(() => {
     setDirty(defaultPath !== savedPath);
@@ -27,17 +31,23 @@ export default function SettingsPanel({ onClose }) {
   const handleSave = async () => {
     setSaving(true);
     try {
-      if (defaultPath) {
-        await fetch('/api/config/defaultPath', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ value: defaultPath }),
-        });
-      } else {
-        await fetch('/api/config/defaultPath', { method: 'DELETE' });
+      const res = defaultPath
+        ? await fetch('/api/config/defaultPath', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: defaultPath }),
+          })
+        : await fetch('/api/config/defaultPath', { method: 'DELETE' });
+      if (!res.ok) {
+        showToast({ type: 'error', message: 'Failed to save settings' });
+        setSaving(false);
+        return;
       }
       setSavedPath(defaultPath);
-    } catch {}
+      showToast({ type: 'success', message: 'Settings saved' });
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
     setSaving(false);
   };
 
