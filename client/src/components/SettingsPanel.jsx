@@ -6,18 +6,23 @@ import { useToast } from './ToastContext';
 export default function SettingsPanel({ onClose }) {
   const [defaultPath, setDefaultPath] = useState('');
   const [savedPath, setSavedPath] = useState('');
+  const [editorCommand, setEditorCommand] = useState('');
+  const [savedEditorCommand, setSavedEditorCommand] = useState('');
   const [showBrowser, setShowBrowser] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const { showToast } = useToast();
 
   useEffect(() => {
-    fetch('/api/config/defaultPath')
-      .then(res => res.ok ? res.json() : null)
+    fetch('/api/config')
+      .then(res => res.ok ? res.json() : Promise.reject(new Error('Failed to load settings')))
       .then(data => {
-        const val = data?.value || '';
-        setDefaultPath(val);
-        setSavedPath(val);
+        const nextDefaultPath = data.defaultPath || '';
+        const nextEditorCommand = data.editorCommand || '';
+        setDefaultPath(nextDefaultPath);
+        setSavedPath(nextDefaultPath);
+        setEditorCommand(nextEditorCommand);
+        setSavedEditorCommand(nextEditorCommand);
       })
       .catch(() => {
         showToast({ type: 'error', message: 'Failed to load settings' });
@@ -25,25 +30,39 @@ export default function SettingsPanel({ onClose }) {
   }, [showToast]);
 
   useEffect(() => {
-    setDirty(defaultPath !== savedPath);
-  }, [defaultPath, savedPath]);
+    setDirty(
+      defaultPath !== savedPath ||
+      editorCommand !== savedEditorCommand
+    );
+  }, [defaultPath, savedPath, editorCommand, savedEditorCommand]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = defaultPath
-        ? await fetch('/api/config/defaultPath', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ value: defaultPath }),
-          })
-        : await fetch('/api/config/defaultPath', { method: 'DELETE' });
-      if (!res.ok) {
+      const requests = [
+        defaultPath
+          ? fetch('/api/config/defaultPath', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ value: defaultPath }),
+            })
+          : fetch('/api/config/defaultPath', { method: 'DELETE' }),
+        editorCommand
+          ? fetch('/api/config/editorCommand', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ value: editorCommand }),
+            })
+          : fetch('/api/config/editorCommand', { method: 'DELETE' }),
+      ];
+      const responses = await Promise.all(requests);
+      if (responses.some(res => !res.ok)) {
         showToast({ type: 'error', message: 'Failed to save settings' });
         setSaving(false);
         return;
       }
       setSavedPath(defaultPath);
+      setSavedEditorCommand(editorCommand);
       showToast({ type: 'success', message: 'Settings saved' });
     } catch {
       showToast({ type: 'error', message: 'Server unreachable' });
@@ -105,6 +124,27 @@ export default function SettingsPanel({ onClose }) {
                   </button>
                 </div>
               </div>
+
+              <div style={{ ...rowStyle, marginTop: 12 }}>
+                <div style={rowHeaderStyle}>
+                  <span style={keyStyle}>editorCommand</span>
+                  <span style={descStyle}>
+                    Command used when opening clicked files. Leave blank for VS Code.
+                  </span>
+                </div>
+                <div style={valueColumnStyle}>
+                  <input
+                    value={editorCommand}
+                    onChange={e => setEditorCommand(e.target.value)}
+                    placeholder="code -r"
+                    spellCheck={false}
+                    style={inputStyle}
+                  />
+                  <span style={hintStyle}>
+                    Examples: <code style={inlineCodeStyle}>code -r</code>, <code style={inlineCodeStyle}>cursor -r</code>, <code style={inlineCodeStyle}>windsurf -r</code>
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -117,7 +157,10 @@ export default function SettingsPanel({ onClose }) {
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button
-                onClick={() => { setDefaultPath(savedPath); }}
+                onClick={() => {
+                  setDefaultPath(savedPath);
+                  setEditorCommand(savedEditorCommand);
+                }}
                 disabled={!dirty}
                 style={{
                   ...actionBtnStyle,
@@ -281,6 +324,12 @@ const valueRowStyle = {
   gap: 6,
 };
 
+const valueColumnStyle = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+};
+
 const inputStyle = {
   flex: 1,
   background: 'var(--bg-base)',
@@ -291,6 +340,19 @@ const inputStyle = {
   fontFamily: 'var(--font-mono)',
   color: 'var(--text-primary)',
   outline: 'none',
+};
+
+const hintStyle = {
+  fontSize: '11px',
+  color: 'var(--text-muted)',
+  fontFamily: 'var(--font-mono)',
+  lineHeight: 1.5,
+};
+
+const inlineCodeStyle = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: '11px',
+  color: 'var(--text-secondary)',
 };
 
 const browseBtnStyle = {

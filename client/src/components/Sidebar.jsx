@@ -3,6 +3,7 @@ import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, A
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
+import BrandMark from './BrandMark';
 
 const SIDEBAR_ACTIVITY_WINDOW_MS = 45000;
 
@@ -81,6 +82,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
       return [];
     }
   });
+  const [confirmDelete, setConfirmDelete] = useState(null);
   const renameInputRef = useRef(null);
   const busyTracker = useRef(new Map());
   const prevStatusRef = useRef(new Map());
@@ -194,6 +196,13 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
   };
 
   useEffect(() => {
+    if (!confirmDelete) return;
+    const dismiss = () => setConfirmDelete(null);
+    document.addEventListener('click', dismiss);
+    return () => document.removeEventListener('click', dismiss);
+  }, [confirmDelete]);
+
+  useEffect(() => {
     if (renamingProject && renameInputRef.current) {
       renameInputRef.current.focus();
       renameInputRef.current.select();
@@ -246,59 +255,49 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
       }}>
         {/* Header */}
         <div style={{
-          padding: isCompact ? '14px 10px 12px' : '16px 16px 12px',
+          padding: isCompact ? '14px 10px 12px' : '10px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: isCompact ? 'center' : 'space-between',
           borderBottom: '1px solid var(--border)',
+          gap: 6,
         }}>
           {!isCompact && (
-            <span style={{
-              fontFamily: 'var(--font-mono)',
-              fontWeight: 600,
-              fontSize: '13px',
-              letterSpacing: '0.5px',
-              color: 'var(--accent)',
-            }}>
-              CODEDECK
-            </span>
+            <div className="brand-lockup">
+              <BrandMark size={24} showWordmark showTagline={false} gap={7} />
+            </div>
           )}
-          <div style={{ display: 'flex', gap: 4, flexDirection: isCompact ? 'column' : 'row' }}>
+          {isCompact && <BrandMark size={28} />}
+          <div style={{ display: 'flex', gap: 3, flexDirection: isCompact ? 'column' : 'row', flexShrink: 0 }}>
             <button
               onClick={toggleCompact}
+              className="sidebar-header-btn"
               title={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
               aria-label={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
               style={{
-                padding: 4,
-                borderRadius: 4,
-                color: isCompact ? 'var(--accent)' : 'var(--text-muted)',
-                background: isCompact ? 'var(--accent-dim)' : 'transparent',
+                color: isCompact ? 'var(--accent)' : undefined,
+                background: isCompact ? 'var(--accent-dim)' : undefined,
               }}
             >
-              {isCompact ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+              {isCompact ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
             </button>
             <button
               onClick={onToggleFiles}
+              className="sidebar-header-btn"
               title="Toggle file tree"
               style={{
-                padding: 4,
-                borderRadius: 4,
-                color: showFileTree ? 'var(--accent)' : 'var(--text-muted)',
-                background: showFileTree ? 'var(--accent-dim)' : 'transparent',
+                color: showFileTree ? 'var(--accent)' : undefined,
+                background: showFileTree ? 'var(--accent-dim)' : undefined,
               }}
             >
-              <FolderTree size={16} />
+              <FolderTree size={15} />
             </button>
             <button
               onClick={handleAddClick}
+              className="sidebar-header-btn"
               title="Add project"
-              style={{
-                padding: 4,
-                borderRadius: 4,
-                color: 'var(--text-muted)',
-              }}
             >
-              <Plus size={16} />
+              <Plus size={15} />
             </button>
           </div>
         </div>
@@ -402,7 +401,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                   <div className="project-actions" style={{
                     display: 'flex',
                     gap: 2,
-                    marginLeft: 22,
+                    marginLeft: 16,
                   }}>
                     <button
                       onClick={(e) => { e.stopPropagation(); onBrowseFiles(project); }}
@@ -426,13 +425,24 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                     >
                       <Pencil size={14} />
                     </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onRemove(project.name); }}
-                      className="project-action-btn danger"
-                      title="Remove project"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {confirmDelete === project.name ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onRemove(project.name); setConfirmDelete(null); }}
+                        className="project-action-btn"
+                        title="Click to confirm removal"
+                        style={{ fontSize: '11px', color: 'var(--danger)', fontFamily: 'var(--font-mono)', width: 'auto', padding: '2px 6px' }}
+                      >
+                        Remove?
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(project.name); }}
+                        className="project-action-btn danger"
+                        title="Remove project"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                     <button
                       onClick={(e) => toggleMute(e, project.name)}
                       className="project-action-btn"
@@ -448,7 +458,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                 {!isCompact && count > 0 && (
                   <div style={{
                     marginTop: 3,
-                    marginLeft: 22,
+                    marginLeft: 16,
                     fontSize: '11px',
                     fontFamily: 'var(--font-mono)',
                     color: 'var(--text-muted)',
@@ -468,7 +478,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                     : 'var(--text-muted)';
                   return (
                     <div key={session.sessionId} style={{ marginTop: 4 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 30 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 16, minWidth: 0 }}>
                         <span
                           className={termStatus === 'busy' ? 'terminal-dot-busy' : undefined}
                           style={{
@@ -481,16 +491,16 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                           }}
                           title={`Terminal ${session.sessionId}: ${termStatus}`}
                         />
-                        <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                        <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                           {session.sessionId}
                         </span>
-                        <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                        <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' }}>
                           · {timeSince}
                         </span>
                       </div>
                       {session.lastOutputLine && (
                         <div style={{
-                          marginLeft: 38,
+                          marginLeft: 28,
                           marginTop: 2,
                           fontSize: '11px',
                           fontFamily: 'var(--font-mono)',
@@ -499,7 +509,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap',
-                          maxWidth: 'calc(100% - 46px)',
+                          maxWidth: 'calc(100% - 28px)',
                         }}>
                           {session.lastOutputLine}
                         </div>
@@ -666,13 +676,24 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                         >
                           <ArchiveRestore size={14} />
                         </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onRemove(project.name); }}
-                          className="project-action-btn danger"
-                          title="Remove project"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {confirmDelete === project.name ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onRemove(project.name); setConfirmDelete(null); }}
+                            className="project-action-btn"
+                            title="Click to confirm removal"
+                            style={{ fontSize: '11px', color: 'var(--danger)', fontFamily: 'var(--font-mono)', width: 'auto', padding: '2px 6px' }}
+                          >
+                            Remove?
+                          </button>
+                        ) : (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDelete(project.name); }}
+                            className="project-action-btn danger"
+                            title="Remove project"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}

@@ -45,4 +45,36 @@ describe('readTree', () => {
       },
     ]);
   });
+
+  it('handles deeper directory structures than the previous 3-level limit', async () => {
+    const root = await makeTempDir();
+    tempDirs.push(root);
+
+    // root/1/2/3/4/file.txt
+    let currentDir = root;
+    for (let i = 1; i <= 5; i++) {
+      currentDir = path.join(currentDir, i.toString());
+      await fs.mkdir(currentDir);
+    }
+    const deepFile = path.join(currentDir, 'file.txt');
+    await fs.writeFile(deepFile, 'content');
+
+    const tree = await readTree(root);
+
+    // level 0: [1]
+    // level 1: [2]
+    // level 2: [3]
+    // level 3: [4]
+    // level 4: [5]
+    // level 5: [file.txt]
+
+    let node = tree[0];
+    for (let i = 1; i <= 5; i++) {
+      expect(node.name).toBe(i.toString());
+      expect(node.children.length).toBe(1);
+      node = node.children[0];
+    }
+    expect(node.name).toBe('file.txt');
+    expect(node.type).toBe('file');
+  });
 });

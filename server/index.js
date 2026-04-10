@@ -5,11 +5,12 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { spawn } from 'node-pty';
-import { exec } from 'child_process';
+import { spawn as spawnProcess } from 'child_process';
 import db from './db.js';
 import { handleWsConnection } from './ws-handler.js';
 import { readTree } from './file-tree.js';
 import { buildShellEnv } from './shell-env.js';
+import { resolveEditorCommand } from './editor-command.js';
 
 const app = express();
 app.use(express.json());
@@ -34,6 +35,15 @@ function loadProjects() {
 
 function saveProjects(projects) {
   setConfig('projects', projects);
+}
+
+function openFileWithCommand(filePath, commandParts) {
+  const [command, ...args] = commandParts;
+  const child = spawnProcess(command, [...args, filePath], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
 }
 
 // -------------------------------------------------------------------
@@ -172,15 +182,17 @@ app.get('/api/browse', async (req, res) => {
   }
 });
 
-// Open a file in the system default editor
+// Open a file in the configured editor. Defaults to VS Code.
 app.post('/api/open', (req, res) => {
   const { filePath } = req.body;
   if (!filePath || !existsSync(filePath)) return res.status(400).json({ error: 'invalid path' });
 
-  // macOS: 'open', Linux: 'xdg-open', Windows: 'start'
-  const platform = process.platform;
-  const cmd = platform === 'darwin' ? 'open' : platform === 'win32' ? 'start' : 'xdg-open';
-  exec(`${cmd} "${filePath}"`);
+  try {
+    openFileWithCommand(filePath, resolveEditorCommand(getConfig('editorCommand')));
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
   res.json({ ok: true });
 });
 
@@ -188,7 +200,13 @@ app.post('/api/open', (req, res) => {
 app.post('/api/open-vscode', (req, res) => {
   const { filePath } = req.body;
   if (!filePath || !existsSync(filePath)) return res.status(400).json({ error: 'invalid path' });
-  exec(`code "${filePath}"`);
+
+  try {
+    openFileWithCommand(filePath, resolveEditorCommand('code -r'));
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
   res.json({ ok: true });
 });
 

@@ -13,7 +13,7 @@ export const IGNORED = new Set([
   '.DS_Store',
 ]);
 
-export async function readTree(dir, depth = 0, maxDepth = 3) {
+export async function readTree(dir, depth = 0, maxDepth = 20) {
   if (depth >= maxDepth) return [];
 
   const entries = await fs.readdir(dir, { withFileTypes: true });

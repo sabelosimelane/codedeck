@@ -1,18 +1,23 @@
 :root {
-  --bg-base: #0e0e10;
-  --bg-sidebar: #141416;
-  --bg-surface: #1a1a1e;
-  --bg-hover: #222228;
-  --bg-active: #2a2a32;
-  --border: #2a2a30;
-  --text-primary: #e4e4e8;
-  --text-secondary: #8a8a96;
-  --text-muted: #5a5a66;
-  --accent: #6ee7b7;
-  --accent-dim: #34d39930;
+  --bg-base: #0b0d12;
+  --bg-sidebar: #10131a;
+  --bg-surface: #161b24;
+  --bg-elevated: rgba(255, 255, 255, 0.03);
+  --bg-hover: #1d2430;
+  --bg-active: #202938;
+  --border: #232b38;
+  --border-strong: rgba(255, 255, 255, 0.08);
+  --text-primary: #edf2f7;
+  --text-secondary: #9aa5b8;
+  --text-muted: #677286;
+  --accent: #5fe0ba;
+  --accent-2: #35beea;
+  --accent-dim: rgba(95, 224, 186, 0.16);
   --danger: #f87171;
   --font-sans: 'Outfit', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
+  --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.28);
+  --radius-panel: 18px;
 }
 
 * {
@@ -25,7 +30,10 @@ html, body, #root {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: var(--bg-base);
+  background:
+    radial-gradient(circle at top left, rgba(53, 190, 234, 0.1), transparent 22%),
+    radial-gradient(circle at top right, rgba(95, 224, 186, 0.08), transparent 20%),
+    var(--bg-base);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -52,6 +60,7 @@ input {
 
 input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(95, 224, 186, 0.12);
 }
 
 ::-webkit-scrollbar {
@@ -153,6 +162,50 @@ input:focus {
 }
 
 .project-action-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.brand-lockup {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.brand-wordmark {
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.brand-tagline {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  transition: color 0.15s, background 0.15s;
+}
+
+.sidebar-header-btn:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
 }
