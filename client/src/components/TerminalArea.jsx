@@ -1,14 +1,19 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns } from 'lucide-react';
+import { Plus, X, Columns, Eraser, PlugZap, TerminalSquare, RotateCcw } from 'lucide-react';
 
 let tabCounter = 0;
 let sessionCounter = 0;
 
 function createPane(projectName) {
   const sessionId = `${projectName}-${++sessionCounter}`;
-  return { id: `pane-${sessionId}`, sessionId, widthFraction: 1 };
+  return {
+    id: `pane-${sessionId}`,
+    sessionId,
+    widthFraction: 1,
+    isConnected: true,
+  };
 }
 
 function createTab(projectName) {
@@ -72,7 +77,11 @@ function filterLayoutByLiveSessions(saved, liveSessions) {
       const fraction = 1 / livePanes.length;
       filteredTabs.push({
         ...tab,
-        panes: livePanes.map(p => ({ ...p, widthFraction: fraction })),
+        panes: livePanes.map(p => ({
+          ...p,
+          widthFraction: fraction,
+          isConnected: p.isConnected ?? true,
+        })),
       });
     }
   }
@@ -90,6 +99,7 @@ function filterLayoutByLiveSessions(saved, liveSessions) {
 export default function TerminalArea({ project }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const containerRef = useRef(null);
+  const terminalRefs = useRef(new Map());
   const prevProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
   const restoringRef = useRef(false);
@@ -260,6 +270,34 @@ export default function TerminalArea({ project }) {
     });
   }, [project.name]);
 
+  const clearPane = useCallback((paneId) => {
+    const terminal = terminalRefs.current.get(paneId);
+    terminal?.clear?.();
+  }, []);
+
+  const setPaneConnection = useCallback((tabId, paneId, isConnected) => {
+    setState(prev => ({
+      ...prev,
+      tabs: prev.tabs.map(tab => {
+        if (tab.id !== tabId) return tab;
+        return {
+          ...tab,
+          panes: tab.panes.map(pane => (
+            pane.id === paneId ? { ...pane, isConnected } : pane
+          )),
+        };
+      }),
+    }));
+  }, []);
+
+  const registerTerminalRef = useCallback((paneId, instance) => {
+    if (instance) {
+      terminalRefs.current.set(paneId, instance);
+    } else {
+      terminalRefs.current.delete(paneId);
+    }
+  }, []);
+
   // Divider drag — resize adjacent panes, enforce 200px minimum
   const handleDividerDrag = useCallback((tabId, leftIndex, deltaPixels) => {
     setState(prev => {
@@ -419,38 +457,142 @@ export default function TerminalArea({ project }) {
                     minWidth: 0,
                     minHeight: 0,
                     position: 'relative',
+                    padding: '12px 12px 10px',
+                    background: 'linear-gradient(180deg, rgba(26, 26, 30, 0.95), rgba(14, 14, 16, 0.98))',
                   }}
                 >
-                  {tab.panes.length > 1 && (
-                    <button
-                      onClick={() => closePane(tab.id, pane.id, pane.sessionId)}
-                      title="Close pane"
-                      className="pane-close-btn"
+                  <div
+                    style={{
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      minHeight: 0,
+                      border: '1px solid rgba(110, 231, 183, 0.12)',
+                      borderRadius: 16,
+                      overflow: 'hidden',
+                      background: 'radial-gradient(circle at top, rgba(110, 231, 183, 0.06), rgba(14, 14, 16, 0) 42%), #09090b',
+                      boxShadow: '0 20px 45px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.03)',
+                    }}
+                  >
+                    <div
                       style={{
-                        position: 'absolute',
-                        top: 4,
-                        right: 8,
-                        zIndex: 20,
-                        padding: '2px 6px',
-                        borderRadius: 3,
-                        background: 'rgba(30,30,34,0.85)',
-                        color: 'var(--text-muted)',
-                        fontSize: '10px',
-                        lineHeight: 1,
-                        opacity: 0.7,
-                        transition: 'opacity 0.15s',
-                        cursor: 'pointer',
-                        border: '1px solid var(--border)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                        padding: '10px 14px',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+                        background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0))',
                       }}
                     >
-                      <X size={10} />
-                    </button>
-                  )}
-                  <Terminal
-                    sessionId={pane.sessionId}
-                    cwd={project.path}
-                    isVisible={isActive}
-                  />
+                      <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: '50%',
+                              background: pane.isConnected ? 'var(--accent)' : 'rgba(138, 138, 150, 0.85)',
+                              boxShadow: pane.isConnected ? '0 0 14px rgba(110, 231, 183, 0.55)' : 'none',
+                            }}
+                          />
+                          <span
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: 'var(--text-primary)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {pane.sessionId}
+                          </span>
+                        </div>
+                        <span
+                          style={{
+                            fontFamily: 'var(--font-sans)',
+                            fontSize: 11,
+                            letterSpacing: '0.03em',
+                            color: pane.isConnected ? 'var(--text-muted)' : 'rgba(228, 228, 232, 0.68)',
+                          }}
+                        >
+                          {pane.isConnected ? 'Live terminal attached' : 'Detached. Reopen when you need it.'}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        {pane.isConnected ? (
+                          <>
+                            <button
+                              onClick={() => clearPane(pane.id)}
+                              title="Clear terminal"
+                              className="terminal-action-btn"
+                            >
+                              <Eraser size={13} />
+                            </button>
+                            <button
+                              onClick={() => setPaneConnection(tab.id, pane.id, false)}
+                              title="Disconnect terminal"
+                              className="terminal-action-btn"
+                            >
+                              <PlugZap size={13} />
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => setPaneConnection(tab.id, pane.id, true)}
+                            title="Reconnect terminal"
+                            className="terminal-action-btn"
+                          >
+                            <RotateCcw size={13} />
+                          </button>
+                        )}
+
+                        {tab.panes.length > 1 && (
+                          <button
+                            onClick={() => closePane(tab.id, pane.id, pane.sessionId)}
+                            title="Close pane"
+                            className="terminal-action-btn pane-close-btn"
+                          >
+                            <X size={13} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+                      {pane.isConnected ? (
+                        <Terminal
+                          ref={(instance) => registerTerminalRef(pane.id, instance)}
+                          sessionId={pane.sessionId}
+                          cwd={project.path}
+                          isVisible={isActive}
+                        />
+                      ) : (
+                        <div className="terminal-empty-state">
+                          <div className="terminal-empty-orb" />
+                          <div className="terminal-empty-card">
+                            <div className="terminal-empty-icon">
+                              <TerminalSquare size={18} />
+                            </div>
+                            <div className="terminal-empty-label">Terminal detached</div>
+                            <div className="terminal-empty-copy">
+                              This pane is intentionally quiet. The shell session stays available until you reopen it.
+                            </div>
+                            <button
+                              onClick={() => setPaneConnection(tab.id, pane.id, true)}
+                              className="terminal-empty-cta"
+                            >
+                              <RotateCcw size={14} />
+                              <span>Reopen terminal</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </React.Fragment>
             ))}

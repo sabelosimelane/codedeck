@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -10,7 +10,7 @@ const MAX_RETRIES = 10;
 const BASE_DELAY = 1000;
 const MAX_DELAY = 30000;
 
-export default function Terminal({ sessionId, cwd, isVisible }) {
+const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref) {
   const containerRef = useRef(null);
   const wsRef = useRef(null);
   const fitRef = useRef(null);
@@ -22,6 +22,15 @@ export default function Terminal({ sessionId, cwd, isVisible }) {
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const userScrolledUpRef = useRef(false);
   const { showToast } = useToast();
+
+  useImperativeHandle(ref, () => ({
+    clear() {
+      if (termRef.current) {
+        termRef.current.clear();
+        termRef.current.scrollToBottom();
+      }
+    },
+  }), []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -255,7 +264,9 @@ export default function Terminal({ sessionId, cwd, isVisible }) {
       )}
     </div>
   );
-}
+});
+
+export default Terminal;
 
 const scrollBtnStyle = {
   position: 'absolute',
