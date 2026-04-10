@@ -7,9 +7,20 @@
  *
  * @param {WebSocket} ws - The incoming WebSocket connection
  * @param {http.IncomingMessage} req - The HTTP upgrade request
- * @param {Map} sessions - The sessions Map: sessionId -> { pty, ws, cwd, startedAt, lastOutputAt, alive }
+ * @param {Map} sessions - The sessions Map: sessionId -> { pty, ws, cwd, startedAt, lastOutputAt, lastOutputLine, alive }
  * @param {Function} spawnPty - Factory function: ({ cwd, cols, rows }) => ptyProcess
  */
+
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+
+function extractLastLine(rawData) {
+  const stripped = rawData.replace(ANSI_RE, '').replace(/\r/g, '').trim();
+  if (!stripped) return null;
+  const lines = stripped.split('\n').filter(l => l.length > 0);
+  if (lines.length === 0) return null;
+  return lines[lines.length - 1].slice(0, 200);
+}
+
 export function handleWsConnection(ws, req, sessions, spawnPty) {
   const params = new URL(req.url, 'http://localhost').searchParams;
   const cwd = params.get('cwd') || process.env.HOME;
@@ -38,6 +49,7 @@ export function handleWsConnection(ws, req, sessions, spawnPty) {
       cwd,
       startedAt: now,
       lastOutputAt: now,
+      lastOutputLine: '',
       alive: true,
     };
     sessions.set(sessionId, entry);
@@ -47,6 +59,8 @@ export function handleWsConnection(ws, req, sessions, spawnPty) {
       const s = sessions.get(sessionId);
       if (s) {
         s.lastOutputAt = new Date().toISOString();
+        const line = extractLastLine(data);
+        if (line) s.lastOutputLine = line;
         if (s.ws && s.ws.readyState === 1) { // WebSocket.OPEN = 1
           s.ws.send(JSON.stringify({ type: 'output', data }));
         }

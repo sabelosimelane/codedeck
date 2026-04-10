@@ -88,6 +88,75 @@ input:focus {
   to { opacity: 1; transform: translateX(0); }
 }
 
+/* ─── Shelf animations ───────────────────────────────────────── */
+@keyframes shelfSlideDown {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.shelf-content {
+  animation: shelfSlideDown 150ms ease;
+}
+
+.project-row {
+  animation: fadeIn 200ms ease;
+}
+
+.shelf-row {
+  animation: fadeIn 200ms ease;
+}
+
+/* ─── Terminal activity dot pulse ───────────────────────────── */
+@keyframes terminalPulse {
+  0%, 100% { opacity: 0.4; box-shadow: 0 0 0 0 var(--accent); }
+  50% { opacity: 1; box-shadow: 0 0 6px 2px var(--accent); }
+}
+
+.terminal-dot-busy {
+  animation: terminalPulse 1.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-dot-busy {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* ─── Project row hover actions ──────────────────────────────── */
+.project-actions {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 150ms ease, opacity 150ms ease, margin 150ms ease;
+  margin-top: 0;
+}
+
+.project-row:hover .project-actions,
+.project-row:focus-within .project-actions {
+  max-height: 36px;
+  opacity: 1;
+  margin-top: 4px;
+}
+
+.project-action-btn {
+  padding: 4px 6px;
+  color: var(--text-muted);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.1s, background 0.1s;
+}
+
+.project-action-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.project-action-btn.danger:hover {
+  color: var(--danger);
+}
+
 /* ─── Pane divider & close button ────────────────────────────── */
 .pane-divider {
   background: var(--border);

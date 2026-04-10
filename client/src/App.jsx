@@ -37,7 +37,7 @@ function AppContent() {
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
 
-  // Poll session status every 5 seconds for sidebar cockpit
+  // Poll session status every 2 seconds for sidebar terminal list
   useEffect(() => {
     const poll = async () => {
       try {
@@ -48,7 +48,7 @@ function AppContent() {
       }
     };
     poll();
-    const id = setInterval(poll, 5000);
+    const id = setInterval(poll, 2000);
     return () => clearInterval(id);
   }, []);
 
@@ -66,6 +66,47 @@ function AppContent() {
       }
       showToast({ type: 'success', message: `Project "${name}" added` });
       await fetchProjects();
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
+  };
+
+  const shelveProject = async (name) => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shelved: true, shelvedAt: new Date().toISOString() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: err.error || 'Failed to shelve project' });
+        return;
+      }
+      if (activeProject?.name === name) setActiveProject(null);
+      showToast({ type: 'success', message: 'Project shelved' });
+      await fetchProjects();
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
+  };
+
+  const unshelveProject = async (name) => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shelved: false, shelvedAt: null }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: err.error || 'Failed to restore project' });
+        return;
+      }
+      const data = await res.json();
+      showToast({ type: 'success', message: 'Project restored' });
+      await fetchProjects();
+      setActiveProject(data);
     } catch {
       showToast({ type: 'error', message: 'Server unreachable' });
     }
@@ -125,15 +166,23 @@ function AppContent() {
     }
   };
 
+  const activeProjects = projects.filter(p => !p.shelved);
+  const shelvedProjects = projects
+    .filter(p => p.shelved)
+    .sort((a, b) => new Date(b.shelvedAt) - new Date(a.shelvedAt));
+
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
       <Sidebar
-        projects={projects}
+        activeProjects={activeProjects}
+        shelvedProjects={shelvedProjects}
         activeProject={activeProject}
         onSelect={setActiveProject}
         onAdd={addProject}
         onRemove={removeProject}
         onRename={renameProject}
+        onShelve={shelveProject}
+        onUnshelve={unshelveProject}
         onToggleFiles={() => setShowFileTree(prev => !prev)}
         showFileTree={showFileTree}
         sessionStatus={sessionStatus}

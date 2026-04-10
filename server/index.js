@@ -26,7 +26,8 @@ function setConfig(key, value) {
 }
 
 function loadProjects() {
-  return getConfig('projects') || [];
+  const projects = getConfig('projects') || [];
+  return projects.map(p => ({ shelved: false, shelvedAt: null, ...p }));
 }
 
 function saveProjects(projects) {
@@ -55,17 +56,28 @@ app.post('/api/projects', (req, res) => {
 });
 
 app.put('/api/projects/:name', (req, res) => {
-  const { name: newName, path: newPath } = req.body;
-  if (!newName || !newPath) return res.status(400).json({ error: 'name and path required' });
-  if (!existsSync(newPath)) return res.status(400).json({ error: 'path does not exist' });
-
   const projects = loadProjects();
   const idx = projects.findIndex(p => p.name === req.params.name);
   if (idx === -1) return res.status(404).json({ error: 'project not found' });
 
-  projects[idx] = { name: newName, path: newPath };
+  const existing = projects[idx];
+  const { name: newName, path: newPath, shelved, shelvedAt } = req.body;
+
+  // If name or path is provided, validate and apply them
+  if (newName !== undefined || newPath !== undefined) {
+    const resolvedName = newName ?? existing.name;
+    const resolvedPath = newPath ?? existing.path;
+    if (!resolvedName || !resolvedPath) return res.status(400).json({ error: 'name and path required' });
+    if (!existsSync(resolvedPath)) return res.status(400).json({ error: 'path does not exist' });
+    projects[idx] = { ...existing, name: resolvedName, path: resolvedPath };
+  }
+
+  // Apply shelf fields if provided
+  if (shelved !== undefined) projects[idx] = { ...projects[idx], shelved };
+  if (shelvedAt !== undefined) projects[idx] = { ...projects[idx], shelvedAt };
+
   saveProjects(projects);
-  res.json({ name: newName, path: newPath });
+  res.json(projects[idx]);
 });
 
 app.delete('/api/projects/:name', (req, res) => {
@@ -217,6 +229,7 @@ app.get('/api/sessions', (req, res) => {
       cwd: entry.cwd,
       startedAt: entry.startedAt,
       lastOutputAt: entry.lastOutputAt,
+      lastOutputLine: entry.lastOutputLine || '',
       alive: entry.alive,
     });
   }

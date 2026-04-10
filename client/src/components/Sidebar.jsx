@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch } from 'lucide-react';
+import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
@@ -12,6 +12,22 @@ function formatElapsed(timestamp) {
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+function getTerminalStatus(session) {
+  if (!session.alive) return 'dead';
+  const age = Date.now() - new Date(session.lastOutputAt).getTime();
+  return age < 5000 ? 'busy' : 'idle';
+}
+
+function formatTimeSince(isoString) {
+  if (!isoString) return '';
+  const secs = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
+  if (secs < 5) return 'just now';
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins / 60)}h ago`;
 }
 
 function getProjectStatus(sessions) {
@@ -40,16 +56,95 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRemove, onRename, onToggleFiles, showFileTree, sessionStatus, onBrowseFiles }) {
+export default function Sidebar({ activeProjects, shelvedProjects, activeProject, onSelect, onAdd, onRemove, onRename, onShelve, onUnshelve, onToggleFiles, showFileTree, sessionStatus, onBrowseFiles }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [shelfExpanded, setShelfExpanded] = useState(() => {
+    return localStorage.getItem('codedeck-shelf-expanded') === 'true';
+  });
+  const [shelfSearch, setShelfSearch] = useState('');
+  const [mutedProjects, setMutedProjects] = useState(() => {
+    try {
+      const stored = localStorage.getItem('codedeck-muted-projects');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
   const renameInputRef = useRef(null);
+  const busyTracker = useRef(new Map());
+  const prevStatusRef = useRef(new Map());
+  const permissionRequested = useRef(false);
+  const mutedProjectsRef = useRef(mutedProjects);
+  const activeProjectsRef = useRef(activeProjects);
   const { showToast } = useToast();
 
-  // Map sessions to projects by sessionId prefix or cwd match
+  useEffect(() => { mutedProjectsRef.current = mutedProjects; }, [mutedProjects]);
+  useEffect(() => { activeProjectsRef.current = activeProjects; }, [activeProjects]);
+
+  // Notification logic: track busy durations, fire on busy→idle/dead after ≥30s
+  useEffect(() => {
+    if (!sessionStatus || sessionStatus.length === 0) return;
+
+    // Request permission once when first busy terminal is detected
+    const anyBusy = sessionStatus.some(s => getTerminalStatus(s) === 'busy');
+    if (anyBusy && !permissionRequested.current && 'Notification' in window) {
+      permissionRequested.current = true;
+      if (Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+    }
+
+    sessionStatus.forEach(session => {
+      const status = getTerminalStatus(session);
+      const prevStatus = prevStatusRef.current.get(session.sessionId);
+
+      if (status === 'busy') {
+        if (prevStatus !== 'busy') {
+          // Newly busy or resumed after idle — record start time
+          busyTracker.current.set(session.sessionId, { busyStartedAt: Date.now() });
+        }
+      } else {
+        if (prevStatus === 'busy') {
+          // Transitioned from busy → check duration and fire notification
+          const tracker = busyTracker.current.get(session.sessionId);
+          if (tracker) {
+            const duration = Date.now() - tracker.busyStartedAt;
+            if (duration >= 30000 && 'Notification' in window && Notification.permission === 'granted') {
+              const project = activeProjectsRef.current.find(p =>
+                session.sessionId.startsWith(`${p.name}-`) || session.cwd === p.path
+              );
+              if (project && !mutedProjectsRef.current.includes(project.name)) {
+                new Notification(`CodeDeck — ${session.sessionId} finished`, {
+                  body: session.lastOutputLine || '',
+                });
+              }
+            }
+          }
+        }
+        busyTracker.current.delete(session.sessionId);
+      }
+    });
+
+    const newPrev = new Map();
+    sessionStatus.forEach(s => newPrev.set(s.sessionId, getTerminalStatus(s)));
+    prevStatusRef.current = newPrev;
+  }, [sessionStatus]);
+
+  const toggleMute = (e, projectName) => {
+    e.stopPropagation();
+    setMutedProjects(prev => {
+      const next = prev.includes(projectName)
+        ? prev.filter(n => n !== projectName)
+        : [...prev, projectName];
+      localStorage.setItem('codedeck-muted-projects', JSON.stringify(next));
+      return next;
+    });
+  };
+
   const getProjectSessions = (project) => {
     if (!sessionStatus || sessionStatus.length === 0) return [];
     const prefix = `${project.name}-`;
@@ -102,6 +197,17 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
   const cancelRename = () => {
     setRenamingProject(null);
   };
+
+  const toggleShelf = () => {
+    setShelfExpanded(prev => {
+      const next = !prev;
+      localStorage.setItem('codedeck-shelf-expanded', String(next));
+      if (!next) setShelfSearch('');
+      return next;
+    });
+  };
+
+  const totalProjects = activeProjects.length + shelvedProjects.length;
 
   return (
     <>
@@ -159,9 +265,9 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
           </div>
         </div>
 
-        {/* Project list */}
+        {/* Project list — scrollable */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-          {projects.length === 0 && (
+          {activeProjects.length === 0 && shelvedProjects.length === 0 && (
             <div style={{
               padding: '24px 16px',
               color: 'var(--text-muted)',
@@ -173,7 +279,9 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
               <br />Click + to add one.
             </div>
           )}
-          {projects.map(project => {
+
+          {/* Active project rows */}
+          {activeProjects.map(project => {
             const isActive = activeProject?.name === project.name;
             const isRenaming = renamingProject === project.name;
             const projSessions = getProjectSessions(project);
@@ -182,6 +290,7 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
               <div
                 key={project.name}
                 onClick={() => { if (!isRenaming) onSelect(project); }}
+                className="project-row"
                 style={{
                   padding: '8px 16px',
                   cursor: isRenaming ? 'default' : 'pointer',
@@ -192,6 +301,7 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)'; }}
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
               >
+                {/* Row 1: status dot + project name (full width) */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {status !== 'none' ? (
                     <span style={{
@@ -242,43 +352,54 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
                       {project.name}
                     </span>
                   )}
+                </div>
+
+                {/* Row 2: action buttons — revealed on hover */}
+                <div className="project-actions" style={{
+                  display: 'flex',
+                  gap: 2,
+                  marginLeft: 22,
+                }}>
                   <button
                     onClick={(e) => { e.stopPropagation(); onBrowseFiles(project); }}
-                    style={{
-                      padding: 2,
-                      color: 'var(--text-muted)',
-                      opacity: 0.5,
-                      borderRadius: 3,
-                    }}
+                    className="project-action-btn"
                     title="Browse files"
                   >
-                    <FolderSearch size={12} />
+                    <FolderSearch size={14} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onShelve(project.name); }}
+                    className="project-action-btn"
+                    title="Shelve project"
+                    aria-label="Shelve project"
+                  >
+                    <Archive size={14} />
                   </button>
                   <button
                     onClick={(e) => startRename(e, project)}
-                    style={{
-                      padding: 2,
-                      color: 'var(--text-muted)',
-                      opacity: 0.5,
-                      borderRadius: 3,
-                    }}
+                    className="project-action-btn"
                     title="Rename project"
                   >
-                    <Pencil size={12} />
+                    <Pencil size={14} />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); onRemove(project.name); }}
-                    style={{
-                      padding: 2,
-                      color: 'var(--text-muted)',
-                      opacity: 0.5,
-                      borderRadius: 3,
-                    }}
+                    className="project-action-btn danger"
                     title="Remove project"
                   >
-                    <Trash2 size={12} />
+                    <Trash2 size={14} />
+                  </button>
+                  <button
+                    onClick={(e) => toggleMute(e, project.name)}
+                    className="project-action-btn"
+                    title={mutedProjects.includes(project.name) ? 'Unmute notifications' : 'Mute notifications'}
+                    aria-label={mutedProjects.includes(project.name) ? `Unmute notifications for ${project.name}` : `Mute notifications for ${project.name}`}
+                  >
+                    {mutedProjects.includes(project.name) ? <BellOff size={14} /> : <Bell size={14} />}
                   </button>
                 </div>
+
+                {/* Terminal count + elapsed */}
                 {count > 0 && (
                   <div style={{
                     marginTop: 3,
@@ -290,10 +411,212 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
                     {count} terminal{count !== 1 ? 's' : ''}{elapsed ? ` · ${elapsed}` : ''}
                   </div>
                 )}
+
+                {/* Per-session details */}
+                {projSessions.length > 0 && projSessions.map(session => {
+                  const termStatus = getTerminalStatus(session);
+                  const timeSince = formatTimeSince(session.lastOutputAt);
+                  const dotColor = termStatus === 'busy'
+                    ? 'var(--accent)'
+                    : termStatus === 'dead'
+                    ? 'var(--danger)'
+                    : 'var(--text-muted)';
+                  return (
+                    <div key={session.sessionId} style={{ marginTop: 4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 30 }}>
+                        <span
+                          className={termStatus === 'busy' ? 'terminal-dot-busy' : undefined}
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: '50%',
+                            background: dotColor,
+                            flexShrink: 0,
+                            display: 'inline-block',
+                          }}
+                          title={`Terminal ${session.sessionId}: ${termStatus}`}
+                        />
+                        <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                          {session.sessionId}
+                        </span>
+                        <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                          · {timeSince}
+                        </span>
+                      </div>
+                      {session.lastOutputLine && (
+                        <div style={{
+                          marginLeft: 38,
+                          marginTop: 2,
+                          fontSize: '11px',
+                          fontFamily: 'var(--font-mono)',
+                          color: 'var(--text-muted)',
+                          opacity: 0.6,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          maxWidth: 'calc(100% - 46px)',
+                        }}>
+                          {session.lastOutputLine}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             );
           })}
         </div>
+
+        {/* Shelf — pinned to bottom, above footer */}
+        {shelvedProjects.length > 0 && (() => {
+          const searchActive = shelfSearch.trim() !== '';
+          const showSearch = shelfExpanded && shelvedProjects.length > 5;
+          const displayedProjects = searchActive
+            ? shelvedProjects
+                .filter(p => p.name.toLowerCase().includes(shelfSearch.toLowerCase()))
+                .sort((a, b) => a.name.localeCompare(b.name))
+            : shelvedProjects.slice(0, 5);
+          const overflowCount = shelvedProjects.length - 5;
+          return (
+            <div style={{ flexShrink: 0 }}>
+              <div style={{ height: 1, background: 'var(--border)' }} />
+              <div
+                role="button"
+                aria-expanded={shelfExpanded}
+                tabIndex={0}
+                onClick={toggleShelf}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleShelf(); } }}
+                style={{
+                  padding: '8px 16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  cursor: 'pointer',
+                  color: 'var(--text-muted)',
+                  fontSize: '11px',
+                  fontFamily: 'var(--font-mono)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+              >
+                {shelfExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                <span>Shelved ({shelvedProjects.length})</span>
+              </div>
+
+              {shelfExpanded && (
+                <div className="shelf-content" style={{ maxHeight: 200, overflowY: 'auto' }}>
+                  {showSearch && (
+                    <div style={{ padding: '0 16px 4px', position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <Search size={12} style={{ position: 'absolute', left: 24, color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                      <input
+                        type="text"
+                        value={shelfSearch}
+                        onChange={e => setShelfSearch(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Escape') setShelfSearch(''); }}
+                        placeholder="Search shelved..."
+                        aria-label="Search shelved projects"
+                        style={{
+                          width: '100%',
+                          height: 28,
+                          paddingLeft: 24,
+                          paddingRight: shelfSearch ? 22 : 8,
+                          fontSize: '12px',
+                          fontFamily: 'var(--font-mono)',
+                          background: 'var(--bg-surface)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 6,
+                          color: 'var(--text-primary)',
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                      {shelfSearch && (
+                        <button
+                          onClick={() => setShelfSearch('')}
+                          style={{ position: 'absolute', right: 20, padding: 2, color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}
+                          title="Clear search"
+                        >
+                          <X size={10} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {searchActive && displayedProjects.length === 0 && (
+                    <div style={{
+                      padding: '8px 16px',
+                      fontSize: '11px',
+                      color: 'var(--text-muted)',
+                      textAlign: 'center',
+                      fontFamily: 'var(--font-mono)',
+                    }}>
+                      No matches
+                    </div>
+                  )}
+
+                  {displayedProjects.map(project => (
+                    <div
+                      key={project.name}
+                      className="shelf-row"
+                      tabIndex={0}
+                      onClick={() => onUnshelve(project.name)}
+                      onKeyDown={e => { if (e.key === 'Enter') onUnshelve(project.name); }}
+                      style={{
+                        padding: '6px 16px',
+                        cursor: 'pointer',
+                        borderLeft: '2px solid transparent',
+                        transition: 'background 0.1s',
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{
+                          flex: 1,
+                          fontSize: '13px',
+                          color: 'var(--text-muted)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {project.name}
+                        </span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onUnshelve(project.name); }}
+                          className="project-action-btn"
+                          title="Restore project"
+                          aria-label="Restore project"
+                        >
+                          <ArchiveRestore size={14} />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onRemove(project.name); }}
+                          className="project-action-btn danger"
+                          title="Remove project"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {!searchActive && overflowCount > 0 && (
+                    <div style={{
+                      padding: '4px 16px 6px',
+                      fontSize: '11px',
+                      color: 'var(--text-muted)',
+                      fontFamily: 'var(--font-mono)',
+                    }}>
+                      + {overflowCount} more
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Footer */}
         <div style={{
@@ -306,7 +629,7 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
           alignItems: 'center',
           justifyContent: 'space-between',
         }}>
-          <span>{projects.length} project{projects.length !== 1 ? 's' : ''}</span>
+          <span>{totalProjects} project{totalProjects !== 1 ? 's' : ''}</span>
           <button
             onClick={() => setShowSettings(true)}
             title="Settings"
@@ -323,7 +646,6 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
         </div>
       </div>
 
-      {/* Directory Browser Modal — Add project */}
       {showBrowser && (
         <DirectoryBrowser
           initialPath={defaultPath}
@@ -332,7 +654,6 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
         />
       )}
 
-      {/* Settings Panel */}
       {showSettings && (
         <SettingsPanel onClose={() => setShowSettings(false)} />
       )}
