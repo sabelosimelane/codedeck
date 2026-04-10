@@ -3,6 +3,7 @@ import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
 import { Plus, X, Columns, Eraser, PlugZap, TerminalSquare, RotateCcw } from 'lucide-react';
 import { shouldPersistLayout } from '../utils/terminalLayout';
+import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
 
 let tabCounter = 0;
 let sessionCounter = 0;
@@ -62,41 +63,6 @@ function clearLayout(projectName) {
   }
 }
 
-/**
- * Filter a saved layout against live backend sessions.
- * Removes any panes whose sessionId is no longer alive on the server.
- * Returns null if no valid panes remain.
- */
-function filterLayoutByLiveSessions(saved, liveSessions) {
-  const aliveIds = new Set(liveSessions.filter(s => s.alive).map(s => s.sessionId));
-  const filteredTabs = [];
-
-  for (const tab of saved.tabs) {
-    const livePanes = tab.panes.filter(p => aliveIds.has(p.sessionId));
-    if (livePanes.length > 0) {
-      // Redistribute widths equally among surviving panes
-      const fraction = 1 / livePanes.length;
-      filteredTabs.push({
-        ...tab,
-        panes: livePanes.map(p => ({
-          ...p,
-          widthFraction: fraction,
-          isConnected: p.isConnected ?? true,
-        })),
-      });
-    }
-  }
-
-  if (filteredTabs.length === 0) return null;
-
-  // If the saved active tab was removed, fall back to the last remaining tab
-  const activeTabId = filteredTabs.find(t => t.id === saved.activeTabId)
-    ? saved.activeTabId
-    : filteredTabs[filteredTabs.length - 1].id;
-
-  return { tabs: filteredTabs, activeTabId };
-}
-
 export default function TerminalArea({ project }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const containerRef = useRef(null);
@@ -134,19 +100,7 @@ export default function TerminalArea({ project }) {
     prevProjectRef.current = project.name;
     restoringRef.current = true;
 
-    // Try to restore saved layout for the incoming project
     const saved = loadLayout(project.name);
-    if (!saved) {
-      // No saved layout — start fresh
-      tabCounter = 0;
-      sessionCounter = 0;
-      const tab = createTab(project.name);
-      setState({ tabs: [tab], activeTabId: tab.id });
-      restoringRef.current = false;
-      return;
-    }
-
-    // Validate saved sessions against the backend before restoring
     let cancelled = false;
     (async () => {
       try {
@@ -156,20 +110,20 @@ export default function TerminalArea({ project }) {
 
         if (cancelled) return;
 
-        const restored = filterLayoutByLiveSessions(saved, liveSessions);
-        if (restored) {
-          // Restore counters so new tabs/panes get unique IDs
-          tabCounter = saved.tabCounter;
-          sessionCounter = saved.sessionCounter;
-          setState(restored);
-        } else {
-          // All saved sessions are dead — start fresh
+        const resolved = resolveInitialTerminalState({
+          projectName: project.name,
+          projectPath: project.path,
+          savedLayout: saved,
+          liveSessions,
+        });
+
+        if (resolved.shouldClearSavedLayout) {
           clearLayout(project.name);
-          tabCounter = 0;
-          sessionCounter = 0;
-          const tab = createTab(project.name);
-          setState({ tabs: [tab], activeTabId: tab.id });
         }
+
+        tabCounter = resolved.tabCounter;
+        sessionCounter = resolved.sessionCounter;
+        setState(resolved.state);
       } catch {
         // Backend unreachable — start fresh rather than showing stale layout
         clearLayout(project.name);
