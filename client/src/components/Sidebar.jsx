@@ -79,6 +79,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
   const prevStatusRef = useRef(new Map());
   const mutedProjectsRef = useRef(mutedProjects);
   const activeProjectsRef = useRef(activeProjects);
+  const notificationRequestedRef = useRef(false);
   const { showToast } = useToast();
 
   useEffect(() => { mutedProjectsRef.current = mutedProjects; }, [mutedProjects]);
@@ -93,6 +94,15 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
       const prevStatus = prevStatusRef.current.get(session.sessionId);
 
       if (status === 'busy') {
+        if (
+          !notificationRequestedRef.current &&
+          typeof window !== 'undefined' &&
+          'Notification' in window &&
+          Notification.permission === 'default'
+        ) {
+          notificationRequestedRef.current = true;
+          Notification.requestPermission().catch(() => {});
+        }
         if (prevStatus !== 'busy') {
           busyTracker.current.set(session.sessionId, { busyStartedAt: Date.now() });
         }
@@ -106,7 +116,18 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                 session.sessionId.startsWith(`${p.name}-`) || session.cwd === p.path
               );
               if (project && !mutedProjectsRef.current.includes(project.name)) {
-                alert(`CodeDeck — ${session.sessionId} finished`);
+                const body = session.lastOutputLine
+                  ? session.lastOutputLine
+                  : `${session.sessionId} is idle`;
+
+                if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+                  new Notification(`CodeDeck — ${session.sessionId} finished`, { body });
+                } else {
+                  showToast({
+                    type: 'success',
+                    message: `${session.sessionId} finished${session.lastOutputLine ? `: ${session.lastOutputLine}` : ''}`,
+                  });
+                }
               }
             }
           }
@@ -118,7 +139,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
     const newPrev = new Map();
     sessionStatus.forEach(s => newPrev.set(s.sessionId, getTerminalStatus(s)));
     prevStatusRef.current = newPrev;
-  }, [sessionStatus]);
+  }, [sessionStatus, showToast]);
 
   const toggleMute = (e, projectName) => {
     e.stopPropagation();

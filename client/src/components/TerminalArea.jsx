@@ -577,9 +577,9 @@ export default function TerminalArea({ project }) {
                             <div className="terminal-empty-icon">
                               <TerminalSquare size={18} />
                             </div>
-                            <div className="terminal-empty-label">Terminal detached</div>
+                            <div className="terminal-empty-label">Summon some mischief</div>
                             <div className="terminal-empty-copy">
-                              This pane is intentionally quiet. The shell session stays available until you reopen it.
+                              This terminal is taking a dramatic pause. Reopen it when it&apos;s time to start cooking again.
                             </div>
                             <button
                               onClick={() => setPaneConnection(tab.id, pane.id, true)}
