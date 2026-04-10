@@ -9,6 +9,7 @@ import { spawn as spawnProcess } from 'child_process';
 import db from './db.js';
 import { handleWsConnection } from './ws-handler.js';
 import { readTree } from './file-tree.js';
+import { readFilePreview } from './file-preview.js';
 import { buildShellEnv } from './shell-env.js';
 import { resolveEditorCommand } from './editor-command.js';
 
@@ -136,6 +137,24 @@ app.get('/api/files', async (req, res) => {
   if (!root || !existsSync(root)) return res.status(400).json({ error: 'invalid root' });
   const tree = await readTree(root);
   res.json(tree);
+});
+
+app.get('/api/file-preview', async (req, res) => {
+  const filePath = typeof req.query.filePath === 'string' ? req.query.filePath : '';
+  if (!filePath || !existsSync(filePath)) return res.status(400).json({ error: 'invalid path' });
+
+  try {
+    const preview = await readFilePreview(filePath);
+    res.json({
+      ...preview,
+      path: filePath,
+      name: path.basename(filePath),
+      extension: path.extname(filePath),
+    });
+  } catch (error) {
+    const status = error.message === 'not a file' ? 400 : 500;
+    res.status(status).json({ error: status === 400 ? 'invalid path' : error.message });
+  }
 });
 
 // -------------------------------------------------------------------

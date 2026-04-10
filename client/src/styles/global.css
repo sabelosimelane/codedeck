@@ -214,6 +214,24 @@ input:focus {
   color: var(--danger);
 }
 
+.file-tree-row-action {
+  opacity: 0;
+  transform: translateX(4px);
+  transition: opacity 120ms ease, transform 120ms ease, color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.file-tree-file-row:hover .file-tree-row-action,
+.file-tree-file-row:focus-within .file-tree-row-action {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.file-tree-row-action:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(95, 224, 186, 0.24);
+}
+
 /* ─── Pane divider & close button ────────────────────────────── */
 .pane-divider {
   background: var(--border);

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X } from 'lucide-react';
+import { ChevronRight, ChevronDown, ExternalLink, File, Folder, FolderOpen, X } from 'lucide-react';
 import { useToast } from './ToastContext';
 
 function collectDirectoryPaths(nodes) {
@@ -16,13 +16,14 @@ function collectDirectoryPaths(nodes) {
   return paths;
 }
 
-function TreeNode({ node, expandedPaths, onOpenFile, onToggleDir, depth = 0 }) {
+function TreeNode({ node, expandedPaths, onOpenFile, onPreviewFile, onToggleDir, depth = 0 }) {
   const expanded = expandedPaths.has(node.path);
 
   if (node.type === 'file') {
     return (
       <div
-        onClick={() => onOpenFile(node.path)}
+        className="file-tree-file-row"
+        onClick={() => onPreviewFile(node.path)}
         style={{
           padding: '3px 8px 3px ' + (16 + depth * 16) + 'px',
           display: 'flex',
@@ -38,10 +39,22 @@ function TreeNode({ node, expandedPaths, onOpenFile, onToggleDir, depth = 0 }) {
         }}
         onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-        title={`Open: ${node.path}`}
+        title={`Preview: ${node.path}`}
       >
         <File size={12} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.name}</span>
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.name}</span>
+        <button
+          type="button"
+          className="file-tree-row-action"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenFile(node.path);
+          }}
+          title="Open in editor"
+          style={rowActionBtnStyle}
+        >
+          <ExternalLink size={12} />
+        </button>
       </div>
     );
   }
@@ -74,6 +87,7 @@ function TreeNode({ node, expandedPaths, onOpenFile, onToggleDir, depth = 0 }) {
           node={child}
           expandedPaths={expandedPaths}
           onOpenFile={onOpenFile}
+          onPreviewFile={onPreviewFile}
           onToggleDir={onToggleDir}
           depth={depth + 1}
         />
@@ -82,7 +96,7 @@ function TreeNode({ node, expandedPaths, onOpenFile, onToggleDir, depth = 0 }) {
   );
 }
 
-export default function FileBrowserPanel({ project, onOpenFile, onClose }) {
+export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
   const [tree, setTree] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedPaths, setExpandedPaths] = useState(() => new Set());
@@ -216,6 +230,7 @@ export default function FileBrowserPanel({ project, onOpenFile, onClose }) {
                 node={node}
                 expandedPaths={expandedPaths}
                 onOpenFile={handleFileClick}
+                onPreviewFile={onPreviewFile}
                 onToggleDir={handleToggleDir}
               />
             ))
@@ -229,7 +244,7 @@ export default function FileBrowserPanel({ project, onOpenFile, onClose }) {
             fontFamily: 'var(--font-mono)',
             color: 'var(--text-muted)',
           }}>
-            Click a file to open in editor
+            Click a file to preview in browser. Use the arrow button to open in editor.
           </span>
         </div>
       </div>
@@ -343,4 +358,17 @@ const spinnerStyle = {
   borderTopColor: 'var(--accent)',
   borderRadius: '50%',
   animation: 'spin 0.6s linear infinite',
+};
+
+const rowActionBtnStyle = {
+  width: 24,
+  height: 24,
+  borderRadius: 7,
+  flexShrink: 0,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: 'var(--text-muted)',
+  background: 'rgba(255, 255, 255, 0.03)',
+  border: '1px solid rgba(255, 255, 255, 0.04)',
 };

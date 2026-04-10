@@ -3,7 +3,9 @@ import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
 import FileTree from './components/FileTree';
 import FileBrowserPanel from './components/FileBrowserPanel';
+import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
+import { openFilePreviewTab } from './utils/fileActions';
 
 export default function App() {
   return (
@@ -14,6 +16,7 @@ export default function App() {
 }
 
 function AppContent() {
+  const previewPath = new URLSearchParams(window.location.search).get('preview');
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState(null);
   const [showFileTree, setShowFileTree] = useState(false);
@@ -171,6 +174,10 @@ function AppContent() {
     .filter(p => p.shelved)
     .sort((a, b) => new Date(b.shelvedAt) - new Date(a.shelvedAt));
 
+  if (previewPath) {
+    return <PreviewPage filePath={previewPath} onOpenFile={openFile} />;
+  }
+
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
       <Sidebar
@@ -189,7 +196,11 @@ function AppContent() {
         onBrowseFiles={setFileBrowserProject}
       />
       {showFileTree && activeProject && (
-        <FileTree root={activeProject.path} onOpenFile={openFile} />
+        <FileTree
+          root={activeProject.path}
+          onOpenFile={openFile}
+          onPreviewFile={openFilePreviewTab}
+        />
       )}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {activeProject ? (
@@ -211,6 +222,7 @@ function AppContent() {
       {fileBrowserProject && (
         <FileBrowserPanel
           project={fileBrowserProject}
+          onPreviewFile={openFilePreviewTab}
           onClose={() => setFileBrowserProject(null)}
         />
       )}

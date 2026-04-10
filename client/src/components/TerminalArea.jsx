@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
 import { Plus, X, Columns, Eraser, PlugZap, TerminalSquare, RotateCcw } from 'lucide-react';
+import { shouldPersistLayout } from '../utils/terminalLayout';
 
 let tabCounter = 0;
 let sessionCounter = 0;
@@ -110,7 +111,12 @@ export default function TerminalArea({ project }) {
   // Skips saves while a project-switch restore is in progress to avoid
   // writing the outgoing project's state under the incoming project's key.
   useEffect(() => {
-    if (!project.name || tabs.length === 0 || restoringRef.current) return;
+    if (!shouldPersistLayout({
+      projectName: project.name,
+      prevProjectName: prevProjectRef.current,
+      tabsLength: tabs.length,
+      isRestoring: restoringRef.current,
+    })) return;
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
       saveLayout(project.name, state);
