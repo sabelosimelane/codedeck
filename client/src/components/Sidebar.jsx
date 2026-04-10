@@ -1,10 +1,26 @@
-import React, { useState } from 'react';
-import { FolderOpen, Plus, Trash2, FolderTree, Pencil } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
+import SettingsPanel from './SettingsPanel';
 
-export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRemove, onEdit, onToggleFiles, showFileTree }) {
+export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRemove, onRename, onToggleFiles, showFileTree }) {
   const [showBrowser, setShowBrowser] = useState(false);
-  const [editingProject, setEditingProject] = useState(null);
+  const [defaultPath, setDefaultPath] = useState(null);
+  const [renamingProject, setRenamingProject] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const renameInputRef = useRef(null);
+
+  const handleAddClick = async () => {
+    try {
+      const res = await fetch('/api/config/defaultPath');
+      if (res.ok) {
+        const data = await res.json();
+        setDefaultPath(data.value);
+      }
+    } catch {}
+    setShowBrowser(true);
+  };
 
   const handleBrowseSelect = (selectedPath) => {
     const segments = selectedPath.replace(/\/+$/, '').split('/');
@@ -13,18 +29,29 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
     setShowBrowser(false);
   };
 
-  const handleEditClick = (e, project) => {
+  const startRename = (e, project) => {
     e.stopPropagation();
-    setEditingProject(project);
+    setRenamingProject(project.name);
+    setRenameValue(project.name);
   };
 
-  const handleEditSelect = (selectedPath) => {
-    if (editingProject) {
-      const segments = selectedPath.replace(/\/+$/, '').split('/');
-      const newName = segments[segments.length - 1] || editingProject.name;
-      onEdit(editingProject.name, newName, selectedPath);
+  useEffect(() => {
+    if (renamingProject && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
     }
-    setEditingProject(null);
+  }, [renamingProject]);
+
+  const commitRename = () => {
+    const trimmed = renameValue.trim();
+    if (trimmed && trimmed !== renamingProject) {
+      onRename(renamingProject, trimmed);
+    }
+    setRenamingProject(null);
+  };
+
+  const cancelRename = () => {
+    setRenamingProject(null);
   };
 
   return (
@@ -70,7 +97,7 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
               <FolderTree size={16} />
             </button>
             <button
-              onClick={() => setShowBrowser(true)}
+              onClick={handleAddClick}
               title="Add project"
               style={{
                 padding: 4,
@@ -99,16 +126,17 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
           )}
           {projects.map(project => {
             const isActive = activeProject?.name === project.name;
+            const isRenaming = renamingProject === project.name;
             return (
               <div
                 key={project.name}
-                onClick={() => onSelect(project)}
+                onClick={() => { if (!isRenaming) onSelect(project); }}
                 style={{
                   padding: '8px 16px',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 8,
-                  cursor: 'pointer',
+                  cursor: isRenaming ? 'default' : 'pointer',
                   background: isActive ? 'var(--bg-active)' : 'transparent',
                   borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                   transition: 'background 0.1s',
@@ -117,26 +145,53 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
               >
                 <FolderOpen size={14} style={{ color: isActive ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
-                <span style={{
-                  flex: 1,
-                  fontSize: '13px',
-                  fontWeight: isActive ? 500 : 400,
-                  color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}>
-                  {project.name}
-                </span>
+                {isRenaming ? (
+                  <input
+                    ref={renameInputRef}
+                    value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitRename();
+                      if (e.key === 'Escape') cancelRename();
+                    }}
+                    onBlur={commitRename}
+                    onClick={e => e.stopPropagation()}
+                    spellCheck={false}
+                    style={{
+                      flex: 1,
+                      fontSize: '13px',
+                      fontFamily: 'var(--font-mono)',
+                      padding: '2px 6px',
+                      background: 'var(--bg-surface)',
+                      border: '1px solid var(--accent)',
+                      borderRadius: 4,
+                      color: 'var(--text-primary)',
+                      outline: 'none',
+                      minWidth: 0,
+                    }}
+                  />
+                ) : (
+                  <span style={{
+                    flex: 1,
+                    fontSize: '13px',
+                    fontWeight: isActive ? 500 : 400,
+                    color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {project.name}
+                  </span>
+                )}
                 <button
-                  onClick={(e) => handleEditClick(e, project)}
+                  onClick={(e) => startRename(e, project)}
                   style={{
                     padding: 2,
                     color: 'var(--text-muted)',
                     opacity: 0.5,
                     borderRadius: 3,
                   }}
-                  title="Edit project path"
+                  title="Rename project"
                 >
                   <Pencil size={12} />
                 </button>
@@ -159,31 +214,44 @@ export default function Sidebar({ projects, activeProject, onSelect, onAdd, onRe
 
         {/* Footer */}
         <div style={{
-          padding: '12px 16px',
+          padding: '10px 16px',
           borderTop: '1px solid var(--border)',
           fontSize: '11px',
           color: 'var(--text-muted)',
           fontFamily: 'var(--font-mono)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
         }}>
-          {projects.length} project{projects.length !== 1 ? 's' : ''}
+          <span>{projects.length} project{projects.length !== 1 ? 's' : ''}</span>
+          <button
+            onClick={() => setShowSettings(true)}
+            title="Settings"
+            style={{
+              padding: 4,
+              borderRadius: 4,
+              color: 'var(--text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            <Settings size={14} />
+          </button>
         </div>
       </div>
 
       {/* Directory Browser Modal — Add project */}
       {showBrowser && (
         <DirectoryBrowser
+          initialPath={defaultPath}
           onSelect={handleBrowseSelect}
           onCancel={() => setShowBrowser(false)}
         />
       )}
 
-      {/* Directory Browser Modal — Edit project */}
-      {editingProject && (
-        <DirectoryBrowser
-          initialPath={editingProject.path}
-          onSelect={handleEditSelect}
-          onCancel={() => setEditingProject(null)}
-        />
+      {/* Settings Panel */}
+      {showSettings && (
+        <SettingsPanel onClose={() => setShowSettings(false)} />
       )}
     </>
   );

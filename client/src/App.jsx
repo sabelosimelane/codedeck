@@ -25,11 +25,13 @@ export default function App() {
     await fetchProjects();
   };
 
-  const editProject = async (oldName, newName, newPath) => {
+  const renameProject = async (oldName, newName) => {
+    const project = projects.find(p => p.name === oldName);
+    if (!project) return;
     const res = await fetch(`/api/projects/${encodeURIComponent(oldName)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newName, path: newPath }),
+      body: JSON.stringify({ name: newName, path: project.path }),
     });
     if (res.ok) {
       const updated = await res.json();
@@ -60,7 +62,7 @@ export default function App() {
         onSelect={setActiveProject}
         onAdd={addProject}
         onRemove={removeProject}
-        onEdit={editProject}
+        onRename={renameProject}
         onToggleFiles={() => setShowFileTree(prev => !prev)}
         showFileTree={showFileTree}
       />

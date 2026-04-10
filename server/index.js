@@ -6,71 +6,101 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { spawn } from 'node-pty';
 import { exec } from 'child_process';
+import db from './db.js';
 
 const app = express();
 app.use(express.json());
 
 // -------------------------------------------------------------------
-// Config: define your projects here (or load from a JSON file later)
+// Config helpers (SQLite-backed)
 // -------------------------------------------------------------------
-const CONFIG_PATH = path.join(process.env.HOME || '/root', '.codedeck.json');
-
-async function loadProjects() {
-  if (existsSync(CONFIG_PATH)) {
-    const raw = await fs.readFile(CONFIG_PATH, 'utf-8');
-    return JSON.parse(raw);
-  }
-  // Default example config
-  return {
-    projects: []
-  };
+function getConfig(key) {
+  const row = db.prepare('SELECT value FROM configs WHERE key = ?').get(key);
+  return row ? JSON.parse(row.value) : null;
 }
 
-async function saveProjects(config) {
-  await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2));
+function setConfig(key, value) {
+  db.prepare('INSERT INTO configs (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run(key, JSON.stringify(value));
+}
+
+function loadProjects() {
+  return getConfig('projects') || [];
+}
+
+function saveProjects(projects) {
+  setConfig('projects', projects);
 }
 
 // -------------------------------------------------------------------
 // REST API: Projects
 // -------------------------------------------------------------------
-app.get('/api/projects', async (req, res) => {
-  const config = await loadProjects();
-  res.json(config.projects);
+app.get('/api/projects', (req, res) => {
+  res.json(loadProjects());
 });
 
-app.post('/api/projects', async (req, res) => {
+app.post('/api/projects', (req, res) => {
   const { name, path: projectPath } = req.body;
   if (!name || !projectPath) return res.status(400).json({ error: 'name and path required' });
   if (!existsSync(projectPath)) return res.status(400).json({ error: 'path does not exist' });
 
-  const config = await loadProjects();
-  if (config.projects.find(p => p.path === projectPath)) {
+  const projects = loadProjects();
+  if (projects.find(p => p.path === projectPath)) {
     return res.status(409).json({ error: 'project already exists' });
   }
-  config.projects.push({ name, path: projectPath });
-  await saveProjects(config);
+  projects.push({ name, path: projectPath });
+  saveProjects(projects);
   res.status(201).json({ name, path: projectPath });
 });
 
-app.put('/api/projects/:name', async (req, res) => {
+app.put('/api/projects/:name', (req, res) => {
   const { name: newName, path: newPath } = req.body;
   if (!newName || !newPath) return res.status(400).json({ error: 'name and path required' });
   if (!existsSync(newPath)) return res.status(400).json({ error: 'path does not exist' });
 
-  const config = await loadProjects();
-  const idx = config.projects.findIndex(p => p.name === req.params.name);
+  const projects = loadProjects();
+  const idx = projects.findIndex(p => p.name === req.params.name);
   if (idx === -1) return res.status(404).json({ error: 'project not found' });
 
-  config.projects[idx] = { name: newName, path: newPath };
-  await saveProjects(config);
+  projects[idx] = { name: newName, path: newPath };
+  saveProjects(projects);
   res.json({ name: newName, path: newPath });
 });
 
-app.delete('/api/projects/:name', async (req, res) => {
-  const config = await loadProjects();
-  config.projects = config.projects.filter(p => p.name !== req.params.name);
-  await saveProjects(config);
+app.delete('/api/projects/:name', (req, res) => {
+  const projects = loadProjects();
+  saveProjects(projects.filter(p => p.name !== req.params.name));
   res.json({ ok: true });
+});
+
+// -------------------------------------------------------------------
+// REST API: Config (generic key-value)
+// -------------------------------------------------------------------
+app.get('/api/config/:key', (req, res) => {
+  const value = getConfig(req.params.key);
+  if (value === null) return res.status(404).json({ error: 'key not found' });
+  res.json({ key: req.params.key, value });
+});
+
+app.put('/api/config/:key', (req, res) => {
+  const { value } = req.body;
+  if (value === undefined) return res.status(400).json({ error: 'value required' });
+  setConfig(req.params.key, value);
+  res.json({ key: req.params.key, value });
+});
+
+app.delete('/api/config/:key', (req, res) => {
+  db.prepare('DELETE FROM configs WHERE key = ?').run(req.params.key);
+  res.json({ ok: true });
+});
+
+app.get('/api/config', (req, res) => {
+  const rows = db.prepare('SELECT key, value FROM configs').all();
+  const result = {};
+  for (const row of rows) {
+    result[row.key] = JSON.parse(row.value);
+  }
+  res.json(result);
 });
 
 // -------------------------------------------------------------------
