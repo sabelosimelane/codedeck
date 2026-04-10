@@ -77,7 +77,6 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
   const renameInputRef = useRef(null);
   const busyTracker = useRef(new Map());
   const prevStatusRef = useRef(new Map());
-  const permissionRequested = useRef(false);
   const mutedProjectsRef = useRef(mutedProjects);
   const activeProjectsRef = useRef(activeProjects);
   const { showToast } = useToast();
@@ -89,38 +88,25 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
   useEffect(() => {
     if (!sessionStatus || sessionStatus.length === 0) return;
 
-    // Request permission once when first busy terminal is detected
-    const anyBusy = sessionStatus.some(s => getTerminalStatus(s) === 'busy');
-    if (anyBusy && !permissionRequested.current && 'Notification' in window) {
-      permissionRequested.current = true;
-      if (Notification.permission === 'default') {
-        Notification.requestPermission();
-      }
-    }
-
     sessionStatus.forEach(session => {
       const status = getTerminalStatus(session);
       const prevStatus = prevStatusRef.current.get(session.sessionId);
 
       if (status === 'busy') {
         if (prevStatus !== 'busy') {
-          // Newly busy or resumed after idle — record start time
           busyTracker.current.set(session.sessionId, { busyStartedAt: Date.now() });
         }
       } else {
         if (prevStatus === 'busy') {
-          // Transitioned from busy → check duration and fire notification
           const tracker = busyTracker.current.get(session.sessionId);
           if (tracker) {
             const duration = Date.now() - tracker.busyStartedAt;
-            if (duration >= 30000 && 'Notification' in window && Notification.permission === 'granted') {
+            if (duration >= 30000) {
               const project = activeProjectsRef.current.find(p =>
                 session.sessionId.startsWith(`${p.name}-`) || session.cwd === p.path
               );
               if (project && !mutedProjectsRef.current.includes(project.name)) {
-                new Notification(`CodeDeck — ${session.sessionId} finished`, {
-                  body: session.lastOutputLine || '',
-                });
+                alert(`CodeDeck — ${session.sessionId} finished`);
               }
             }
           }
