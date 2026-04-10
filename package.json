@@ -1,0 +1,5 @@
+{
+  "name": "codedeck",
+  "private": true,
+  "workspaces": ["server", "client"]
+}
