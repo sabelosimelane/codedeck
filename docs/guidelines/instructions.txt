@@ -2,53 +2,52 @@ Follow the Well-Architected Framework for all implementation decisions.
 
 ## Architecture at a Glance
 ```
-API Layer (DTOs with primitives)
-    ↓ converts to value objects
-Business Logic Layer (value objects only)
-    ↓ converts to primitives
-Data Access Layer (entities with primitives)
+API Layer (Express route handlers — validate input, return responses)
+    ↓ calls
+Service Layer (business logic — pure functions, no req/res)
+    ↓ calls
+Data Layer (SQLite via better-sqlite3 — schema, queries)
+
+Frontend (React)
+    ↕ REST + WebSocket → Backend
+    → All state mutations go through the backend
+    → Every API call has error handling and user feedback
 ```
 
 ## Anti-Patterns (Forbidden)
 
-❌ Primitives in business logic layer
-❌ Mutable domain objects
-❌ Business logic in API or data layers
-❌ Generic exception catching
-❌ Null parameters without validation
-❌ Direct database access from business logic
-❌ Infrastructure dependencies in core logic (Spring, repositories, brokers, caches inside evaluators/processors)
-❌ Using `ImmutableXxx.Builder` as a return type in `@Value.Immutable` interfaces (causes silent annotation processor failures — return the interface type instead)
+❌ Silent error swallowing (`catch(() => {})` or `.catch(() => {})`)
+❌ Frontend holding authoritative state (localStorage as source of truth)
+❌ API calls without error handling or user feedback
+❌ Business logic in route handlers (extract to service modules)
+❌ Business logic in React components (data flows from backend)
+❌ Raw SQL scattered across route handlers (use db helper functions)
+❌ Unsanitized user input in shell commands
+❌ Optimistic UI updates without backend confirmation and rollback
 
-✅ Wrap primitives that carry domain meaning or cross boundaries (records for simple wrappers, Immutables for rich entities with cross-field invariants)
-✅ Validate at every boundary
-✅ Fail fast with clear messages
-✅ Immutable objects throughout business layer
-✅ Clean layer separation
-✅ Technology-independent business logic
-✅ Core logic is pure: domain objects in, domain objects out — service layer orchestrates infrastructure around it
+✅ Backend is the single source of truth for all state
+✅ Every user action that modifies state round-trips through the backend
+✅ Success and failure both produce user-visible feedback (toasts)
+✅ Validate at every backend route handler (required fields, types, path existence)
+✅ Structured error responses: `{ error: string, detail?: string }`
+✅ WebSocket disconnect/reconnect is handled and visible to the user
+✅ Service functions are testable without Express (no req/res coupling)
+✅ File paths validated before passing to any system command
 
 ## Pre-Commit Checklist
 
-- [ ] No primitives in business logic classes
-- [ ] All value objects validate invariants (records: factory method; Immutables: @Value.Check)
-- [ ] Preconditions used for business rule validation
-- [ ] Bean Validation annotations on DTOs for request validation
-- [ ] Clear error messages that guide resolution
-- [ ] Immutable objects throughout business layer
-- [ ] Core logic is infrastructure-free (no Spring, no repositories, no broker/cache calls)
-- [ ] Service layer orchestrates: fetches data → calls pure logic → persists/publishes results
-- [ ] Technology abstractions properly implemented
-- [ ] Comprehensive test coverage (pure logic unit tests + integration tests)
-- [ ] Security annotations on commands
-- [ ] Audit logging for business operations
-- [ ] Error responses use RFC 9457 ProblemDetail
-- [ ] Domain exceptions use sealed hierarchy (ValidationException, StateConflictException, NotFoundException) — never map bare IllegalArgumentException to HTTP status codes
+- [ ] No silent error swallowing anywhere in changed files
+- [ ] Every new/modified API call in the frontend handles errors and shows feedback
+- [ ] State mutations go through the backend, not just local React state
+- [ ] New route handlers validate input before processing
+- [ ] File/directory paths are validated before use
+- [ ] WebSocket handlers handle disconnect gracefully
+- [ ] Backend returns structured error responses with appropriate HTTP status codes
 
 ## Frontend Pre-Commit Checklist
 
-- [ ] `unhandledrejection` handler for chunk load errors registered in entry point (before `createRoot()`)
-- [ ] Top-level `ErrorBoundary` wraps the app in `App.tsx`
-- [ ] `ErrorBoundary` shows "Reload Page" for chunk errors, "Try Again" for generic errors
-- [ ] No hardcoded domain error messages on the frontend — all read from `error.message` in API response
-- [ ] Generic fallback strings are non-descriptive ("Something went wrong. Please try again.")
+- [ ] No hardcoded error messages — read from API response `error` field
+- [ ] Generic fallback for unexpected errors ("Something went wrong. Please try again.")
+- [ ] Toast notifications for success and failure on all mutating actions
+- [ ] Loading states shown for operations that may take time
+- [ ] Connection-lost state is visible when backend is unreachable
