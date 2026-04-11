@@ -7,6 +7,7 @@ import { shouldPersistLayout } from '../utils/terminalLayout';
 import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
 import { getTabTerminalStatus } from '../utils/terminalActivity';
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
+import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
 
 let tabCounter = 0;
 let sessionCounter = 0;
@@ -462,8 +463,15 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
               minHeight: 0,
             }}
           >
-            {tab.panes.map((pane, index) => (
-              <React.Fragment key={pane.id}>
+            {tab.panes.map((pane, index) => {
+              const paneCwd = getTerminalPaneCwd({
+                sessionId: pane.sessionId,
+                projectPath: project.path,
+                sessionLookup,
+              });
+
+              return (
+                <React.Fragment key={pane.id}>
                 {index > 0 && (
                   <PaneDivider
                     onDrag={(delta) => handleDividerDrag(tab.id, index - 1, delta)}
@@ -539,6 +547,19 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                           }}
                         >
                           {pane.isConnected ? 'Live terminal attached' : 'Detached. Reopen when you need it.'}
+                        </span>
+                        <span
+                          title={paneCwd}
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: 11,
+                            color: 'rgba(228, 228, 232, 0.58)',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {`cwd: ${paneCwd}`}
                         </span>
                       </div>
 
@@ -622,8 +643,9 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                     </div>
                   </div>
                 </div>
-              </React.Fragment>
-            ))}
+                </React.Fragment>
+              );
+            })}
           </div>
         );
       })}
