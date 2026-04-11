@@ -314,10 +314,10 @@ const wss = new WebSocketServer({ server, path: '/ws/terminal' });
 // Active PTY sessions: Map<string, { pty, ws, cwd, startedAt, lastOutputAt, alive }>
 const sessions = new Map();
 
-// Resolve terminal runtime mode: env var > SQLite config > default 'pty'
+// Resolve terminal runtime mode: env var > SQLite config > default 'tmux'
 const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
   || getConfig('terminalRuntime')
-  || 'pty';
+  || 'tmux';
 const terminalRuntime = createTerminalRuntime(runtimeMode);
 
 wss.on('connection', (ws, req) => {

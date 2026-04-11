@@ -24,7 +24,7 @@ Solo developer (Sabelo) who juggles multiple codebases daily. The core pain poin
 - Connection awareness — detect backend unreachable, show reconnection banner with exponential backoff
 - Keyboard shortcut passthrough — Ctrl+R/W/T/N forwarded to PTY instead of browser
 - Terminal resilience — pane-local debug inspector, visibility-aware refocus recovery, heartbeat/sequence-tracked replay, explicit recovery actions (reconnect/resync/redraw)
-- Optional durable sessions — tmux-backed terminal runtime behind `CODEDECK_TERMINAL_RUNTIME=tmux` flag
+- Durable sessions by default — tmux-backed terminal runtime is the default when available; raw PTY remains available via explicit override
 - Optional sleep prevention — `CODEDECK_CAFFEINATE=1` wraps startup under macOS `caffeinate`
 
 **Future (not yet specified):**

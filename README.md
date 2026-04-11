@@ -37,12 +37,24 @@ CodeDeck includes built-in terminal resilience features for debugging and recove
 - **Debug inspector** — click the bug icon on any terminal pane to see its health status, lifecycle event timeline, and diagnostic snapshot. Health is classified as `healthy`, `detached`, `reconnecting`, `stalled`, `replaying`, or `dead`.
 - **Recovery actions** — the inspector offers Reconnect (drop and re-establish socket), Resync (request replay without teardown), and Redraw (force xterm repaint and resize sync).
 - **Visibility-aware recovery** — when you return to a backgrounded tab, CodeDeck detects the refocus and automatically resizes, resyncs dimensions, and replays missed output.
-- **Replay buffer** — the backend maintains a bounded per-session output buffer. On reconnect or refocus, missed output is replayed so you don't lose context. If the buffer overflows, you're notified.
+- **Replay buffer** — the backend maintains a bounded per-session output buffer. On reconnect or refocus, missed output is replayed so you don't lose context. If the buffer overflows, you're notified, but durable `tmux` sessions reduce how often recovery depends on replay alone.
 - **Heartbeat & stall detection** — the client sends periodic heartbeats with diagnostics. The backend detects when a pane view is stale (browser throttled, paint lagging, or ack lag) and surfaces the reason in the inspector.
 
-### Optional: Durable Sessions (tmux)
+### Terminal Runtime
 
-Set `CODEDECK_TERMINAL_RUNTIME=tmux` to back terminal sessions with tmux. Sessions survive server restarts and node-pty wrapper crashes. Requires `tmux` installed.
+CodeDeck now defaults to `tmux`-backed terminal sessions. That makes long-running builds, tails, and log-heavy panes much more resilient when you switch projects or the browser detaches. If `tmux` is not installed, the server falls back to raw PTY mode automatically.
+
+You can still override the runtime explicitly:
+
+```bash
+# Force durable tmux-backed sessions
+CODEDECK_TERMINAL_RUNTIME=tmux ./server.sh start
+
+# Force legacy raw PTY sessions
+CODEDECK_TERMINAL_RUNTIME=pty ./server.sh start
+```
+
+`tmux` mode preserves sessions across browser detaches and server restarts. Raw PTY mode is simpler, but relies much more heavily on the bounded replay buffer.
 
 ### Optional: Prevent macOS Sleep
 

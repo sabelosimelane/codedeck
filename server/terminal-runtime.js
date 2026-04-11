@@ -2,8 +2,8 @@
  * Terminal runtime abstraction.
  *
  * Provides a uniform spawn/kill/recovery interface for two backends:
- *   - 'pty'  — raw node-pty (current default, ephemeral)
- *   - 'tmux' — tmux-backed sessions (durable across server restarts)
+ *   - 'pty'  — raw node-pty (ephemeral)
+ *   - 'tmux' — tmux-backed sessions (default, durable across server restarts)
  *
  * The browser-side pane model stays identical regardless of backend.
  * ws-handler.js consumes the runtime via dependency injection.
@@ -50,7 +50,7 @@ export function isTmuxAvailable() {
 }
 
 // ---------------------------------------------------------------------------
-// Raw PTY runtime (default)
+// Raw PTY runtime
 // ---------------------------------------------------------------------------
 
 function createPtyRuntime() {
@@ -158,7 +158,7 @@ function createTmuxRuntime() {
  * @param {'pty' | 'tmux'} mode
  * @returns {object} runtime with spawn/kill/isSessionRecoverable
  */
-export function createTerminalRuntime(mode = 'pty') {
+export function createTerminalRuntime(mode = 'tmux') {
   if (mode === 'tmux') {
     if (!isTmuxAvailable()) {
       console.warn('[terminal-runtime] tmux mode requested but tmux is not installed — falling back to pty');

@@ -322,6 +322,19 @@ describe('handleWsConnection', () => {
         JSON.stringify({ type: 'session', sessionId: 'test-1', existing: true })
       );
     });
+
+    it('does not inject Ctrl+L into the PTY on reconnect', () => {
+      const ws1 = createMockWs();
+      const ws2 = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws1, req, sessions, spawnPty);
+      mockPty.write.mockClear();
+
+      handleWsConnection(ws2, req, sessions, spawnPty);
+
+      expect(mockPty.write).not.toHaveBeenCalledWith('\x0c');
+    });
   });
 
   // -----------------------------------------------------------------------

@@ -243,8 +243,6 @@ export function handleWsConnection(ws, req, sessions, runtime) {
 
     // Resize to match the new client's dimensions
     try { entry.pty.resize(cols, rows); } catch {}
-    // Send Ctrl+L to clear screen and redraw prompt in the new xterm instance
-    if (entry.alive) entry.pty.write('\x0c');
   }
 
   // Browser -> PTY
@@ -322,6 +320,6 @@ export function handleWsConnection(ws, req, sessions, runtime) {
     console.log(`[terminal] detach session=${sessionId}`);
   });
 
-  // Send session info — flag existing sessions so client can trigger prompt redraw
+  // Send session info — existing sessions let the client decide whether replay is needed
   ws.send(JSON.stringify({ type: 'session', sessionId, existing: isExisting }));
 }
