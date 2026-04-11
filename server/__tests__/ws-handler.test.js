@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { handleWsConnection, computeSessionHealth, computeStallReason, REPLAY_BUFFER_SIZE } from '../ws-handler.js';
+import { handleWsConnection, computeSessionHealth, computeStallReason, isSubstantialOutput, REPLAY_BUFFER_SIZE } from '../ws-handler.js';
 
 // ---------------------------------------------------------------------------
 // Mock factories
@@ -974,6 +974,84 @@ describe('handleWsConnection', () => {
 
       const stallEvents = entry.events.filter(e => e.type === 'stall_detected');
       expect(stallEvents).toHaveLength(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Bug: tmux status bar refreshes keep activity dot green forever
+  // -----------------------------------------------------------------------
+  describe('substantial output tracking (activity noise filtering)', () => {
+    // Typical tmux status bar refresh: cursor save, move to status line,
+    // draw status content, cursor restore — no newlines, mostly ANSI escapes
+    const TMUX_STATUS_REFRESH = '\x1b7\x1b[25;1H\x1b[K\x1b[0;32m[0] 0:zsh*\x1b[0m\x1b8';
+
+    // Real command output has newlines
+    const REAL_OUTPUT = 'total 42\ndrwxr-xr-x  5 user  staff  160 Apr 10 09:00 src\n';
+
+    it('initializes lastSubstantialOutputAt on session creation', () => {
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      handleWsConnection(ws, req, sessions, spawnPty);
+
+      const entry = sessions.get('test-1');
+      expect(entry.lastSubstantialOutputAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('does not update lastSubstantialOutputAt on ANSI-only tmux status refresh', () => {
+      vi.useFakeTimers({ now: new Date('2026-04-11T10:00:00Z') });
+
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      handleWsConnection(ws, req, sessions, spawnPty);
+
+      const entry = sessions.get('test-1');
+      const before = entry.lastSubstantialOutputAt;
+
+      vi.advanceTimersByTime(5000);
+      mockPty.emitData(TMUX_STATUS_REFRESH);
+
+      expect(entry.lastSubstantialOutputAt).toBe(before);
+
+      vi.useRealTimers();
+    });
+
+    it('updates lastSubstantialOutputAt on output containing newlines', () => {
+      vi.useFakeTimers({ now: new Date('2026-04-11T10:00:00Z') });
+
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      handleWsConnection(ws, req, sessions, spawnPty);
+
+      const entry = sessions.get('test-1');
+      const before = entry.lastSubstantialOutputAt;
+
+      vi.advanceTimersByTime(5000);
+      mockPty.emitData(REAL_OUTPUT);
+
+      expect(new Date(entry.lastSubstantialOutputAt).getTime())
+        .toBeGreaterThan(new Date(before).getTime());
+
+      vi.useRealTimers();
+    });
+
+    it('still updates lastOutputAt on all output including tmux noise', () => {
+      vi.useFakeTimers({ now: new Date('2026-04-11T10:00:00Z') });
+
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      handleWsConnection(ws, req, sessions, spawnPty);
+
+      const entry = sessions.get('test-1');
+      const before = entry.lastOutputAt;
+
+      vi.advanceTimersByTime(5000);
+      mockPty.emitData(TMUX_STATUS_REFRESH);
+
+      // lastOutputAt still updates on ALL output (for diagnostics/replay)
+      expect(new Date(entry.lastOutputAt).getTime())
+        .toBeGreaterThan(new Date(before).getTime());
+
+      vi.useRealTimers();
     });
   });
 

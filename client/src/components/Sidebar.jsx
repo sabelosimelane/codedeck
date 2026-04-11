@@ -19,7 +19,8 @@ function formatElapsed(timestamp) {
 
 function getTerminalStatus(session) {
   if (!session.alive) return 'dead';
-  const age = Date.now() - new Date(session.lastOutputAt).getTime();
+  const activityTimestamp = session.lastSubstantialOutputAt || session.lastOutputAt;
+  const age = Date.now() - new Date(activityTimestamp).getTime();
   return age < SIDEBAR_ACTIVITY_WINDOW_MS ? 'busy' : 'idle';
 }
 
@@ -41,7 +42,7 @@ function getProjectStatus(sessions) {
 
   const now = Date.now();
   const anyActive = alive.some(
-    s => now - new Date(s.lastOutputAt).getTime() < SIDEBAR_ACTIVITY_WINDOW_MS
+    s => now - new Date(s.lastSubstantialOutputAt || s.lastOutputAt).getTime() < SIDEBAR_ACTIVITY_WINDOW_MS
   );
   const earliest = alive.reduce((min, s) => {
     const t = new Date(s.startedAt).getTime();

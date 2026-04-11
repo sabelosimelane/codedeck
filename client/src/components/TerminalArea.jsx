@@ -252,6 +252,16 @@ export default function TerminalArea({ project }) {
     }));
   }, []);
 
+  const disconnectPane = useCallback((tabId, paneId, sessionId) => {
+    setPaneConnection(tabId, paneId, false);
+    fetch(`/api/terminal/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+      .catch(err => console.warn('Failed to disconnect terminal session:', err));
+  }, [setPaneConnection]);
+
+  const reconnectPane = useCallback((tabId, paneId) => {
+    setPaneConnection(tabId, paneId, true);
+  }, [setPaneConnection]);
+
   const registerTerminalRef = useCallback((paneId, instance) => {
     if (instance) {
       terminalRefs.current.set(paneId, instance);
@@ -503,7 +513,7 @@ export default function TerminalArea({ project }) {
                               <Eraser size={13} />
                             </button>
                             <button
-                              onClick={() => setPaneConnection(tab.id, pane.id, false)}
+                              onClick={() => disconnectPane(tab.id, pane.id, pane.sessionId)}
                               title="Disconnect terminal"
                               className="terminal-action-btn"
                             >
@@ -512,8 +522,8 @@ export default function TerminalArea({ project }) {
                           </>
                         ) : (
                           <button
-                            onClick={() => setPaneConnection(tab.id, pane.id, true)}
-                            title="Reconnect terminal"
+                            onClick={() => reconnectPane(tab.id, pane.id)}
+                            title="Reopen terminal"
                             className="terminal-action-btn"
                           >
                             <RotateCcw size={13} />
@@ -552,7 +562,7 @@ export default function TerminalArea({ project }) {
                               This terminal is taking a dramatic pause. Reopen it when it&apos;s time to start cooking again.
                             </div>
                             <button
-                              onClick={() => setPaneConnection(tab.id, pane.id, true)}
+                              onClick={() => reconnectPane(tab.id, pane.id)}
                               className="terminal-empty-cta"
                             >
                               <RotateCcw size={14} />

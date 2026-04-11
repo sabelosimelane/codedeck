@@ -113,6 +113,12 @@ function createTmuxRuntime() {
           '-x', String(cols),
           '-y', String(rows),
         ], { stdio: 'pipe' });
+        // Suppress tmux status bar — CodeDeck has its own tab/pane UI.
+        // Without this, tmux's default status-interval (15s) generates
+        // periodic PTY output that keeps the sidebar activity dot green.
+        execFileSync('tmux', [
+          'set-option', '-t', tmuxName, 'status', 'off',
+        ], { stdio: 'pipe' });
       }
 
       // Attach via node-pty so we get the same onData/onExit/write/resize API

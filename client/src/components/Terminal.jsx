@@ -6,7 +6,10 @@ import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
 import { ChevronsDown } from 'lucide-react';
 import { shouldResumeFromSessionHandshake } from '../utils/terminalResume';
-import { shouldSyncVisibleTerminal } from '../utils/terminalVisibility';
+import {
+  shouldSyncVisibleTerminal,
+  shouldWriteTerminalViewport,
+} from '../utils/terminalVisibility';
 
 const MAX_RETRIES = 10;
 const BASE_DELAY = 1000;
@@ -29,10 +32,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
   const lastPaintAtRef = useRef(null);
   const lastResizeAtRef = useRef(null);
   const documentVisibilityRef = useRef(document.visibilityState === 'visible' ? 'visible' : 'hidden');
+  const isVisibleRef = useRef(isVisible);
   // Sequence tracking for loss-aware replay (Phase 3)
   const lastSeenSeqRef = useRef(0);
   const reconnectCountRef = useRef(0);
   const resumeInFlightRef = useRef(false);
+  const pendingOutputRef = useRef([]);
+  const inputBufferRef = useRef([]);
   const { showToast } = useToast();
 
   function requestResume(ws) {
@@ -47,10 +53,86 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
   function canSyncCurrentTerminal() {
     const container = containerRef.current;
     return shouldSyncVisibleTerminal({
-      isVisible,
+      isVisible: isVisibleRef.current,
       width: container?.clientWidth ?? 0,
       height: container?.clientHeight ?? 0,
     });
+  }
+
+  function canPaintCurrentViewport() {
+    return shouldWriteTerminalViewport({
+      isVisible: isVisibleRef.current,
+      documentVisibility: documentVisibilityRef.current,
+    });
+  }
+
+  function writeChunkToTerminal(term, chunk) {
+    term.write(chunk.data);
+    lastPaintAtRef.current = new Date().toISOString();
+    if (typeof chunk.seq === 'number') {
+      lastSeenSeqRef.current = chunk.seq;
+    }
+    if (!userScrolledUpRef.current) {
+      term.scrollToBottom();
+    }
+  }
+
+  function bufferOrWriteChunk(term, chunk) {
+    if (typeof chunk.seq === 'number') {
+      lastSeenSeqRef.current = chunk.seq;
+    }
+
+    if (!canPaintCurrentViewport()) {
+      pendingOutputRef.current.push(chunk);
+      return;
+    }
+
+    writeChunkToTerminal(term, chunk);
+  }
+
+  function flushPendingOutput({ focus = false } = {}) {
+    const term = termRef.current;
+    if (!term || !canPaintCurrentViewport()) return;
+
+    if (pendingOutputRef.current.length > 0) {
+      for (const chunk of pendingOutputRef.current) {
+        writeChunkToTerminal(term, chunk);
+      }
+      pendingOutputRef.current = [];
+    }
+
+    term.refresh(0, Math.max(term.rows - 1, 0));
+    if (!userScrolledUpRef.current) {
+      term.scrollToBottom();
+    }
+    if (focus) {
+      term.focus();
+    }
+  }
+
+  function syncTerminalViewport({ focus = false, requestResumeAfterSync = false } = {}) {
+    if (!mountedRef.current) return;
+    if (!canSyncCurrentTerminal()) return;
+
+    const term = termRef.current;
+    const fitAddon = fitRef.current;
+    const currentWs = wsRef.current;
+
+    try {
+      if (fitAddon) fitAddon.fit();
+      flushPendingOutput({ focus });
+      lastResizeAtRef.current = new Date().toISOString();
+      if (currentWs && currentWs.readyState === WebSocket.OPEN && term) {
+        currentWs.send(JSON.stringify({
+          type: 'resize',
+          cols: term.cols,
+          rows: term.rows,
+        }));
+        if (requestResumeAfterSync) {
+          requestResume(currentWs);
+        }
+      }
+    } catch {}
   }
 
   // Send a recovery action notification to the backend for timeline tracking
@@ -89,20 +171,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     redraw() {
       // Force xterm repaint and resize sync
       if (termRef.current && fitRef.current) {
-        try {
-          fitRef.current.fit();
-          termRef.current.refresh(0, termRef.current.rows - 1);
-          lastPaintAtRef.current = new Date().toISOString();
-          lastResizeAtRef.current = new Date().toISOString();
-          const ws = wsRef.current;
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type: 'resize',
-              cols: termRef.current.cols,
-              rows: termRef.current.rows,
-            }));
-          }
-        } catch {}
+        syncTerminalViewport({ focus: true });
         sendRecoveryAction('redraw');
       }
     },
@@ -149,9 +218,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     term.loadAddon(webLinksAddon);
 
     term.open(containerRef.current);
-    fitAddon.fit();
     fitRef.current = fitAddon;
     termRef.current = term;
+    requestAnimationFrame(() => {
+      syncTerminalViewport();
+    });
 
     // Track scroll position — detect when user scrolls away from bottom
     term.onScroll(() => {
@@ -176,6 +247,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
           const ws = wsRef.current;
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'input', data: ctrlChar }));
+          } else {
+            inputBufferRef.current.push(ctrlChar);
           }
           return false; // prevent xterm from also processing it
         }
@@ -183,11 +256,14 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       return true;
     });
 
-    // Register onData once — route input to whichever ws is current
+    // Register onData once — route input to whichever ws is current.
+    // When WS is not open (reconnecting), buffer input and flush on reconnect.
     term.onData((data) => {
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data }));
+      } else {
+        inputBufferRef.current.push(data);
       }
     });
 
@@ -212,6 +288,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
           reconnectCountRef.current += 1;
           showToast({ type: 'success', message: 'Reconnected' });
           requestResume(ws);
+        }
+        // Flush any input that was typed during reconnection
+        if (inputBufferRef.current.length > 0) {
+          for (const data of inputBufferRef.current) {
+            ws.send(JSON.stringify({ type: 'input', data }));
+          }
+          inputBufferRef.current = [];
         }
         // Send periodic heartbeats with client diagnostics for visibility-aware recovery
         if (heartbeatRef.current) clearInterval(heartbeatRef.current);
@@ -238,14 +321,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
           const msg = JSON.parse(event.data);
           lastMessageAtRef.current = new Date().toISOString();
           if (msg.type === 'output') {
-            term.write(msg.data);
-            lastPaintAtRef.current = new Date().toISOString();
-            if (typeof msg.seq === 'number') {
-              lastSeenSeqRef.current = msg.seq;
-            }
-            if (!userScrolledUpRef.current) {
-              term.scrollToBottom();
-            }
+            bufferOrWriteChunk(term, { data: msg.data, seq: msg.seq });
           } else if (shouldResumeFromSessionHandshake(msg, resumeInFlightRef.current)) {
             requestResume(ws);
           } else if (msg.type === 'replay') {
@@ -253,14 +329,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
             // Apply replayed chunks to catch up after reconnect/refocus
             if (msg.chunks && msg.chunks.length > 0) {
               for (const chunk of msg.chunks) {
-                term.write(chunk.data);
-                if (typeof chunk.seq === 'number') {
-                  lastSeenSeqRef.current = chunk.seq;
-                }
-              }
-              lastPaintAtRef.current = new Date().toISOString();
-              if (!userScrolledUpRef.current) {
-                term.scrollToBottom();
+                bufferOrWriteChunk(term, chunk);
               }
             }
             if (msg.overflow) {
@@ -303,24 +372,6 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     // before a WebSocket is ever created
     const connectTimer = setTimeout(connect, 0);
 
-    // Shared helper: refit xterm and resend dimensions to backend
-    function syncTerminalSize() {
-      if (!mountedRef.current) return;
-      if (!canSyncCurrentTerminal()) return;
-      try {
-        if (fitRef.current) fitRef.current.fit();
-        lastResizeAtRef.current = new Date().toISOString();
-        const currentWs = wsRef.current;
-        if (currentWs && currentWs.readyState === WebSocket.OPEN && termRef.current) {
-          currentWs.send(JSON.stringify({
-            type: 'resize',
-            cols: termRef.current.cols,
-            rows: termRef.current.rows,
-          }));
-        }
-      } catch {}
-    }
-
     // Track browser-level visibility changes for deterministic refocus recovery
     function handleVisibilityChange() {
       const state = document.visibilityState === 'visible' ? 'visible' : 'hidden';
@@ -334,12 +385,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       // On refocus: force fit, resend dimensions, request replay of missed output
       if (state === 'visible') {
         setTimeout(() => {
-          if (!mountedRef.current) return;
-          syncTerminalSize();
-          // Request replay from last seen seq to catch up on missed output
-          // Skip if a resume is already in flight (e.g., reconnect just fired)
-          const currentWs = wsRef.current;
-          requestResume(currentWs);
+          syncTerminalViewport({ focus: true, requestResumeAfterSync: true });
         }, 50);
       }
     }
@@ -347,15 +393,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
-      if (!canSyncCurrentTerminal()) return;
-      try {
-        fitAddon.fit();
-        lastResizeAtRef.current = new Date().toISOString();
-        const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-        }
-      } catch {}
+      syncTerminalViewport();
     });
     resizeObserver.observe(containerRef.current);
 
@@ -364,6 +402,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       clearTimeout(connectTimer);
       clearTimeout(retryTimerRef.current);
       clearInterval(heartbeatRef.current);
+      inputBufferRef.current = [];
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       resizeObserver.disconnect();
       if (wsRef.current) wsRef.current.close();
@@ -373,40 +412,35 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
 
   // Re-fit and sync dimensions when tab becomes visible (React-level tab switch)
   useEffect(() => {
+    isVisibleRef.current = isVisible;
     if (isVisible && fitRef.current && termRef.current) {
       setTimeout(() => {
-        if (!mountedRef.current) return;
-        if (!canSyncCurrentTerminal()) return;
-        try {
-          fitRef.current.fit();
-          termRef.current.refresh(0, termRef.current.rows - 1);
-          lastPaintAtRef.current = new Date().toISOString();
-          lastResizeAtRef.current = new Date().toISOString();
-          const ws = wsRef.current;
-          const term = termRef.current;
-          if (ws && ws.readyState === WebSocket.OPEN && term) {
-            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-          }
-        } catch {}
+        syncTerminalViewport({ focus: true, requestResumeAfterSync: true });
       }, 50);
     }
   }, [isVisible]);
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      {/* Reconnection banner */}
+      {/* Reconnecting overlay — dims terminal and shows spinner so user knows input is paused */}
       {connectionStatus === 'disconnected' && (
-        <div style={bannerStyle}>
-          Connection lost — reconnecting...
+        <div style={reconnectOverlayStyle}>
+          <div style={reconnectCardStyle}>
+            <div className="reconnect-spinner" />
+            <span>Reconnecting...</span>
+          </div>
         </div>
       )}
       {connectionStatus === 'failed' && (
-        <div style={{ ...bannerStyle, background: '#450a0a', borderColor: '#dc2626' }}>
-          Unable to connect to server. Check that the backend is running.
+        <div style={failedOverlayStyle}>
+          <div style={{ ...reconnectCardStyle, borderColor: 'rgba(248, 113, 113, 0.3)' }}>
+            <span>Unable to connect to server. Check that the backend is running.</span>
+          </div>
         </div>
       )}
       <div
         ref={containerRef}
+        onMouseDown={() => syncTerminalViewport({ focus: true })}
         style={{
           width: '100%',
           height: '100%',
@@ -456,17 +490,33 @@ const scrollBtnStyle = {
   boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
 };
 
-const bannerStyle = {
+const reconnectOverlayStyle = {
   position: 'absolute',
-  top: 0,
-  left: 0,
-  right: 0,
+  inset: 0,
   zIndex: 10,
-  padding: '6px 12px',
-  fontSize: '11px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: 'rgba(11, 13, 18, 0.75)',
+  backdropFilter: 'blur(2px)',
+  pointerEvents: 'none',
+};
+
+const failedOverlayStyle = {
+  ...reconnectOverlayStyle,
+  background: 'rgba(11, 13, 18, 0.85)',
+};
+
+const reconnectCardStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '10px 18px',
+  borderRadius: 8,
+  background: 'rgba(22, 27, 36, 0.95)',
+  border: '1px solid rgba(110, 231, 183, 0.2)',
   fontFamily: 'var(--font-mono)',
-  textAlign: 'center',
-  background: '#451a03',
-  borderBottom: '1px solid #d97706',
-  color: '#fde68a',
+  fontSize: '12px',
+  color: 'var(--text-secondary)',
+  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
 };

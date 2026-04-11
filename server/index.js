@@ -239,6 +239,7 @@ app.get('/api/sessions', (req, res) => {
       cwd: entry.cwd,
       startedAt: entry.startedAt,
       lastOutputAt: entry.lastOutputAt,
+      lastSubstantialOutputAt: entry.lastSubstantialOutputAt ?? entry.lastOutputAt,
       lastOutputLine: entry.lastOutputLine || '',
       alive: entry.alive,
       runtimeType: entry.runtimeType ?? 'pty',

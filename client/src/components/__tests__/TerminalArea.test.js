@@ -34,9 +34,9 @@ describe('TerminalArea layout persistence guard', () => {
 describe('TerminalArea live session hydration', () => {
   it('restores all live project sessions when saved layout is missing', async () => {
     const sessions = [
-      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true },
-      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true },
-      { sessionId: 'Other-1', cwd: '/tmp/other', alive: true },
+      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true, wsAttached: false },
+      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'Other-1', cwd: '/tmp/other', alive: true, wsAttached: false },
     ];
 
     const result = resolveInitialTerminalState({
@@ -51,5 +51,189 @@ describe('TerminalArea live session hydration', () => {
     expect(result.state.tabs[1].panes[0].sessionId).toBe('BookMe-2');
     expect(result.state.activeTabId).toBe('tab-2');
     expect(result.sessionCounter).toBe(2);
+  });
+
+  it('merges live sessions that are missing from the saved layout', async () => {
+    const savedLayout = {
+      tabs: [
+        {
+          id: 'tab-1',
+          label: 'Terminal 1',
+          panes: [{
+            id: 'pane-BookMe-1',
+            sessionId: 'BookMe-1',
+            widthFraction: 1,
+            isConnected: true,
+          }],
+        },
+      ],
+      activeTabId: 'tab-1',
+      tabCounter: 1,
+      sessionCounter: 1,
+    };
+
+    const sessions = [
+      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true, wsAttached: false },
+    ];
+
+    const result = resolveInitialTerminalState({
+      projectName: 'BookMe',
+      projectPath: '/tmp/bookme',
+      savedLayout,
+      liveSessions: sessions,
+    });
+
+    expect(result.state.tabs).toHaveLength(2);
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
+    expect(result.state.tabs[1].panes[0].sessionId).toBe('BookMe-2');
+    expect(result.state.activeTabId).toBe('tab-1');
+    expect(result.tabCounter).toBe(2);
+    expect(result.sessionCounter).toBe(2);
+  });
+
+  it('preserves saved split-pane widths when all pane sessions are still live', async () => {
+    const savedLayout = {
+      tabs: [
+        {
+          id: 'tab-1',
+          label: 'Terminal 1',
+          panes: [
+            {
+              id: 'pane-BookMe-1',
+              sessionId: 'BookMe-1',
+              widthFraction: 0.7,
+              isConnected: true,
+            },
+            {
+              id: 'pane-BookMe-2',
+              sessionId: 'BookMe-2',
+              widthFraction: 0.3,
+              isConnected: true,
+            },
+          ],
+        },
+      ],
+      activeTabId: 'tab-1',
+      tabCounter: 1,
+      sessionCounter: 2,
+    };
+
+    const sessions = [
+      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true, wsAttached: false },
+    ];
+
+    const result = resolveInitialTerminalState({
+      projectName: 'BookMe',
+      projectPath: '/tmp/bookme',
+      savedLayout,
+      liveSessions: sessions,
+    });
+
+    expect(result.state.tabs).toHaveLength(1);
+    expect(result.state.tabs[0].panes).toHaveLength(2);
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
+    expect(result.state.tabs[0].panes[0].widthFraction).toBe(0.7);
+    expect(result.state.tabs[0].panes[1].sessionId).toBe('BookMe-2');
+    expect(result.state.tabs[0].panes[1].widthFraction).toBe(0.3);
+  });
+
+  it('renormalizes widths only when some panes from a saved split are gone', async () => {
+    const savedLayout = {
+      tabs: [
+        {
+          id: 'tab-1',
+          label: 'Terminal 1',
+          panes: [
+            {
+              id: 'pane-BookMe-1',
+              sessionId: 'BookMe-1',
+              widthFraction: 0.7,
+              isConnected: true,
+            },
+            {
+              id: 'pane-BookMe-2',
+              sessionId: 'BookMe-2',
+              widthFraction: 0.3,
+              isConnected: true,
+            },
+          ],
+        },
+      ],
+      activeTabId: 'tab-1',
+      tabCounter: 1,
+      sessionCounter: 2,
+    };
+
+    const sessions = [
+      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: false, wsAttached: false },
+    ];
+
+    const result = resolveInitialTerminalState({
+      projectName: 'BookMe',
+      projectPath: '/tmp/bookme',
+      savedLayout,
+      liveSessions: sessions,
+    });
+
+    expect(result.state.tabs).toHaveLength(1);
+    expect(result.state.tabs[0].panes).toHaveLength(1);
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
+    expect(result.state.tabs[0].panes[0].widthFraction).toBe(1);
+  });
+
+  it('preserves intentionally disconnected panes when restoring layout', async () => {
+    const savedLayout = {
+      tabs: [
+        {
+          id: 'tab-1',
+          label: 'Terminal 1',
+          panes: [
+            {
+              id: 'pane-BookMe-1',
+              sessionId: 'BookMe-1',
+              widthFraction: 0.65,
+              isConnected: false,
+            },
+            {
+              id: 'pane-BookMe-2',
+              sessionId: 'BookMe-2',
+              widthFraction: 0.35,
+              isConnected: true,
+            },
+          ],
+        },
+      ],
+      activeTabId: 'tab-1',
+      tabCounter: 1,
+      sessionCounter: 2,
+    };
+
+    const sessions = [
+      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: false, wsAttached: false },
+      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+    ];
+
+    const result = resolveInitialTerminalState({
+      projectName: 'BookMe',
+      projectPath: '/tmp/bookme',
+      savedLayout,
+      liveSessions: sessions,
+    });
+
+    expect(result.state.tabs).toHaveLength(1);
+    expect(result.state.tabs[0].panes).toHaveLength(2);
+    expect(result.state.tabs[0].panes[0]).toMatchObject({
+      sessionId: 'BookMe-1',
+      isConnected: false,
+      widthFraction: 0.65,
+    });
+    expect(result.state.tabs[0].panes[1]).toMatchObject({
+      sessionId: 'BookMe-2',
+      isConnected: true,
+      widthFraction: 0.35,
+    });
   });
 });

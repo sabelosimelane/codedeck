@@ -16,6 +16,17 @@ const MAX_TIMELINE_EVENTS = 50;
 export const REPLAY_BUFFER_SIZE = 1000;
 const MAX_TMUX_REATTACH = 3;
 
+/**
+ * Returns true if PTY output contains meaningful content (not just ANSI noise).
+ * tmux status-bar refreshes produce short ANSI-only bursts with no newlines;
+ * real command output virtually always contains newlines.
+ */
+export function isSubstantialOutput(rawData) {
+  const stripped = rawData.replace(ANSI_RE, '').replace(/\r/g, '').trim();
+  if (!stripped) return false;
+  return stripped.includes('\n');
+}
+
 function extractLastLine(rawData) {
   const stripped = rawData.replace(ANSI_RE, '').replace(/\r/g, '').trim();
   if (!stripped) return null;
@@ -45,7 +56,11 @@ function registerPtyDataHandler(ptyProcess, sessionId, sessions) {
   ptyProcess.onData((data) => {
     const s = sessions.get(sessionId);
     if (s) {
-      s.lastOutputAt = new Date().toISOString();
+      const now = new Date().toISOString();
+      s.lastOutputAt = now;
+      if (isSubstantialOutput(data)) {
+        s.lastSubstantialOutputAt = now;
+      }
       s.lastSeq += 1;
       const seq = s.lastSeq;
       const line = extractLastLine(data);
@@ -181,6 +196,7 @@ export function handleWsConnection(ws, req, sessions, runtime) {
       cwd,
       startedAt: now,
       lastOutputAt: now,
+      lastSubstantialOutputAt: now,
       lastOutputLine: '',
       alive: true,
       // Runtime type (Phase 5 — durable sessions)

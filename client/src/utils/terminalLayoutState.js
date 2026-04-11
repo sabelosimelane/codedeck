@@ -56,51 +56,115 @@ function buildTabsFromLiveSessions(projectName, liveSessions) {
   }));
 }
 
-export function filterLayoutByLiveSessions(savedLayout, liveSessions) {
-  const aliveIds = new Set(liveSessions.filter(s => s.alive).map(s => s.sessionId));
-  const filteredTabs = [];
+function normalizePaneWidths(panes) {
+  const fraction = 1 / panes.length;
+  return panes.map(pane => ({
+    ...pane,
+    widthFraction: fraction,
+    isConnected: pane.isConnected ?? true,
+  }));
+}
 
-  for (const tab of savedLayout.tabs) {
-    const livePanes = tab.panes.filter(p => aliveIds.has(p.sessionId));
-    if (livePanes.length > 0) {
-      const fraction = 1 / livePanes.length;
-      filteredTabs.push({
-        ...tab,
-        panes: livePanes.map(p => ({
-          ...p,
-          widthFraction: fraction,
-          isConnected: p.isConnected ?? true,
-        })),
-      });
-    }
-  }
+function shouldPreservePane(pane, aliveIds) {
+  if (pane.isConnected === false) return true;
+  return aliveIds.has(pane.sessionId);
+}
 
-  if (filteredTabs.length === 0) return null;
+function reconcileSavedTab(tab, aliveIds) {
+  const preservedPanes = tab.panes.filter(pane => shouldPreservePane(pane, aliveIds));
+  if (preservedPanes.length === 0) return null;
 
-  const activeTabId = filteredTabs.find(t => t.id === savedLayout.activeTabId)
+  return {
+    ...tab,
+    panes: preservedPanes.length === tab.panes.length
+      ? preservedPanes.map(pane => ({
+        ...pane,
+        isConnected: pane.isConnected ?? true,
+      }))
+      : normalizePaneWidths(preservedPanes),
+  };
+}
+
+function buildTabsForMissingSessions(projectName, startingTabNumber, liveSessions) {
+  return liveSessions.map((session, index) => {
+    const tabNumber = startingTabNumber + index;
+    return {
+      id: `tab-${tabNumber}`,
+      label: `Terminal ${tabNumber}`,
+      panes: [{
+        id: `pane-${session.sessionId}`,
+        sessionId: session.sessionId,
+        widthFraction: 1,
+        isConnected: true,
+      }],
+    };
+  });
+}
+
+function collectRestoredTabs(savedLayout, aliveIds) {
+  return savedLayout.tabs
+    .map(tab => reconcileSavedTab(tab, aliveIds))
+    .filter(Boolean);
+}
+
+function collectMissingLiveSessions(restoredTabs, liveSessions) {
+  const restoredSessionIds = new Set(
+    restoredTabs.flatMap(tab => tab.panes.map(pane => pane.sessionId))
+  );
+  return liveSessions.filter(
+    session => session.alive && !restoredSessionIds.has(session.sessionId)
+  );
+}
+
+function getNextTabNumber(restoredTabs) {
+  return restoredTabs.length > 0
+    ? restoredTabs.reduce((max, tab) => {
+      const match = tab.id.match(/^tab-(\d+)$/);
+      return match ? Math.max(max, Number(match[1]) + 1) : max;
+    }, 1)
+    : 1;
+}
+
+export function filterLayoutByLiveSessions(savedLayout, liveSessions, projectName) {
+  const aliveIds = new Set(liveSessions.filter(s => s.alive).map(session => session.sessionId));
+  const restoredTabs = collectRestoredTabs(savedLayout, aliveIds);
+  const missingLiveSessions = collectMissingLiveSessions(restoredTabs, liveSessions);
+  const nextTabNumber = getNextTabNumber(restoredTabs);
+  const mergedTabs = [
+    ...restoredTabs,
+    ...buildTabsForMissingSessions(projectName, nextTabNumber, missingLiveSessions),
+  ];
+
+  if (mergedTabs.length === 0) return null;
+
+  const activeTabId = mergedTabs.find(t => t.id === savedLayout.activeTabId)
     ? savedLayout.activeTabId
-    : filteredTabs[filteredTabs.length - 1].id;
+    : mergedTabs[mergedTabs.length - 1].id;
 
-  return { tabs: filteredTabs, activeTabId };
+  return { tabs: mergedTabs, activeTabId };
 }
 
 export function resolveInitialTerminalState({ projectName, projectPath, savedLayout, liveSessions }) {
-  if (savedLayout) {
-    const restored = filterLayoutByLiveSessions(savedLayout, liveSessions);
-    if (restored) {
-      return {
-        state: restored,
-        tabCounter: savedLayout.tabCounter ?? restored.tabs.length,
-        sessionCounter: savedLayout.sessionCounter ?? restored.tabs.length,
-        shouldClearSavedLayout: false,
-      };
-    }
-  }
-
   const projectLiveSessions = sortProjectSessions(
     projectName,
     liveSessions.filter(session => matchesProjectSession(session, projectName, projectPath))
   );
+
+  if (savedLayout) {
+    const restored = filterLayoutByLiveSessions(savedLayout, projectLiveSessions, projectName);
+    if (restored) {
+      const maxSessionNumber = projectLiveSessions.reduce((max, session) => {
+        const sessionNumber = getSessionNumber(projectName, session.sessionId);
+        return sessionNumber === null ? max : Math.max(max, sessionNumber);
+      }, 0);
+      return {
+        state: restored,
+        tabCounter: Math.max(savedLayout.tabCounter ?? 0, restored.tabs.length),
+        sessionCounter: Math.max(savedLayout.sessionCounter ?? 0, maxSessionNumber || projectLiveSessions.length),
+        shouldClearSavedLayout: false,
+      };
+    }
+  }
 
   if (projectLiveSessions.length > 0) {
     const tabs = buildTabsFromLiveSessions(projectName, projectLiveSessions);
