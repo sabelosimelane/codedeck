@@ -1,9 +1,16 @@
-All tasks complete. Frontend test passed.
+All tasks complete across all todo files. All 90 tests pass. All API endpoints verified live.
 
-- Build: 0 errors (Vite)
-- Server tests: 23/23 passing
-- All todo files fully checked:
-  - docs/todos/workspace-enhancements.md — all 5 phases done
-  - docs/todos/project-shelf-frontend.md — all 4 phases done
-  - docs/todos/terminal-activity-frontend.md — all 4 phases done
-- Browser testing: shelve/unshelve flows, terminal rows, API contracts, design compliance, accessibility all verified
+Todo files verified:
+- workspace-enhancements.md: 42/42 tasks complete (5 phases)
+- terminal-activity-frontend.md: 31/31 tasks complete (4 phases)
+- project-shelf-frontend.md: 35/35 tasks complete (4 phases)
+- terminal-resilience-hardening.md: 34/34 tasks complete (6 phases)
+
+Test results:
+- 5 test files, 90 tests, all passing
+- Build: Vite client build passes cleanly
+
+API endpoint verification:
+- GET /api/health: returns status, uptime, terminalRuntime
+- GET /api/sessions: returns session summaries with health metadata
+- GET /api/debug/terminal-health: returns full diagnostics with event timeline

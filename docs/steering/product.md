@@ -23,13 +23,16 @@ Solo developer (Sabelo) who juggles multiple codebases daily. The core pain poin
 - Toast notification system — success/error feedback on all actions
 - Connection awareness — detect backend unreachable, show reconnection banner with exponential backoff
 - Keyboard shortcut passthrough — Ctrl+R/W/T/N forwarded to PTY instead of browser
+- Terminal resilience — pane-local debug inspector, visibility-aware refocus recovery, heartbeat/sequence-tracked replay, explicit recovery actions (reconnect/resync/redraw)
+- Optional durable sessions — tmux-backed terminal runtime behind `CODEDECK_TERMINAL_RUNTIME=tmux` flag
+- Optional sleep prevention — `CODEDECK_CAFFEINATE=1` wraps startup under macOS `caffeinate`
 
 **Future (not yet specified):**
 - Workflow panel for orchestrating tasks across projects
 
 ## Domain Model
 - **Project**: a named directory on disk. Stored as `{ name, path }` in SQLite config.
-- **Terminal session**: a PTY process (node-pty) keyed by `${projectName}-N`. Lives in server memory. Survives WebSocket reconnects but not server restarts.
+- **Terminal session**: a PTY process (node-pty or tmux-backed) keyed by `${projectName}-N`. Lives in server memory. Survives WebSocket reconnects; tmux-backed sessions also survive server restarts.
 - **Config**: generic key-value store in SQLite. Currently holds `projects` list and `defaultPath` setting.
 
 ## Domain Terminology

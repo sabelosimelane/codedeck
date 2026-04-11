@@ -4,13 +4,12 @@ import { createServer } from 'http';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { spawn } from 'node-pty';
 import { spawn as spawnProcess } from 'child_process';
 import db from './db.js';
-import { handleWsConnection } from './ws-handler.js';
+import { handleWsConnection, computeSessionHealth, computeStallReason } from './ws-handler.js';
+import { createTerminalRuntime } from './terminal-runtime.js';
 import { readTree } from './file-tree.js';
 import { readFilePreview } from './file-preview.js';
-import { buildShellEnv } from './shell-env.js';
 import { resolveEditorCommand } from './editor-command.js';
 
 const app = express();
@@ -242,9 +241,55 @@ app.get('/api/sessions', (req, res) => {
       lastOutputAt: entry.lastOutputAt,
       lastOutputLine: entry.lastOutputLine || '',
       alive: entry.alive,
+      runtimeType: entry.runtimeType ?? 'pty',
+      wsAttached: entry.wsAttached ?? false,
+      lastAttachAt: entry.lastAttachAt ?? null,
+      lastClientAckAt: entry.lastClientAckAt ?? null,
+      lastSeq: entry.lastSeq ?? 0,
+      health: computeSessionHealth(entry),
+      stallReason: computeStallReason(entry),
     });
   }
   res.json(result);
+});
+
+// -------------------------------------------------------------------
+// REST API: Debug terminal health (rich diagnostics)
+// -------------------------------------------------------------------
+app.get('/api/debug/terminal-health', (req, res) => {
+  const sessionList = [];
+  for (const [sessionId, entry] of sessions) {
+    sessionList.push({
+      sessionId,
+      health: computeSessionHealth(entry),
+      ptyAlive: entry.alive,
+      runtimeType: entry.runtimeType ?? 'pty',
+      wsAttached: entry.wsAttached ?? false,
+      cwd: entry.cwd,
+      startedAt: entry.startedAt,
+      lastOutputAt: entry.lastOutputAt,
+      lastOutputLine: entry.lastOutputLine || '',
+      lastAttachAt: entry.lastAttachAt ?? null,
+      lastDetachAt: entry.lastDetachAt ?? null,
+      lastClientAckAt: entry.lastClientAckAt ?? null,
+      lastReplayAt: entry.lastReplayAt ?? null,
+      lastSeq: entry.lastSeq ?? 0,
+      stallReason: computeStallReason(entry),
+      replayBufferSize: (entry.replayBuffer || []).length,
+      // Client-reported diagnostics (Phase 2 + 3)
+      documentVisibility: entry.documentVisibility,
+      clientLastMessageAt: entry.clientLastMessageAt ?? null,
+      clientLastPaintAt: entry.clientLastPaintAt ?? null,
+      clientLastResizeAt: entry.clientLastResizeAt ?? null,
+      clientLastSeenSeq: entry.clientLastSeenSeq ?? 0,
+      clientReconnectCount: entry.clientReconnectCount ?? 0,
+      events: (entry.events || []).slice(-20),
+    });
+  }
+  res.json({
+    generatedAt: new Date().toISOString(),
+    sessions: sessionList,
+  });
 });
 
 // -------------------------------------------------------------------
@@ -253,7 +298,11 @@ app.get('/api/sessions', (req, res) => {
 const startedAt = Date.now();
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', uptime: Math.floor((Date.now() - startedAt) / 1000) });
+  res.json({
+    status: 'ok',
+    uptime: Math.floor((Date.now() - startedAt) / 1000),
+    terminalRuntime: terminalRuntime.type,
+  });
 });
 
 // -------------------------------------------------------------------
@@ -265,20 +314,14 @@ const wss = new WebSocketServer({ server, path: '/ws/terminal' });
 // Active PTY sessions: Map<string, { pty, ws, cwd, startedAt, lastOutputAt, alive }>
 const sessions = new Map();
 
-// PTY spawn factory — wraps node-pty spawn for dependency injection in tests
-function spawnPty({ cwd, cols, rows }) {
-  const shell = process.env.SHELL || '/bin/zsh';
-  return spawn(shell, [], {
-    name: 'xterm-256color',
-    cols,
-    rows,
-    cwd,
-    env: buildShellEnv(shell, process.env),
-  });
-}
+// Resolve terminal runtime mode: env var > SQLite config > default 'pty'
+const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
+  || getConfig('terminalRuntime')
+  || 'pty';
+const terminalRuntime = createTerminalRuntime(runtimeMode);
 
 wss.on('connection', (ws, req) => {
-  handleWsConnection(ws, req, sessions, spawnPty);
+  handleWsConnection(ws, req, sessions, terminalRuntime);
 });
 
 // -------------------------------------------------------------------
@@ -287,7 +330,7 @@ wss.on('connection', (ws, req) => {
 app.delete('/api/terminal/:sessionId', (req, res) => {
   const entry = sessions.get(req.params.sessionId);
   if (entry) {
-    entry.pty.kill();
+    terminalRuntime.kill(entry, req.params.sessionId);
     sessions.delete(req.params.sessionId);
   }
   res.json({ ok: true });

@@ -30,6 +30,24 @@ Open `http://localhost:43000` in your browser.
 6. Click the **folder icon** on any project row to browse its files — clicking a file opens it in VS Code by default, or in the command configured under Settings.
 7. Toast notifications confirm every action and surface errors.
 
+## Terminal Resilience
+
+CodeDeck includes built-in terminal resilience features for debugging and recovering misbehaving panes:
+
+- **Debug inspector** — click the bug icon on any terminal pane to see its health status, lifecycle event timeline, and diagnostic snapshot. Health is classified as `healthy`, `detached`, `reconnecting`, `stalled`, `replaying`, or `dead`.
+- **Recovery actions** — the inspector offers Reconnect (drop and re-establish socket), Resync (request replay without teardown), and Redraw (force xterm repaint and resize sync).
+- **Visibility-aware recovery** — when you return to a backgrounded tab, CodeDeck detects the refocus and automatically resizes, resyncs dimensions, and replays missed output.
+- **Replay buffer** — the backend maintains a bounded per-session output buffer. On reconnect or refocus, missed output is replayed so you don't lose context. If the buffer overflows, you're notified.
+- **Heartbeat & stall detection** — the client sends periodic heartbeats with diagnostics. The backend detects when a pane view is stale (browser throttled, paint lagging, or ack lag) and surfaces the reason in the inspector.
+
+### Optional: Durable Sessions (tmux)
+
+Set `CODEDECK_TERMINAL_RUNTIME=tmux` to back terminal sessions with tmux. Sessions survive server restarts and node-pty wrapper crashes. Requires `tmux` installed.
+
+### Optional: Prevent macOS Sleep
+
+Set `CODEDECK_CAFFEINATE=1` before starting to wrap the server under `caffeinate -i`, preventing idle sleep while CodeDeck is running.
+
 ## Config
 
 Projects and settings are stored in SQLite at `~/.codedeck.db`.

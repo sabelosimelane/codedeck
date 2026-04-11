@@ -27,8 +27,8 @@ For detailed patterns and code examples, read these when relevant:
 
 ## Current Work
 - Completed: `docs/todos/workspace-enhancements.md` — all 5 phases done (toast system, flexible panes, sidebar cockpit, per-project file browsing, cleanup)
-- Spec: `docs/specifications/workspace-enhancements-spec.md`
-- Run server tests: `cd server && npx vitest --maxWorkers=1`
+- Completed: `docs/todos/terminal-resilience-hardening.md` — all 6 phases done (debug inspector, visibility recovery, heartbeat/replay, recovery UX, tmux/caffeinate, verification)
+- Specs: `docs/specifications/workspace-enhancements-spec.md`, `docs/specifications/terminal-resilience-hardening-spec.md`
 
 ## Rules — IMPORTANT
 - NEVER let the frontend hold authoritative state — backend (SQLite) is the source of truth

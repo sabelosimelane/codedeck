@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, PlugZap, TerminalSquare, RotateCcw } from 'lucide-react';
+import { Plus, X, Columns, Eraser, PlugZap, TerminalSquare, RotateCcw, Bug } from 'lucide-react';
+import TerminalInspector from './TerminalInspector';
 import { shouldPersistLayout } from '../utils/terminalLayout';
 import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
 
@@ -65,6 +66,7 @@ function clearLayout(projectName) {
 
 export default function TerminalArea({ project }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
+  const [inspectingSessionId, setInspectingSessionId] = useState(null);
   const containerRef = useRef(null);
   const terminalRefs = useRef(new Map());
   const prevProjectRef = useRef(null);
@@ -483,6 +485,14 @@ export default function TerminalArea({ project }) {
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        <button
+                          onClick={() => setInspectingSessionId(pane.sessionId)}
+                          title="Inspect terminal"
+                          className="terminal-action-btn"
+                          style={{ opacity: 0.4 }}
+                        >
+                          <Bug size={13} />
+                        </button>
                         {pane.isConnected ? (
                           <>
                             <button
@@ -559,6 +569,26 @@ export default function TerminalArea({ project }) {
           </div>
         );
       })}
+
+      {inspectingSessionId && (
+        <TerminalInspector
+          sessionId={inspectingSessionId}
+          onClose={() => setInspectingSessionId(null)}
+          onAction={(action) => {
+            // Find the pane with this sessionId and call the recovery method on its Terminal ref
+            for (const tab of tabs) {
+              const pane = tab.panes.find(p => p.sessionId === inspectingSessionId);
+              if (pane) {
+                const terminalRef = terminalRefs.current.get(pane.id);
+                if (terminalRef && typeof terminalRef[action] === 'function') {
+                  terminalRef[action]();
+                }
+                break;
+              }
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

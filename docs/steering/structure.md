@@ -40,11 +40,12 @@ The backend is an Express app in `server/index.js` with WebSocket connection han
 codedeck/
 ├── server/
 │   ├── index.js          # REST routes, WebSocket server, PTY spawn factory
-│   ├── ws-handler.js     # WebSocket connection handler (extracted for testability)
+│   ├── ws-handler.js     # WebSocket connection handler, diagnostics, replay (extracted for testability)
+│   ├── terminal-runtime.js # Runtime abstraction: raw PTY or tmux-backed sessions
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
 │   └── __tests__/
-│       └── ws-handler.test.js  # Unit tests for WebSocket handler (23 tests)
+│       └── ws-handler.test.js  # Unit tests for WebSocket handler (90 tests)
 ├── client/
 │   ├── index.html        # Vite entry
 │   ├── vite.config.js    # Dev server, proxy config
@@ -54,7 +55,8 @@ codedeck/
 │       ├── components/
 │       │   ├── Sidebar.jsx           # Project list, status cockpit, file browse trigger
 │       │   ├── TerminalArea.jsx      # Tab bar, N-pane layout, localStorage persistence
-│       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, keyboard shortcuts
+│       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, heartbeat, replay, visibility recovery
+│       │   ├── TerminalInspector.jsx # Debug inspector: health, timeline, recovery actions, snapshot copy
 │       │   ├── PaneDivider.jsx       # Draggable vertical divider between terminal panes
 │       │   ├── FileTree.jsx          # Directory tree renderer
 │       │   ├── FileBrowserPanel.jsx  # Modal overlay for per-project file browsing
@@ -91,11 +93,13 @@ codedeck/
 
 ### Backend Patterns
 - REST routes in `server/index.js` — grouped by concern with comment headers
-- WebSocket connection handling extracted to `server/ws-handler.js` — receives `(ws, req, sessions, spawnPty)` for testability via dependency injection
+- WebSocket connection handling extracted to `server/ws-handler.js` — receives `(ws, req, sessions, runtime)` for testability via dependency injection
+- Terminal runtime abstraction in `server/terminal-runtime.js` — factory returns either raw PTY or tmux-backed runtime, injected into ws-handler
 - Synchronous SQLite via better-sqlite3 (no async/await needed for DB calls)
-- PTY sessions stored in a `Map<sessionId, { pty, ws, cwd, startedAt, lastOutputAt, alive }>` in memory
+- PTY sessions stored in a `Map<sessionId, { pty, ws, cwd, startedAt, lastOutputAt, alive, wsAttached, lastSeq, replayBuffer, events[], ... }>` in memory
 - PTY listeners (onData, onExit) registered ONCE per PTY at creation — they read `entry.ws` to route to the current WebSocket, avoiding stale closure references on reconnect
-- WebSocket messages are JSON: `{ type: 'input'|'output'|'resize'|'session'|'spawn_error', ... }`
+- Output sequencing: each PTY output chunk gets a monotonic `seq`, stored in a bounded replay buffer (1000 entries) for loss-aware recovery
+- WebSocket messages are JSON: `{ type: 'input'|'output'|'resize'|'session'|'spawn_error'|'heartbeat'|'resume'|'replay'|'visibility_change'|'recovery_action', ... }`
 - File tree reads are depth-limited (3 levels) and skip: `node_modules`, `.git`, `.next`, `dist`, `build`, `target`, `.idea`, `__pycache__`, `.DS_Store`
 
 ## API Conventions

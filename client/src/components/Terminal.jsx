@@ -17,17 +17,77 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
   const termRef = useRef(null);
   const retryRef = useRef(0);
   const retryTimerRef = useRef(null);
+  const heartbeatRef = useRef(null);
   const mountedRef = useRef(true);
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connected' | 'connecting' | 'disconnected' | 'failed'
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const userScrolledUpRef = useRef(false);
+  // Client-side diagnostics for visibility-aware recovery (Phase 2)
+  const lastMessageAtRef = useRef(null);
+  const lastPaintAtRef = useRef(null);
+  const lastResizeAtRef = useRef(null);
+  const documentVisibilityRef = useRef(document.visibilityState === 'visible' ? 'visible' : 'hidden');
+  // Sequence tracking for loss-aware replay (Phase 3)
+  const lastSeenSeqRef = useRef(0);
+  const reconnectCountRef = useRef(0);
+  const resumeInFlightRef = useRef(false);
   const { showToast } = useToast();
+
+  // Send a recovery action notification to the backend for timeline tracking
+  function sendRecoveryAction(action) {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'recovery_action', action }));
+    }
+  }
 
   useImperativeHandle(ref, () => ({
     clear() {
       if (termRef.current) {
         termRef.current.clear();
         termRef.current.scrollToBottom();
+      }
+    },
+    reconnect() {
+      // Drop current WebSocket — onclose handler will trigger reconnect flow
+      const ws = wsRef.current;
+      if (ws) {
+        retryRef.current = 0; // Reset retry counter for fresh reconnect
+        ws.close();
+      }
+      // Notify backend about the recovery action
+      sendRecoveryAction('reconnect');
+    },
+    resync() {
+      // Request replay from last seen seq without dropping the socket
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN && !resumeInFlightRef.current) {
+        resumeInFlightRef.current = true;
+        ws.send(JSON.stringify({
+          type: 'resume',
+          lastSeenSeq: lastSeenSeqRef.current,
+        }));
+        sendRecoveryAction('resync');
+      }
+    },
+    redraw() {
+      // Force xterm repaint and resize sync
+      if (termRef.current && fitRef.current) {
+        try {
+          fitRef.current.fit();
+          termRef.current.refresh(0, termRef.current.rows - 1);
+          lastPaintAtRef.current = new Date().toISOString();
+          lastResizeAtRef.current = new Date().toISOString();
+          const ws = wsRef.current;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'resize',
+              cols: termRef.current.cols,
+              rows: termRef.current.rows,
+            }));
+          }
+        } catch {}
+        sendRecoveryAction('redraw');
       }
     },
   }), []);
@@ -133,8 +193,31 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
         retryRef.current = 0;
         setConnectionStatus('connected');
         if (wasReconnect) {
+          reconnectCountRef.current += 1;
           showToast({ type: 'success', message: 'Reconnected' });
+          // Request replay of missed output since last seen seq
+          resumeInFlightRef.current = true;
+          ws.send(JSON.stringify({
+            type: 'resume',
+            lastSeenSeq: lastSeenSeqRef.current,
+          }));
         }
+        // Send periodic heartbeats with client diagnostics for visibility-aware recovery
+        if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+        heartbeatRef.current = setInterval(() => {
+          const currentWs = wsRef.current;
+          if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+            currentWs.send(JSON.stringify({
+              type: 'heartbeat',
+              documentVisibility: documentVisibilityRef.current,
+              lastMessageAt: lastMessageAtRef.current,
+              lastPaintAt: lastPaintAtRef.current,
+              lastResizeAt: lastResizeAtRef.current,
+              lastSeenSeq: lastSeenSeqRef.current,
+              reconnectCount: reconnectCountRef.current,
+            }));
+          }
+        }, 5000);
       };
 
       let spawnFailed = false;
@@ -142,11 +225,33 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          lastMessageAtRef.current = new Date().toISOString();
           if (msg.type === 'output') {
             term.write(msg.data);
-            // Force scroll to bottom if user hasn't scrolled up
+            lastPaintAtRef.current = new Date().toISOString();
+            if (typeof msg.seq === 'number') {
+              lastSeenSeqRef.current = msg.seq;
+            }
             if (!userScrolledUpRef.current) {
               term.scrollToBottom();
+            }
+          } else if (msg.type === 'replay') {
+            resumeInFlightRef.current = false;
+            // Apply replayed chunks to catch up after reconnect/refocus
+            if (msg.chunks && msg.chunks.length > 0) {
+              for (const chunk of msg.chunks) {
+                term.write(chunk.data);
+                if (typeof chunk.seq === 'number') {
+                  lastSeenSeqRef.current = chunk.seq;
+                }
+              }
+              lastPaintAtRef.current = new Date().toISOString();
+              if (!userScrolledUpRef.current) {
+                term.scrollToBottom();
+              }
+            }
+            if (msg.overflow) {
+              showToast({ type: 'warning', message: `Replay buffer overflow — ${msg.missedCount} output chunks lost` });
             }
           } else if (msg.type === 'spawn_error') {
             spawnFailed = true;
@@ -185,10 +290,58 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     // before a WebSocket is ever created
     const connectTimer = setTimeout(connect, 0);
 
+    // Shared helper: refit xterm and resend dimensions to backend
+    function syncTerminalSize() {
+      if (!mountedRef.current) return;
+      try {
+        if (fitRef.current) fitRef.current.fit();
+        lastResizeAtRef.current = new Date().toISOString();
+        const currentWs = wsRef.current;
+        if (currentWs && currentWs.readyState === WebSocket.OPEN && termRef.current) {
+          currentWs.send(JSON.stringify({
+            type: 'resize',
+            cols: termRef.current.cols,
+            rows: termRef.current.rows,
+          }));
+        }
+      } catch {}
+    }
+
+    // Track browser-level visibility changes for deterministic refocus recovery
+    function handleVisibilityChange() {
+      const state = document.visibilityState === 'visible' ? 'visible' : 'hidden';
+      documentVisibilityRef.current = state;
+
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'visibility_change', state }));
+      }
+
+      // On refocus: force fit, resend dimensions, request replay of missed output
+      if (state === 'visible') {
+        setTimeout(() => {
+          if (!mountedRef.current) return;
+          syncTerminalSize();
+          // Request replay from last seen seq to catch up on missed output
+          // Skip if a resume is already in flight (e.g., reconnect just fired)
+          const currentWs = wsRef.current;
+          if (currentWs && currentWs.readyState === WebSocket.OPEN && !resumeInFlightRef.current) {
+            resumeInFlightRef.current = true;
+            currentWs.send(JSON.stringify({
+              type: 'resume',
+              lastSeenSeq: lastSeenSeqRef.current,
+            }));
+          }
+        }, 50);
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
       try {
         fitAddon.fit();
+        lastResizeAtRef.current = new Date().toISOString();
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
@@ -201,18 +354,22 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       mountedRef.current = false;
       clearTimeout(connectTimer);
       clearTimeout(retryTimerRef.current);
+      clearInterval(heartbeatRef.current);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       resizeObserver.disconnect();
       if (wsRef.current) wsRef.current.close();
       term.dispose();
     };
   }, [sessionId, cwd]);
 
-  // Re-fit and sync dimensions when tab becomes visible
+  // Re-fit and sync dimensions when tab becomes visible (React-level tab switch)
   useEffect(() => {
     if (isVisible && fitRef.current && termRef.current) {
       setTimeout(() => {
+        if (!mountedRef.current) return;
         try {
           fitRef.current.fit();
+          lastResizeAtRef.current = new Date().toISOString();
           const ws = wsRef.current;
           const term = termRef.current;
           if (ws && ws.readyState === WebSocket.OPEN && term) {

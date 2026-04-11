@@ -8,6 +8,15 @@ set -e
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Optional: prevent macOS idle sleep while CodeDeck is running.
+# Set CODEDECK_CAFFEINATE=1 to enable. Re-executes self under caffeinate -i.
+if [[ "$CODEDECK_CAFFEINATE" == "1" ]] && command -v caffeinate >/dev/null 2>&1; then
+  if [[ -z "$CODEDECK_CAFFEINATED" ]]; then
+    export CODEDECK_CAFFEINATED=1
+    exec caffeinate -i "$0" "$@"
+  fi
+fi
+
 cleanup() {
   echo ""
   echo "⏹  Shutting down..."
