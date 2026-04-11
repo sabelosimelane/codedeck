@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-04-11] - Right-Click Context Menu for Copy Path in File Trees
+
+### Executive Summary
+* Right-clicking any file or directory in the sidebar file tree or the file browser panel now shows a context menu with "Copy relative path" and "Copy path" options. This makes it easy to grab a file's path for use in terminals, scripts, or other tools without manually constructing it. Also includes terminal focus reliability improvements and WebSocket URL construction cleanup.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/components/FileContextMenu.jsx` — new shared context menu component with "Copy relative path" (relative to project root) and "Copy path" (absolute) options, toast confirmation, dismiss on click-outside or Escape
+  * `client/src/components/FileTree.jsx` — added right-click handler to file and directory rows, renders FileContextMenu with project root for relative path calculation
+  * `client/src/components/FileBrowserPanel.jsx` — same context menu integration for the modal file browser panel
+* **🛠️ Codebase:**
+  * `client/src/components/Terminal.jsx` — extracted WebSocket URL construction to `terminalWsUrl.js` utility, moved focus handling outside try/catch in `syncTerminalViewport()` so focus isn't blocked by fit() errors, added direct focus fallback on mouseDown
+  * `client/src/utils/terminalWsUrl.js` — new utility for building terminal WebSocket URLs with proper protocol detection (ws/wss)
+  * `client/src/components/__tests__/terminalWsUrl.test.js` — unit tests for WebSocket URL builder
+  * `.gitignore` — added `playwright-*` pattern to ignore playwright artifacts
+
 ## [2026-04-11] - Fix Sidebar Activity Dot Stuck Green Due to Tmux Status Noise
 
 ### Executive Summary

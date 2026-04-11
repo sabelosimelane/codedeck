@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
 import { ChevronsDown } from 'lucide-react';
 import { shouldResumeFromSessionHandshake } from '../utils/terminalResume';
+import { buildTerminalWebSocketUrl } from '../utils/terminalWsUrl';
 import {
   shouldSyncVisibleTerminal,
   shouldWriteTerminalViewport,
@@ -90,7 +91,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     writeChunkToTerminal(term, chunk);
   }
 
-  function flushPendingOutput({ focus = false } = {}) {
+  function flushPendingOutput() {
     const term = termRef.current;
     if (!term || !canPaintCurrentViewport()) return;
 
@@ -105,9 +106,6 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     if (!userScrolledUpRef.current) {
       term.scrollToBottom();
     }
-    if (focus) {
-      term.focus();
-    }
   }
 
   function syncTerminalViewport({ focus = false, requestResumeAfterSync = false } = {}) {
@@ -120,7 +118,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
 
     try {
       if (fitAddon) fitAddon.fit();
-      flushPendingOutput({ focus });
+      flushPendingOutput();
       lastResizeAtRef.current = new Date().toISOString();
       if (currentWs && currentWs.readyState === WebSocket.OPEN && term) {
         currentWs.send(JSON.stringify({
@@ -133,6 +131,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
         }
       }
     } catch {}
+
+    // Focus MUST happen outside the try/catch and outside flushPendingOutput.
+    // Focus is an input concern — it must not be blocked by fit() errors
+    // or paint-visibility gates that only apply to output rendering.
+    if (focus && term) {
+      term.focus();
+    }
   }
 
   // Send a recovery action notification to the backend for timeline tracking
@@ -274,7 +279,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
 
       const cols = term.cols;
       const rows = term.rows;
-      const wsUrl = `ws://${window.location.host}/ws/terminal?cwd=${encodeURIComponent(cwd)}&sessionId=${encodeURIComponent(sessionId)}&cols=${cols}&rows=${rows}`;
+      const wsUrl = buildTerminalWebSocketUrl({
+        location: window.location,
+        cwd,
+        sessionId,
+        cols,
+        rows,
+      });
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -440,7 +451,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       )}
       <div
         ref={containerRef}
-        onMouseDown={() => syncTerminalViewport({ focus: true })}
+        onMouseDown={() => {
+          syncTerminalViewport({ focus: true });
+          // Direct fallback: ensure focus even if syncTerminalViewport gates bail early
+          if (termRef.current) termRef.current.focus();
+        }}
         style={{
           width: '100%',
           height: '100%',

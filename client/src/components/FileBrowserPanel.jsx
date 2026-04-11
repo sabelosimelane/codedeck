@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { ChevronRight, ChevronDown, ExternalLink, File, Folder, FolderOpen, X } from 'lucide-react';
 import { useToast } from './ToastContext';
+import FileContextMenu from './FileContextMenu';
 
 function collectDirectoryPaths(nodes) {
   const paths = [];
@@ -16,14 +17,20 @@ function collectDirectoryPaths(nodes) {
   return paths;
 }
 
-function TreeNode({ node, expandedPaths, onOpenFile, onPreviewFile, onToggleDir, depth = 0 }) {
+function TreeNode({ node, expandedPaths, onOpenFile, onPreviewFile, onToggleDir, onContextMenu, depth = 0 }) {
   const expanded = expandedPaths.has(node.path);
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    onContextMenu({ x: e.clientX, y: e.clientY, path: node.path });
+  };
 
   if (node.type === 'file') {
     return (
       <div
         className="file-tree-file-row"
         onClick={() => onPreviewFile(node.path)}
+        onContextMenu={handleContextMenu}
         style={{
           padding: '3px 8px 3px ' + (16 + depth * 16) + 'px',
           display: 'flex',
@@ -63,6 +70,7 @@ function TreeNode({ node, expandedPaths, onOpenFile, onPreviewFile, onToggleDir,
     <div>
       <div
         onClick={() => onToggleDir(node.path)}
+        onContextMenu={handleContextMenu}
         style={{
           padding: '3px 8px 3px ' + (8 + depth * 16) + 'px',
           display: 'flex',
@@ -89,6 +97,7 @@ function TreeNode({ node, expandedPaths, onOpenFile, onPreviewFile, onToggleDir,
           onOpenFile={onOpenFile}
           onPreviewFile={onPreviewFile}
           onToggleDir={onToggleDir}
+          onContextMenu={onContextMenu}
           depth={depth + 1}
         />
       ))}
@@ -100,6 +109,7 @@ export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
   const [tree, setTree] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedPaths, setExpandedPaths] = useState(() => new Set());
+  const [contextMenu, setContextMenu] = useState(null);
   const panelRef = useRef(null);
   const { showToast } = useToast();
 
@@ -232,10 +242,21 @@ export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
                 onOpenFile={handleFileClick}
                 onPreviewFile={onPreviewFile}
                 onToggleDir={handleToggleDir}
+                onContextMenu={setContextMenu}
               />
             ))
           )}
         </div>
+
+        {contextMenu && (
+          <FileContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            path={contextMenu.path}
+            root={project.path}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
 
         {/* Footer */}
         <div style={footerStyle}>
