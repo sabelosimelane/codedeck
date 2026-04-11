@@ -234,6 +234,8 @@ app.post('/api/open-vscode', (req, res) => {
 app.get('/api/sessions', (req, res) => {
   const result = [];
   for (const [sessionId, entry] of sessions) {
+    entry.cwd = terminalRuntime.getSessionCwd?.(entry, sessionId) || entry.cwd;
+
     result.push({
       sessionId,
       cwd: entry.cwd,
@@ -260,6 +262,8 @@ app.get('/api/sessions', (req, res) => {
 app.get('/api/debug/terminal-health', (req, res) => {
   const sessionList = [];
   for (const [sessionId, entry] of sessions) {
+    entry.cwd = terminalRuntime.getSessionCwd?.(entry, sessionId) || entry.cwd;
+
     sessionList.push({
       sessionId,
       health: computeSessionHealth(entry),

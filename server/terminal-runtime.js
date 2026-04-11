@@ -84,6 +84,14 @@ function createPtyRuntime() {
     isSessionRecoverable() {
       return false;
     },
+
+    /**
+     * Raw PTY sessions do not expose a durable external cwd source.
+     * Fall back to the server's last known value.
+     */
+    getSessionCwd(entry) {
+      return entry.cwd;
+    },
   };
 }
 
@@ -150,6 +158,26 @@ function createTmuxRuntime() {
     isSessionRecoverable(sessionId) {
       const tmuxName = sanitizeTmuxName(sessionId);
       return tmuxSessionExists(tmuxName);
+    },
+
+    /**
+     * Resolve the live cwd from the active tmux pane instead of the original
+     * spawn directory. This keeps the UI in sync after `cd` commands.
+     */
+    getSessionCwd(entry, sessionId) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+
+      try {
+        const cwd = execFileSync(
+          'tmux',
+          ['display-message', '-p', '-t', tmuxName, '#{pane_current_path}'],
+          { stdio: 'pipe', encoding: 'utf8' }
+        ).trim();
+
+        return cwd || entry.cwd;
+      } catch {
+        return entry.cwd;
+      }
     },
   };
 }
