@@ -234,6 +234,12 @@ export function handleWsConnection(ws, req, sessions, runtime) {
     registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, rows);
   } else {
     // Existing session — update the active WebSocket reference
+    const previousWs = entry.ws;
+    if (previousWs && previousWs !== ws) {
+      try {
+        previousWs.close();
+      } catch {}
+    }
     entry.ws = ws;
     entry.wsAttached = true;
     entry.lastAttachAt = new Date().toISOString();
@@ -263,6 +269,8 @@ export function handleWsConnection(ws, req, sessions, runtime) {
 
   // Browser -> PTY
   ws.on('message', (msg) => {
+    if (entry.ws !== ws) return;
+
     try {
       const parsed = JSON.parse(msg.toString());
       if (parsed.type === 'input') {
@@ -329,6 +337,8 @@ export function handleWsConnection(ws, req, sessions, runtime) {
   });
 
   ws.on('close', () => {
+    if (entry.ws !== ws) return;
+
     // Keep PTY alive for reconnection — only kill on explicit DELETE
     entry.wsAttached = false;
     entry.lastDetachAt = new Date().toISOString();

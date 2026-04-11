@@ -151,6 +151,18 @@ describe('handleWsConnection', () => {
       expect(entry.ws).toBe(ws2);
       expect(entry.ws).not.toBe(ws1);
     });
+
+    it('closes the previous WebSocket when a new connection takes over the session', () => {
+      const ws1 = createMockWs();
+      const ws2 = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws1, req, sessions, spawnPty);
+      handleWsConnection(ws2, req, sessions, spawnPty);
+
+      expect(ws1.close).toHaveBeenCalledTimes(1);
+      expect(sessions.get('test-1').ws).toBe(ws2);
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -392,6 +404,20 @@ describe('handleWsConnection', () => {
       expect(mockPty.write).toHaveBeenCalledWith('ls\n');
     });
 
+    it('ignores input from a stale WebSocket after a newer connection takes over', () => {
+      const ws1 = createMockWs();
+      const ws2 = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws1, req, sessions, spawnPty);
+      handleWsConnection(ws2, req, sessions, spawnPty);
+      mockPty.write.mockClear();
+
+      ws1._emit('message', JSON.stringify({ type: 'input', data: 'stale\n' }));
+
+      expect(mockPty.write).not.toHaveBeenCalled();
+    });
+
     it('forwards resize messages to the PTY', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
@@ -508,6 +534,24 @@ describe('handleWsConnection', () => {
       expect(entry.lastDetachAt).toBeDefined();
       const detachEvent = entry.events.find(e => e.type === 'detach');
       expect(detachEvent).toBeDefined();
+    });
+
+    it('ignores close events from a stale WebSocket after reconnect', () => {
+      const ws1 = createMockWs();
+      const ws2 = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws1, req, sessions, spawnPty);
+      handleWsConnection(ws2, req, sessions, spawnPty);
+
+      const entry = sessions.get('test-1');
+      const eventCountBeforeClose = entry.events.length;
+
+      ws1._emit('close');
+
+      expect(entry.ws).toBe(ws2);
+      expect(entry.wsAttached).toBe(true);
+      expect(entry.events).toHaveLength(eventCountBeforeClose);
     });
 
     it('records pty_exited event and sets wsAttached false on PTY exit', () => {
