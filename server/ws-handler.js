@@ -11,10 +11,46 @@
  * @param {object} runtime - Terminal runtime (from terminal-runtime.js) with spawn/kill/isSessionRecoverable
  */
 
-const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const DCS_RE = /\x1bP[\s\S]*?\x1b\\/g;
+const STRING_ESCAPE_RE = /\x1b[_^X][\s\S]*?\x1b\\/g;
+const ISO2022_CHARSET_RE = /\x1b[\(\)\*\+\-\.\/][0-9A-Za-z]/g;
+const ESC_SINGLE_RE = /\x1b[@-_]/g;
+const CONTROL_CHAR_RE = /[\x00-\x08\x0b-\x1f\x7f]/g;
+const CARET_CSI_RE = /\^\[\[[0-?]*[ -/]*[@-~]/g;
+const PRINTABLE_CHARSET_MARKER_RE = /\([0-9A-Za-z]/g;
 const MAX_TIMELINE_EVENTS = 50;
 export const REPLAY_BUFFER_SIZE = 1000;
 const MAX_TMUX_REATTACH = 3;
+
+function stripTerminalControl(rawData) {
+  return rawData
+    .replace(OSC_RE, '')
+    .replace(DCS_RE, '')
+    .replace(STRING_ESCAPE_RE, '')
+    .replace(ISO2022_CHARSET_RE, '')
+    .replace(CSI_RE, '')
+    .replace(ESC_SINGLE_RE, '')
+    .replace(/\r/g, '')
+    .replace(CONTROL_CHAR_RE, '')
+    .trim();
+}
+
+export function sanitizePreviewLine(line) {
+  if (!line) return '';
+
+  return line
+    .replace(PRINTABLE_CHARSET_MARKER_RE, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function isPreviewNoise(line) {
+  if (!line) return true;
+  if (line.replace(CARET_CSI_RE, '').trim() === '') return true;
+  return false;
+}
 
 /**
  * Returns true if PTY output contains meaningful content (not just ANSI noise).
@@ -22,17 +58,29 @@ const MAX_TMUX_REATTACH = 3;
  * real command output virtually always contains newlines.
  */
 export function isSubstantialOutput(rawData) {
-  const stripped = rawData.replace(ANSI_RE, '').replace(/\r/g, '').trim();
+  const stripped = stripTerminalControl(rawData);
   if (!stripped) return false;
   return stripped.includes('\n');
 }
 
+function isReplayNoise(rawData) {
+  if (rawData.includes('\n') || rawData.includes('\r')) return false;
+
+  const hasSaveCursor = rawData.includes('\x1b7') || rawData.includes('\x1b[s');
+  const hasRestoreCursor = rawData.includes('\x1b8') || rawData.includes('\x1b[u');
+  const hasCursorPosition = /\x1b\[[0-9;]*H/.test(rawData);
+
+  return hasSaveCursor && hasRestoreCursor && hasCursorPosition;
+}
+
 function extractLastLine(rawData) {
-  const stripped = rawData.replace(ANSI_RE, '').replace(/\r/g, '').trim();
+  const stripped = stripTerminalControl(rawData);
   if (!stripped) return null;
   const lines = stripped.split('\n').filter(l => l.length > 0);
   if (lines.length === 0) return null;
-  return lines[lines.length - 1].slice(0, 200);
+  const line = sanitizePreviewLine(lines[lines.length - 1]);
+  if (isPreviewNoise(line)) return null;
+  return line.slice(0, 200);
 }
 
 /**
@@ -297,7 +345,9 @@ export function handleWsConnection(ws, req, sessions, runtime) {
         const lastSeenSeq = parsed.lastSeenSeq || 0;
         pushTimelineEvent(entry, 'replay_requested', `from seq ${lastSeenSeq}`);
         // Find chunks in replay buffer after lastSeenSeq
-        const chunks = entry.replayBuffer.filter(c => c.seq > lastSeenSeq);
+        const chunks = entry.replayBuffer.filter(
+          c => c.seq > lastSeenSeq && !isReplayNoise(c.data)
+        );
         const oldestBufferedSeq = entry.replayBuffer.length > 0 ? entry.replayBuffer[0].seq : 0;
         const overflow = lastSeenSeq > 0 && oldestBufferedSeq > lastSeenSeq + 1;
         const missedCount = overflow ? oldestBufferedSeq - lastSeenSeq - 1 : 0;

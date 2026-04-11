@@ -6,7 +6,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { spawn as spawnProcess } from 'child_process';
 import db from './db.js';
-import { handleWsConnection, computeSessionHealth, computeStallReason } from './ws-handler.js';
+import { handleWsConnection, computeSessionHealth, computeStallReason, sanitizePreviewLine } from './ws-handler.js';
 import { createTerminalRuntime } from './terminal-runtime.js';
 import { readTree } from './file-tree.js';
 import { readFilePreview } from './file-preview.js';
@@ -240,7 +240,7 @@ app.get('/api/sessions', (req, res) => {
       startedAt: entry.startedAt,
       lastOutputAt: entry.lastOutputAt,
       lastSubstantialOutputAt: entry.lastSubstantialOutputAt ?? entry.lastOutputAt,
-      lastOutputLine: entry.lastOutputLine || '',
+      lastOutputLine: sanitizePreviewLine(entry.lastOutputLine || ''),
       alive: entry.alive,
       runtimeType: entry.runtimeType ?? 'pty',
       wsAttached: entry.wsAttached ?? false,
@@ -269,7 +269,7 @@ app.get('/api/debug/terminal-health', (req, res) => {
       cwd: entry.cwd,
       startedAt: entry.startedAt,
       lastOutputAt: entry.lastOutputAt,
-      lastOutputLine: entry.lastOutputLine || '',
+      lastOutputLine: sanitizePreviewLine(entry.lastOutputLine || ''),
       lastAttachAt: entry.lastAttachAt ?? null,
       lastDetachAt: entry.lastDetachAt ?? null,
       lastClientAckAt: entry.lastClientAckAt ?? null,

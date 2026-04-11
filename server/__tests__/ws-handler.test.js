@@ -232,6 +232,39 @@ describe('handleWsConnection', () => {
       });
       expect(outputCalls).toHaveLength(0);
     });
+
+    it('stores a clean lastOutputLine when output contains terminal control sequences', () => {
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      const noisyOutput = '\x1b]0;BookMe-2\x07\x1b[?25l\x1b[2K\rBackend is fully verified\x1b[?25h';
+
+      handleWsConnection(ws, req, sessions, spawnPty);
+      mockPty.emitData(noisyOutput);
+
+      expect(sessions.get('test-1').lastOutputLine).toBe('Backend is fully verified');
+    });
+
+    it('does not leave ISO-2022 charset markers in lastOutputLine', () => {
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      const noisyOutput = 'sabside \x1b(B~/git/bookme/backend \x1b(BOpus4.6';
+
+      handleWsConnection(ws, req, sessions, spawnPty);
+      mockPty.emitData(noisyOutput);
+
+      expect(sessions.get('test-1').lastOutputLine).toBe('sabside ~/git/bookme/backend Opus4.6');
+    });
+
+    it('does not let caret-escaped device responses overwrite the previous preview line', () => {
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, spawnPty);
+      mockPty.emitData('Backend is fully verified\n');
+      mockPty.emitData('^[[?1;2c^[[>0;276;0c');
+
+      expect(sessions.get('test-1').lastOutputLine).toBe('Backend is fully verified');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -765,6 +798,27 @@ describe('handleWsConnection', () => {
   });
 
   describe('resume and replay', () => {
+    it('does not replay tmux status refresh noise on resume', () => {
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      const tmuxStatusRefresh = '\x1b7\x1b[25;1H\x1b[K\x1b[0;32m[0] 0:zsh*\x1b[0m\x1b8';
+
+      handleWsConnection(ws, req, sessions, spawnPty);
+
+      mockPty.emitData('real output\n');
+      mockPty.emitData(tmuxStatusRefresh);
+      ws.send.mockClear();
+
+      ws._emit('message', JSON.stringify({ type: 'resume', lastSeenSeq: 0 }));
+
+      const replayMsg = JSON.parse(ws.send.mock.calls[0][0]);
+      expect(replayMsg.type).toBe('replay');
+      expect(replayMsg.chunks).toEqual([
+        { seq: 1, data: 'real output\n' },
+      ]);
+      expect(replayMsg.overflow).toBe(false);
+    });
+
     it('replays all buffered chunks when lastSeenSeq is 0', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });

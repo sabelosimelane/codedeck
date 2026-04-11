@@ -204,7 +204,7 @@ function AppContent() {
       )}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {activeProject ? (
-          <TerminalArea project={activeProject} />
+          <TerminalArea project={activeProject} sessionStatus={sessionStatus} />
         ) : (
           <div style={{
             flex: 1,

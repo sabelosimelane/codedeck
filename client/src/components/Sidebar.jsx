@@ -4,25 +4,7 @@ import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
-
-const SIDEBAR_ACTIVITY_WINDOW_MS = 45000;
-
-function formatElapsed(timestamp) {
-  if (!timestamp || isNaN(timestamp)) return null;
-  const mins = Math.floor((Date.now() - timestamp) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
-function getTerminalStatus(session) {
-  if (!session.alive) return 'dead';
-  const activityTimestamp = session.lastSubstantialOutputAt || session.lastOutputAt;
-  const age = Date.now() - new Date(activityTimestamp).getTime();
-  return age < SIDEBAR_ACTIVITY_WINDOW_MS ? 'busy' : 'idle';
-}
+import { getAggregateTerminalStatus, getTerminalStatus } from '../utils/terminalActivity';
 
 function formatTimeSince(isoString) {
   if (!isoString) return '';
@@ -35,24 +17,12 @@ function formatTimeSince(isoString) {
 }
 
 function getProjectStatus(sessions) {
-  if (!sessions || sessions.length === 0) return { status: 'none', count: 0, elapsed: null };
-  const alive = sessions.filter(s => s.alive);
-  const count = alive.length;
-  if (count === 0) return { status: 'dead', count: 0, elapsed: null };
+  if (!sessions || sessions.length === 0) return { status: 'none' };
+  if (!sessions.some(session => session.alive)) return { status: 'dead' };
 
-  const now = Date.now();
-  const anyActive = alive.some(
-    s => now - new Date(s.lastSubstantialOutputAt || s.lastOutputAt).getTime() < SIDEBAR_ACTIVITY_WINDOW_MS
-  );
-  const earliest = alive.reduce((min, s) => {
-    const t = new Date(s.startedAt).getTime();
-    return t < min ? t : min;
-  }, Infinity);
-
+  const status = getAggregateTerminalStatus(sessions);
   return {
-    status: anyActive ? 'active' : 'idle',
-    count,
-    elapsed: formatElapsed(earliest),
+    status: status === 'busy' ? 'active' : status,
   };
 }
 
@@ -327,7 +297,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
             const isActive = activeProject?.name === project.name;
             const isRenaming = renamingProject === project.name;
             const projSessions = getProjectSessions(project);
-            const { status, count, elapsed } = getProjectStatus(projSessions);
+            const { status } = getProjectStatus(projSessions);
             return (
               <div
                 key={project.name}
@@ -452,19 +422,6 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                     >
                       {mutedProjects.includes(project.name) ? <BellOff size={14} /> : <Bell size={14} />}
                     </button>
-                  </div>
-                )}
-
-                {/* Terminal count + elapsed */}
-                {!isCompact && count > 0 && (
-                  <div style={{
-                    marginTop: 3,
-                    marginLeft: 16,
-                    fontSize: '11px',
-                    fontFamily: 'var(--font-mono)',
-                    color: 'var(--text-muted)',
-                  }}>
-                    {count} terminal{count !== 1 ? 's' : ''}{elapsed ? ` · ${elapsed}` : ''}
                   </div>
                 )}
 

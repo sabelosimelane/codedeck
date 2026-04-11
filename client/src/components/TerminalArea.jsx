@@ -5,6 +5,7 @@ import { Plus, X, Columns, Eraser, PlugZap, TerminalSquare, RotateCcw, Bug } fro
 import TerminalInspector from './TerminalInspector';
 import { shouldPersistLayout } from '../utils/terminalLayout';
 import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
+import { getTabTerminalStatus } from '../utils/terminalActivity';
 
 let tabCounter = 0;
 let sessionCounter = 0;
@@ -64,7 +65,34 @@ function clearLayout(projectName) {
   }
 }
 
-export default function TerminalArea({ project }) {
+const TAB_STATUS_STYLES = {
+  none: {
+    dotColor: 'rgba(138, 146, 166, 0.35)',
+    dotShadow: 'none',
+    borderColor: 'transparent',
+    textColor: 'var(--text-muted)',
+  },
+  busy: {
+    dotColor: 'var(--accent)',
+    dotShadow: '0 0 12px rgba(95, 224, 186, 0.5)',
+    borderColor: 'rgba(95, 224, 186, 0.38)',
+    textColor: 'var(--text-primary)',
+  },
+  idle: {
+    dotColor: 'var(--text-muted)',
+    dotShadow: 'none',
+    borderColor: 'rgba(154, 165, 184, 0.22)',
+    textColor: 'var(--text-secondary)',
+  },
+  dead: {
+    dotColor: 'var(--danger)',
+    dotShadow: '0 0 10px rgba(248, 113, 113, 0.22)',
+    borderColor: 'rgba(248, 113, 113, 0.28)',
+    textColor: 'var(--text-primary)',
+  },
+};
+
+export default function TerminalArea({ project, sessionStatus = [] }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [inspectingSessionId, setInspectingSessionId] = useState(null);
   const containerRef = useRef(null);
@@ -74,6 +102,7 @@ export default function TerminalArea({ project }) {
   const restoringRef = useRef(false);
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
+  const sessionLookup = new Map(sessionStatus.map(session => [session.sessionId, session]));
 
   // Persist layout to localStorage on state changes (debounced).
   // Skips saves while a project-switch restore is in progress to avoid
@@ -349,22 +378,40 @@ export default function TerminalArea({ project }) {
         <div style={{ display: 'flex', gap: 2, flex: 1, overflow: 'hidden' }}>
           {tabs.map(tab => {
             const isActive = tab.id === activeTabId;
+            const tabStatus = getTabTerminalStatus(tab, sessionLookup);
+            const statusStyle = TAB_STATUS_STYLES[tabStatus] || TAB_STATUS_STYLES.none;
             return (
               <button
                 key={tab.id}
                 onClick={() => setActiveTabId(tab.id)}
+                className={tabStatus === 'busy' ? 'terminal-tab terminal-tab-busy' : 'terminal-tab'}
                 style={{
                   padding: '4px 10px',
                   fontSize: '12px',
                   fontFamily: 'var(--font-mono)',
                   borderRadius: 4,
                   background: isActive ? 'var(--bg-active)' : 'transparent',
-                  color: isActive ? 'var(--text-primary)' : 'var(--text-muted)',
+                  color: isActive ? 'var(--text-primary)' : statusStyle.textColor,
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
+                  border: `1px solid ${isActive ? statusStyle.borderColor : 'transparent'}`,
+                  boxShadow: isActive && tabStatus === 'busy' ? 'inset 0 1px 0 rgba(255, 255, 255, 0.04)' : 'none',
+                  transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease',
                 }}
+                title={tabStatus === 'none' ? tab.label : `${tab.label} · ${tabStatus}`}
               >
+                <span
+                  className={tabStatus === 'busy' ? 'terminal-dot-busy' : undefined}
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: statusStyle.dotColor,
+                    boxShadow: statusStyle.dotShadow,
+                    flexShrink: 0,
+                  }}
+                />
                 {tab.label}
                 {tab.panes.length > 1 && (
                   <span style={{ fontSize: '10px', opacity: 0.5 }}>

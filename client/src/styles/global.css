@@ -135,10 +135,30 @@ input:focus {
   animation: terminalPulse 1.5s ease-in-out infinite;
 }
 
+.terminal-tab {
+  position: relative;
+}
+
+.terminal-tab-busy::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -6px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(95, 224, 186, 0), rgba(95, 224, 186, 0.9), rgba(95, 224, 186, 0));
+  opacity: 0.75;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .terminal-dot-busy {
     animation: none;
     opacity: 1;
+  }
+
+  .terminal-tab-busy::after {
+    opacity: 0.45;
   }
 
   .terminal-empty-orb {
