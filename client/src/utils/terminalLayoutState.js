@@ -1,3 +1,5 @@
+import { getTerminalTabLabel } from './terminalTabLabel';
+
 function createPane(projectName, sessionNumber) {
   const sessionId = `${projectName}-${sessionNumber}`;
   return {
@@ -9,10 +11,11 @@ function createPane(projectName, sessionNumber) {
 }
 
 function createTab(projectName, tabNumber, sessionNumber) {
+  const pane = createPane(projectName, sessionNumber);
   return {
     id: `tab-${tabNumber}`,
-    label: `Terminal ${tabNumber}`,
-    panes: [createPane(projectName, sessionNumber)],
+    label: getTerminalTabLabel([pane]),
+    panes: [pane],
   };
 }
 
@@ -44,16 +47,20 @@ function sortProjectSessions(projectName, sessions) {
 }
 
 function buildTabsFromLiveSessions(projectName, liveSessions) {
-  return liveSessions.map((session, index) => ({
-    id: `tab-${index + 1}`,
-    label: `Terminal ${index + 1}`,
-    panes: [{
+  return liveSessions.map((session, index) => {
+    const panes = [{
       id: `pane-${session.sessionId}`,
       sessionId: session.sessionId,
       widthFraction: 1,
       isConnected: true,
-    }],
-  }));
+    }];
+
+    return {
+      id: `tab-${index + 1}`,
+      label: getTerminalTabLabel(panes),
+      panes,
+    };
+  });
 }
 
 function normalizePaneWidths(panes) {
@@ -74,29 +81,34 @@ function reconcileSavedTab(tab, aliveIds) {
   const preservedPanes = tab.panes.filter(pane => shouldPreservePane(pane, aliveIds));
   if (preservedPanes.length === 0) return null;
 
+  const panes = preservedPanes.length === tab.panes.length
+    ? preservedPanes.map(pane => ({
+      ...pane,
+      isConnected: pane.isConnected ?? true,
+    }))
+    : normalizePaneWidths(preservedPanes);
+
   return {
     ...tab,
-    panes: preservedPanes.length === tab.panes.length
-      ? preservedPanes.map(pane => ({
-        ...pane,
-        isConnected: pane.isConnected ?? true,
-      }))
-      : normalizePaneWidths(preservedPanes),
+    label: getTerminalTabLabel(panes, tab.label),
+    panes,
   };
 }
 
 function buildTabsForMissingSessions(projectName, startingTabNumber, liveSessions) {
   return liveSessions.map((session, index) => {
     const tabNumber = startingTabNumber + index;
+    const panes = [{
+      id: `pane-${session.sessionId}`,
+      sessionId: session.sessionId,
+      widthFraction: 1,
+      isConnected: true,
+    }];
+
     return {
       id: `tab-${tabNumber}`,
-      label: `Terminal ${tabNumber}`,
-      panes: [{
-        id: `pane-${session.sessionId}`,
-        sessionId: session.sessionId,
-        widthFraction: 1,
-        isConnected: true,
-      }],
+      label: getTerminalTabLabel(panes),
+      panes,
     };
   });
 }

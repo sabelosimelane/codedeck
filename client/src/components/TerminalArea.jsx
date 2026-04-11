@@ -6,6 +6,7 @@ import TerminalInspector from './TerminalInspector';
 import { shouldPersistLayout } from '../utils/terminalLayout';
 import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
 import { getTabTerminalStatus } from '../utils/terminalActivity';
+import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 
 let tabCounter = 0;
 let sessionCounter = 0;
@@ -24,7 +25,7 @@ function createTab(projectName) {
   const pane = createPane(projectName);
   return {
     id: `tab-${++tabCounter}`,
-    label: `Terminal ${tabCounter}`,
+    label: getTerminalTabLabel([pane]),
     panes: [pane],
   };
 }

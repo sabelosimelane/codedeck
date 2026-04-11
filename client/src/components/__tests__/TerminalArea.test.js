@@ -48,7 +48,9 @@ describe('TerminalArea live session hydration', () => {
 
     expect(result.state.tabs).toHaveLength(2);
     expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
+    expect(result.state.tabs[0].label).toBe('BookMe-1');
     expect(result.state.tabs[1].panes[0].sessionId).toBe('BookMe-2');
+    expect(result.state.tabs[1].label).toBe('BookMe-2');
     expect(result.state.activeTabId).toBe('tab-2');
     expect(result.sessionCounter).toBe(2);
   });
@@ -86,7 +88,9 @@ describe('TerminalArea live session hydration', () => {
 
     expect(result.state.tabs).toHaveLength(2);
     expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
+    expect(result.state.tabs[0].label).toBe('BookMe-1');
     expect(result.state.tabs[1].panes[0].sessionId).toBe('BookMe-2');
+    expect(result.state.tabs[1].label).toBe('BookMe-2');
     expect(result.state.activeTabId).toBe('tab-1');
     expect(result.tabCounter).toBe(2);
     expect(result.sessionCounter).toBe(2);
@@ -137,6 +141,7 @@ describe('TerminalArea live session hydration', () => {
     expect(result.state.tabs[0].panes[0].widthFraction).toBe(0.7);
     expect(result.state.tabs[0].panes[1].sessionId).toBe('BookMe-2');
     expect(result.state.tabs[0].panes[1].widthFraction).toBe(0.3);
+    expect(result.state.tabs[0].label).toBe('BookMe-1');
   });
 
   it('renormalizes widths only when some panes from a saved split are gone', async () => {
@@ -182,6 +187,7 @@ describe('TerminalArea live session hydration', () => {
     expect(result.state.tabs[0].panes).toHaveLength(1);
     expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
     expect(result.state.tabs[0].panes[0].widthFraction).toBe(1);
+    expect(result.state.tabs[0].label).toBe('BookMe-1');
   });
 
   it('preserves intentionally disconnected panes when restoring layout', async () => {
@@ -235,5 +241,39 @@ describe('TerminalArea live session hydration', () => {
       isConnected: true,
       widthFraction: 0.35,
     });
+    expect(result.state.tabs[0].label).toBe('BookMe-1');
+  });
+
+  it('migrates saved Terminal N labels to session-based tab names', async () => {
+    const savedLayout = {
+      tabs: [
+        {
+          id: 'tab-1',
+          label: 'Terminal 1',
+          panes: [{
+            id: 'pane-BookMe-9',
+            sessionId: 'BookMe-9',
+            widthFraction: 1,
+            isConnected: true,
+          }],
+        },
+      ],
+      activeTabId: 'tab-1',
+      tabCounter: 1,
+      sessionCounter: 9,
+    };
+
+    const sessions = [
+      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+    ];
+
+    const result = resolveInitialTerminalState({
+      projectName: 'BookMe',
+      projectPath: '/tmp/bookme',
+      savedLayout,
+      liveSessions: sessions,
+    });
+
+    expect(result.state.tabs[0].label).toBe('BookMe-9');
   });
 });
