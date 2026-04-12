@@ -11,6 +11,10 @@ import {
   shouldSyncVisibleTerminal,
   shouldWriteTerminalViewport,
 } from '../utils/terminalVisibility';
+import {
+  isTerminalViewportAtBottom,
+  shouldPauseAutoScrollOnWheel,
+} from '../utils/terminalAutoScroll';
 
 const MAX_RETRIES = 10;
 const BASE_DELAY = 1000;
@@ -41,6 +45,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
   const pendingOutputRef = useRef([]);
   const inputBufferRef = useRef([]);
   const { showToast } = useToast();
+
+  function setAutoScrollEnabled(enabled) {
+    userScrolledUpRef.current = !enabled;
+    setShowScrollBtn(!enabled);
+  }
 
   function requestResume(ws) {
     if (!ws || ws.readyState !== WebSocket.OPEN || resumeInFlightRef.current) return;
@@ -232,10 +241,18 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     // Track scroll position — detect when user scrolls away from bottom
     term.onScroll(() => {
       const buffer = term.buffer.active;
-      const atBottom = buffer.viewportY >= buffer.baseY;
-      userScrolledUpRef.current = !atBottom;
-      setShowScrollBtn(!atBottom);
+      setAutoScrollEnabled(isTerminalViewportAtBottom(buffer));
     });
+
+    const handleWheel = (event) => {
+      if (shouldPauseAutoScrollOnWheel({
+        deltaY: event.deltaY,
+        buffer: term.buffer.active,
+      })) {
+        setAutoScrollEnabled(false);
+      }
+    };
+    containerRef.current.addEventListener('wheel', handleWheel, { passive: true });
 
     // Prevent browser from stealing terminal shortcuts (Ctrl+R, Ctrl+W, etc.)
     // We intercept these keys, block both browser and xterm default handling,
@@ -415,6 +432,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       clearInterval(heartbeatRef.current);
       inputBufferRef.current = [];
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      containerRef.current?.removeEventListener('wheel', handleWheel);
       resizeObserver.disconnect();
       if (wsRef.current) wsRef.current.close();
       term.dispose();
@@ -469,8 +487,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
           onClick={() => {
             if (termRef.current) {
               termRef.current.scrollToBottom();
-              userScrolledUpRef.current = false;
-              setShowScrollBtn(false);
+              setAutoScrollEnabled(true);
             }
           }}
           style={scrollBtnStyle}
