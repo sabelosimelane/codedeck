@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Copy, Download, ExternalLink, FileCode2, RefreshCw } from 'lucide-react';
+import { renderMarkdownToHtml } from '../utils/markdownPreview';
 
 export default function PreviewPage({ filePath, onOpenFile }) {
   const [preview, setPreview] = useState({ state: 'loading' });
@@ -97,6 +98,18 @@ export default function PreviewPage({ filePath, onOpenFile }) {
       );
     }
 
+    if (preview.format === 'markdown') {
+      return (
+        <div style={markdownFrameStyle}>
+          <article
+            style={markdownArticleStyle}
+            className="markdown-preview"
+            dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(preview.content) }}
+          />
+        </div>
+      );
+    }
+
     const lines = preview.content.split('\n');
 
     return (
@@ -172,7 +185,13 @@ export default function PreviewPage({ filePath, onOpenFile }) {
 
         <section style={metaBarStyle}>
           <div style={metaPillStyle}>
-            {preview.state === 'ready' ? `${preview.kind === 'text' ? 'Text' : 'Binary'} file` : 'Preparing preview'}
+            {preview.state === 'ready'
+              ? preview.kind === 'text'
+                ? preview.format === 'markdown'
+                  ? 'Markdown file'
+                  : 'Text file'
+                : 'Binary file'
+              : 'Preparing preview'}
           </div>
           {preview.state === 'ready' && (
             <div style={metaPillStyle}>{Math.max(1, Math.ceil((preview.size || 0) / 1024))} KB</div>
@@ -358,6 +377,21 @@ const codeFrameStyle = {
   paddingTop: 14,
   paddingBottom: 10,
   background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.08))',
+};
+
+const markdownFrameStyle = {
+  minHeight: '60vh',
+  padding: '36px clamp(20px, 4vw, 52px) 56px',
+  background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(0, 0, 0, 0.08))',
+};
+
+const markdownArticleStyle = {
+  maxWidth: 860,
+  margin: '0 auto',
+  lineHeight: 1.7,
+  fontSize: 16,
+  color: 'var(--text-primary)',
+  wordBreak: 'break-word',
 };
 
 const codeScrollStyle = {

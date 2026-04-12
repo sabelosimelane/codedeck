@@ -27,6 +27,7 @@ describe('readFilePreview', () => {
 
     expect(preview).toEqual({
       kind: 'text',
+      format: 'markdown',
       truncated: false,
       size: 22,
       content: '# Preview\nhello world\n',
@@ -43,6 +44,7 @@ describe('readFilePreview', () => {
     const preview = await readFilePreview(filePath, { maxBytes: 5 });
 
     expect(preview.kind).toBe('text');
+    expect(preview.format).toBe('text');
     expect(preview.truncated).toBe(true);
     expect(preview.content).toBe('abcde');
     expect(preview.size).toBe(10);
@@ -59,6 +61,7 @@ describe('readFilePreview', () => {
 
     expect(preview).toEqual({
       kind: 'binary',
+      format: 'binary',
       truncated: false,
       size: 4,
       content: null,

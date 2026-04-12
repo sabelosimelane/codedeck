@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
+import path from 'path';
 
 export const MAX_PREVIEW_BYTES = 262144;
+const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd', '.mdx']);
 
 function isBinaryBuffer(buffer) {
   for (const byte of buffer) {
@@ -26,14 +28,18 @@ export async function readFilePreview(filePath, { maxBytes = MAX_PREVIEW_BYTES }
     if (isBinaryBuffer(previewSlice)) {
       return {
         kind: 'binary',
+        format: 'binary',
         truncated: stat.size > maxBytes,
         size: stat.size,
         content: null,
       };
     }
 
+    const extension = path.extname(filePath).toLowerCase();
+
     return {
       kind: 'text',
+      format: MARKDOWN_EXTENSIONS.has(extension) ? 'markdown' : 'text',
       truncated: bytesRead > maxBytes,
       size: stat.size,
       content: previewSlice.toString('utf8'),
