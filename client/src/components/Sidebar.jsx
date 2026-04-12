@@ -32,15 +32,12 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, shelvedProjects, activeProject, onSelect, onAdd, onRemove, onRename, onShelve, onUnshelve, onToggleFiles, showFileTree, sessionStatus, onBrowseFiles }) {
+export default function Sidebar({ activeProjects, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, onBrowseFiles }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [isCompact, setIsCompact] = useState(() => {
-    return localStorage.getItem('codedeck-sidebar-compact') === 'true';
-  });
   const [shelfExpanded, setShelfExpanded] = useState(() => {
     return localStorage.getItem('codedeck-shelf-expanded') === 'true';
   });
@@ -201,14 +198,6 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
     });
   };
 
-  const toggleCompact = () => {
-    setIsCompact(prev => {
-      const next = !prev;
-      localStorage.setItem('codedeck-sidebar-compact', String(next));
-      return next;
-    });
-  };
-
   const totalProjects = activeProjects.length + shelvedProjects.length;
   const sidebarWidth = isCompact ? 72 : 220;
 
@@ -241,7 +230,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
           {isCompact && <BrandMark size={28} />}
           <div style={{ display: 'flex', gap: 3, flexDirection: isCompact ? 'column' : 'row', flexShrink: 0 }}>
             <button
-              onClick={toggleCompact}
+              onClick={onToggleCompact}
               className="sidebar-header-btn"
               title={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
               aria-label={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}

@@ -3,7 +3,11 @@ import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
 import { Plus, X, Columns, Eraser, PlugZap, TerminalSquare, RotateCcw, Bug } from 'lucide-react';
 import TerminalInspector from './TerminalInspector';
-import { shouldPersistLayout } from '../utils/terminalLayout';
+import { useToast } from './ToastContext';
+import {
+  shouldPersistLayout,
+  shouldRenderProjectTerminals,
+} from '../utils/terminalLayout';
 import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
 import { getTabTerminalStatus } from '../utils/terminalActivity';
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
@@ -35,7 +39,7 @@ function createTab(projectName) {
 const LAYOUT_KEY_PREFIX = 'codedeck-layout-';
 
 function saveLayout(projectName, state) {
-  if (!projectName || !state.tabs.length) return;
+  if (!projectName) return;
   try {
     const data = {
       tabs: state.tabs,
@@ -96,15 +100,22 @@ const TAB_STATUS_STYLES = {
 
 export default function TerminalArea({ project, sessionStatus = [] }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
+  const [pendingSessionIds, setPendingSessionIds] = useState([]);
   const [inspectingSessionId, setInspectingSessionId] = useState(null);
   const containerRef = useRef(null);
   const terminalRefs = useRef(new Map());
   const prevProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
   const restoringRef = useRef(false);
+  const pendingSessionIdsRef = useRef(new Set());
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
   const sessionLookup = new Map(sessionStatus.map(session => [session.sessionId, session]));
+  const shouldRenderTerminals = shouldRenderProjectTerminals({
+    projectName: project.name,
+    prevProjectName: prevProjectRef.current,
+  });
+  const { showToast } = useToast();
 
   // Persist layout to localStorage on state changes (debounced).
   // Skips saves while a project-switch restore is in progress to avoid
@@ -176,8 +187,67 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
     setState(prev => ({ ...prev, activeTabId: id }));
   }, []);
 
+  const setSessionsPending = useCallback((sessionIds, isPending) => {
+    if (sessionIds.length === 0) return;
+
+    const nextPending = new Set(pendingSessionIdsRef.current);
+    sessionIds.forEach(sessionId => {
+      if (isPending) nextPending.add(sessionId);
+      else nextPending.delete(sessionId);
+    });
+
+    pendingSessionIdsRef.current = nextPending;
+    setPendingSessionIds(Array.from(nextPending));
+  }, []);
+
+  const deleteTerminalSessions = useCallback(async (sessionIds, actionLabel) => {
+    const targetSessionIds = [...new Set(sessionIds.filter(Boolean))].filter(
+      sessionId => !pendingSessionIdsRef.current.has(sessionId)
+    );
+
+    if (targetSessionIds.length === 0) return new Set();
+
+    setSessionsPending(targetSessionIds, true);
+
+    try {
+      const results = await Promise.all(targetSessionIds.map(async (sessionId) => {
+        try {
+          const res = await fetch(`/api/terminal/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Request failed');
+          }
+          return { sessionId, ok: true };
+        } catch (error) {
+          return {
+            sessionId,
+            ok: false,
+            error: error.message || 'Server unreachable',
+          };
+        }
+      }));
+
+      const failed = results.filter(result => !result.ok);
+      if (failed.length > 0) {
+        const message = failed.length === 1
+          ? `Failed to ${actionLabel} ${failed[0].sessionId}: ${failed[0].error}`
+          : `Failed to ${actionLabel} ${failed.length} terminals`;
+        showToast({ type: 'error', message });
+      }
+
+      return new Set(
+        results
+          .filter(result => result.ok)
+          .map(result => result.sessionId)
+      );
+    } finally {
+      setSessionsPending(targetSessionIds, false);
+    }
+  }, [setSessionsPending, showToast]);
+
   // Split right — add pane to active tab, redistribute widths equally
   const splitRight = useCallback(() => {
+    if (!activeTabId) return;
     const pane = createPane(project.name);
     setState(prev => ({
       ...prev,
@@ -188,7 +258,7 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         return { ...tab, panes: newPanes.map(p => ({ ...p, widthFraction: fraction })) };
       }),
     }));
-  }, [project.name]);
+  }, [activeTabId, project.name]);
 
   // New tab with one pane
   const addTab = useCallback(() => {
@@ -200,9 +270,10 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
   }, [project.name]);
 
   // Close a single pane — redistribute, or close tab if last pane
-  const closePane = useCallback((tabId, paneId, sessionId) => {
-    fetch(`/api/terminal/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
-      .catch(err => console.warn('Failed to close terminal session:', err));
+  const closePane = useCallback(async (tabId, paneId, sessionId) => {
+    const deletedSessionIds = await deleteTerminalSessions([sessionId], 'close');
+    if (!deletedSessionIds.has(sessionId)) return;
+
     setState(prev => {
       const tab = prev.tabs.find(t => t.id === tabId);
       if (!tab) return prev;
@@ -214,7 +285,11 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         return {
           ...prev,
           tabs: prev.tabs.map(t => t.id === tabId
-            ? { ...t, panes: remainingPanes.map(p => ({ ...p, widthFraction: fraction })) }
+            ? {
+                ...t,
+                label: getTerminalTabLabel(remainingPanes, t.label),
+                panes: remainingPanes.map(p => ({ ...p, widthFraction: fraction })),
+              }
             : t
           ),
         };
@@ -222,46 +297,59 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
 
       // Last pane in tab → close the tab
       const remainingTabs = prev.tabs.filter(t => t.id !== tabId);
-      if (remainingTabs.length > 0) {
-        return {
-          tabs: remainingTabs,
-          activeTabId: prev.activeTabId === tabId
-            ? remainingTabs[remainingTabs.length - 1].id
-            : prev.activeTabId,
-        };
-      }
-
-      // Last tab → create fresh default
-      const newTab = createTab(project.name);
-      return { tabs: [newTab], activeTabId: newTab.id };
+      return {
+        tabs: remainingTabs,
+        activeTabId: prev.activeTabId === tabId
+          ? remainingTabs[remainingTabs.length - 1]?.id ?? null
+          : prev.activeTabId,
+      };
     });
-  }, [project.name]);
+  }, [deleteTerminalSessions]);
 
   // Close entire tab — kill all PTY sessions
-  const closeTab = useCallback((tabId) => {
-    setState(prev => {
-      const tab = prev.tabs.find(t => t.id === tabId);
-      if (tab) {
-        tab.panes.forEach(p => {
-          fetch(`/api/terminal/${encodeURIComponent(p.sessionId)}`, { method: 'DELETE' })
-            .catch(err => console.warn('Failed to close terminal session:', err));
-        });
-      }
+  const closeTab = useCallback(async (tabId) => {
+    const tab = tabs.find(candidate => candidate.id === tabId);
+    if (!tab) return;
 
-      const remaining = prev.tabs.filter(t => t.id !== tabId);
-      if (remaining.length > 0) {
+    const deletedSessionIds = await deleteTerminalSessions(
+      tab.panes.map(pane => pane.sessionId),
+      'close'
+    );
+
+    if (deletedSessionIds.size === 0) return;
+
+    setState(prev => {
+      const currentTab = prev.tabs.find(candidate => candidate.id === tabId);
+      if (!currentTab) return prev;
+
+      const remainingPanes = currentTab.panes.filter(
+        pane => !deletedSessionIds.has(pane.sessionId)
+      );
+
+      if (remainingPanes.length > 0) {
+        const fraction = 1 / remainingPanes.length;
         return {
-          tabs: remaining,
-          activeTabId: prev.activeTabId === tabId
-            ? remaining[remaining.length - 1].id
-            : prev.activeTabId,
+          ...prev,
+          tabs: prev.tabs.map(candidate => candidate.id === tabId
+            ? {
+                ...candidate,
+                label: getTerminalTabLabel(remainingPanes, candidate.label),
+                panes: remainingPanes.map(pane => ({ ...pane, widthFraction: fraction })),
+              }
+            : candidate
+          ),
         };
       }
 
-      const newTab = createTab(project.name);
-      return { tabs: [newTab], activeTabId: newTab.id };
+      const remainingTabs = prev.tabs.filter(candidate => candidate.id !== tabId);
+      return {
+        tabs: remainingTabs,
+        activeTabId: prev.activeTabId === tabId
+          ? remainingTabs[remainingTabs.length - 1]?.id ?? null
+          : prev.activeTabId,
+      };
     });
-  }, [project.name]);
+  }, [deleteTerminalSessions, tabs]);
 
   const clearPane = useCallback((paneId) => {
     const terminal = terminalRefs.current.get(paneId);
@@ -283,11 +371,11 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
     }));
   }, []);
 
-  const disconnectPane = useCallback((tabId, paneId, sessionId) => {
+  const disconnectPane = useCallback(async (tabId, paneId, sessionId) => {
+    const deletedSessionIds = await deleteTerminalSessions([sessionId], 'disconnect');
+    if (!deletedSessionIds.has(sessionId)) return;
     setPaneConnection(tabId, paneId, false);
-    fetch(`/api/terminal/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
-      .catch(err => console.warn('Failed to disconnect terminal session:', err));
-  }, [setPaneConnection]);
+  }, [deleteTerminalSessions, setPaneConnection]);
 
   const reconnectPane = useCallback((tabId, paneId) => {
     setPaneConnection(tabId, paneId, true);
@@ -382,6 +470,7 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
             const isActive = tab.id === activeTabId;
             const tabStatus = getTabTerminalStatus(tab, sessionLookup);
             const statusStyle = TAB_STATUS_STYLES[tabStatus] || TAB_STATUS_STYLES.none;
+            const tabHasPendingClose = tab.panes.some(pane => pendingSessionIds.includes(pane.sessionId));
             return (
               <button
                 key={tab.id}
@@ -422,8 +511,15 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                 )}
                 {tabs.length > 1 && (
                   <span
-                    onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
-                    style={{ opacity: 0.5, display: 'flex' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!tabHasPendingClose) closeTab(tab.id);
+                    }}
+                    style={{
+                      opacity: tabHasPendingClose ? 0.2 : 0.5,
+                      display: 'flex',
+                      cursor: tabHasPendingClose ? 'wait' : 'pointer',
+                    }}
                   >
                     <X size={10} />
                   </span>
@@ -436,8 +532,15 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         {/* Actions */}
         <button
           onClick={splitRight}
+          disabled={!activeTab}
           title="Split right"
-          style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)' }}
+          style={{
+            padding: 4,
+            borderRadius: 4,
+            color: activeTab ? 'var(--text-muted)' : 'rgba(138, 146, 166, 0.45)',
+            opacity: activeTab ? 1 : 0.5,
+            cursor: activeTab ? 'pointer' : 'not-allowed',
+          }}
         >
           <Columns size={14} />
         </button>
@@ -450,8 +553,39 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         </button>
       </div>
 
+      {tabs.length === 0 && (
+        <div
+          className="terminal-empty-state"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 24,
+          }}
+        >
+          <div className="terminal-empty-card">
+            <div className="terminal-empty-icon">
+              <TerminalSquare size={18} />
+            </div>
+            <div className="terminal-empty-label">No terminals open</div>
+            <div className="terminal-empty-copy">
+              This project has no running terminals. Open a new tab when you want to start one.
+            </div>
+            <button
+              onClick={addTab}
+              className="terminal-empty-cta"
+            >
+              <Plus size={14} />
+              <span>Open terminal</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Pane groups — render ALL tabs, hide inactive ones to preserve terminal state */}
-      {tabs.map(tab => {
+      {shouldRenderTerminals && tabs.map(tab => {
         const isActive = tab.id === activeTabId;
         return (
           <div
@@ -469,6 +603,7 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                 projectPath: project.path,
                 sessionLookup,
               });
+              const isPending = pendingSessionIds.includes(pane.sessionId);
 
               return (
                 <React.Fragment key={pane.id}>
@@ -569,6 +704,7 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                           title="Inspect terminal"
                           className="terminal-action-btn"
                           style={{ opacity: 0.4 }}
+                          disabled={isPending}
                         >
                           <Bug size={13} />
                         </button>
@@ -578,13 +714,15 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                               onClick={() => clearPane(pane.id)}
                               title="Clear terminal"
                               className="terminal-action-btn"
+                              disabled={isPending}
                             >
                               <Eraser size={13} />
                             </button>
                             <button
                               onClick={() => disconnectPane(tab.id, pane.id, pane.sessionId)}
-                              title="Disconnect terminal"
+                              title={isPending ? 'Disconnecting terminal' : 'Disconnect terminal'}
                               className="terminal-action-btn"
+                              disabled={isPending}
                             >
                               <PlugZap size={13} />
                             </button>
@@ -594,26 +732,27 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                             onClick={() => reconnectPane(tab.id, pane.id)}
                             title="Reopen terminal"
                             className="terminal-action-btn"
+                            disabled={isPending}
                           >
                             <RotateCcw size={13} />
                           </button>
                         )}
 
-                        {tab.panes.length > 1 && (
-                          <button
-                            onClick={() => closePane(tab.id, pane.id, pane.sessionId)}
-                            title="Close pane"
-                            className="terminal-action-btn pane-close-btn"
-                          >
-                            <X size={13} />
-                          </button>
-                        )}
+                        <button
+                          onClick={() => closePane(tab.id, pane.id, pane.sessionId)}
+                          title={isPending ? 'Closing pane' : 'Close pane'}
+                          className="terminal-action-btn pane-close-btn"
+                          disabled={isPending}
+                        >
+                          <X size={13} />
+                        </button>
                       </div>
                     </div>
 
                     <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
                       {pane.isConnected ? (
                         <Terminal
+                          key={pane.sessionId}
                           ref={(instance) => registerTerminalRef(pane.id, instance)}
                           sessionId={pane.sessionId}
                           cwd={project.path}
@@ -633,6 +772,7 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                             <button
                               onClick={() => reconnectPane(tab.id, pane.id)}
                               className="terminal-empty-cta"
+                              disabled={isPending}
                             >
                               <RotateCcw size={14} />
                               <span>Reopen terminal</span>

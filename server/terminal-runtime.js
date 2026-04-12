@@ -75,7 +75,11 @@ function createPtyRuntime() {
      * Kill a raw PTY session. After this the session is unrecoverable.
      */
     kill(entry, _sessionId) {
-      entry.pty.kill();
+      try {
+        entry.pty.kill();
+      } catch {
+        // PTY may already be gone
+      }
     },
 
     /**
@@ -142,7 +146,11 @@ function createTmuxRuntime() {
      * Kill both the node-pty attachment and the underlying tmux session.
      */
     kill(entry, sessionId) {
-      entry.pty.kill();
+      try {
+        entry.pty.kill();
+      } catch {
+        // PTY wrapper may already be gone
+      }
       const tmuxName = sanitizeTmuxName(sessionId);
       try {
         execFileSync('tmux', ['kill-session', '-t', tmuxName], { stdio: 'pipe' });

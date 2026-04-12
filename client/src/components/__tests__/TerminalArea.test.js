@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { shouldPersistLayout } from '../../utils/terminalLayout';
+import {
+  shouldPersistLayout,
+  shouldRenderProjectTerminals,
+} from '../../utils/terminalLayout';
 import { resolveInitialTerminalState } from '../../utils/terminalLayoutState';
 
 describe('TerminalArea layout persistence guard', () => {
@@ -21,6 +24,15 @@ describe('TerminalArea layout persistence guard', () => {
     })).toBe(true);
   });
 
+  it('allows persisting an intentional zero-terminal state', () => {
+    expect(shouldPersistLayout({
+      projectName: 'alpha',
+      prevProjectName: 'alpha',
+      tabsLength: 0,
+      isRestoring: false,
+    })).toBe(true);
+  });
+
   it('skips persistence while a restore is in progress', () => {
     expect(shouldPersistLayout({
       projectName: 'alpha',
@@ -28,6 +40,27 @@ describe('TerminalArea layout persistence guard', () => {
       tabsLength: 1,
       isRestoring: true,
     })).toBe(false);
+  });
+});
+
+describe('TerminalArea project-switch render guard', () => {
+  it('suppresses stale panes on the first render after switching projects', () => {
+    expect(shouldRenderProjectTerminals({
+      projectName: 'whatsapp',
+      prevProjectName: 'BookMe',
+    })).toBe(false);
+  });
+
+  it('renders terminals on first mount and while staying on the same project', () => {
+    expect(shouldRenderProjectTerminals({
+      projectName: 'BookMe',
+      prevProjectName: null,
+    })).toBe(true);
+
+    expect(shouldRenderProjectTerminals({
+      projectName: 'BookMe',
+      prevProjectName: 'BookMe',
+    })).toBe(true);
   });
 });
 
@@ -275,5 +308,26 @@ describe('TerminalArea live session hydration', () => {
     });
 
     expect(result.state.tabs[0].label).toBe('BookMe-9');
+  });
+
+  it('preserves an intentional zero-terminal saved layout when no live sessions remain', async () => {
+    const savedLayout = {
+      tabs: [],
+      activeTabId: null,
+      tabCounter: 4,
+      sessionCounter: 9,
+    };
+
+    const result = resolveInitialTerminalState({
+      projectName: 'BookMe',
+      projectPath: '/tmp/bookme',
+      savedLayout,
+      liveSessions: [],
+    });
+
+    expect(result.state).toEqual({ tabs: [], activeTabId: null });
+    expect(result.tabCounter).toBe(4);
+    expect(result.sessionCounter).toBe(9);
+    expect(result.shouldClearSavedLayout).toBe(false);
   });
 });

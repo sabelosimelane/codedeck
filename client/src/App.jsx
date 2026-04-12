@@ -19,6 +19,9 @@ function AppContent() {
   const previewPath = new URLSearchParams(window.location.search).get('preview');
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState(null);
+  const [isSidebarCompact, setIsSidebarCompact] = useState(() => {
+    return localStorage.getItem('codedeck-sidebar-compact') === 'true';
+  });
   const [showFileTree, setShowFileTree] = useState(false);
   const [sessionStatus, setSessionStatus] = useState([]);
   const [fileBrowserProject, setFileBrowserProject] = useState(null);
@@ -39,6 +42,30 @@ function AppContent() {
   }, [showToast]);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
+
+  useEffect(() => {
+    localStorage.setItem('codedeck-sidebar-compact', String(isSidebarCompact));
+  }, [isSidebarCompact]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (
+        event.key.toLowerCase() !== 'b' ||
+        !event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      setIsSidebarCompact(prev => !prev);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Poll session status every 2 seconds for sidebar terminal list
   useEffect(() => {
@@ -184,12 +211,14 @@ function AppContent() {
         activeProjects={activeProjects}
         shelvedProjects={shelvedProjects}
         activeProject={activeProject}
+        isCompact={isSidebarCompact}
         onSelect={setActiveProject}
         onAdd={addProject}
         onRemove={removeProject}
         onRename={renameProject}
         onShelve={shelveProject}
         onUnshelve={unshelveProject}
+        onToggleCompact={() => setIsSidebarCompact(prev => !prev)}
         onToggleFiles={() => setShowFileTree(prev => !prev)}
         showFileTree={showFileTree}
         sessionStatus={sessionStatus}

@@ -8,6 +8,7 @@ import { spawn as spawnProcess } from 'child_process';
 import db from './db.js';
 import { handleWsConnection, computeSessionHealth, computeStallReason, sanitizePreviewLine } from './ws-handler.js';
 import { createTerminalRuntime } from './terminal-runtime.js';
+import { pruneTerminalSessions } from './session-gc.js';
 import { readTree } from './file-tree.js';
 import { readFilePreview } from './file-preview.js';
 import { resolveEditorCommand } from './editor-command.js';
@@ -324,6 +325,16 @@ const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
   || getConfig('terminalRuntime')
   || 'tmux';
 const terminalRuntime = createTerminalRuntime(runtimeMode);
+const sessionPruneTimer = setInterval(() => {
+  pruneTerminalSessions({
+    sessions,
+    runtime: terminalRuntime,
+    onPruned: (sessionId, entry) => {
+      console.log(`[terminal] pruned session=${sessionId} alive=${entry.alive} wsAttached=${entry.wsAttached}`);
+    },
+  });
+}, 60 * 1000);
+sessionPruneTimer.unref?.();
 
 wss.on('connection', (ws, req) => {
   handleWsConnection(ws, req, sessions, terminalRuntime);
@@ -335,8 +346,13 @@ wss.on('connection', (ws, req) => {
 app.delete('/api/terminal/:sessionId', (req, res) => {
   const entry = sessions.get(req.params.sessionId);
   if (entry) {
-    terminalRuntime.kill(entry, req.params.sessionId);
-    sessions.delete(req.params.sessionId);
+    try {
+      terminalRuntime.kill(entry, req.params.sessionId);
+    } catch (error) {
+      console.warn(`[terminal] delete failed session=${req.params.sessionId} error=${error.message}`);
+    } finally {
+      sessions.delete(req.params.sessionId);
+    }
   }
   res.json({ ok: true });
 });

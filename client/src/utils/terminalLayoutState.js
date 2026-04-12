@@ -176,6 +176,15 @@ export function resolveInitialTerminalState({ projectName, projectPath, savedLay
         shouldClearSavedLayout: false,
       };
     }
+
+    if (savedLayout.tabs.length === 0 && projectLiveSessions.length === 0) {
+      return {
+        state: { tabs: [], activeTabId: null },
+        tabCounter: savedLayout.tabCounter ?? 0,
+        sessionCounter: savedLayout.sessionCounter ?? 0,
+        shouldClearSavedLayout: false,
+      };
+    }
   }
 
   if (projectLiveSessions.length > 0) {
