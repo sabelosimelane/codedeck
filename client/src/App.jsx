@@ -3,6 +3,8 @@ import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
 import FileTree from './components/FileTree';
 import FileBrowserPanel from './components/FileBrowserPanel';
+import ProjectSwitcher from './components/ProjectSwitcher';
+import ShortcutsOverlay from './components/ShortcutsOverlay';
 import PaneDivider from './components/PaneDivider';
 import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
@@ -26,6 +28,8 @@ function AppContent() {
   const [showFileTree, setShowFileTree] = useState(false);
   const [sessionStatus, setSessionStatus] = useState([]);
   const [fileBrowserProject, setFileBrowserProject] = useState(null);
+  const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
+  const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
     const saved = localStorage.getItem('codedeck-filetree-width');
     return saved ? parseInt(saved, 10) : 260;
@@ -68,10 +72,24 @@ function AppContent() {
         return;
       }
       
-      // Cmd/Ctrl + Shift + B: Toggle files browser
-      if (key === 'b' && isCmdOrCtrl && event.shiftKey && !event.altKey) {
+      // Cmd/Ctrl + Shift + F: Toggle files browser
+      if (key === 'f' && isCmdOrCtrl && event.shiftKey && !event.altKey) {
         event.preventDefault();
         setShowFileTree(prev => !prev);
+        return;
+      }
+
+      // Cmd/Ctrl + Shift + P: Project quick switcher
+      if (key === 'p' && isCmdOrCtrl && event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setShowProjectSwitcher(prev => !prev);
+        return;
+      }
+
+      // Cmd/Ctrl + /: Shortcuts reference overlay
+      if (key === '/' && isCmdOrCtrl && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setShowShortcutsOverlay(prev => !prev);
         return;
       }
     };
@@ -236,6 +254,7 @@ function AppContent() {
         showFileTree={showFileTree}
         sessionStatus={sessionStatus}
         onBrowseFiles={setFileBrowserProject}
+        onShowShortcuts={() => setShowShortcutsOverlay(true)}
       />
       {showFileTree && activeProject && (
         <>
@@ -273,6 +292,19 @@ function AppContent() {
           project={fileBrowserProject}
           onPreviewFile={openFilePreviewTab}
           onClose={() => setFileBrowserProject(null)}
+        />
+      )}
+      {showShortcutsOverlay && (
+        <ShortcutsOverlay onClose={() => setShowShortcutsOverlay(false)} />
+      )}
+      {showProjectSwitcher && (
+        <ProjectSwitcher
+          projects={activeProjects}
+          onSelect={(project) => {
+            setActiveProject(project);
+            setShowProjectSwitcher(false);
+          }}
+          onClose={() => setShowProjectSwitcher(false)}
         />
       )}
     </div>

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
@@ -49,7 +49,7 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, onBrowseFiles }) {
+export default function Sidebar({ activeProjects, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, onBrowseFiles, onShowShortcuts }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
@@ -341,7 +341,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
             <button
               onClick={onToggleFiles}
               className="sidebar-header-btn"
-              title={`Toggle file tree (${mod}⇧B)`}
+              title={`Toggle file tree (${mod}⇧F)`}
               style={{
                 color: showFileTree ? 'var(--accent)' : undefined,
                 background: showFileTree ? 'var(--accent-dim)' : undefined,
@@ -772,20 +772,34 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
           {!isCompact && (
             <span>{totalProjects} project{totalProjects !== 1 ? 's' : ''}</span>
           )}
-          <button
-            onClick={() => setShowSettings(true)}
-            title="Settings"
-            style={{
-              padding: 4,
-              borderRadius: 4,
-              color: 'var(--text-muted)',
-              display: 'flex',
-              alignItems: 'center',
-              margin: isCompact ? '0 auto' : undefined,
-            }}
-          >
-            <Settings size={14} />
-          </button>
+          <div style={{ display: 'flex', gap: 4, margin: isCompact ? '0 auto' : undefined }}>
+            <button
+              onClick={onShowShortcuts}
+              title="Keyboard shortcuts"
+              style={{
+                padding: 4,
+                borderRadius: 4,
+                color: 'var(--text-muted)',
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              <Keyboard size={14} />
+            </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              title="Settings"
+              style={{
+                padding: 4,
+                borderRadius: 4,
+                color: 'var(--text-muted)',
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              <Settings size={14} />
+            </button>
+          </div>
         </div>
       </div>
 

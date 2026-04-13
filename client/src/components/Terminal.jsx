@@ -248,6 +248,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
   }
 
   useImperativeHandle(ref, () => ({
+    focus() {
+      if (termRef.current) {
+        termRef.current.focus();
+      }
+    },
     clear() {
       if (termRef.current) {
         termRef.current.clear();

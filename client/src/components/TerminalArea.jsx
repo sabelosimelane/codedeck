@@ -38,11 +38,13 @@ function ShortcutHint({ label, keys, children }) {
       {visible && (
         <div className="shortcut-tooltip">
           <span className="shortcut-tooltip-label">{label}</span>
-          <span className="shortcut-tooltip-keys">
-            {keys.map((key, i) => (
-              <kbd key={i} className="shortcut-kbd">{key}</kbd>
-            ))}
-          </span>
+          {keys.length > 0 && (
+            <span className="shortcut-tooltip-keys">
+              {keys.map((key, i) => (
+                <kbd key={i} className="shortcut-kbd">{key}</kbd>
+              ))}
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -136,6 +138,7 @@ const TAB_STATUS_STYLES = {
 
 export default function TerminalArea({ project, sessionStatus = [] }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
+  const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
   const [inspectingSessionId, setInspectingSessionId] = useState(null);
   const containerRef = useRef(null);
@@ -220,8 +223,19 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
   }, [project.name]);
 
   const setActiveTabId = useCallback((id) => {
-    setState(prev => ({ ...prev, activeTabId: id }));
+    setState(prev => {
+      const tab = prev.tabs.find(t => t.id === id);
+      setActivePaneId(tab?.panes[0]?.id ?? null);
+      return { ...prev, activeTabId: id };
+    });
   }, []);
+
+  // Auto-select first pane when active tab changes (project switch, initial load)
+  useEffect(() => {
+    if (activeTab && (!activePaneId || !activeTab.panes.some(p => p.id === activePaneId))) {
+      setActivePaneId(activeTab.panes[0]?.id ?? null);
+    }
+  }, [activeTab?.id]);
 
   const setSessionsPending = useCallback((sessionIds, isPending) => {
     if (sessionIds.length === 0) return;
@@ -285,6 +299,7 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
   const splitRight = useCallback(() => {
     if (!activeTabId) return;
     const pane = createPane(project.name);
+    setActivePaneId(pane.id);
     setState(prev => ({
       ...prev,
       tabs: prev.tabs.map(tab => {
@@ -314,9 +329,15 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
       const tab = prev.tabs.find(t => t.id === tabId);
       if (!tab) return prev;
 
+      const closedIndex = tab.panes.findIndex(p => p.id === paneId);
       const remainingPanes = tab.panes.filter(p => p.id !== paneId);
 
       if (remainingPanes.length > 0) {
+        // Auto-select adjacent pane if the closed pane was active
+        if (activePaneId === paneId) {
+          const nextIndex = Math.min(closedIndex, remainingPanes.length - 1);
+          setActivePaneId(remainingPanes[nextIndex].id);
+        }
         const fraction = 1 / remainingPanes.length;
         return {
           ...prev,
@@ -333,14 +354,20 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
 
       // Last pane in tab → close the tab
       const remainingTabs = prev.tabs.filter(t => t.id !== tabId);
+      const newActiveTabId = prev.activeTabId === tabId
+        ? remainingTabs[remainingTabs.length - 1]?.id ?? null
+        : prev.activeTabId;
+      // Auto-select first pane of new active tab
+      if (prev.activeTabId === tabId) {
+        const newTab = remainingTabs.find(t => t.id === newActiveTabId);
+        setActivePaneId(newTab?.panes[0]?.id ?? null);
+      }
       return {
         tabs: remainingTabs,
-        activeTabId: prev.activeTabId === tabId
-          ? remainingTabs[remainingTabs.length - 1]?.id ?? null
-          : prev.activeTabId,
+        activeTabId: newActiveTabId,
       };
     });
-  }, [deleteTerminalSessions]);
+  }, [deleteTerminalSessions, activePaneId]);
 
   // Close entire tab — kill all PTY sessions
   const closeTab = useCallback(async (tabId) => {
@@ -455,27 +482,64 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
   useEffect(() => {
     const handleKeyDown = (e) => {
       const isCmdOrCtrl = e.metaKey || e.ctrlKey;
-      if (!isCmdOrCtrl || !e.shiftKey || e.altKey) return;
+      if (!isCmdOrCtrl) return;
 
       const key = e.key.toLowerCase();
 
-      if (key === 'd' && activeTabId) {
+      // Cmd+Option+1-9 — select pane by number
+      if (e.altKey && !e.shiftKey) {
+        const digit = parseInt(key, 10) || parseInt(e.code?.replace('Digit', ''), 10);
+        if (digit >= 1 && digit <= 9 && activeTab) {
+          e.preventDefault();
+          e.stopPropagation();
+          const targetPane = activeTab.panes[digit - 1];
+          if (targetPane) {
+            setActivePaneId(targetPane.id);
+            const terminal = terminalRefs.current.get(targetPane.id);
+            terminal?.focus?.();
+          }
+        }
+        return;
+      }
+
+      if (!e.shiftKey || e.altKey) return;
+
+      if (key === 'e' && activeTabId) {
         e.preventDefault();
         e.stopPropagation();
         splitRight();
         return;
       }
 
-      if (key === 'j') {
+      if (key === 't') {
         e.preventDefault();
         e.stopPropagation();
         addTab();
+        return;
+      }
+
+      // Cmd+Shift+K — clear active pane
+      if (key === 'k' && activePaneId) {
+        e.preventDefault();
+        e.stopPropagation();
+        clearPane(activePaneId);
+        return;
+      }
+
+      // Cmd+Shift+X — close active pane
+      if (key === 'x' && activePaneId && activeTab) {
+        e.preventDefault();
+        e.stopPropagation();
+        const pane = activeTab.panes.find(p => p.id === activePaneId);
+        if (pane) {
+          closePane(activeTab.id, pane.id, pane.sessionId);
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [splitRight, addTab, activeTabId]);
+  }, [splitRight, addTab, activeTabId, activeTab, activePaneId, clearPane, closePane]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -570,7 +634,7 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         {/* Actions */}
         <ShortcutHint
           label="Split right"
-          keys={IS_MAC ? ['⌘', '⇧', 'D'] : ['Ctrl', '⇧', 'D']}
+          keys={IS_MAC ? ['⌘', '⇧', 'E'] : ['Ctrl', '⇧', 'E']}
         >
           <button
             onClick={splitRight}
@@ -588,7 +652,7 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         </ShortcutHint>
         <ShortcutHint
           label="New terminal"
-          keys={IS_MAC ? ['⌘', '⇧', 'J'] : ['Ctrl', '⇧', 'J']}
+          keys={IS_MAC ? ['⌘', '⇧', 'T'] : ['Ctrl', '⇧', 'T']}
         >
           <button
             onClick={addTab}
@@ -661,6 +725,11 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                 )}
                 <div
                   className="pane-wrapper"
+                  onMouseDown={() => {
+                    if (activePaneId !== pane.id) {
+                      setActivePaneId(pane.id);
+                    }
+                  }}
                   style={{
                     flex: pane.widthFraction,
                     minWidth: 0,
@@ -676,11 +745,12 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                       display: 'flex',
                       flexDirection: 'column',
                       minHeight: 0,
-                      border: '1px solid rgba(110, 231, 183, 0.12)',
+                      border: `1px solid ${activePaneId === pane.id ? 'rgba(110, 231, 183, 0.45)' : 'rgba(110, 231, 183, 0.12)'}`,
                       borderRadius: 16,
                       overflow: 'hidden',
                       background: 'radial-gradient(circle at top, rgba(110, 231, 183, 0.06), rgba(14, 14, 16, 0) 42%), #09090b',
                       boxShadow: '0 20px 45px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.03)',
+                      transition: 'border-color 0.15s ease',
                     }}
                   >
                     <div
@@ -745,31 +815,40 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                        <button
-                          onClick={() => setInspectingSessionId(pane.sessionId)}
-                          title="Inspect terminal"
-                          className="terminal-action-btn"
-                          style={{ opacity: 0.4 }}
-                          disabled={isPending}
+                        <ShortcutHint label="Inspect terminal" keys={[]}>
+                          <button
+                            onClick={() => setInspectingSessionId(pane.sessionId)}
+                            className="terminal-action-btn"
+                            style={{ opacity: 0.4 }}
+                            disabled={isPending}
+                          >
+                            <Bug size={13} />
+                          </button>
+                        </ShortcutHint>
+                        <ShortcutHint
+                          label="Clear terminal"
+                          keys={IS_MAC ? ['⌘', '⇧', 'K'] : ['Ctrl', '⇧', 'K']}
                         >
-                          <Bug size={13} />
-                        </button>
-                        <button
-                          onClick={() => clearPane(pane.id)}
-                          title="Clear terminal"
-                          className="terminal-action-btn"
-                          disabled={isPending}
+                          <button
+                            onClick={() => clearPane(pane.id)}
+                            className="terminal-action-btn"
+                            disabled={isPending}
+                          >
+                            <Eraser size={13} />
+                          </button>
+                        </ShortcutHint>
+                        <ShortcutHint
+                          label="Close pane"
+                          keys={IS_MAC ? ['⌘', '⇧', 'X'] : ['Ctrl', '⇧', 'X']}
                         >
-                          <Eraser size={13} />
-                        </button>
-                        <button
-                          onClick={() => closePane(tab.id, pane.id, pane.sessionId)}
-                          title={isPending ? 'Closing pane' : 'Close pane'}
-                          className="terminal-action-btn pane-close-btn"
-                          disabled={isPending}
-                        >
-                          <X size={13} />
-                        </button>
+                          <button
+                            onClick={() => closePane(tab.id, pane.id, pane.sessionId)}
+                            className="terminal-action-btn pane-close-btn"
+                            disabled={isPending}
+                          >
+                            <X size={13} />
+                          </button>
+                        </ShortcutHint>
                       </div>
                     </div>
 
