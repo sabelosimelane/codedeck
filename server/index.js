@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { spawn as spawnProcess } from 'child_process';
+import multer from 'multer';
 import db from './db.js';
 import { handleWsConnection, computeSessionHealth, computeStallReason, sanitizePreviewLine } from './ws-handler.js';
 import { createTerminalRuntime } from './terminal-runtime.js';
@@ -155,6 +156,49 @@ app.get('/api/file-preview', async (req, res) => {
     const status = error.message === 'not a file' ? 400 : 500;
     res.status(status).json({ error: status === 400 ? 'invalid path' : error.message });
   }
+});
+
+// -------------------------------------------------------------------
+// REST API: File upload (drag-and-drop / paste support)
+// -------------------------------------------------------------------
+const UPLOAD_DIR = '/tmp/codedeck-drops';
+const UPLOAD_MAX_SIZE = 20 * 1024 * 1024; // 20MB
+
+function sanitizeFilename(name) {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: async (_req, _file, cb) => {
+      try {
+        await fs.mkdir(UPLOAD_DIR, { recursive: true });
+        cb(null, UPLOAD_DIR);
+      } catch (err) {
+        cb(err);
+      }
+    },
+    filename: (_req, file, cb) => {
+      const sanitized = sanitizeFilename(file.originalname);
+      cb(null, `${Date.now()}-${sanitized}`);
+    },
+  }),
+  limits: { fileSize: UPLOAD_MAX_SIZE },
+});
+
+app.post('/api/upload', (req, res) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'File too large (max 20MB)' });
+      }
+      return res.status(500).json({ error: 'Failed to save file', detail: err.message });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+    res.status(201).json({ path: req.file.path });
+  });
 });
 
 // -------------------------------------------------------------------

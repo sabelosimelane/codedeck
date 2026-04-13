@@ -1,4 +1,4 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -44,7 +44,97 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
   const resumeInFlightRef = useRef(false);
   const pendingOutputRef = useRef([]);
   const inputBufferRef = useRef([]);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
   const { showToast } = useToast();
+
+  // Upload a file to the backend and return the saved path
+  async function uploadFile(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Failed to upload file');
+    }
+    const data = await res.json();
+    return data.path;
+  }
+
+  // Upload files and inject quoted paths into the focused PTY
+  async function handleFilesDrop(files) {
+    // Directory detection — File API: directories have no type and size 0,
+    // or we can try reading them (which fails for directories)
+    for (const file of files) {
+      if (file.size === 0 && file.type === '') {
+        showToast({ type: 'error', message: 'Directory uploads not supported' });
+        return;
+      }
+    }
+
+    const paths = [];
+    for (const file of files) {
+      try {
+        const path = await uploadFile(file);
+        paths.push(`"${path}"`);
+      } catch (err) {
+        showToast({ type: 'error', message: err.message });
+        return;
+      }
+    }
+
+    if (paths.length > 0) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data: paths.join(' ') }));
+      }
+    }
+  }
+
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDragEnter = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (dragCounterRef.current === 1) {
+      setIsDragOver(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      handleFilesDrop(files);
+    }
+  }, []);
+
+  const handlePaste = useCallback((e) => {
+    const files = e.clipboardData && e.clipboardData.files;
+    if (files && files.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      handleFilesDrop(Array.from(files));
+    }
+    // No files — let xterm.js handle normal text paste
+  }, []);
 
   function setAutoScrollEnabled(enabled) {
     userScrolledUpRef.current = !enabled;
@@ -279,8 +369,14 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     });
 
     // Register onData once — route input to whichever ws is current.
-    // When WS is not open (reconnecting), buffer input and flush on reconnect.
+    // During replay, DROP all onData. Replayed chunks contain terminal queries
+    // (DA \x1b[c, CPR \x1b[6n) that xterm.js responds to synchronously via
+    // onData. These stale responses, if sent to the PTY, appear as garbage
+    // stdin to the shell and corrupt zsh/readline's line editor state —
+    // causing the "typing doesn't echo until Ctrl+C" symptom. The replay
+    // window is <100ms so dropped user keystrokes are negligible.
     term.onData((data) => {
+      if (resumeInFlightRef.current) return;
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data }));
@@ -353,16 +449,23 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
           } else if (shouldResumeFromSessionHandshake(msg, resumeInFlightRef.current)) {
             requestResume(ws);
           } else if (msg.type === 'replay') {
-            resumeInFlightRef.current = false;
-            // Apply replayed chunks to catch up after reconnect/refocus
+            // Write chunks BEFORE clearing resumeInFlight. term.write()
+            // causes xterm.js to process terminal queries embedded in the
+            // replayed data and emit responses synchronously via onData.
+            // Keeping the flag true ensures those responses are dropped.
             if (msg.chunks && msg.chunks.length > 0) {
               for (const chunk of msg.chunks) {
                 bufferOrWriteChunk(term, chunk);
               }
             }
+            resumeInFlightRef.current = false;
             if (msg.overflow) {
               showToast({ type: 'warning', message: `Replay buffer overflow — ${msg.missedCount} output chunks lost` });
             }
+            // Reset auto-scroll (rapid writes can trip onScroll) and focus
+            setAutoScrollEnabled(true);
+            term.scrollToBottom();
+            term.focus();
           } else if (msg.type === 'spawn_error') {
             spawnFailed = true;
             term.write(msg.data);
@@ -450,7 +553,14 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
   }, [isVisible]);
 
   return (
-    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+    <div
+      style={{ width: '100%', height: '100%', position: 'relative' }}
+      onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      onPaste={handlePaste}
+    >
       {/* Reconnecting overlay — dims terminal and shows spinner so user knows input is paused */}
       {connectionStatus === 'disconnected' && (
         <div style={reconnectOverlayStyle}>
@@ -464,6 +574,14 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
         <div style={failedOverlayStyle}>
           <div style={{ ...reconnectCardStyle, borderColor: 'rgba(248, 113, 113, 0.3)' }}>
             <span>Unable to connect to server. Check that the backend is running.</span>
+          </div>
+        </div>
+      )}
+      {/* Drop zone overlay — shown during file drag */}
+      {isDragOver && (
+        <div style={dropZoneOverlayStyle}>
+          <div style={dropZoneLabelStyle}>
+            Drop file to paste path
           </div>
         </div>
       )}
@@ -551,4 +669,28 @@ const reconnectCardStyle = {
   fontSize: '12px',
   color: 'var(--text-secondary)',
   boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
+};
+
+const dropZoneOverlayStyle = {
+  position: 'absolute',
+  inset: 0,
+  zIndex: 10,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: 'rgba(11, 13, 18, 0.75)',
+  backdropFilter: 'blur(2px)',
+  border: '2px dashed var(--accent)',
+  borderRadius: 4,
+  pointerEvents: 'none',
+};
+
+const dropZoneLabelStyle = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: '13px',
+  color: 'var(--accent)',
+  padding: '8px 16px',
+  borderRadius: 6,
+  background: 'rgba(22, 27, 36, 0.95)',
+  border: '1px solid rgba(110, 231, 183, 0.2)',
 };

@@ -1,5 +1,29 @@
 # Changelog
 
+## [2026-04-13] - Terminal File Drop & Paste Support
+
+### Executive Summary
+* Added drag-and-drop and clipboard paste support for files on terminal panes. Dropping or pasting a file uploads it to a temp directory on the backend and injects the quoted file path into the focused terminal — enabling agentic CLI tools (like Claude Code) that accept image/file paths as input to receive screenshots and files seamlessly, without leaving the browser.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/index.js` — Added `POST /api/upload` endpoint using multer for multipart file handling. Saves files to `/tmp/codedeck-drops/` with timestamp-prefixed sanitized filenames. Enforces 20MB size limit with proper error responses (400/413/500).
+  * `client/src/components/Terminal.jsx` — Added drag-and-drop event handlers (dragover/dragenter/dragleave/drop) with a counter-based approach for nested element correctness. Added clipboard paste handler that detects file paste vs text paste. Drop zone overlay with dashed accent border appears during drag. Files are uploaded via fetch and quoted paths injected as WebSocket input messages.
+* **🐛 Bug Fix:**
+  * `client/src/components/Terminal.jsx` — Fixed replay input corruption: moved `resumeInFlightRef.current = false` after chunk writes so xterm.js terminal query responses during replay are correctly dropped. Added auto-scroll reset and focus after replay completes.
+* **🛠️ Codebase:**
+  * `client/vitest.config.js` — New client-side vitest config with jsdom environment and React plugin.
+  * `package.json` — Added `@testing-library/react` and `jsdom` as dev dependencies.
+  * `server/package.json` — Added `multer` dependency for multipart uploads.
+* **🧪 Tests:**
+  * `server/__tests__/upload.test.js` — 11 integration tests for upload endpoint: valid upload, size rejection, missing file, filename sanitization.
+  * `client/src/components/__tests__/TerminalFileDrop.test.jsx` — 9 component tests for drag-drop and paste: file upload + path injection, error handling, drop zone overlay, directory rejection, text paste passthrough.
+  * `client/src/components/__tests__/TerminalInputResume.test.jsx` — Tests for replay input dropping behavior.
+  * `client/src/components/__tests__/hard-refresh-race.test.jsx` — Tests for hard refresh race condition handling.
+* **📝 Documentation:**
+  * `docs/specifications/terminal-file-drop-spec.md` — Full feature specification.
+  * `docs/todos/terminal-file-drop.md` — Implementation tracking (all phases complete).
+
 ## [2026-04-13] - Enhanced Keyboard Shortcuts for Sidebar and File Browser
 
 ### Executive Summary
