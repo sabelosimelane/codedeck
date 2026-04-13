@@ -10,3 +10,4 @@ coverage/
 .omx/
 .playwright-mcp/
 playwright-*
+client/node_modules

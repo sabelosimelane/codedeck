@@ -76,6 +76,13 @@ function consumeCodeFence(lines, startIndex) {
 
   if (index < lines.length) index += 1;
 
+  if (language === 'mermaid') {
+    return {
+      index,
+      html: `<div class="mermaid">${escapeHtml(content.join('\n'))}</div>`,
+    };
+  }
+
   const className = language ? ` class="language-${escapeAttribute(language)}"` : '';
   return {
     index,

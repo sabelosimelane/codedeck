@@ -32,4 +32,15 @@ describe('renderMarkdownToHtml', () => {
     expect(html).toContain('href="https://example.com"');
     expect(html).not.toContain('<script>');
   });
+
+  it('renders mermaid code blocks as div.mermaid', () => {
+    const html = renderMarkdownToHtml([
+      '```mermaid',
+      'graph TD',
+      '  A --> B',
+      '```',
+    ].join('\n'));
+
+    expect(html).toContain('<div class="mermaid">graph TD\n  A --&gt; B</div>');
+  });
 });

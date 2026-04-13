@@ -3,6 +3,7 @@ import path from 'path';
 
 export const MAX_PREVIEW_BYTES = 262144;
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd', '.mdx']);
+const MERMAID_EXTENSIONS = new Set(['.mmd', '.mermaid']);
 
 function isBinaryBuffer(buffer) {
   for (const byte of buffer) {
@@ -37,9 +38,16 @@ export async function readFilePreview(filePath, { maxBytes = MAX_PREVIEW_BYTES }
 
     const extension = path.extname(filePath).toLowerCase();
 
+    let format = 'text';
+    if (MARKDOWN_EXTENSIONS.has(extension)) {
+      format = 'markdown';
+    } else if (MERMAID_EXTENSIONS.has(extension)) {
+      format = 'mermaid';
+    }
+
     return {
       kind: 'text',
-      format: MARKDOWN_EXTENSIONS.has(extension) ? 'markdown' : 'text',
+      format,
       truncated: bytesRead > maxBytes,
       size: stat.size,
       content: previewSlice.toString('utf8'),

@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Copy, Download, ExternalLink, FileCode2, RefreshCw } from 'lucide-react';
+import mermaid from 'mermaid';
 import { renderMarkdownToHtml } from '../utils/markdownPreview';
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'dark',
+  securityLevel: 'loose',
+});
 
 export default function PreviewPage({ filePath, onOpenFile }) {
   const [preview, setPreview] = useState({ state: 'loading' });
@@ -57,6 +64,18 @@ export default function PreviewPage({ filePath, onOpenFile }) {
   }, [filePath]);
 
   useEffect(() => {
+    if (preview.state === 'ready' && (preview.format === 'markdown' || preview.format === 'mermaid')) {
+      // Small delay to ensure DOM is ready after React render
+      const timer = setTimeout(() => {
+        mermaid.run({
+          querySelector: '.mermaid',
+        }).catch(err => console.error('Mermaid render error:', err));
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [preview]);
+
+  useEffect(() => {
     const fileName = filePath.split('/').pop() || 'Preview';
     document.title = `${fileName} · CodeDeck Preview`;
   }, [filePath]);
@@ -106,6 +125,16 @@ export default function PreviewPage({ filePath, onOpenFile }) {
             className="markdown-preview"
             dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(preview.content) }}
           />
+        </div>
+      );
+    }
+
+    if (preview.format === 'mermaid') {
+      return (
+        <div style={markdownFrameStyle}>
+          <div className="mermaid" style={{ display: 'flex', justifyContent: 'center' }}>
+            {preview.content}
+          </div>
         </div>
       );
     }
@@ -189,7 +218,9 @@ export default function PreviewPage({ filePath, onOpenFile }) {
               ? preview.kind === 'text'
                 ? preview.format === 'markdown'
                   ? 'Markdown file'
-                  : 'Text file'
+                  : preview.format === 'mermaid'
+                    ? 'Mermaid diagram'
+                    : 'Text file'
                 : 'Binary file'
               : 'Preparing preview'}
           </div>
