@@ -1,4 +1,6 @@
 export const TERMINAL_ACTIVITY_WINDOW_MS = 45000;
+export const TERMINAL_COMPLETION_NOTIFICATION_MS = 30000;
+export const DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS = TERMINAL_COMPLETION_NOTIFICATION_MS;
 
 export function getTerminalStatus(session, now = Date.now()) {
   if (!session?.alive) return 'dead';
@@ -29,4 +31,49 @@ export function getTabTerminalStatus(tab, sessionLookup, now = Date.now()) {
     .filter(Boolean);
 
   return getAggregateTerminalStatus(sessions, now);
+}
+
+export function resolveTerminalCompletionNotificationMs(value) {
+  if (value === null || value === undefined || value === '') {
+    return DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS;
+  }
+
+  const numericValue = typeof value === 'number' ? value : Number.parseFloat(String(value));
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS;
+  }
+
+  return Math.round(numericValue * 1000);
+}
+
+export function findProjectForSession(session, projects = []) {
+  if (!session || !Array.isArray(projects) || projects.length === 0) return null;
+
+  return projects.find(project =>
+    session.sessionId?.startsWith(`${project.name}-`) || session.cwd === project.path
+  ) || null;
+}
+
+export function getTerminalCompletionNotification(session, {
+  activeProjects = [],
+  mutedProjects = [],
+  prevStatus,
+  busyStartedAt,
+  cooldownMs = TERMINAL_COMPLETION_NOTIFICATION_MS,
+  now = Date.now(),
+} = {}) {
+  if (!session || prevStatus !== 'busy' || !busyStartedAt) return null;
+
+  const status = getTerminalStatus(session, now);
+  if (status === 'busy') return null;
+  if (now - busyStartedAt < cooldownMs) return null;
+
+  const project = findProjectForSession(session, activeProjects);
+  if (!project || mutedProjects.includes(project.name)) return null;
+
+  return {
+    title: `CodeDeck — ${session.sessionId} finished`,
+    body: session.lastOutputLine || `${session.sessionId} is idle`,
+    projectName: project.name,
+  };
 }

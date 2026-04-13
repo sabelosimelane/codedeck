@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-04-13] - Browser Notifications and Terminal Resilience Enhancements
+
+### Executive Summary
+* This update introduces browser notifications for long-running terminal tasks, allowing you to get an alert (with sound) when a command finishes while you're in another tab. It also adds several under-the-hood improvements to terminal autoscroll behavior, automatic cleanup of abandoned terminal sessions, and a new configuration setting to customize notification timing.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/public/notification-sw.js` — Service worker to handle background notification clicks and focus.
+  * `client/src/utils/browserNotifications.js` — Utilities for managing notification permissions, showing notifications via Service Worker, and playing completion audio cues.
+  * `client/src/components/SettingsPanel.jsx` — Added `terminalFinishCooldownSeconds` setting to control how long a task must run before it triggers a notification.
+* **🛠️ Codebase:**
+  * `client/src/utils/terminalActivity.js` — Implemented notification payload generation logic and project-aware session detection.
+  * `client/src/components/Sidebar.jsx` — Integrated browser notification orchestration, permission request flows, and audio "warming" on user interaction.
+  * `client/src/utils/terminalAutoScroll.js` — Added helpers to detect viewport position and pause autoscroll on scroll-up.
+  * `server/session-gc.js` — Implemented GC logic for pruning dead or long-detached terminal sessions to prevent memory leaks.
+  * `client/src/main.jsx` — Added Service Worker registration.
+* **🧪 Tests:**
+  * `client/src/utils/__tests__/browserNotifications.test.js` — Unit tests for notification permission and display logic.
+  * `client/src/utils/__tests__/terminalActivity.test.js` — Updated tests for new completion notification logic.
+  * `client/src/utils/__tests__/terminalAutoScroll.test.js` — Tests for autoscroll viewport detection.
+  * `server/__tests__/session-gc.test.js` — Integration tests for terminal session garbage collection.
+
 ## [2026-04-11] - Right-Click Context Menu for Copy Path in File Trees
 
 ### Executive Summary

@@ -4,7 +4,21 @@ import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
-import { getAggregateTerminalStatus, getTerminalStatus } from '../utils/terminalActivity';
+import {
+  createNotificationAudioContext,
+  playCompletionDing,
+  requestNotificationPermissionFromGesture,
+  showBrowserNotification,
+  shouldQueueNotificationPermissionRequest,
+  warmNotificationAudioContext,
+} from '../utils/browserNotifications';
+import {
+  DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS,
+  getAggregateTerminalStatus,
+  getTerminalCompletionNotification,
+  getTerminalStatus,
+  resolveTerminalCompletionNotificationMs,
+} from '../utils/terminalActivity';
 
 function formatTimeSince(isoString) {
   if (!isoString) return '';
@@ -56,11 +70,74 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
   const prevStatusRef = useRef(new Map());
   const mutedProjectsRef = useRef(mutedProjects);
   const activeProjectsRef = useRef(activeProjects);
+  const notificationCooldownMsRef = useRef(DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS);
+  const notificationAudioRef = useRef(null);
+  const notificationPermissionPendingRef = useRef(false);
   const notificationRequestedRef = useRef(false);
   const { showToast } = useToast();
 
   useEffect(() => { mutedProjectsRef.current = mutedProjects; }, [mutedProjects]);
   useEffect(() => { activeProjectsRef.current = activeProjects; }, [activeProjects]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch('/api/config/terminalFinishCooldownSeconds')
+      .then(async res => {
+        if (res.status === 404) return { value: null };
+        if (!res.ok) throw new Error('Failed to load notification cooldown');
+        return res.json();
+      })
+      .then(data => {
+        if (cancelled) return;
+        notificationCooldownMsRef.current = resolveTerminalCompletionNotificationMs(data.value);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const primeNotificationAudio = () => {
+      if (!notificationAudioRef.current) {
+        notificationAudioRef.current = createNotificationAudioContext(window);
+      }
+      if (notificationAudioRef.current) {
+        void warmNotificationAudioContext(notificationAudioRef.current);
+      }
+
+      if (notificationPermissionPendingRef.current && !notificationRequestedRef.current) {
+        notificationRequestedRef.current = true;
+        const pendingRequest = notificationPermissionPendingRef.current;
+        notificationPermissionPendingRef.current = false;
+
+        void requestNotificationPermissionFromGesture(window, {
+          pendingRequest,
+          alreadyRequested: false,
+        }).then((requested) => {
+          if (!requested) {
+            notificationRequestedRef.current = false;
+          }
+        });
+      }
+    };
+
+    window.addEventListener('pointerdown', primeNotificationAudio, { passive: true });
+    window.addEventListener('keydown', primeNotificationAudio);
+
+    return () => {
+      window.removeEventListener('pointerdown', primeNotificationAudio);
+      window.removeEventListener('keydown', primeNotificationAudio);
+
+      if (notificationAudioRef.current && typeof notificationAudioRef.current.close === 'function') {
+        Promise.resolve(notificationAudioRef.current.close()).catch(() => {});
+      }
+    };
+  }, []);
 
   // Notification logic: track busy durations, fire on busy→idle/dead after ≥30s
   useEffect(() => {
@@ -71,41 +148,53 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
       const prevStatus = prevStatusRef.current.get(session.sessionId);
 
       if (status === 'busy') {
-        if (
-          !notificationRequestedRef.current &&
-          typeof window !== 'undefined' &&
-          'Notification' in window &&
-          Notification.permission === 'default'
-        ) {
-          notificationRequestedRef.current = true;
-          Notification.requestPermission().catch(() => {});
+        if (shouldQueueNotificationPermissionRequest({
+          status,
+          alreadyRequested: notificationRequestedRef.current,
+          permission: typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied',
+          hasNotificationSupport: typeof window !== 'undefined' && 'Notification' in window,
+        })) {
+          notificationPermissionPendingRef.current = true;
         }
         if (prevStatus !== 'busy') {
           busyTracker.current.set(session.sessionId, { busyStartedAt: Date.now() });
         }
       } else {
         if (prevStatus === 'busy') {
-          const tracker = busyTracker.current.get(session.sessionId);
-          if (tracker) {
-            const duration = Date.now() - tracker.busyStartedAt;
-            if (duration >= 30000) {
-              const project = activeProjectsRef.current.find(p =>
-                session.sessionId.startsWith(`${p.name}-`) || session.cwd === p.path
-              );
-              if (project && !mutedProjectsRef.current.includes(project.name)) {
-                const body = session.lastOutputLine
-                  ? session.lastOutputLine
-                  : `${session.sessionId} is idle`;
+          const completionNotification = getTerminalCompletionNotification(session, {
+            activeProjects: activeProjectsRef.current,
+            mutedProjects: mutedProjectsRef.current,
+            prevStatus,
+            busyStartedAt: busyTracker.current.get(session.sessionId)?.busyStartedAt,
+            cooldownMs: notificationCooldownMsRef.current,
+          });
 
-                if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-                  new Notification(`CodeDeck — ${session.sessionId} finished`, { body });
-                } else {
-                  showToast({
-                    type: 'success',
-                    message: `${session.sessionId} finished${session.lastOutputLine ? `: ${session.lastOutputLine}` : ''}`,
-                  });
+          if (completionNotification) {
+            if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+              void showBrowserNotification(window, {
+                title: completionNotification.title,
+                body: completionNotification.body,
+                tag: `${session.sessionId}-finished`,
+                data: { sessionId: session.sessionId, projectName: completionNotification.projectName },
+              }).then((method) => {
+                if (method !== 'none') {
+                  if (!notificationAudioRef.current) {
+                    notificationAudioRef.current = createNotificationAudioContext(window);
+                  }
+                  void playCompletionDing(notificationAudioRef.current);
+                  return;
                 }
-              }
+
+                showToast({
+                  type: 'success',
+                  message: `${session.sessionId} finished${session.lastOutputLine ? `: ${session.lastOutputLine}` : ''}`,
+                });
+              });
+            } else {
+              showToast({
+                type: 'success',
+                message: `${session.sessionId} finished${session.lastOutputLine ? `: ${session.lastOutputLine}` : ''}`,
+              });
             }
           }
         }
@@ -135,6 +224,11 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
     return sessionStatus.filter(s =>
       s.sessionId.startsWith(prefix) || s.cwd === project.path
     );
+  };
+
+  const handleSettingsSaved = ({ terminalFinishCooldownSeconds } = {}) => {
+    if (terminalFinishCooldownSeconds === undefined) return;
+    notificationCooldownMsRef.current = resolveTerminalCompletionNotificationMs(terminalFinishCooldownSeconds);
   };
 
   const handleAddClick = async () => {
@@ -701,7 +795,10 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
       )}
 
       {showSettings && (
-        <SettingsPanel onClose={() => setShowSettings(false)} />
+        <SettingsPanel
+          onClose={() => setShowSettings(false)}
+          onSaved={handleSettingsSaved}
+        />
       )}
     </>
   );

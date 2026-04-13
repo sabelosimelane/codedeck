@@ -3,11 +3,15 @@ import { X, Settings, FolderOpen, RotateCcw, Save } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import { useToast } from './ToastContext';
 
-export default function SettingsPanel({ onClose }) {
+const DEFAULT_NOTIFICATION_COOLDOWN_SECONDS = 30;
+
+export default function SettingsPanel({ onClose, onSaved }) {
   const [defaultPath, setDefaultPath] = useState('');
   const [savedPath, setSavedPath] = useState('');
   const [editorCommand, setEditorCommand] = useState('');
   const [savedEditorCommand, setSavedEditorCommand] = useState('');
+  const [terminalFinishCooldownSeconds, setTerminalFinishCooldownSeconds] = useState('');
+  const [savedTerminalFinishCooldownSeconds, setSavedTerminalFinishCooldownSeconds] = useState('');
   const [showBrowser, setShowBrowser] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -19,10 +23,15 @@ export default function SettingsPanel({ onClose }) {
       .then(data => {
         const nextDefaultPath = data.defaultPath || '';
         const nextEditorCommand = data.editorCommand || '';
+        const nextCooldown = data.terminalFinishCooldownSeconds === undefined || data.terminalFinishCooldownSeconds === null
+          ? ''
+          : String(data.terminalFinishCooldownSeconds);
         setDefaultPath(nextDefaultPath);
         setSavedPath(nextDefaultPath);
         setEditorCommand(nextEditorCommand);
         setSavedEditorCommand(nextEditorCommand);
+        setTerminalFinishCooldownSeconds(nextCooldown);
+        setSavedTerminalFinishCooldownSeconds(nextCooldown);
       })
       .catch(() => {
         showToast({ type: 'error', message: 'Failed to load settings' });
@@ -32,11 +41,31 @@ export default function SettingsPanel({ onClose }) {
   useEffect(() => {
     setDirty(
       defaultPath !== savedPath ||
-      editorCommand !== savedEditorCommand
+      editorCommand !== savedEditorCommand ||
+      terminalFinishCooldownSeconds !== savedTerminalFinishCooldownSeconds
     );
-  }, [defaultPath, savedPath, editorCommand, savedEditorCommand]);
+  }, [
+    defaultPath,
+    savedPath,
+    editorCommand,
+    savedEditorCommand,
+    terminalFinishCooldownSeconds,
+    savedTerminalFinishCooldownSeconds,
+  ]);
 
   const handleSave = async () => {
+    const trimmedCooldown = terminalFinishCooldownSeconds.trim();
+    let normalizedCooldown = null;
+
+    if (trimmedCooldown) {
+      const parsedCooldown = Number.parseFloat(trimmedCooldown);
+      if (!Number.isFinite(parsedCooldown) || parsedCooldown <= 0) {
+        showToast({ type: 'error', message: 'Finish cooldown must be a positive number of seconds' });
+        return;
+      }
+      normalizedCooldown = parsedCooldown;
+    }
+
     setSaving(true);
     try {
       const requests = [
@@ -54,6 +83,13 @@ export default function SettingsPanel({ onClose }) {
               body: JSON.stringify({ value: editorCommand }),
             })
           : fetch('/api/config/editorCommand', { method: 'DELETE' }),
+        normalizedCooldown !== null
+          ? fetch('/api/config/terminalFinishCooldownSeconds', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ value: normalizedCooldown }),
+            })
+          : fetch('/api/config/terminalFinishCooldownSeconds', { method: 'DELETE' }),
       ];
       const responses = await Promise.all(requests);
       if (responses.some(res => !res.ok)) {
@@ -63,6 +99,10 @@ export default function SettingsPanel({ onClose }) {
       }
       setSavedPath(defaultPath);
       setSavedEditorCommand(editorCommand);
+      setSavedTerminalFinishCooldownSeconds(trimmedCooldown);
+      onSaved?.({
+        terminalFinishCooldownSeconds: normalizedCooldown,
+      });
       showToast({ type: 'success', message: 'Settings saved' });
     } catch {
       showToast({ type: 'error', message: 'Server unreachable' });
@@ -145,6 +185,31 @@ export default function SettingsPanel({ onClose }) {
                   </span>
                 </div>
               </div>
+
+              <div style={{ ...rowStyle, marginTop: 12 }}>
+                <div style={rowHeaderStyle}>
+                  <span style={keyStyle}>terminalFinishCooldownSeconds</span>
+                  <span style={descStyle}>
+                    Seconds of continuous activity before a session is treated as finished and alerts can fire.
+                  </span>
+                </div>
+                <div style={valueColumnStyle}>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    inputMode="numeric"
+                    value={terminalFinishCooldownSeconds}
+                    onChange={e => setTerminalFinishCooldownSeconds(e.target.value)}
+                    placeholder={String(DEFAULT_NOTIFICATION_COOLDOWN_SECONDS)}
+                    spellCheck={false}
+                    style={inputStyle}
+                  />
+                  <span style={hintStyle}>
+                    Leave blank for the default of <code style={inlineCodeStyle}>{DEFAULT_NOTIFICATION_COOLDOWN_SECONDS}</code> seconds.
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -156,11 +221,12 @@ export default function SettingsPanel({ onClose }) {
               )}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                onClick={() => {
-                  setDefaultPath(savedPath);
-                  setEditorCommand(savedEditorCommand);
-                }}
+                <button
+                  onClick={() => {
+                    setDefaultPath(savedPath);
+                    setEditorCommand(savedEditorCommand);
+                    setTerminalFinishCooldownSeconds(savedTerminalFinishCooldownSeconds);
+                  }}
                 disabled={!dirty}
                 style={{
                   ...actionBtnStyle,
