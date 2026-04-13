@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
 import FileTree from './components/FileTree';
 import FileBrowserPanel from './components/FileBrowserPanel';
+import PaneDivider from './components/PaneDivider';
 import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
 import { openFilePreviewTab } from './utils/fileActions';
@@ -25,6 +26,10 @@ function AppContent() {
   const [showFileTree, setShowFileTree] = useState(false);
   const [sessionStatus, setSessionStatus] = useState([]);
   const [fileBrowserProject, setFileBrowserProject] = useState(null);
+  const [fileTreeWidth, setFileTreeWidth] = useState(() => {
+    const saved = localStorage.getItem('codedeck-filetree-width');
+    return saved ? parseInt(saved, 10) : 260;
+  });
   const { showToast } = useToast();
 
   const fetchProjects = useCallback(async () => {
@@ -46,6 +51,10 @@ function AppContent() {
   useEffect(() => {
     localStorage.setItem('codedeck-sidebar-compact', String(isSidebarCompact));
   }, [isSidebarCompact]);
+
+  useEffect(() => {
+    localStorage.setItem('codedeck-filetree-width', String(fileTreeWidth));
+  }, [fileTreeWidth]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -229,11 +238,18 @@ function AppContent() {
         onBrowseFiles={setFileBrowserProject}
       />
       {showFileTree && activeProject && (
-        <FileTree
-          root={activeProject.path}
-          onOpenFile={openFile}
-          onPreviewFile={openFilePreviewTab}
-        />
+        <>
+          <FileTree
+            root={activeProject.path}
+            onOpenFile={openFile}
+            onPreviewFile={openFilePreviewTab}
+            width={fileTreeWidth}
+          />
+          <PaneDivider
+            onDrag={(delta) => setFileTreeWidth(prev => Math.max(180, Math.min(600, prev + delta)))}
+            onDoubleClick={() => setFileTreeWidth(260)}
+          />
+        </>
       )}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {activeProject ? (

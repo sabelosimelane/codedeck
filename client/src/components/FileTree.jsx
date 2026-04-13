@@ -104,7 +104,7 @@ function TreeNode({ node, expandedPaths, onOpenFile, onPreviewFile, onToggleDir,
   );
 }
 
-export default function FileTree({ root, onOpenFile, onPreviewFile }) {
+export default function FileTree({ root, onOpenFile, onPreviewFile, width = 260 }) {
   const [tree, setTree] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedPaths, setExpandedPaths] = useState(() => new Set());
@@ -141,12 +141,13 @@ export default function FileTree({ root, onOpenFile, onPreviewFile }) {
 
   return (
     <div style={{
-      width: 240,
-      minWidth: 240,
+      width: width,
+      minWidth: 180,
       background: 'var(--bg-sidebar)',
       borderRight: '1px solid var(--border)',
       overflowY: 'auto',
       overflowX: 'hidden',
+      flexShrink: 0,
     }}>
       <div style={{
         padding: '12px 12px 8px',

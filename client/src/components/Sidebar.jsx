@@ -20,6 +20,9 @@ import {
   resolveTerminalCompletionNotificationMs,
 } from '../utils/terminalActivity';
 
+const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
+const mod = isMac ? '⌘' : 'Ctrl+';
+
 function formatTimeSince(isoString) {
   if (!isoString) return '';
   const secs = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
@@ -326,7 +329,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
             <button
               onClick={onToggleCompact}
               className="sidebar-header-btn"
-              title={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
+              title={isCompact ? `Expand sidebar (${mod}B)` : `Collapse sidebar (${mod}B)`}
               aria-label={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
               style={{
                 color: isCompact ? 'var(--accent)' : undefined,
@@ -338,7 +341,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
             <button
               onClick={onToggleFiles}
               className="sidebar-header-btn"
-              title="Toggle file tree"
+              title={`Toggle file tree (${mod}⇧B)`}
               style={{
                 color: showFileTree ? 'var(--accent)' : undefined,
                 background: showFileTree ? 'var(--accent-dim)' : undefined,
