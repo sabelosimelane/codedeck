@@ -375,8 +375,14 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     // stdin to the shell and corrupt zsh/readline's line editor state —
     // causing the "typing doesn't echo until Ctrl+C" symptom. The replay
     // window is <100ms so dropped user keystrokes are negligible.
+    //
+    // DA/CPR responses also occur OUTSIDE replay — e.g. fitAddon.fit() on
+    // tab switch triggers a resize, the shell sends DA queries, and xterm.js
+    // emits responses here. Filter them unconditionally.
+    const TERMINAL_RESPONSE_RE = /^\x1b\[\??[0-9;]*[cR]$|^\x1b\[>[0-9;]*c$/;
     term.onData((data) => {
       if (resumeInFlightRef.current) return;
+      if (TERMINAL_RESPONSE_RE.test(data)) return;
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data }));

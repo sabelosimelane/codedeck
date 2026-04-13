@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, PlugZap, TerminalSquare, RotateCcw, Bug } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, TerminalSquare } from 'lucide-react';
 import TerminalInspector from './TerminalInspector';
 import { useToast } from './ToastContext';
 import {
@@ -12,6 +12,42 @@ import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
 import { getTabTerminalStatus } from '../utils/terminalActivity';
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
+
+const IS_MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+
+function ShortcutHint({ label, keys, children }) {
+  const [visible, setVisible] = useState(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    return () => clearTimeout(timerRef.current);
+  }, []);
+
+  return (
+    <div
+      className="shortcut-hint-wrapper"
+      onMouseEnter={() => {
+        timerRef.current = setTimeout(() => setVisible(true), 400);
+      }}
+      onMouseLeave={() => {
+        clearTimeout(timerRef.current);
+        setVisible(false);
+      }}
+    >
+      {children}
+      {visible && (
+        <div className="shortcut-tooltip">
+          <span className="shortcut-tooltip-label">{label}</span>
+          <span className="shortcut-tooltip-keys">
+            {keys.map((key, i) => (
+              <kbd key={i} className="shortcut-kbd">{key}</kbd>
+            ))}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 let tabCounter = 0;
 let sessionCounter = 0;
@@ -356,30 +392,6 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
     terminal?.clear?.();
   }, []);
 
-  const setPaneConnection = useCallback((tabId, paneId, isConnected) => {
-    setState(prev => ({
-      ...prev,
-      tabs: prev.tabs.map(tab => {
-        if (tab.id !== tabId) return tab;
-        return {
-          ...tab,
-          panes: tab.panes.map(pane => (
-            pane.id === paneId ? { ...pane, isConnected } : pane
-          )),
-        };
-      }),
-    }));
-  }, []);
-
-  const disconnectPane = useCallback(async (tabId, paneId, sessionId) => {
-    const deletedSessionIds = await deleteTerminalSessions([sessionId], 'disconnect');
-    if (!deletedSessionIds.has(sessionId)) return;
-    setPaneConnection(tabId, paneId, false);
-  }, [deleteTerminalSessions, setPaneConnection]);
-
-  const reconnectPane = useCallback((tabId, paneId) => {
-    setPaneConnection(tabId, paneId, true);
-  }, [setPaneConnection]);
 
   const registerTerminalRef = useCallback((paneId, instance) => {
     if (instance) {
@@ -438,6 +450,32 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
       }),
     }));
   }, []);
+
+  // Keyboard shortcuts — capture phase fires before xterm's key handler
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+      if (!isCmdOrCtrl || !e.shiftKey || e.altKey) return;
+
+      const key = e.key.toLowerCase();
+
+      if (key === 'd' && activeTabId) {
+        e.preventDefault();
+        e.stopPropagation();
+        splitRight();
+        return;
+      }
+
+      if (key === 'j') {
+        e.preventDefault();
+        e.stopPropagation();
+        addTab();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [splitRight, addTab, activeTabId]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -530,27 +568,35 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         </div>
 
         {/* Actions */}
-        <button
-          onClick={splitRight}
-          disabled={!activeTab}
-          title="Split right"
-          style={{
-            padding: 4,
-            borderRadius: 4,
-            color: activeTab ? 'var(--text-muted)' : 'rgba(138, 146, 166, 0.45)',
-            opacity: activeTab ? 1 : 0.5,
-            cursor: activeTab ? 'pointer' : 'not-allowed',
-          }}
+        <ShortcutHint
+          label="Split right"
+          keys={IS_MAC ? ['⌘', '⇧', 'D'] : ['Ctrl', '⇧', 'D']}
         >
-          <Columns size={14} />
-        </button>
-        <button
-          onClick={addTab}
-          title="New tab"
-          style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)' }}
+          <button
+            onClick={splitRight}
+            disabled={!activeTab}
+            style={{
+              padding: 4,
+              borderRadius: 4,
+              color: activeTab ? 'var(--text-muted)' : 'rgba(138, 146, 166, 0.45)',
+              opacity: activeTab ? 1 : 0.5,
+              cursor: activeTab ? 'pointer' : 'not-allowed',
+            }}
+          >
+            <Columns size={14} />
+          </button>
+        </ShortcutHint>
+        <ShortcutHint
+          label="New terminal"
+          keys={IS_MAC ? ['⌘', '⇧', 'J'] : ['Ctrl', '⇧', 'J']}
         >
-          <Plus size={14} />
-        </button>
+          <button
+            onClick={addTab}
+            style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)' }}
+          >
+            <Plus size={14} />
+          </button>
+        </ShortcutHint>
       </div>
 
       {tabs.length === 0 && (
@@ -655,8 +701,8 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                               width: 8,
                               height: 8,
                               borderRadius: '50%',
-                              background: pane.isConnected ? 'var(--accent)' : 'rgba(138, 138, 150, 0.85)',
-                              boxShadow: pane.isConnected ? '0 0 14px rgba(110, 231, 183, 0.55)' : 'none',
+                              background: 'var(--accent)',
+                              boxShadow: '0 0 14px rgba(110, 231, 183, 0.55)',
                             }}
                           />
                           <span
@@ -678,10 +724,10 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                             fontFamily: 'var(--font-sans)',
                             fontSize: 11,
                             letterSpacing: '0.03em',
-                            color: pane.isConnected ? 'var(--text-muted)' : 'rgba(228, 228, 232, 0.68)',
+                            color: 'var(--text-muted)',
                           }}
                         >
-                          {pane.isConnected ? 'Live terminal attached' : 'Detached. Reopen when you need it.'}
+                          Live terminal attached
                         </span>
                         <span
                           title={paneCwd}
@@ -708,36 +754,14 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                         >
                           <Bug size={13} />
                         </button>
-                        {pane.isConnected ? (
-                          <>
-                            <button
-                              onClick={() => clearPane(pane.id)}
-                              title="Clear terminal"
-                              className="terminal-action-btn"
-                              disabled={isPending}
-                            >
-                              <Eraser size={13} />
-                            </button>
-                            <button
-                              onClick={() => disconnectPane(tab.id, pane.id, pane.sessionId)}
-                              title={isPending ? 'Disconnecting terminal' : 'Disconnect terminal'}
-                              className="terminal-action-btn"
-                              disabled={isPending}
-                            >
-                              <PlugZap size={13} />
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            onClick={() => reconnectPane(tab.id, pane.id)}
-                            title="Reopen terminal"
-                            className="terminal-action-btn"
-                            disabled={isPending}
-                          >
-                            <RotateCcw size={13} />
-                          </button>
-                        )}
-
+                        <button
+                          onClick={() => clearPane(pane.id)}
+                          title="Clear terminal"
+                          className="terminal-action-btn"
+                          disabled={isPending}
+                        >
+                          <Eraser size={13} />
+                        </button>
                         <button
                           onClick={() => closePane(tab.id, pane.id, pane.sessionId)}
                           title={isPending ? 'Closing pane' : 'Close pane'}
@@ -750,36 +774,13 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
                     </div>
 
                     <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-                      {pane.isConnected ? (
-                        <Terminal
-                          key={pane.sessionId}
-                          ref={(instance) => registerTerminalRef(pane.id, instance)}
-                          sessionId={pane.sessionId}
-                          cwd={project.path}
-                          isVisible={isActive}
-                        />
-                      ) : (
-                        <div className="terminal-empty-state">
-                          <div className="terminal-empty-orb" />
-                          <div className="terminal-empty-card">
-                            <div className="terminal-empty-icon">
-                              <TerminalSquare size={18} />
-                            </div>
-                            <div className="terminal-empty-label">Summon some mischief</div>
-                            <div className="terminal-empty-copy">
-                              This terminal is taking a dramatic pause. Reopen it when it&apos;s time to start cooking again.
-                            </div>
-                            <button
-                              onClick={() => reconnectPane(tab.id, pane.id)}
-                              className="terminal-empty-cta"
-                              disabled={isPending}
-                            >
-                              <RotateCcw size={14} />
-                              <span>Reopen terminal</span>
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                      <Terminal
+                        key={pane.sessionId}
+                        ref={(instance) => registerTerminalRef(pane.id, instance)}
+                        sessionId={pane.sessionId}
+                        cwd={project.path}
+                        isVisible={isActive}
+                      />
                     </div>
                   </div>
                 </div>

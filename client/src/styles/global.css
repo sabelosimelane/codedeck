@@ -386,6 +386,84 @@ input:focus {
   50% { transform: translateY(-14px) scale(1.04); opacity: 1; }
 }
 
+/* ─── Shortcut tooltips ─────────────────────────────────────── */
+.shortcut-hint-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.shortcut-tooltip {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: rgba(18, 22, 30, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(16px);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: tooltipIn 120ms ease;
+}
+
+.shortcut-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: 8px;
+  width: 9px;
+  height: 9px;
+  background: rgba(18, 22, 30, 0.97);
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  transform: rotate(45deg);
+  border-radius: 2px 0 0 0;
+}
+
+.shortcut-tooltip-label {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+.shortcut-tooltip-keys {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.shortcut-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-primary);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 1.5px 0 rgba(0, 0, 0, 0.35), inset 0 0.5px 0 rgba(255, 255, 255, 0.1);
+}
+
+@keyframes tooltipIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .markdown-preview > * + * {
   margin-top: 1em;
 }
