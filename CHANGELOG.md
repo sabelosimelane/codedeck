@@ -1,5 +1,14 @@
 # Changelog
 
+## [2026-04-13] - Enhanced Keyboard Shortcuts for Sidebar and File Browser
+
+### Executive Summary
+* Added a dedicated keyboard shortcut for toggling the file browser panel: **Cmd/Ctrl + Shift + B**. The existing **Cmd/Ctrl + B** shortcut now correctly works with both Cmd (Mac) and Ctrl (Windows/Linux) to toggle the project sidebar. This improves cross-platform keyboard navigation and provides quick access to both major UI panels without reaching for the mouse.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `client/src/App.jsx` — Refactored keyboard event handling to support both Cmd and Ctrl modifiers consistently across platforms. Split shortcut logic: Cmd/Ctrl+B toggles sidebar compact mode, Cmd/Ctrl+Shift+B toggles file browser panel. Improved modifier key detection to prevent false triggers.
+
 ## [2026-04-13] - Browser Notifications and Terminal Resilience Enhancements
 
 ### Executive Summary

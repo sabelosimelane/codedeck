@@ -49,18 +49,22 @@ function AppContent() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (
-        event.key.toLowerCase() !== 'b' ||
-        !event.metaKey ||
-        event.ctrlKey ||
-        event.altKey ||
-        event.shiftKey
-      ) {
+      const key = event.key.toLowerCase();
+      const isCmdOrCtrl = event.metaKey || event.ctrlKey;
+      
+      // Cmd/Ctrl + B: Toggle project sidebar
+      if (key === 'b' && isCmdOrCtrl && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setIsSidebarCompact(prev => !prev);
         return;
       }
-
-      event.preventDefault();
-      setIsSidebarCompact(prev => !prev);
+      
+      // Cmd/Ctrl + Shift + B: Toggle files browser
+      if (key === 'b' && isCmdOrCtrl && event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setShowFileTree(prev => !prev);
+        return;
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
