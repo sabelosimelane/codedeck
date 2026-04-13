@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="client/public/favicon.svg" alt="CodeDeck" width="200" />
+</p>
+
 # CodeDeck
 
 A browser-based terminal workspace for developers who juggle multiple projects. Split panes, project switching, file browsing — no IDE overhead. Especially useful for CLI-based agentic coding workflows where each project needs 3-4 terminals running simultaneously.
