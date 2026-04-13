@@ -7,7 +7,20 @@ dist/
 build/
 coverage/
 .DS_Store
-.omx/
+
+# Personal/local tooling artifacts
+.mcp-bash-config.json
 .playwright-mcp/
+.workflow/
+.tmp/
+.omx/
+inbox/
+other/
+*.tar.gz
 playwright-*
+screenshot-*.png
+server/shell/zsh/.zsh_history
+
+# Build artifacts
+client/dist/
 client/node_modules
