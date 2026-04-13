@@ -4,7 +4,7 @@
 CodeDeck is a lightweight multi-project terminal workspace for developers who work across 3-5 projects simultaneously. It replaces the need for multiple IDE windows by providing terminal multiplexing, project switching, and file browsing in a single browser-based UI. Built as a personal tool — single user, local machine, no auth.
 
 ## Target Users
-Solo developer (Sabelo) who juggles multiple codebases daily. The core pain points are:
+Developers who juggle multiple codebases daily. The core pain points are:
 - Machine performance degradation from 5-6 open IDEs
 - Losing track of what's running and where across projects
 - Context-switching friction between project terminals

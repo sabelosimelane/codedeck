@@ -145,7 +145,7 @@ Add `lastOutputLine` field to each session entry:
 [
   {
     "sessionId": "equinox-1",
-    "cwd": "/Users/sabside/projects/equinox",
+    "cwd": "/home/user/projects/equinox",
     "startedAt": "2026-04-10T09:30:00.000Z",
     "lastOutputAt": "2026-04-10T09:44:12.000Z",
     "alive": true,

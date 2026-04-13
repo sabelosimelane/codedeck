@@ -159,14 +159,14 @@ Response:
 [
   {
     "sessionId": "anvil-1",
-    "cwd": "/Users/sabside/projects/anvil",
+    "cwd": "/home/user/projects/anvil",
     "startedAt": "2026-04-10T09:30:00.000Z",
     "lastOutputAt": "2026-04-10T09:44:12.000Z",
     "alive": true
   },
   {
     "sessionId": "anvil-2",
-    "cwd": "/Users/sabside/projects/anvil",
+    "cwd": "/home/user/projects/anvil",
     "startedAt": "2026-04-10T09:35:00.000Z",
     "lastOutputAt": "2026-04-10T09:35:45.000Z",
     "alive": true
@@ -217,7 +217,7 @@ Clicking the file browse button opens a **slide-in panel** — a modal overlay s
 ```
 ┌─────────────────────────────────┐
 │  📁 anvil                    ✕  │
-│  /Users/sabside/projects/anvil  │
+│  /home/user/projects/anvil  │
 │─────────────────────────────────│
 │  ▸ src/                         │
 │  ▸ tests/                       │

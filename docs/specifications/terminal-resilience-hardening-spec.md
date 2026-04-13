@@ -192,7 +192,7 @@ The terminal protocol grows beyond raw output and resize messages.
 [
   {
     "sessionId": "anvil-1",
-    "cwd": "/Users/sabside/git/anvil/backend",
+    "cwd": "/home/user/projects/anvil/backend",
     "startedAt": "2026-04-11T09:30:00.000Z",
     "lastOutputAt": "2026-04-11T09:44:12.000Z",
     "lastOutputLine": "Working (1m 48s • esc to interrupt)",

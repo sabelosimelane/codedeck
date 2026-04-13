@@ -4,21 +4,21 @@ import { getTerminalPaneCwd } from '../terminalPaneCwd';
 describe('getTerminalPaneCwd', () => {
   it('prefers the live session cwd when available', () => {
     const sessionLookup = new Map([
-      ['BookMe-5', { sessionId: 'BookMe-5', cwd: '/Users/sabside/git/bookme/frontend' }],
+      ['myapp-5', { sessionId: 'myapp-5', cwd: '/home/user/projects/myapp/frontend' }],
     ]);
 
     expect(getTerminalPaneCwd({
-      sessionId: 'BookMe-5',
-      projectPath: '/Users/sabside/git/bookme',
+      sessionId: 'myapp-5',
+      projectPath: '/home/user/projects/myapp',
       sessionLookup,
-    })).toBe('/Users/sabside/git/bookme/frontend');
+    })).toBe('/home/user/projects/myapp/frontend');
   });
 
   it('falls back to the project path when there is no live session cwd', () => {
     expect(getTerminalPaneCwd({
-      sessionId: 'BookMe-5',
-      projectPath: '/Users/sabside/git/bookme',
+      sessionId: 'myapp-5',
+      projectPath: '/home/user/projects/myapp',
       sessionLookup: new Map(),
-    })).toBe('/Users/sabside/git/bookme');
+    })).toBe('/home/user/projects/myapp');
   });
 });

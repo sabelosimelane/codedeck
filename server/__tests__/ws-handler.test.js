@@ -247,12 +247,12 @@ describe('handleWsConnection', () => {
     it('does not leave ISO-2022 charset markers in lastOutputLine', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
-      const noisyOutput = 'sabside \x1b(B~/git/bookme/backend \x1b(BOpus4.6';
+      const noisyOutput = 'user \x1b(B~/projects/myapp/backend \x1b(BOpus4.6';
 
       handleWsConnection(ws, req, sessions, spawnPty);
       mockPty.emitData(noisyOutput);
 
-      expect(sessions.get('test-1').lastOutputLine).toBe('sabside ~/git/bookme/backend Opus4.6');
+      expect(sessions.get('test-1').lastOutputLine).toBe('user ~/projects/myapp/backend Opus4.6');
     });
 
     it('does not let caret-escaped device responses overwrite the previous preview line', () => {

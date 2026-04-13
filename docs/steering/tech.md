@@ -57,7 +57,7 @@ Open `http://localhost:43000` in the browser.
 - **SQLite**: embedded, file-based at `~/.codedeck.db`. WAL mode enabled, foreign keys on. No migration tool — schema created via `CREATE TABLE IF NOT EXISTS` in `server/db.js`.
 - **Vite dev server**: runs on `:43000`, proxies `/api/*` and `/ws/*` to Express on `:43001`.
 - **No Docker**: runs directly on the local machine. No containerization needed.
-- **No CI/CD**: personal project, deployed locally only.
+- **No CI/CD**: runs locally. Contributions welcome to add CI.
 
 ## Environment & Configuration
 - No environment variables required for basic operation
@@ -66,6 +66,6 @@ Open `http://localhost:43000` in the browser.
 - `~/.codedeck.db` is the sole persistent state file
 
 ## Source Control
-- Git repository hosted on GitLab: `gitlab.com:sabside/codedeck.git`
+- Git repository hosted on GitHub: `github.com/sabelosimelane/codedeck`
 - Workspace monorepo: root `package.json` with `"workspaces": ["server", "client"]`
 - Dependencies hoisted to root `node_modules/` — server and client share the tree
