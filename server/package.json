@@ -1,6 +1,7 @@
 {
   "name": "codedeck-server",
   "version": "0.1.0",
+  "description": "CodeDeck backend — Express server with PTY management and WebSocket terminal I/O",
   "private": true,
   "type": "module",
   "scripts": {

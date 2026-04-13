@@ -1,6 +1,26 @@
 {
   "name": "codedeck",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Browser-based multi-project terminal workspace",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sabelosimelane/codedeck.git"
+  },
+  "author": "Sabelo Simelane",
+  "homepage": "https://github.com/sabelosimelane/codedeck",
+  "keywords": [
+    "terminal",
+    "workspace",
+    "multiplexer",
+    "developer-tools",
+    "xterm",
+    "pty"
+  ],
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
   "workspaces": [
     "server",
     "client"
