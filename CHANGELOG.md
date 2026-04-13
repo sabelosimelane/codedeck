@@ -1,5 +1,14 @@
 # Changelog
 
+## [2026-04-13] - Add package-lock.json to gitignore
+
+### Executive Summary
+* Added `package-lock.json` to the project's `.gitignore` to prevent it from being tracked in version control. This keeps the repository clean since the project uses npm workspaces and the lock file is not needed for contributors.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `.gitignore` — Added `package-lock.json` to the ignored files list under build artifacts section.
+
 ## [2026-04-13] - Terminal File Drop & Paste Support
 
 ### Executive Summary

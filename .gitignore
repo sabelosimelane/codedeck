@@ -24,3 +24,4 @@ server/shell/zsh/.zsh_history
 # Build artifacts
 client/dist/
 client/node_modules
+package-lock.json
