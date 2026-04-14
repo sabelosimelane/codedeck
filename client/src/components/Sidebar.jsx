@@ -604,8 +604,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
             ? shelvedProjects
                 .filter(p => p.name.toLowerCase().includes(shelfSearch.toLowerCase()))
                 .sort((a, b) => a.name.localeCompare(b.name))
-            : shelvedProjects.slice(0, 5);
-          const overflowCount = shelvedProjects.length - 5;
+            : shelvedProjects;
           return (
             <div style={{ flexShrink: 0 }}>
               <div style={{ height: 1, background: 'var(--border)' }} />
@@ -742,16 +741,6 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                     </div>
                   ))}
 
-                  {!searchActive && overflowCount > 0 && (
-                    <div style={{
-                      padding: '4px 16px 6px',
-                      fontSize: '11px',
-                      color: 'var(--text-muted)',
-                      fontFamily: 'var(--font-mono)',
-                    }}>
-                      + {overflowCount} more
-                    </div>
-                  )}
                 </div>
               )}
             </div>

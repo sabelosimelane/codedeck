@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-04-14] - Fix shelved projects not visible beyond first five
+
+### Executive Summary
+* Expanding the shelved projects section only showed the first 5 projects with a "+ N more" label — but there was no way to browse the rest without searching by exact name. Projects beyond the top 5 were effectively hidden. Now expanding the shelf shows all shelved projects in a scrollable list, with search available to filter.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Shelved projects list was hard-capped to `slice(0, 5)` regardless of whether the section was expanded, making projects beyond the first 5 unreachable unless the user typed the exact name in search.
+  * **Solution:** `client/src/components/Sidebar.jsx` — Show all shelved projects when expanded (no search filter), removed the misleading "+ N more" overflow message.
+* **✨ New Feature:**
+  * `client/src/components/Terminal.jsx` — Terminal web links now open in a new browser tab via explicit click handler instead of relying on xterm.js default behavior.
+
 ## [2026-04-14] - Keyboard shortcuts, project switcher, and terminal fixes
 
 ### Executive Summary

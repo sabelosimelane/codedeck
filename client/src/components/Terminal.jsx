@@ -322,7 +322,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     });
 
     const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
+    const webLinksAddon = new WebLinksAddon((event, url) => {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.click();
+    });
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
 
