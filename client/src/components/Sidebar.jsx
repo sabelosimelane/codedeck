@@ -19,6 +19,7 @@ import {
   getTerminalStatus,
   resolveTerminalCompletionNotificationMs,
 } from '../utils/terminalActivity';
+import { doesSessionBelongToProject } from '../utils/terminalProjectMatch';
 
 const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
 const mod = isMac ? '⌘' : 'Ctrl+';
@@ -223,10 +224,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
 
   const getProjectSessions = (project) => {
     if (!sessionStatus || sessionStatus.length === 0) return [];
-    const prefix = `${project.name}-`;
-    return sessionStatus.filter(s =>
-      s.sessionId.startsWith(prefix) || s.cwd === project.path
-    );
+    return sessionStatus.filter(session => doesSessionBelongToProject(session, project));
   };
 
   const handleSettingsSaved = ({ terminalFinishCooldownSeconds } = {}) => {

@@ -4,6 +4,6 @@ export function isTerminalViewportAtBottom(buffer) {
 }
 
 export function shouldPauseAutoScrollOnWheel({ deltaY, buffer }) {
-  if (deltaY >= 0 || !buffer) return false;
-  return buffer.baseY > 0;
+  if (!buffer || buffer.baseY <= 0 || deltaY === 0) return false;
+  return isTerminalViewportAtBottom(buffer);
 }

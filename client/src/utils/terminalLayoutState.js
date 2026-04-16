@@ -1,4 +1,5 @@
 import { getTerminalTabLabel } from './terminalTabLabel';
+import { doesSessionBelongToProject, isProjectSessionId } from './terminalProjectMatch';
 
 function createPane(projectName, sessionNumber) {
   const sessionId = `${projectName}-${sessionNumber}`;
@@ -20,14 +21,15 @@ function createTab(projectName, tabNumber, sessionNumber) {
 }
 
 function matchesProjectSession(session, projectName, projectPath) {
-  return session.alive && (
-    session.sessionId.startsWith(`${projectName}-`) ||
-    session.cwd === projectPath
-  );
+  return session.alive && doesSessionBelongToProject(session, {
+    name: projectName,
+    path: projectPath,
+  });
 }
 
 function getSessionNumber(projectName, sessionId) {
-  const match = sessionId.match(new RegExp(`^${projectName}-(\\d+)$`));
+  if (!isProjectSessionId(sessionId, projectName)) return null;
+  const match = sessionId.match(/-(\d+)$/);
   return match ? Number(match[1]) : null;
 }
 

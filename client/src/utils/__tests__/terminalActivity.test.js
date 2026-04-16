@@ -3,6 +3,7 @@ import {
   DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS,
   TERMINAL_ACTIVITY_WINDOW_MS,
   TERMINAL_COMPLETION_NOTIFICATION_MS,
+  findProjectForSession,
   getAggregateTerminalStatus,
   getTerminalCompletionNotification,
   resolveTerminalCompletionNotificationMs,
@@ -139,6 +140,22 @@ describe('terminalActivity', () => {
     })).toEqual(expect.objectContaining({
       title: 'CodeDeck — BookMe-1 finished',
     }));
+  });
+
+  it('does not match a sibling project whose name shares a hyphenated prefix', () => {
+    const session = {
+      sessionId: 'store-of-value-config-1',
+      cwd: '/tmp/store-of-value/store-of-value-config',
+      alive: true,
+    };
+
+    expect(findProjectForSession(session, [
+      { name: 'store-of-value', path: '/tmp/store-of-value' },
+      { name: 'store-of-value-config', path: '/tmp/store-of-value/store-of-value-config' },
+    ])).toEqual({
+      name: 'store-of-value-config',
+      path: '/tmp/store-of-value/store-of-value-config',
+    });
   });
 
   it('normalizes invalid cooldown settings back to the default', () => {

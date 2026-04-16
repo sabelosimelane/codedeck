@@ -1,3 +1,5 @@
+import { doesSessionBelongToProject } from './terminalProjectMatch';
+
 export const TERMINAL_ACTIVITY_WINDOW_MS = 45000;
 export const TERMINAL_COMPLETION_NOTIFICATION_MS = 30000;
 export const DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS = TERMINAL_COMPLETION_NOTIFICATION_MS;
@@ -49,9 +51,7 @@ export function resolveTerminalCompletionNotificationMs(value) {
 export function findProjectForSession(session, projects = []) {
   if (!session || !Array.isArray(projects) || projects.length === 0) return null;
 
-  return projects.find(project =>
-    session.sessionId?.startsWith(`${project.name}-`) || session.cwd === project.path
-  ) || null;
+  return projects.find(project => doesSessionBelongToProject(session, project)) || null;
 }
 
 export function getTerminalCompletionNotification(session, {

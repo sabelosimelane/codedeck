@@ -296,6 +296,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       fontSize: 13,
       fontFamily: "'JetBrains Mono', monospace",
       lineHeight: 1.4,
+      scrollSensitivity: 3,
+      fastScrollSensitivity: 5,
+      smoothScrollDuration: 0,
       theme: {
         background: '#0e0e10',
         foreground: '#e4e4e8',

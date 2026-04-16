@@ -88,6 +88,35 @@ describe('TerminalArea live session hydration', () => {
     expect(result.sessionCounter).toBe(2);
   });
 
+  it('does not treat sessions from hyphen-prefixed sibling projects as belonging to the selected project', async () => {
+    const sessions = [
+      {
+        sessionId: 'store-of-value-config-1',
+        cwd: '/tmp/store-of-value/store-of-value-config',
+        alive: true,
+        wsAttached: true,
+      },
+      {
+        sessionId: 'store-of-value-3',
+        cwd: '/tmp/store-of-value/backend',
+        alive: true,
+        wsAttached: true,
+      },
+    ];
+
+    const result = resolveInitialTerminalState({
+      projectName: 'store-of-value',
+      projectPath: '/tmp/store-of-value',
+      savedLayout: null,
+      liveSessions: sessions,
+    });
+
+    expect(result.state.tabs).toHaveLength(1);
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('store-of-value-3');
+    expect(result.state.tabs[0].label).toBe('store-of-value-3');
+    expect(result.sessionCounter).toBe(3);
+  });
+
   it('merges live sessions that are missing from the saved layout', async () => {
     const savedLayout = {
       tabs: [

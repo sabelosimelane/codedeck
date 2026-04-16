@@ -22,7 +22,14 @@ describe('shouldPauseAutoScrollOnWheel', () => {
     })).toBe(true);
   });
 
-  it('keeps auto-scroll active for downward wheel movement', () => {
+  it('pauses auto-scroll for any wheel attempt while pinned at the bottom with scrollback available', () => {
+    expect(shouldPauseAutoScrollOnWheel({
+      deltaY: 36,
+      buffer: { viewportY: 24, baseY: 24 },
+    })).toBe(true);
+  });
+
+  it('keeps auto-scroll active once the viewport is already detached from the bottom', () => {
     expect(shouldPauseAutoScrollOnWheel({
       deltaY: 36,
       buffer: { viewportY: 20, baseY: 24 },
