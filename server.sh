@@ -4,6 +4,7 @@
 # ------------------------------------------------------------
 
 PORT="${PORT:-43001}"
+FRONTEND_PORT="${FRONTEND_PORT:-43000}"
 START_COMMAND="./start.sh"
 LOG_DIR="./logs"
 LOG_FILE="$LOG_DIR/server.log"
@@ -31,11 +32,13 @@ is_running() {
 }
 
 port_in_use() {
-  lsof -i :"$PORT" -P -n 2>/dev/null | grep -q LISTEN
+  local port="$1"
+  lsof -i :"$port" -P -n 2>/dev/null | grep -q LISTEN
 }
 
 listener_pid() {
-  lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null | head -n 1
+  local port="$1"
+  lsof -ti :"$port" -sTCP:LISTEN 2>/dev/null | head -n 1
 }
 
 launch_detached() {
@@ -68,9 +71,15 @@ start_server() {
     return 0
   fi
 
-  if port_in_use; then
+  if port_in_use "$PORT"; then
     echo -e "${RED}Port $PORT is already in use${NC}"
     lsof -i :"$PORT" -P -n | grep LISTEN || true
+    return 1
+  fi
+
+  if port_in_use "$FRONTEND_PORT"; then
+    echo -e "${RED}Port $FRONTEND_PORT is already in use${NC}"
+    lsof -i :"$FRONTEND_PORT" -P -n | grep LISTEN || true
     return 1
   fi
 
@@ -83,15 +92,19 @@ start_server() {
   fi
   echo "$DETACHED_PID" >"$PID_FILE"
 
-  echo -n "Waiting for server"
+  echo -n "Waiting for servers"
   for i in {1..30}; do
-    local active_pid
-    active_pid="$(listener_pid)"
-    if [[ -n "$active_pid" ]]; then
+    local backend_pid
+    local frontend_pid
+    backend_pid="$(listener_pid "$PORT")"
+    frontend_pid="$(listener_pid "$FRONTEND_PORT")"
+    if [[ -n "$backend_pid" && -n "$frontend_pid" ]]; then
       echo -e "\n${GREEN}CodeDeck started${NC}"
-      echo -e "  URL:          ${GREEN}http://localhost:43000${NC}"
+      echo -e "  Frontend URL: ${GREEN}http://localhost:$FRONTEND_PORT${NC}"
+      echo -e "  Backend URL:  ${GREEN}http://localhost:$PORT${NC}"
       echo -e "  Launcher PID: ${GREEN}$DETACHED_PID${NC}"
-      echo -e "  Backend PID:  ${GREEN}$active_pid${NC}"
+      echo -e "  Frontend PID: ${GREEN}$frontend_pid${NC}"
+      echo -e "  Backend PID:  ${GREEN}$backend_pid${NC}"
       echo -e "  Logs:         ${GREEN}$LOG_FILE${NC}"
       return 0
     fi
@@ -99,7 +112,7 @@ start_server() {
     sleep 1
   done
 
-  echo -e "\n${RED}Server failed to start within 30s${NC}"
+  echo -e "\n${RED}Servers failed to start within 30s${NC}"
   tail -20 "$LOG_FILE" 2>/dev/null
   is_running && kill "$(cat $PID_FILE)" 2>/dev/null
   rm -f "$PID_FILE"
@@ -134,17 +147,23 @@ stop_server() {
 check_status() {
   if is_running; then
     local pid
-    local active_pid
+    local backend_pid
+    local frontend_pid
     pid=$(cat "$PID_FILE")
-    active_pid="$(listener_pid)"
-    echo -e "${GREEN}Server is running${NC} (launcher PID: $pid, port: $PORT)"
-    if [[ -n "$active_pid" ]]; then
-      echo -e "${GREEN}Backend listener PID:${NC} $active_pid"
+    backend_pid="$(listener_pid "$PORT")"
+    frontend_pid="$(listener_pid "$FRONTEND_PORT")"
+    echo -e "${GREEN}Server is running${NC} (launcher PID: $pid, backend port: $PORT, frontend port: $FRONTEND_PORT)"
+    if [[ -n "$frontend_pid" ]]; then
+      echo -e "${GREEN}Frontend listener PID:${NC} $frontend_pid"
+    fi
+    if [[ -n "$backend_pid" ]]; then
+      echo -e "${GREEN}Backend listener PID:${NC} $backend_pid"
     fi
     [[ -f "$LOG_FILE" ]] && { echo -e "\n${YELLOW}Recent logs:${NC}"; tail -5 "$LOG_FILE"; }
   else
     echo -e "${RED}Server is not running${NC}"
-    port_in_use && echo -e "${YELLOW}Warning: port $PORT is in use by another process${NC}"
+    port_in_use "$PORT" && echo -e "${YELLOW}Warning: backend port $PORT is in use by another process${NC}"
+    port_in_use "$FRONTEND_PORT" && echo -e "${YELLOW}Warning: frontend port $FRONTEND_PORT is in use by another process${NC}"
   fi
 }
 
