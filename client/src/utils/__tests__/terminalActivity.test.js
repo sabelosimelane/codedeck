@@ -144,17 +144,17 @@ describe('terminalActivity', () => {
 
   it('does not match a sibling project whose name shares a hyphenated prefix', () => {
     const session = {
-      sessionId: 'store-of-value-config-1',
-      cwd: '/tmp/store-of-value/store-of-value-config',
+      sessionId: 'alpha-suite-config-1',
+      cwd: '/tmp/alpha-suite/alpha-suite-config',
       alive: true,
     };
 
     expect(findProjectForSession(session, [
-      { name: 'store-of-value', path: '/tmp/store-of-value' },
-      { name: 'store-of-value-config', path: '/tmp/store-of-value/store-of-value-config' },
+      { name: 'alpha-suite', path: '/tmp/alpha-suite' },
+      { name: 'alpha-suite-config', path: '/tmp/alpha-suite/alpha-suite-config' },
     ])).toEqual({
-      name: 'store-of-value-config',
-      path: '/tmp/store-of-value/store-of-value-config',
+      name: 'alpha-suite-config',
+      path: '/tmp/alpha-suite/alpha-suite-config',
     });
   });
 

@@ -91,29 +91,29 @@ describe('TerminalArea live session hydration', () => {
   it('does not treat sessions from hyphen-prefixed sibling projects as belonging to the selected project', async () => {
     const sessions = [
       {
-        sessionId: 'store-of-value-config-1',
-        cwd: '/tmp/store-of-value/store-of-value-config',
+        sessionId: 'alpha-suite-config-1',
+        cwd: '/tmp/alpha-suite/alpha-suite-config',
         alive: true,
         wsAttached: true,
       },
       {
-        sessionId: 'store-of-value-3',
-        cwd: '/tmp/store-of-value/backend',
+        sessionId: 'alpha-suite-3',
+        cwd: '/tmp/alpha-suite/backend',
         alive: true,
         wsAttached: true,
       },
     ];
 
     const result = resolveInitialTerminalState({
-      projectName: 'store-of-value',
-      projectPath: '/tmp/store-of-value',
+      projectName: 'alpha-suite',
+      projectPath: '/tmp/alpha-suite',
       savedLayout: null,
       liveSessions: sessions,
     });
 
     expect(result.state.tabs).toHaveLength(1);
-    expect(result.state.tabs[0].panes[0].sessionId).toBe('store-of-value-3');
-    expect(result.state.tabs[0].label).toBe('store-of-value-3');
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('alpha-suite-3');
+    expect(result.state.tabs[0].label).toBe('alpha-suite-3');
     expect(result.sessionCounter).toBe(3);
   });
 
