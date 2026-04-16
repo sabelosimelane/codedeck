@@ -38,6 +38,18 @@ describe('shouldPruneTerminalSession', () => {
     })).toBe(false);
   });
 
+  it('does not prune recoverable tmux sessions even after multiple days detached', () => {
+    const runtime = { isSessionRecoverable: vi.fn(() => true) };
+    const entry = createEntry({ alive: false });
+
+    expect(shouldPruneTerminalSession({
+      entry,
+      sessionId: 'demo-1',
+      runtime,
+      nowMs: Date.parse('2026-04-15T10:00:00.000Z'),
+    })).toBe(false);
+  });
+
   it('never prunes sessions with an attached websocket', () => {
     const runtime = { isSessionRecoverable: vi.fn(() => false) };
     const entry = createEntry({ wsAttached: true });

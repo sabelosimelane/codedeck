@@ -208,12 +208,20 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         sessionCounter = resolved.sessionCounter;
         setState(resolved.state);
       } catch {
-        // Backend unreachable — start fresh rather than showing stale layout
-        clearLayout(project.name);
-        tabCounter = 0;
-        sessionCounter = 0;
-        const tab = createTab(project.name);
-        setState({ tabs: [tab], activeTabId: tab.id });
+        if (saved) {
+          tabCounter = saved.tabCounter ?? saved.tabs?.length ?? 0;
+          sessionCounter = saved.sessionCounter ?? 0;
+          setState({
+            tabs: saved.tabs ?? [],
+            activeTabId: saved.activeTabId ?? saved.tabs?.[0]?.id ?? null,
+          });
+        } else {
+          // Backend unreachable and no saved layout exists — start fresh
+          tabCounter = 0;
+          sessionCounter = 0;
+          const tab = createTab(project.name);
+          setState({ tabs: [tab], activeTabId: tab.id });
+        }
       } finally {
         if (!cancelled) restoringRef.current = false;
       }

@@ -1,6 +1,5 @@
 const DEAD_SESSION_TTL_MS = 15 * 1000;
 const DETACHED_UNRECOVERABLE_TTL_MS = 5 * 60 * 1000;
-const DETACHED_RECOVERABLE_TTL_MS = 30 * 60 * 1000;
 
 function getAgeMs(isoString, nowMs) {
   if (!isoString) return Number.POSITIVE_INFINITY;
@@ -16,7 +15,6 @@ export function shouldPruneTerminalSession({
   nowMs = Date.now(),
   deadSessionTtlMs = DEAD_SESSION_TTL_MS,
   detachedUnrecoverableTtlMs = DETACHED_UNRECOVERABLE_TTL_MS,
-  detachedRecoverableTtlMs = DETACHED_RECOVERABLE_TTL_MS,
 }) {
   if (!entry || entry.wsAttached) return false;
 
@@ -31,7 +29,7 @@ export function shouldPruneTerminalSession({
   }
 
   if (recoverable) {
-    return detachedForMs >= detachedRecoverableTtlMs;
+    return false;
   }
 
   return detachedForMs >= detachedUnrecoverableTtlMs;
@@ -43,7 +41,6 @@ export function pruneTerminalSessions({
   nowMs = Date.now(),
   deadSessionTtlMs = DEAD_SESSION_TTL_MS,
   detachedUnrecoverableTtlMs = DETACHED_UNRECOVERABLE_TTL_MS,
-  detachedRecoverableTtlMs = DETACHED_RECOVERABLE_TTL_MS,
   onPruned = () => {},
 }) {
   const prunedSessionIds = [];
@@ -56,7 +53,6 @@ export function pruneTerminalSessions({
       nowMs,
       deadSessionTtlMs,
       detachedUnrecoverableTtlMs,
-      detachedRecoverableTtlMs,
     })) {
       continue;
     }
