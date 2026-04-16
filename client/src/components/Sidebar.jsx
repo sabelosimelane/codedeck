@@ -86,17 +86,20 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
   useEffect(() => {
     let cancelled = false;
 
-    fetch('/api/config/terminalFinishCooldownSeconds')
+    fetch('/api/config')
       .then(async res => {
-        if (res.status === 404) return { value: null };
         if (!res.ok) throw new Error('Failed to load notification cooldown');
         return res.json();
       })
       .then(data => {
         if (cancelled) return;
-        notificationCooldownMsRef.current = resolveTerminalCompletionNotificationMs(data.value);
+        notificationCooldownMsRef.current = resolveTerminalCompletionNotificationMs(
+          data.terminalFinishCooldownSeconds
+        );
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.warn('Failed to load terminal finish cooldown config', error);
+      });
 
     return () => {
       cancelled = true;

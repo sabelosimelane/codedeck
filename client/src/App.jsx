@@ -100,12 +100,18 @@ function AppContent() {
 
   // Poll session status every 2 seconds for sidebar terminal list
   useEffect(() => {
+    let polling = false;
+
     const poll = async () => {
+      if (polling) return;
+      polling = true;
       try {
         const res = await fetch('/api/sessions');
         if (res.ok) setSessionStatus(await res.json());
       } catch {
         // Silent — polling failure is not user-actionable
+      } finally {
+        polling = false;
       }
     };
     poll();
