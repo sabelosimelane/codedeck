@@ -136,7 +136,7 @@ const TAB_STATUS_STYLES = {
   },
 };
 
-export default function TerminalArea({ project, sessionStatus = [] }) {
+export default function TerminalArea({ project, sessionStatus = [], onSessionStatusRefresh = () => {} }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
@@ -192,6 +192,8 @@ export default function TerminalArea({ project, sessionStatus = [] }) {
         const liveSessions = await res.json();
 
         if (cancelled) return;
+
+        onSessionStatusRefresh(liveSessions);
 
         const resolved = resolveInitialTerminalState({
           projectName: project.name,

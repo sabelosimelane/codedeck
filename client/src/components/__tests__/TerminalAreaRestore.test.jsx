@@ -63,10 +63,12 @@ const SAVED_LAYOUT = {
 
 describe('TerminalArea restore fallback', () => {
   let originalFetch;
+  let onSessionStatusRefresh;
 
   beforeEach(() => {
     originalFetch = global.fetch;
     mocks.showToast.mockReset();
+    onSessionStatusRefresh = vi.fn();
     localStorage.clear();
   });
 
@@ -79,7 +81,7 @@ describe('TerminalArea restore fallback', () => {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify(SAVED_LAYOUT));
     global.fetch = vi.fn().mockRejectedValue(new Error('backend unavailable'));
 
-    render(<TerminalArea project={PROJECT} sessionStatus={[]} />);
+    render(<TerminalArea project={PROJECT} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />);
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith('/api/sessions');
@@ -87,6 +89,23 @@ describe('TerminalArea restore fallback', () => {
 
     await waitFor(() => {
       expect(localStorage.getItem(LAYOUT_KEY)).toBe(JSON.stringify(SAVED_LAYOUT));
+    });
+  });
+
+  it('publishes restore-time session snapshots to the app shell', async () => {
+    const liveSessions = [
+      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+    ];
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => liveSessions,
+    });
+
+    render(<TerminalArea project={PROJECT} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />);
+
+    await waitFor(() => {
+      expect(onSessionStatusRefresh).toHaveBeenCalledWith(liveSessions);
     });
   });
 });

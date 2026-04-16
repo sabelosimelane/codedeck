@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
 import FileTree from './components/FileTree';
@@ -35,6 +35,7 @@ function AppContent() {
     return saved ? parseInt(saved, 10) : 260;
   });
   const { showToast } = useToast();
+  const sessionStatusRequestInFlightRef = useRef(false);
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -98,26 +99,25 @@ function AppContent() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  const fetchSessionStatus = useCallback(async () => {
+    if (sessionStatusRequestInFlightRef.current) return;
+    sessionStatusRequestInFlightRef.current = true;
+    try {
+      const res = await fetch('/api/sessions');
+      if (res.ok) setSessionStatus(await res.json());
+    } catch {
+      // Silent — background session refresh failure is not user-actionable
+    } finally {
+      sessionStatusRequestInFlightRef.current = false;
+    }
+  }, []);
+
   // Poll session status every 2 seconds for sidebar terminal list
   useEffect(() => {
-    let polling = false;
-
-    const poll = async () => {
-      if (polling) return;
-      polling = true;
-      try {
-        const res = await fetch('/api/sessions');
-        if (res.ok) setSessionStatus(await res.json());
-      } catch {
-        // Silent — polling failure is not user-actionable
-      } finally {
-        polling = false;
-      }
-    };
-    poll();
-    const id = setInterval(poll, 2000);
+    fetchSessionStatus();
+    const id = setInterval(fetchSessionStatus, 2000);
     return () => clearInterval(id);
-  }, []);
+  }, [fetchSessionStatus]);
 
   const addProject = async (name, path) => {
     try {
@@ -249,7 +249,10 @@ function AppContent() {
         shelvedProjects={shelvedProjects}
         activeProject={activeProject}
         isCompact={isSidebarCompact}
-        onSelect={setActiveProject}
+        onSelect={(project) => {
+          setActiveProject(project);
+          fetchSessionStatus();
+        }}
         onAdd={addProject}
         onRemove={removeProject}
         onRename={renameProject}
@@ -278,7 +281,11 @@ function AppContent() {
       )}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {activeProject ? (
-          <TerminalArea project={activeProject} sessionStatus={sessionStatus} />
+          <TerminalArea
+            project={activeProject}
+            sessionStatus={sessionStatus}
+            onSessionStatusRefresh={setSessionStatus}
+          />
         ) : (
           <div style={{
             flex: 1,
@@ -308,6 +315,7 @@ function AppContent() {
           projects={activeProjects}
           onSelect={(project) => {
             setActiveProject(project);
+            fetchSessionStatus();
             setShowProjectSwitcher(false);
           }}
           onClose={() => setShowProjectSwitcher(false)}

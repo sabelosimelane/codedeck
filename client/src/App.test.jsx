@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, fireEvent, screen } from '@testing-library/react';
 import React from 'react';
 
 const mocks = vi.hoisted(() => ({
@@ -7,7 +7,15 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('./components/Sidebar', () => ({
-  default: () => null,
+  default: ({ activeProjects = [], onSelect }) => (
+    <div>
+      {activeProjects.map(project => (
+        <button key={project.name} onClick={() => onSelect(project)}>
+          {project.name}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 vi.mock('./components/TerminalArea', () => ({
@@ -92,5 +100,37 @@ describe('App session polling', () => {
 
     await vi.advanceTimersByTimeAsync(2000);
     expect(sessionRequestCount).toBe(1);
+  });
+
+  it('refreshes /api/sessions immediately when selecting a project', async () => {
+    let sessionRequestCount = 0;
+
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/projects') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [{ name: 'BookMe', path: '/tmp/bookme' }],
+        });
+      }
+
+      if (url === '/api/sessions') {
+        sessionRequestCount += 1;
+        return Promise.resolve({
+          ok: true,
+          json: async () => [],
+        });
+      }
+
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    render(<App />);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sessionRequestCount).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'BookMe' }));
+
+    expect(sessionRequestCount).toBe(2);
   });
 });

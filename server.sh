@@ -88,11 +88,11 @@ start_server() {
     local active_pid
     active_pid="$(listener_pid)"
     if [[ -n "$active_pid" ]]; then
-      echo "$active_pid" >"$PID_FILE"
       echo -e "\n${GREEN}CodeDeck started${NC}"
-      echo -e "  URL:  ${GREEN}http://localhost:43000${NC}"
-      echo -e "  PID:  ${GREEN}$active_pid${NC}"
-      echo -e "  Logs: ${GREEN}$LOG_FILE${NC}"
+      echo -e "  URL:          ${GREEN}http://localhost:43000${NC}"
+      echo -e "  Launcher PID: ${GREEN}$DETACHED_PID${NC}"
+      echo -e "  Backend PID:  ${GREEN}$active_pid${NC}"
+      echo -e "  Logs:         ${GREEN}$LOG_FILE${NC}"
       return 0
     fi
     echo -n "."
@@ -134,8 +134,13 @@ stop_server() {
 check_status() {
   if is_running; then
     local pid
+    local active_pid
     pid=$(cat "$PID_FILE")
-    echo -e "${GREEN}Server is running${NC} (PID: $pid, port: $PORT)"
+    active_pid="$(listener_pid)"
+    echo -e "${GREEN}Server is running${NC} (launcher PID: $pid, port: $PORT)"
+    if [[ -n "$active_pid" ]]; then
+      echo -e "${GREEN}Backend listener PID:${NC} $active_pid"
+    fi
     [[ -f "$LOG_FILE" ]] && { echo -e "\n${YELLOW}Recent logs:${NC}"; tail -5 "$LOG_FILE"; }
   else
     echo -e "${RED}Server is not running${NC}"
