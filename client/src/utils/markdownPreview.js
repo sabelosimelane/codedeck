@@ -90,6 +90,98 @@ function consumeCodeFence(lines, startIndex) {
   };
 }
 
+function splitTableRow(line) {
+  const trimmed = line.trim();
+  if (!trimmed.includes('|')) return null;
+
+  const content = trimmed
+    .replace(/^\|/, '')
+    .replace(/\|$/, '');
+
+  const cells = [];
+  let current = '';
+  let escaped = false;
+
+  for (const char of content) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '|') {
+      cells.push(current.trim());
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaped) current += '\\';
+  cells.push(current.trim());
+
+  return cells;
+}
+
+function getTableAlignment(separatorCell) {
+  const trimmed = separatorCell.trim();
+  if (!/^:?-{3,}:?$/.test(trimmed)) return null;
+  if (trimmed.startsWith(':') && trimmed.endsWith(':')) return 'center';
+  if (trimmed.endsWith(':')) return 'right';
+  if (trimmed.startsWith(':')) return 'left';
+  return null;
+}
+
+function consumeTable(lines, startIndex) {
+  const headerCells = splitTableRow(lines[startIndex]);
+  const separatorCells = splitTableRow(lines[startIndex + 1] || '');
+
+  if (!headerCells || !separatorCells || headerCells.length !== separatorCells.length || headerCells.length === 0) {
+    return null;
+  }
+
+  const validSeparator = separatorCells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+  if (!validSeparator) return null;
+
+  const alignments = separatorCells.map(getTableAlignment);
+
+  const buildCell = (tag, content, alignment, options = {}) => {
+    const style = alignment ? ` style="text-align:${alignment}"` : '';
+    const dataLabel = options.dataLabel
+      ? ` data-label="${escapeAttribute(options.dataLabel)}"`
+      : '';
+    const cellContent = content ? renderInline(content) : '&nbsp;';
+    return `<${tag}${style}${dataLabel}>${cellContent}</${tag}>`;
+  };
+
+  const head = `<thead><tr>${headerCells.map((cell, index) => buildCell('th', cell, alignments[index])).join('')}</tr></thead>`;
+
+  const rows = [];
+  let index = startIndex + 2;
+
+  while (index < lines.length) {
+    const trimmed = lines[index].trim();
+    if (!trimmed || !trimmed.includes('|')) break;
+
+    const rowCells = splitTableRow(lines[index]);
+    if (!rowCells || rowCells.length !== headerCells.length) break;
+
+    rows.push(`<tr>${rowCells.map((cell, cellIndex) => buildCell('td', cell, alignments[cellIndex], { dataLabel: headerCells[cellIndex] })).join('')}</tr>`);
+    index += 1;
+  }
+
+  return {
+    index,
+    html: `<div class="markdown-table-wrap"><table>${head}<tbody>${rows.join('')}</tbody></table></div>`,
+  };
+}
+
 export function renderMarkdownToHtml(markdown) {
   const normalized = markdown.replace(/\r\n?/g, '\n');
   const lines = normalized.split('\n');
@@ -108,6 +200,13 @@ export function renderMarkdownToHtml(markdown) {
       const fence = consumeCodeFence(lines, index);
       blocks.push(fence.html);
       index = fence.index;
+      continue;
+    }
+
+    const table = consumeTable(lines, index);
+    if (table) {
+      blocks.push(table.html);
+      index = table.index;
       continue;
     }
 
@@ -153,6 +252,7 @@ export function renderMarkdownToHtml(markdown) {
       if (
         !candidateTrimmed ||
         /^```/.test(candidateTrimmed) ||
+        /^\|?.*\|.*$/.test(candidateTrimmed) && consumeTable(lines, index) ||
         /^(#{1,6})\s+/.test(candidateTrimmed) ||
         /^([-*_])(?:\s*\1){2,}\s*$/.test(candidateTrimmed) ||
         /^\s*>/.test(candidate) ||

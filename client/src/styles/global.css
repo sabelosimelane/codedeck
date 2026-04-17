@@ -510,6 +510,118 @@ input:focus {
   border-left: 3px solid rgba(95, 224, 186, 0.35);
 }
 
+.markdown-preview .markdown-table-wrap {
+  overflow-x: auto;
+  margin: 1.25rem 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.markdown-preview table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+}
+
+.markdown-preview thead {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.markdown-preview th,
+.markdown-preview td {
+  padding: 0.72rem 0.9rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  vertical-align: top;
+}
+
+.markdown-preview th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(28, 32, 40, 0.96);
+  backdrop-filter: blur(10px);
+  color: var(--text-primary);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.markdown-preview td {
+  color: var(--text-secondary);
+}
+
+.markdown-preview tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.markdown-preview tbody tr:hover {
+  background: rgba(95, 224, 186, 0.05);
+}
+
+.markdown-preview tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .markdown-preview .markdown-table-wrap {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .markdown-preview table {
+    min-width: 0;
+  }
+
+  .markdown-preview thead {
+    display: none;
+  }
+
+  .markdown-preview table,
+  .markdown-preview tbody,
+  .markdown-preview tr,
+  .markdown-preview td {
+    display: block;
+    width: 100%;
+  }
+
+  .markdown-preview tbody {
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .markdown-preview tbody tr {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.03);
+    overflow: hidden;
+  }
+
+  .markdown-preview tbody tr:nth-child(even),
+  .markdown-preview tbody tr:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .markdown-preview td {
+    display: grid;
+    grid-template-columns: minmax(110px, 38%) 1fr;
+    gap: 0.75rem;
+    padding: 0.72rem 0.9rem;
+    text-align: left !important;
+  }
+
+  .markdown-preview td::before {
+    content: attr(data-label);
+    color: var(--text-primary);
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+}
+
 .markdown-preview code {
   font-family: var(--font-mono);
   font-size: 0.92em;
@@ -539,6 +651,11 @@ input:focus {
 .markdown-preview hr {
   border: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.markdown-preview .mermaid,
+.mermaid-preview-trigger {
+  cursor: zoom-in;
 }
 
 /* Project Quick Switcher */

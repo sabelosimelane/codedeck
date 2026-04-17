@@ -43,4 +43,20 @@ describe('renderMarkdownToHtml', () => {
 
     expect(html).toContain('<div class="mermaid">graph TD\n  A --&gt; B</div>');
   });
+
+  it('renders markdown tables with alignment and inline formatting', () => {
+    const html = renderMarkdownToHtml([
+      '| Component | Change | Owner |',
+      '| :--- | :---: | ---: |',
+      '| `src/a.js` | **New** | Alex |',
+      '| `src/b.js` | Modified | Sam |',
+    ].join('\n'));
+
+    expect(html).toContain('<div class="markdown-table-wrap"><table>');
+    expect(html).toContain('<th style="text-align:left">Component</th>');
+    expect(html).toContain('<th style="text-align:center">Change</th>');
+    expect(html).toContain('<th style="text-align:right">Owner</th>');
+    expect(html).toContain('<td style="text-align:left" data-label="Component"><code>src/a.js</code></td>');
+    expect(html).toContain('<td style="text-align:center" data-label="Change"><strong>New</strong></td>');
+  });
 });

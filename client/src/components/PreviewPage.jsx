@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Copy, Download, ExternalLink, FileCode2, RefreshCw } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Copy, Download, ExternalLink, FileCode2, Minus, Plus, RefreshCw, X } from 'lucide-react';
 import mermaid from 'mermaid';
 import { renderMarkdownToHtml } from '../utils/markdownPreview';
 
@@ -9,8 +9,31 @@ mermaid.initialize({
   securityLevel: 'loose',
 });
 
+const MERMAID_MIN_ZOOM = 0.6;
+const MERMAID_MAX_ZOOM = 2.4;
+const MERMAID_ZOOM_STEP = 0.2;
+
+function roundZoom(value) {
+  return Math.round(value * 100) / 100;
+}
+
+function getMermaidSvgMetrics(svg) {
+  const viewBox = svg.viewBox?.baseVal;
+  const width = viewBox?.width || svg.width?.baseVal?.value || svg.getBoundingClientRect().width;
+  const height = viewBox?.height || svg.height?.baseVal?.value || svg.getBoundingClientRect().height;
+  return { width, height };
+}
+
 export default function PreviewPage({ filePath, onOpenFile }) {
   const [preview, setPreview] = useState({ state: 'loading' });
+  const [lightboxZoom, setLightboxZoom] = useState(1);
+  const [activeMermaid, setActiveMermaid] = useState(null);
+  const [isPanningLightbox, setIsPanningLightbox] = useState(false);
+  const lightboxDiagramRef = useRef(null);
+  const lightboxViewportRef = useRef(null);
+  const panStateRef = useRef(null);
+  const lightboxZoomRef = useRef(1);
+  const pendingLightboxScrollRef = useRef(null);
 
   useEffect(() => {
     const html = document.documentElement;
@@ -32,6 +55,15 @@ export default function PreviewPage({ filePath, onOpenFile }) {
       if (root) root.style.overflow = previous.rootOverflow;
     };
   }, []);
+
+  useEffect(() => {
+    setLightboxZoom(1);
+    setActiveMermaid(null);
+    setIsPanningLightbox(false);
+    panStateRef.current = null;
+    lightboxZoomRef.current = 1;
+    pendingLightboxScrollRef.current = null;
+  }, [filePath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,7 +97,6 @@ export default function PreviewPage({ filePath, onOpenFile }) {
 
   useEffect(() => {
     if (preview.state === 'ready' && (preview.format === 'markdown' || preview.format === 'mermaid')) {
-      // Small delay to ensure DOM is ready after React render
       const timer = setTimeout(() => {
         mermaid.run({
           querySelector: '.mermaid',
@@ -74,6 +105,44 @@ export default function PreviewPage({ filePath, onOpenFile }) {
       return () => clearTimeout(timer);
     }
   }, [preview]);
+
+  useEffect(() => {
+    lightboxZoomRef.current = lightboxZoom;
+
+    if (!activeMermaid) return;
+
+    const svg = lightboxDiagramRef.current?.querySelector('svg');
+    if (!svg) return;
+
+    svg.setAttribute('width', `${activeMermaid.width}`);
+    svg.setAttribute('height', `${activeMermaid.height}`);
+    svg.style.width = `${activeMermaid.width}px`;
+    svg.style.height = `${activeMermaid.height}px`;
+    svg.style.maxWidth = 'none';
+    svg.style.transformOrigin = 'top left';
+    svg.style.transform = `scale(${lightboxZoom})`;
+
+    const pendingScroll = pendingLightboxScrollRef.current;
+    const viewport = lightboxViewportRef.current;
+    if (pendingScroll && viewport) {
+      viewport.scrollLeft = pendingScroll.left;
+      viewport.scrollTop = pendingScroll.top;
+      pendingLightboxScrollRef.current = null;
+    }
+  }, [activeMermaid, lightboxZoom]);
+
+  useEffect(() => {
+    if (!activeMermaid) return undefined;
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setActiveMermaid(null);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeMermaid]);
 
   useEffect(() => {
     const fileName = filePath.split('/').pop() || 'Preview';
@@ -100,6 +169,83 @@ export default function PreviewPage({ filePath, onOpenFile }) {
     URL.revokeObjectURL(url);
   };
 
+  const openMermaidLightbox = (mermaidElement) => {
+    const svg = mermaidElement?.querySelector('svg');
+    if (!svg) return;
+
+    const { width, height } = getMermaidSvgMetrics(svg);
+    if (!(width > 0 && height > 0)) return;
+
+    setLightboxZoom(1);
+    setActiveMermaid({
+      markup: svg.outerHTML,
+      width,
+      height,
+    });
+  };
+
+  const handleMarkdownBodyClick = (event) => {
+    const mermaidElement = event.target.closest('.mermaid');
+    if (!mermaidElement) return;
+    openMermaidLightbox(mermaidElement);
+  };
+
+  const handleLightboxPointerDown = (event) => {
+    if (!lightboxViewportRef.current || event.button !== 0) return;
+
+    panStateRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: lightboxViewportRef.current.scrollLeft,
+      scrollTop: lightboxViewportRef.current.scrollTop,
+    };
+    setIsPanningLightbox(true);
+  };
+
+  const handleLightboxPointerMove = (event) => {
+    if (!lightboxViewportRef.current || !panStateRef.current) return;
+
+    const deltaX = event.clientX - panStateRef.current.startX;
+    const deltaY = event.clientY - panStateRef.current.startY;
+
+    lightboxViewportRef.current.scrollLeft = panStateRef.current.scrollLeft - deltaX;
+    lightboxViewportRef.current.scrollTop = panStateRef.current.scrollTop - deltaY;
+  };
+
+  const handleLightboxWheel = (event) => {
+    if (!activeMermaid || (!event.metaKey && !event.ctrlKey) || !lightboxViewportRef.current) return;
+
+    event.preventDefault();
+
+    const currentZoom = lightboxZoomRef.current;
+    const direction = event.deltaY < 0 ? 1 : -1;
+    const nextZoom = Math.min(
+      MERMAID_MAX_ZOOM,
+      Math.max(MERMAID_MIN_ZOOM, roundZoom(currentZoom + (direction * MERMAID_ZOOM_STEP))),
+    );
+
+    if (nextZoom === currentZoom) return;
+
+    const viewport = lightboxViewportRef.current;
+    const rect = viewport.getBoundingClientRect();
+    const offsetX = event.clientX - rect.left;
+    const offsetY = event.clientY - rect.top;
+    const baseX = (viewport.scrollLeft + offsetX) / currentZoom;
+    const baseY = (viewport.scrollTop + offsetY) / currentZoom;
+
+    pendingLightboxScrollRef.current = {
+      left: Math.max(0, (baseX * nextZoom) - offsetX),
+      top: Math.max(0, (baseY * nextZoom) - offsetY),
+    };
+
+    setLightboxZoom(nextZoom);
+  };
+
+  const stopLightboxPanning = () => {
+    panStateRef.current = null;
+    setIsPanningLightbox(false);
+  };
+
   const renderBody = () => {
     if (preview.state === 'loading') {
       return <div style={emptyStateStyle}>Loading preview…</div>;
@@ -123,6 +269,7 @@ export default function PreviewPage({ filePath, onOpenFile }) {
           <article
             style={markdownArticleStyle}
             className="markdown-preview"
+            onClick={handleMarkdownBodyClick}
             dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(preview.content) }}
           />
         </div>
@@ -132,8 +279,16 @@ export default function PreviewPage({ filePath, onOpenFile }) {
     if (preview.format === 'mermaid') {
       return (
         <div style={markdownFrameStyle}>
-          <div className="mermaid" style={{ display: 'flex', justifyContent: 'center' }}>
-            {preview.content}
+          <div style={mermaidViewportStyle}>
+            <div
+              className="mermaid-preview-trigger"
+              style={mermaidCanvasStyle}
+              onClick={(event) => openMermaidLightbox(event.currentTarget)}
+            >
+              <div className="mermaid mermaid-preview-diagram" style={mermaidDiagramStyle}>
+                {preview.content}
+              </div>
+            </div>
           </div>
         </div>
       );
@@ -234,6 +389,77 @@ export default function PreviewPage({ filePath, onOpenFile }) {
       </div>
 
       <main style={contentShellStyle}>{renderBody()}</main>
+
+      {activeMermaid && (
+        <div style={lightboxOverlayStyle} onClick={() => setActiveMermaid(null)} onMouseUp={stopLightboxPanning}>
+          <div style={lightboxPanelStyle} onClick={(event) => event.stopPropagation()}>
+            <div style={lightboxToolbarStyle}>
+              <div style={zoomPillStyle}>{Math.round(lightboxZoom * 100)}%</div>
+              <button
+                type="button"
+                style={{
+                  ...secondaryBtnStyle,
+                  ...(lightboxZoom <= MERMAID_MIN_ZOOM ? disabledBtnStyle : null),
+                }}
+                onClick={() => setLightboxZoom((value) => Math.max(MERMAID_MIN_ZOOM, roundZoom(value - MERMAID_ZOOM_STEP)))}
+                disabled={lightboxZoom <= MERMAID_MIN_ZOOM}
+              >
+                <Minus size={14} />
+                <span>Zoom out</span>
+              </button>
+              <button
+                type="button"
+                style={{
+                  ...secondaryBtnStyle,
+                  ...(lightboxZoom >= MERMAID_MAX_ZOOM ? disabledBtnStyle : null),
+                }}
+                onClick={() => setLightboxZoom((value) => Math.min(MERMAID_MAX_ZOOM, roundZoom(value + MERMAID_ZOOM_STEP)))}
+                disabled={lightboxZoom >= MERMAID_MAX_ZOOM}
+              >
+                <Plus size={14} />
+                <span>Zoom in</span>
+              </button>
+              <button
+                type="button"
+                style={{
+                  ...secondaryBtnStyle,
+                  ...(lightboxZoom === 1 ? disabledBtnStyle : null),
+                }}
+                onClick={() => setLightboxZoom(1)}
+                disabled={lightboxZoom === 1}
+              >
+                <span>Reset zoom</span>
+              </button>
+              <button type="button" style={secondaryBtnStyle} onClick={() => setActiveMermaid(null)}>
+                <X size={14} />
+                <span>Close</span>
+              </button>
+            </div>
+            <div
+              ref={lightboxViewportRef}
+              style={{
+                ...lightboxViewportStyle,
+                cursor: isPanningLightbox ? 'grabbing' : 'grab',
+              }}
+              onMouseDown={handleLightboxPointerDown}
+              onMouseMove={handleLightboxPointerMove}
+              onMouseUp={stopLightboxPanning}
+              onMouseLeave={stopLightboxPanning}
+              onWheel={handleLightboxWheel}
+            >
+              <div
+                style={{
+                  ...lightboxCanvasStyle,
+                  width: activeMermaid.width * lightboxZoom,
+                  height: activeMermaid.height * lightboxZoom,
+                }}
+              >
+                <div ref={lightboxDiagramRef} dangerouslySetInnerHTML={{ __html: activeMermaid.markup }} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -383,6 +609,17 @@ const warningPillStyle = {
   background: 'rgba(95, 224, 186, 0.1)',
 };
 
+const zoomPillStyle = {
+  ...metaPillStyle,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minWidth: 74,
+  height: 38,
+  padding: '0 12px',
+  color: 'var(--text-primary)',
+};
+
 const contentShellStyle = {
   position: 'relative',
   zIndex: 1,
@@ -423,6 +660,67 @@ const markdownArticleStyle = {
   fontSize: 16,
   color: 'var(--text-primary)',
   wordBreak: 'break-word',
+};
+
+const mermaidViewportStyle = {
+  overflow: 'auto',
+  padding: '8px 0 20px',
+};
+
+const mermaidCanvasStyle = {
+  minHeight: 220,
+  margin: '0 auto',
+  width: 'fit-content',
+};
+
+const mermaidDiagramStyle = {
+  display: 'inline-block',
+};
+
+const lightboxOverlayStyle = {
+  position: 'fixed',
+  inset: 0,
+  zIndex: 50,
+  display: 'flex',
+  alignItems: 'stretch',
+  justifyContent: 'center',
+  padding: 24,
+  background: 'rgba(4, 8, 12, 0.82)',
+  backdropFilter: 'blur(8px)',
+};
+
+const lightboxPanelStyle = {
+  width: 'min(1400px, 100%)',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 16,
+  border: '1px solid rgba(255, 255, 255, 0.08)',
+  borderRadius: 20,
+  padding: 18,
+  background: 'rgba(16, 19, 26, 0.96)',
+  boxShadow: 'var(--shadow-soft)',
+};
+
+const lightboxToolbarStyle = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 10,
+  justifyContent: 'flex-end',
+};
+
+const lightboxViewportStyle = {
+  flex: 1,
+  overflow: 'auto',
+  borderRadius: 16,
+  border: '1px solid rgba(255, 255, 255, 0.06)',
+  background: 'rgba(0, 0, 0, 0.26)',
+  padding: 20,
+};
+
+const lightboxCanvasStyle = {
+  margin: '0 auto',
+  minWidth: 'fit-content',
+  minHeight: 'fit-content',
 };
 
 const codeScrollStyle = {
