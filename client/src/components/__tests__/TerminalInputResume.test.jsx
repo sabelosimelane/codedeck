@@ -185,4 +185,21 @@ describe('Terminal input resume after refocus', () => {
 
     expect(mocks.term.focus).toHaveBeenCalled();
   });
+
+  it('drops focus tracking protocol replies instead of forwarding them to the PTY', () => {
+    render(<Terminal sessionId="s4" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's4', existing: false }) });
+    mocks.ws.send.mockClear();
+
+    const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
+    onDataCb?.('\x1b[I');
+    onDataCb?.('\x1b[O');
+
+    const inputSends = mocks.ws.send.mock.calls.filter(([arg]) => arg.includes('"type":"input"'));
+    expect(inputSends).toHaveLength(0);
+  });
 });

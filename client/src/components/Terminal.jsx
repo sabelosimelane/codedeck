@@ -7,6 +7,7 @@ import { useToast } from './ToastContext';
 import { ChevronsDown } from 'lucide-react';
 import { shouldResumeFromSessionHandshake } from '../utils/terminalResume';
 import { buildTerminalWebSocketUrl } from '../utils/terminalWsUrl';
+import { isTerminalProtocolReply } from '../utils/terminalProtocolReplies';
 import {
   shouldSyncVisibleTerminal,
   shouldWriteTerminalViewport,
@@ -392,11 +393,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     //
     // DA/CPR responses also occur OUTSIDE replay — e.g. fitAddon.fit() on
     // tab switch triggers a resize, the shell sends DA queries, and xterm.js
-    // emits responses here. Filter them unconditionally.
-    const TERMINAL_RESPONSE_RE = /^\x1b\[\??[0-9;]*[cR]$|^\x1b\[>[0-9;]*c$/;
+    // emits responses here. Focus tracking replies can also be emitted when the
+    // terminal regains focus. Filter these protocol replies unconditionally.
     term.onData((data) => {
       if (resumeInFlightRef.current) return;
-      if (TERMINAL_RESPONSE_RE.test(data)) return;
+      if (isTerminalProtocolReply(data)) return;
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data }));
