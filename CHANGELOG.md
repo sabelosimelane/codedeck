@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-04-20] - Hydrate durable tmux history without breaking text selection
+
+### Executive Summary
+* Improved CodeDeck’s durable terminal experience so browser-attached tmux sessions behave much more like a native developer terminal. Existing tmux history is now restored into the browser on reconnect, mouse-wheel scrolling can drive tmux history even when the browser has no local scrollback yet, and the earlier regression that broke drag selection/copy has been fixed by preserving normal browser text selection while routing history scrolling through the backend instead of tmux mouse mode.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Durable tmux-backed terminals could reconnect with missing browser scrollback, and the first scrolling fix depended on `tmux mouse on`, which activated xterm mouse mode and caused drag selection to collapse immediately instead of remaining copyable.
+  * **Solution:** Restored durable tmux history into the browser on attach, kept xterm’s own large local scrollback available, and replaced tmux mouse-mode scrolling with an explicit backend-driven `scroll_history` path that enters tmux copy mode, scrolls history, and exits copy mode at the live bottom without disabling normal browser selection.
+* **🛠️ Codebase:**
+  * `client/src/components/Terminal.jsx` — Added durable tmux history hydration, explicit xterm scrollback sizing, and tmux-specific wheel routing that asks the backend to scroll tmux history instead of enabling tmux mouse mode.
+  * `client/src/components/TerminalArea.jsx` — Passed each pane’s backend runtime type into `Terminal` so wheel behavior can differ correctly between raw PTY and tmux-backed sessions.
+  * `client/src/utils/terminalAutoScroll.js` — Added helpers for deciding when wheel input should route to tmux history and how many tmux history lines each wheel gesture should scroll.
+  * `server/terminal-runtime.js` — Added durable tmux scrollback capture, server-driven tmux history scrolling via copy-mode commands, raw-PTY no-op history helpers, and enforced tmux session options that keep history large while leaving tmux mouse mode off.
+  * `server/ws-handler.js` — Added durable tmux history hydration on reconnect, introduced `scroll_history` handling for tmux sessions, and guarded scroll-history failures so bad scroll commands do not corrupt terminal input handling.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalAutoScroll.test.jsx` — Added regression coverage proving tmux-backed wheel gestures are converted into backend `scroll_history` messages and that xterm keeps the configured large scrollback.
+  * `client/src/components/__tests__/TerminalHistoryRestore.test.jsx` — New regression test proving durable tmux history snapshots are written into xterm before live output resumes.
+  * `client/src/components/__tests__/TerminalFileDrop.test.jsx` — Updated terminal auto-scroll mocks to cover the new tmux wheel-routing helpers.
+  * `client/src/components/__tests__/TerminalInputResume.test.jsx` — Updated terminal auto-scroll mocks so reconnect/input coverage still reflects the expanded terminal wheel logic.
+  * `client/src/components/__tests__/hard-refresh-race.test.jsx` — Updated terminal auto-scroll mocks to preserve replay-race coverage with the new tmux history helpers in place.
+  * `client/src/utils/__tests__/terminalAutoScroll.test.js` — Added unit coverage for tmux history routing decisions and wheel-delta to tmux-line conversion.
+  * `server/__tests__/terminal-runtime.test.js` — Added coverage for keeping tmux mouse mode off, capturing durable tmux history, and driving tmux copy-mode scrolling from the runtime.
+  * `server/__tests__/ws-handler.test.js` — Added regression coverage proving `scroll_history` routes to the tmux runtime instead of PTY stdin and that durable tmux history is sent to newly attached browsers.
+
 ## [2026-04-20] - Fix durable terminal session discovery and identity drift
 
 ### Executive Summary

@@ -238,8 +238,17 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
 
   let entry = sessions.get(sessionId);
   const isExisting = !!entry;
+  let initialScrollback = '';
 
   if (!entry) {
+    if (
+      runtime.type === 'tmux'
+      && runtime.isSessionRecoverable(sessionId)
+      && typeof runtime.getSessionScrollback === 'function'
+    ) {
+      initialScrollback = runtime.getSessionScrollback(sessionId);
+    }
+
     // New session — spawn PTY and register listeners ONCE
     let ptyProcess;
     try {
@@ -380,6 +389,17 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
         const action = parsed.action || 'unknown';
         pushTimelineEvent(entry, `recovery_${action}`, `user-initiated ${action}`);
         console.log(`[terminal] recovery action=${action} session=${sessionId}`);
+      } else if (parsed.type === 'scroll_history') {
+        if (entry.runtimeType === 'tmux' && typeof runtime.scrollSessionHistory === 'function') {
+          try {
+            runtime.scrollSessionHistory(sessionId, {
+              direction: parsed.direction,
+              lines: parsed.lines,
+            });
+          } catch (err) {
+            console.warn(`[terminal] scroll_history_failed session=${sessionId} error=${err.message}`);
+          }
+        }
       } else if (parsed.type === 'visibility_change') {
         const prevVisibility = entry.documentVisibility;
         entry.documentVisibility = parsed.state || 'visible';
@@ -408,6 +428,10 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     pushTimelineEvent(entry, 'detach');
     console.log(`[terminal] detach session=${sessionId}`);
   });
+
+  if (initialScrollback && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'history', data: initialScrollback }));
+  }
 
   // Send session info — existing sessions let the client decide whether replay is needed
   ws.send(JSON.stringify({ type: 'session', sessionId, existing: isExisting }));

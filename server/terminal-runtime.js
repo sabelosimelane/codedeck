@@ -13,6 +13,8 @@ import { spawn } from 'node-pty';
 import { execFileSync } from 'child_process';
 import { buildShellEnv } from './shell-env.js';
 
+const TMUX_HISTORY_LIMIT = 10000;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -99,6 +101,20 @@ function createPtyRuntime() {
     },
 
     /**
+     * Raw PTY sessions have no durable external history to hydrate.
+     */
+    getSessionScrollback() {
+      return '';
+    },
+
+    /**
+     * Raw PTY sessions do not support server-driven history scrolling.
+     */
+    scrollSessionHistory() {
+      return false;
+    },
+
+    /**
      * Raw PTY sessions do not have external durable sessions to enumerate.
      */
     listSessionIds() {
@@ -110,6 +126,37 @@ function createPtyRuntime() {
 // ---------------------------------------------------------------------------
 // tmux-backed runtime
 // ---------------------------------------------------------------------------
+
+function ensureTmuxSessionOptions(tmuxName) {
+  execFileSync('tmux', [
+    'set-option', '-t', tmuxName, 'status', 'off',
+  ], { stdio: 'pipe' });
+  execFileSync('tmux', [
+    'set-option', '-t', tmuxName, 'history-limit', String(TMUX_HISTORY_LIMIT),
+  ], { stdio: 'pipe' });
+  execFileSync('tmux', [
+    'set-option', '-t', tmuxName, 'mouse', 'off',
+  ], { stdio: 'pipe' });
+}
+
+function getTmuxPaneTarget(sessionId) {
+  const tmuxName = sanitizeTmuxName(sessionId);
+  return execFileSync(
+    'tmux',
+    ['display-message', '-p', '-t', tmuxName, '#{pane_id}'],
+    { stdio: 'pipe', encoding: 'utf8' }
+  ).trim();
+}
+
+function getTmuxPaneNumberValue(target, format) {
+  const raw = execFileSync(
+    'tmux',
+    ['display-message', '-p', '-t', target, format],
+    { stdio: 'pipe', encoding: 'utf8' }
+  ).trim();
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 function createTmuxRuntime() {
   return {
@@ -133,13 +180,11 @@ function createTmuxRuntime() {
           '-x', String(cols),
           '-y', String(rows),
         ], { stdio: 'pipe' });
-        // Suppress tmux status bar — CodeDeck has its own tab/pane UI.
-        // Without this, tmux's default status-interval (15s) generates
-        // periodic PTY output that keeps the sidebar activity dot green.
-        execFileSync('tmux', [
-          'set-option', '-t', tmuxName, 'status', 'off',
-        ], { stdio: 'pipe' });
       }
+
+      // Keep tmux session options aligned with the browser terminal.
+      // history-limit matters for durable session restore after reload/server restart.
+      ensureTmuxSessionOptions(tmuxName);
 
       // Attach via node-pty so we get the same onData/onExit/write/resize API
       return spawn('tmux', ['attach-session', '-t', tmuxName], {
@@ -196,6 +241,78 @@ function createTmuxRuntime() {
       } catch {
         return entry.cwd;
       }
+    },
+
+    /**
+     * Capture tmux scrollback that sits ABOVE the currently visible pane.
+     * attach-session repaints the current viewport, but not the older history.
+     * Returning only the rows above the live viewport avoids duplicating the
+     * visible screen when the browser hydrates durable session history.
+     */
+    getSessionScrollback(sessionId) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+
+      try {
+        const paneHeight = parseInt(
+          execFileSync(
+            'tmux',
+            ['display-message', '-p', '-t', tmuxName, '#{pane_height}'],
+            { stdio: 'pipe', encoding: 'utf8' }
+          ).trim(),
+          10,
+        );
+
+        if (!Number.isFinite(paneHeight) || paneHeight <= 0) {
+          return '';
+        }
+
+        const output = execFileSync(
+          'tmux',
+          ['capture-pane', '-pJ', '-S', '-', '-E', `-${paneHeight}`, '-t', tmuxName],
+          { stdio: 'pipe', encoding: 'utf8' }
+        );
+
+        if (!output || output.trim().length === 0) {
+          return '';
+        }
+
+        return output.endsWith('\n') ? output : `${output}\n`;
+      } catch {
+        return '';
+      }
+    },
+
+    /**
+     * Scroll tmux history without enabling tmux mouse mode.
+     * This preserves normal browser text selection while still letting the UI
+     * drive tmux copy-mode history on wheel events.
+     */
+    scrollSessionHistory(sessionId, { direction, lines = 1 } = {}) {
+      const target = getTmuxPaneTarget(sessionId);
+      const count = Math.max(1, Math.min(parseInt(lines, 10) || 1, 200));
+      const paneInMode = getTmuxPaneNumberValue(target, '#{pane_in_mode}') === 1;
+
+      if (direction === 'up') {
+        if (!paneInMode) {
+          execFileSync('tmux', ['copy-mode', '-t', target], { stdio: 'pipe' });
+        }
+        execFileSync('tmux', ['send-keys', '-X', '-t', target, '-N', String(count), 'scroll-up'], { stdio: 'pipe' });
+        return true;
+      }
+
+      if (direction === 'down') {
+        if (!paneInMode) {
+          return false;
+        }
+        execFileSync('tmux', ['send-keys', '-X', '-t', target, '-N', String(count), 'scroll-down'], { stdio: 'pipe' });
+        const scrollPosition = getTmuxPaneNumberValue(target, '#{scroll_position}');
+        if (scrollPosition <= 0) {
+          execFileSync('tmux', ['send-keys', '-X', '-t', target, 'cancel'], { stdio: 'pipe' });
+        }
+        return true;
+      }
+
+      return false;
     },
 
     /**

@@ -12,3 +12,13 @@ export function shouldBlockXtermWheelViewportFallback(buffer) {
   if (!buffer) return false;
   return buffer.type !== 'alternate' && buffer.baseY <= 0;
 }
+
+export function shouldRouteWheelToTmuxHistory({ runtimeType, buffer, deltaY }) {
+  if (runtimeType !== 'tmux' || !buffer || deltaY === 0) return false;
+  return buffer.baseY <= 0;
+}
+
+export function getTmuxHistoryScrollLines(deltaY) {
+  if (!Number.isFinite(deltaY) || deltaY === 0) return 0;
+  return Math.max(1, Math.round(Math.abs(deltaY) / 24));
+}

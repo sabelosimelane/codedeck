@@ -115,6 +115,7 @@ describe('Terminal auto-scroll mouse takeover', () => {
     vi.advanceTimersByTime(16);
 
     expect(mocks.termOptions).toEqual(expect.objectContaining({
+      scrollback: 10000,
       scrollSensitivity: 3,
       fastScrollSensitivity: 5,
       smoothScrollDuration: 0,
@@ -131,5 +132,24 @@ describe('Terminal auto-scroll mouse takeover', () => {
     mocks.term.buffer.active = { type: 'normal', viewportY: 0, baseY: 0, length: 30 };
 
     expect(wheelHandler({ deltaY: -36 })).toBe(false);
+  });
+
+  it('routes wheel scrolling to tmux history instead of enabling tmux mouse mode', () => {
+    render(<Terminal sessionId="s4" cwd="/tmp" isVisible={true} runtimeType="tmux" />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.send.mockClear();
+
+    const wheelHandler = mocks.term.attachCustomWheelEventHandler.mock.calls[0][0];
+    mocks.term.buffer.active = { type: 'alternate', viewportY: 0, baseY: 0, length: 30 };
+
+    expect(wheelHandler({ deltaY: -120 })).toBe(false);
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'scroll_history',
+      direction: 'up',
+      lines: 5,
+    }));
   });
 });

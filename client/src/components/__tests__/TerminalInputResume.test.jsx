@@ -70,8 +70,11 @@ vi.mock('../../utils/terminalVisibility', () => ({
 }));
 
 vi.mock('../../utils/terminalAutoScroll', () => ({
+  getTmuxHistoryScrollLines: () => 5,
   isTerminalViewportAtBottom: () => true,
+  shouldBlockXtermWheelViewportFallback: () => false,
   shouldPauseAutoScrollOnWheel: () => false,
+  shouldRouteWheelToTmuxHistory: () => false,
 }));
 
 vi.mock('../ToastContext', () => ({

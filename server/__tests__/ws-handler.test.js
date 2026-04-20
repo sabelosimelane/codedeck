@@ -83,6 +83,8 @@ function createMockRuntime(spawnFn, opts = {}) {
     spawn: spawnFn,
     kill: vi.fn((entry) => { entry.pty.kill(); }),
     isSessionRecoverable: vi.fn(() => opts.recoverable || false),
+    getSessionScrollback: vi.fn(() => opts.scrollback || ''),
+    scrollSessionHistory: vi.fn(() => true),
   };
 }
 
@@ -501,6 +503,21 @@ describe('handleWsConnection', () => {
       ws._emit('message', 'raw input');
 
       expect(mockPty.write).toHaveBeenCalledWith('raw input');
+    });
+
+    it('routes scroll_history messages to the tmux runtime instead of the PTY stdin', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), { type: 'tmux' });
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+      ws._emit('message', JSON.stringify({ type: 'scroll_history', direction: 'up', lines: 5 }));
+
+      expect(runtime.scrollSessionHistory).toHaveBeenCalledWith('test-1', {
+        direction: 'up',
+        lines: 5,
+      });
+      expect(mockPty.write).not.toHaveBeenCalled();
     });
   });
 
@@ -1421,7 +1438,8 @@ describe('runtime abstraction (Phase 5)', () => {
       // First spawn succeeds, but isSessionRecoverable returns true (tmux alive)
       // and re-spawn will throw
       runtime.isSessionRecoverable = vi.fn()
-        .mockReturnValueOnce(true); // First call on exit — recoverable
+        .mockReturnValueOnce(false) // Initial attach — no pre-existing tmux history
+        .mockReturnValueOnce(true); // PTY exit — tmux session is recoverable
       let callCount = 0;
       runtime.spawn = vi.fn(() => {
         if (callCount++ > 0) throw new Error('tmux attach failed');
@@ -1437,6 +1455,27 @@ describe('runtime abstraction (Phase 5)', () => {
       const entry = sessions.get('test-1');
       expect(entry.alive).toBe(false);
       expect(entry.events.some(e => e.type === 'tmux_reattach_failed')).toBe(true);
+    });
+  });
+
+  describe('tmux scrollback hydration', () => {
+    it('sends tmux scrollback to a newly attached browser when the durable session already exists', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        recoverable: true,
+        scrollback: 'older line 1\nolder line 2\n',
+      });
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+
+      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      expect(messages).toContainEqual({
+        type: 'history',
+        data: 'older line 1\nolder line 2\n',
+      });
+      expect(runtime.getSessionScrollback).toHaveBeenCalledWith('test-1');
     });
   });
 

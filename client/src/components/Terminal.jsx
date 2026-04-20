@@ -13,20 +13,23 @@ import {
   shouldWriteTerminalViewport,
 } from '../utils/terminalVisibility';
 import {
+  getTmuxHistoryScrollLines,
   isTerminalViewportAtBottom,
   shouldBlockXtermWheelViewportFallback,
   shouldPauseAutoScrollOnWheel,
+  shouldRouteWheelToTmuxHistory,
 } from '../utils/terminalAutoScroll';
 
 const MAX_RETRIES = 10;
 const BASE_DELAY = 1000;
 const MAX_DELAY = 30000;
+const TERMINAL_SCROLLBACK = 10000;
 const SESSION_TAKEOVER_CLOSE_CODE = 4001;
 const SESSION_TAKEOVER_CLOSE_REASON = 'session_taken_over';
 const SESSION_DELETED_CLOSE_CODE = 4002;
 const SESSION_DELETED_CLOSE_REASON = 'session_deleted';
 
-const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref) {
+const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runtimeType = 'pty' }, ref) {
   const containerRef = useRef(null);
   const wsRef = useRef(null);
   const fitRef = useRef(null);
@@ -163,6 +166,21 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       width: container?.clientWidth ?? 0,
       height: container?.clientHeight ?? 0,
     });
+  }
+
+  function requestTmuxHistoryScroll(deltaY) {
+    const lines = getTmuxHistoryScrollLines(deltaY);
+    if (lines <= 0) return false;
+
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+
+    ws.send(JSON.stringify({
+      type: 'scroll_history',
+      direction: deltaY < 0 ? 'up' : 'down',
+      lines,
+    }));
+    return true;
   }
 
   function canPaintCurrentViewport() {
@@ -302,6 +320,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       fontSize: 13,
       fontFamily: "'JetBrains Mono', monospace",
       lineHeight: 1.4,
+      scrollback: TERMINAL_SCROLLBACK,
       scrollSensitivity: 3,
       fastScrollSensitivity: 5,
       smoothScrollDuration: 0,
@@ -365,6 +384,16 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
     containerRef.current.addEventListener('wheel', handleWheel, { passive: true });
     term.attachCustomWheelEventHandler((event) => {
       const activeBuffer = term.buffer.active;
+
+      if (shouldRouteWheelToTmuxHistory({
+        runtimeType,
+        buffer: activeBuffer,
+        deltaY: event.deltaY,
+      })) {
+        requestTmuxHistoryScroll(event.deltaY);
+        return false;
+      }
+
       return !shouldBlockXtermWheelViewportFallback(activeBuffer);
     });
 
@@ -476,6 +505,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
           lastMessageAtRef.current = new Date().toISOString();
           if (msg.type === 'output') {
             bufferOrWriteChunk(term, { data: msg.data, seq: msg.seq });
+          } else if (msg.type === 'history') {
+            bufferOrWriteChunk(term, { data: msg.data });
           } else if (shouldResumeFromSessionHandshake(msg, resumeInFlightRef.current)) {
             requestResume(ws);
           } else if (msg.type === 'replay') {
@@ -584,7 +615,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       if (wsRef.current) wsRef.current.close();
       term.dispose();
     };
-  }, [sessionId, cwd]);
+  }, [sessionId, cwd, runtimeType]);
 
   // Re-fit and sync dimensions when tab becomes visible (React-level tab switch)
   useEffect(() => {
