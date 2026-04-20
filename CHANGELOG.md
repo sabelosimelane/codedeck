@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-04-20] - Prevent new terminals from dropping input during metadata sync
+
+### Executive Summary
+* Fixed a follow-on regression where freshly opened terminals could briefly ignore typing right after they appeared. The terminal now keeps its initial browser connection alive while backend runtime metadata catches up, so new panes stay interactive immediately instead of rebuilding themselves during that handoff.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Newly opened panes initially mounted before their backend runtime metadata was fully hydrated, so a late `runtimeType` change from `pty` to `tmux` could tear down and recreate the terminal WebSocket just as the user started typing.
+  * **Solution:** Stopped treating `runtimeType` as a terminal-effect dependency, stored it in a mutable ref instead, and updated the tmux wheel-routing logic to read the latest runtime metadata without rebuilding the live terminal connection.
+* **🛠️ Codebase:**
+  * `client/src/components/Terminal.jsx` — Kept the main terminal/WebSocket lifecycle keyed to the session identity instead of transient runtime metadata, while still updating tmux-specific wheel behavior from the latest runtime type through a ref.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalAutoScroll.test.jsx` — Added regression coverage proving tmux wheel routing updates correctly after runtime metadata arrives without recreating the terminal instance.
+  * `client/src/components/__tests__/TerminalInputResume.test.jsx` — Added a regression test proving a mounted terminal does not create a second WebSocket when runtime metadata changes after first render.
+
 ## [2026-04-20] - Hydrate durable tmux history without breaking text selection
 
 ### Executive Summary

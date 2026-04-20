@@ -152,4 +152,28 @@ describe('Terminal auto-scroll mouse takeover', () => {
       lines: 5,
     }));
   });
+
+  it('updates tmux wheel routing when runtimeType metadata arrives without recreating the terminal', () => {
+    const { rerender } = render(<Terminal sessionId="s5" cwd="/tmp" isVisible={true} runtimeType="pty" />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.send.mockClear();
+
+    const wheelHandler = mocks.term.attachCustomWheelEventHandler.mock.calls[0][0];
+    mocks.term.buffer.active = { type: 'alternate', viewportY: 0, baseY: 0, length: 30 };
+
+    expect(wheelHandler({ deltaY: -120 })).toBe(true);
+    expect(mocks.ws.send).not.toHaveBeenCalled();
+
+    rerender(<Terminal sessionId="s5" cwd="/tmp" isVisible={true} runtimeType="tmux" />);
+
+    expect(wheelHandler({ deltaY: -120 })).toBe(false);
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'scroll_history',
+      direction: 'up',
+      lines: 5,
+    }));
+  });
 });

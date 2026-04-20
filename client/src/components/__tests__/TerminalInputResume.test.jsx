@@ -239,4 +239,22 @@ describe('Terminal input resume after refocus', () => {
 
     expect(wsInstances).toHaveLength(1);
   });
+
+  it('does not recreate the socket when runtimeType metadata arrives after the terminal is already mounted', () => {
+    const { rerender } = render(
+      <Terminal sessionId="s7" cwd="/tmp" isVisible={true} runtimeType="pty" />
+    );
+    vi.advanceTimersByTime(16);
+
+    expect(wsInstances).toHaveLength(1);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's7', existing: false }) });
+
+    rerender(<Terminal sessionId="s7" cwd="/tmp" isVisible={true} runtimeType="tmux" />);
+    vi.advanceTimersByTime(16);
+
+    expect(wsInstances).toHaveLength(1);
+  });
 });

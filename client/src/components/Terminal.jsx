@@ -47,6 +47,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
   const lastResizeAtRef = useRef(null);
   const documentVisibilityRef = useRef(document.visibilityState === 'visible' ? 'visible' : 'hidden');
   const isVisibleRef = useRef(isVisible);
+  const runtimeTypeRef = useRef(runtimeType);
   // Sequence tracking for loss-aware replay (Phase 3)
   const lastSeenSeqRef = useRef(0);
   const reconnectCountRef = useRef(0);
@@ -386,7 +387,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       const activeBuffer = term.buffer.active;
 
       if (shouldRouteWheelToTmuxHistory({
-        runtimeType,
+        runtimeType: runtimeTypeRef.current,
         buffer: activeBuffer,
         deltaY: event.deltaY,
       })) {
@@ -615,7 +616,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       if (wsRef.current) wsRef.current.close();
       term.dispose();
     };
-  }, [sessionId, cwd, runtimeType]);
+  }, [sessionId, cwd]);
+
+  useEffect(() => {
+    runtimeTypeRef.current = runtimeType;
+  }, [runtimeType]);
 
   // Re-fit and sync dimensions when tab becomes visible (React-level tab switch)
   useEffect(() => {
