@@ -7,8 +7,17 @@ import path from 'path';
 import { spawn as spawnProcess } from 'child_process';
 import multer from 'multer';
 import db from './db.js';
-import { handleWsConnection, computeSessionHealth, computeStallReason, sanitizePreviewLine } from './ws-handler.js';
+import {
+  handleWsConnection,
+  computeSessionHealth,
+  computeStallReason,
+  sanitizePreviewLine,
+  SESSION_DELETED_CLOSE_CODE,
+  SESSION_DELETED_CLOSE_REASON,
+} from './ws-handler.js';
 import { createTerminalRuntime } from './terminal-runtime.js';
+import { allocateTerminalSessionId } from './terminal-session-service.js';
+import { listTerminalSessions } from './terminal-session-status-service.js';
 import { pruneTerminalSessions } from './session-gc.js';
 import { readTree } from './file-tree.js';
 import { readFilePreview } from './file-preview.js';
@@ -274,31 +283,55 @@ app.post('/api/open-vscode', (req, res) => {
 });
 
 // -------------------------------------------------------------------
+// REST API: Terminal session allocation (backend authoritative)
+// -------------------------------------------------------------------
+app.post('/api/terminal', (req, res) => {
+  const projectName = typeof req.body?.projectName === 'string'
+    ? req.body.projectName.trim()
+    : '';
+
+  if (!projectName) {
+    return res.status(400).json({ error: 'projectName required' });
+  }
+
+  const project = loadProjects().find(candidate => candidate.name === projectName);
+  if (!project) {
+    return res.status(404).json({ error: 'project not found' });
+  }
+
+  try {
+    const allocation = allocateTerminalSessionId({
+      projectName,
+      activeSessionIds: Array.from(sessions.keys()),
+      deletedSessionIds: Array.from(deletedSessionIds),
+      recoverableSessionIds: terminalRuntime.listSessionIds?.() || [],
+      reservedSessionIds: Array.from(reservedSessionIds),
+    });
+
+    if (allocation.error) {
+      return res.status(allocation.status).json({ error: allocation.error });
+    }
+
+    reservedSessionIds.add(allocation.data.sessionId);
+    res.status(201).json(allocation.data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to allocate terminal', detail: error.message });
+  }
+});
+
+// -------------------------------------------------------------------
 // REST API: Session status (for sidebar cockpit)
 // -------------------------------------------------------------------
 app.get('/api/sessions', (req, res) => {
-  const result = [];
-  for (const [sessionId, entry] of sessions) {
-    entry.cwd = terminalRuntime.getSessionCwd?.(entry, sessionId) || entry.cwd;
-
-    result.push({
-      sessionId,
-      cwd: entry.cwd,
-      startedAt: entry.startedAt,
-      lastOutputAt: entry.lastOutputAt,
-      lastSubstantialOutputAt: entry.lastSubstantialOutputAt ?? entry.lastOutputAt,
-      lastOutputLine: sanitizePreviewLine(entry.lastOutputLine || ''),
-      alive: entry.alive,
-      runtimeType: entry.runtimeType ?? 'pty',
-      wsAttached: entry.wsAttached ?? false,
-      lastAttachAt: entry.lastAttachAt ?? null,
-      lastClientAckAt: entry.lastClientAckAt ?? null,
-      lastSeq: entry.lastSeq ?? 0,
-      health: computeSessionHealth(entry),
-      stallReason: computeStallReason(entry),
-    });
-  }
-  res.json(result);
+  res.json(listTerminalSessions({
+    sessions,
+    runtime: terminalRuntime,
+    projects: loadProjects(),
+    deletedSessionIds,
+    computeHealth: computeSessionHealth,
+    computeStallReason,
+    sanitizePreviewLine,
+  }));
 });
 
 // -------------------------------------------------------------------
@@ -363,6 +396,8 @@ const wss = new WebSocketServer({ server, path: '/ws/terminal' });
 
 // Active PTY sessions: Map<string, { pty, ws, cwd, startedAt, lastOutputAt, alive }>
 const sessions = new Map();
+const deletedSessionIds = new Set();
+const reservedSessionIds = new Set();
 
 // Resolve terminal runtime mode: env var > SQLite config > default 'tmux'
 const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
@@ -381,7 +416,7 @@ const sessionPruneTimer = setInterval(() => {
 sessionPruneTimer.unref?.();
 
 wss.on('connection', (ws, req) => {
-  handleWsConnection(ws, req, sessions, terminalRuntime);
+  handleWsConnection(ws, req, sessions, terminalRuntime, deletedSessionIds, reservedSessionIds);
 });
 
 // -------------------------------------------------------------------
@@ -389,15 +424,26 @@ wss.on('connection', (ws, req) => {
 // -------------------------------------------------------------------
 app.delete('/api/terminal/:sessionId', (req, res) => {
   const entry = sessions.get(req.params.sessionId);
-  if (entry) {
-    try {
-      terminalRuntime.kill(entry, req.params.sessionId);
-    } catch (error) {
-      console.warn(`[terminal] delete failed session=${req.params.sessionId} error=${error.message}`);
-    } finally {
-      sessions.delete(req.params.sessionId);
+
+  try {
+    deletedSessionIds.add(req.params.sessionId);
+    reservedSessionIds.delete(req.params.sessionId);
+
+    if (entry?.ws && entry.ws.readyState === 1) {
+      try {
+        entry.ws.close(SESSION_DELETED_CLOSE_CODE, SESSION_DELETED_CLOSE_REASON);
+      } catch (error) {
+        console.warn(`[terminal] ws close failed session=${req.params.sessionId} error=${error.message}`);
+      }
     }
+
+    terminalRuntime.kill(entry, req.params.sessionId);
+  } catch (error) {
+    console.warn(`[terminal] delete failed session=${req.params.sessionId} error=${error.message}`);
+  } finally {
+    sessions.delete(req.params.sessionId);
   }
+
   res.json({ ok: true });
 });
 

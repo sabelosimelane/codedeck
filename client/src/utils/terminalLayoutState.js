@@ -139,6 +139,27 @@ function getNextTabNumber(restoredTabs) {
     : 1;
 }
 
+function preserveSavedLayout(savedLayout) {
+  const tabs = savedLayout.tabs.map(tab => {
+    const panes = tab.panes.map(pane => ({
+      ...pane,
+      isConnected: pane.isConnected ?? true,
+    }));
+
+    return {
+      ...tab,
+      label: getTerminalTabLabel(panes, tab.label),
+      panes,
+    };
+  });
+
+  const activeTabId = tabs.find(tab => tab.id === savedLayout.activeTabId)
+    ? savedLayout.activeTabId
+    : tabs[tabs.length - 1]?.id ?? null;
+
+  return { tabs, activeTabId };
+}
+
 export function filterLayoutByLiveSessions(savedLayout, liveSessions, projectName) {
   const aliveIds = new Set(liveSessions.filter(s => s.alive).map(session => session.sessionId));
   const restoredTabs = collectRestoredTabs(savedLayout, aliveIds);
@@ -179,10 +200,10 @@ export function resolveInitialTerminalState({ projectName, projectPath, savedLay
       };
     }
 
-    if (savedLayout.tabs.length === 0 && projectLiveSessions.length === 0) {
+    if (projectLiveSessions.length === 0) {
       return {
-        state: { tabs: [], activeTabId: null },
-        tabCounter: savedLayout.tabCounter ?? 0,
+        state: preserveSavedLayout(savedLayout),
+        tabCounter: savedLayout.tabCounter ?? savedLayout.tabs.length,
         sessionCounter: savedLayout.sessionCounter ?? 0,
         shouldClearSavedLayout: false,
       };
@@ -204,11 +225,10 @@ export function resolveInitialTerminalState({ projectName, projectPath, savedLay
     };
   }
 
-  const tab = createTab(projectName, 1, 1);
   return {
-    state: { tabs: [tab], activeTabId: tab.id },
-    tabCounter: 1,
-    sessionCounter: 1,
-    shouldClearSavedLayout: !!savedLayout,
+    state: { tabs: [], activeTabId: null },
+    tabCounter: savedLayout?.tabCounter ?? 0,
+    sessionCounter: savedLayout?.sessionCounter ?? 0,
+    shouldClearSavedLayout: false,
   };
 }

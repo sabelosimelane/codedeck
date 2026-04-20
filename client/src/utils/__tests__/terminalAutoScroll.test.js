@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isTerminalViewportAtBottom,
+  shouldBlockXtermWheelViewportFallback,
   shouldPauseAutoScrollOnWheel,
 } from '../terminalAutoScroll';
 
@@ -40,6 +41,32 @@ describe('shouldPauseAutoScrollOnWheel', () => {
     expect(shouldPauseAutoScrollOnWheel({
       deltaY: -36,
       buffer: { viewportY: 0, baseY: 0 },
+    })).toBe(false);
+  });
+});
+
+describe('shouldBlockXtermWheelViewportFallback', () => {
+  it('blocks xterm wheel fallback for the normal buffer when there is no scrollback', () => {
+    expect(shouldBlockXtermWheelViewportFallback({
+      type: 'normal',
+      viewportY: 0,
+      baseY: 0,
+    })).toBe(true);
+  });
+
+  it('allows xterm wheel handling in the alternate buffer', () => {
+    expect(shouldBlockXtermWheelViewportFallback({
+      type: 'alternate',
+      viewportY: 0,
+      baseY: 0,
+    })).toBe(false);
+  });
+
+  it('allows normal viewport scrolling once normal-buffer scrollback exists', () => {
+    expect(shouldBlockXtermWheelViewportFallback({
+      type: 'normal',
+      viewportY: 4,
+      baseY: 12,
     })).toBe(false);
   });
 });

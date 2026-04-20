@@ -22,6 +22,10 @@ const CARET_CSI_RE = /\^\[\[[0-?]*[ -/]*[@-~]/g;
 const PRINTABLE_CHARSET_MARKER_RE = /\([0-9A-Za-z]/g;
 const MAX_TIMELINE_EVENTS = 50;
 export const REPLAY_BUFFER_SIZE = 1000;
+export const SESSION_TAKEOVER_CLOSE_CODE = 4001;
+export const SESSION_TAKEOVER_CLOSE_REASON = 'session_taken_over';
+export const SESSION_DELETED_CLOSE_CODE = 4002;
+export const SESSION_DELETED_CLOSE_REASON = 'session_deleted';
 const MAX_TMUX_REATTACH = 3;
 
 function stripTerminalControl(rawData) {
@@ -216,12 +220,21 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
   });
 }
 
-export function handleWsConnection(ws, req, sessions, runtime) {
+export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds = new Set(), reservedSessionIds = new Set()) {
   const params = new URL(req.url, 'http://localhost').searchParams;
   const cwd = params.get('cwd') || process.env.HOME;
   const sessionId = params.get('sessionId') || `s-${Date.now()}`;
   const cols = parseInt(params.get('cols') || '120');
   const rows = parseInt(params.get('rows') || '30');
+
+  if (deletedSessionIds.has(sessionId)) {
+    try {
+      ws.close(SESSION_DELETED_CLOSE_CODE, SESSION_DELETED_CLOSE_REASON);
+    } catch {}
+    return;
+  }
+
+  reservedSessionIds.delete(sessionId);
 
   let entry = sessions.get(sessionId);
   const isExisting = !!entry;
@@ -285,7 +298,7 @@ export function handleWsConnection(ws, req, sessions, runtime) {
     const previousWs = entry.ws;
     if (previousWs && previousWs !== ws) {
       try {
-        previousWs.close();
+        previousWs.close(SESSION_TAKEOVER_CLOSE_CODE, SESSION_TAKEOVER_CLOSE_REASON);
       } catch {}
     }
     entry.ws = ws;
@@ -344,13 +357,13 @@ export function handleWsConnection(ws, req, sessions, runtime) {
       } else if (parsed.type === 'resume') {
         const lastSeenSeq = parsed.lastSeenSeq || 0;
         pushTimelineEvent(entry, 'replay_requested', `from seq ${lastSeenSeq}`);
-        // Find chunks in replay buffer after lastSeenSeq
         const chunks = entry.replayBuffer.filter(
           c => c.seq > lastSeenSeq && !isReplayNoise(c.data)
         );
         const oldestBufferedSeq = entry.replayBuffer.length > 0 ? entry.replayBuffer[0].seq : 0;
         const overflow = lastSeenSeq > 0 && oldestBufferedSeq > lastSeenSeq + 1;
         const missedCount = overflow ? oldestBufferedSeq - lastSeenSeq - 1 : 0;
+
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({
             type: 'replay',

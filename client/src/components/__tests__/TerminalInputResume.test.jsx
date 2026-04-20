@@ -35,6 +35,7 @@ vi.mock('@xterm/xterm', () => {
       this.onData = vi.fn();
       this.onScroll = vi.fn();
       this.attachCustomKeyEventHandler = vi.fn();
+      this.attachCustomWheelEventHandler = vi.fn();
       this.buffer = { active: { cursorY: 0, baseY: 0, length: 30 } };
       this.rows = 30;
       this.cols = 120;
@@ -84,11 +85,13 @@ import Terminal from '../Terminal';
 describe('Terminal input resume after refocus', () => {
   let visibilityState;
   let visibilityHandler;
+  let wsInstances;
 
   beforeEach(() => {
     vi.useFakeTimers();
     mocks.ws = null;
     mocks.term = null;
+    wsInstances = [];
     class WsMock {
       constructor() {
         this.readyState = 0;
@@ -99,6 +102,7 @@ describe('Terminal input resume after refocus', () => {
         this.onerror = null;
         this.onclose = null;
         mocks.ws = this;
+        wsInstances.push(this);
       }
     }
     WsMock.CONNECTING = 0;
@@ -201,5 +205,35 @@ describe('Terminal input resume after refocus', () => {
 
     const inputSends = mocks.ws.send.mock.calls.filter(([arg]) => arg.includes('"type":"input"'));
     expect(inputSends).toHaveLength(0);
+  });
+
+  it('does not reconnect when the server closes the socket for session takeover', () => {
+    render(<Terminal sessionId="s5" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    expect(wsInstances).toHaveLength(1);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.onclose?.({ code: 4001, reason: 'session_taken_over' });
+
+    vi.advanceTimersByTime(2000);
+
+    expect(wsInstances).toHaveLength(1);
+  });
+
+  it('does not reconnect when the server closes the socket for intentional session deletion', () => {
+    render(<Terminal sessionId="s6" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    expect(wsInstances).toHaveLength(1);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.onclose?.({ code: 4002, reason: 'session_deleted' });
+
+    vi.advanceTimersByTime(2000);
+
+    expect(wsInstances).toHaveLength(1);
   });
 });

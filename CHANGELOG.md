@@ -1,5 +1,39 @@
 # Changelog
 
+## [2026-04-20] - Fix durable terminal session discovery and identity drift
+
+### Executive Summary
+* Fixed a cluster of terminal reliability issues that all stemmed from the browser and backend disagreeing about which durable tmux sessions existed. Detached terminals now appear in the sidebar immediately after refresh, new terminals get backend-issued IDs that cannot collide with hidden historical sessions, intentionally deleted terminals are tombstoned so stale hidden tabs cannot resurrect them, and project layouts now preserve or clear terminal state more predictably across refreshes and restarts. Mouse-wheel scrolling also no longer falls back to shell history navigation when there is no local scrollback.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Durable tmux sessions could disappear from the sidebar until their project was clicked, “new” terminals could silently reconnect to old historical sessions because session IDs were still minted in the frontend, deleted sessions could be resurrected by stale hidden reconnecting clients, saved layouts could drift from backend truth after refreshes, and xterm could translate wheel-up into ArrowUp when no local scrollback existed.
+  * **Solution:** Moved terminal session ID allocation to a backend `POST /api/terminal` endpoint, taught `/api/sessions` to include detached durable tmux sessions for configured projects, tombstoned deleted session IDs server-side, hardened layout persistence/hydration so empty and saved states are preserved correctly, and installed an xterm custom wheel handler that blocks the no-scrollback ArrowUp fallback.
+* **🔌 API/Interface:**
+  * `server/index.js` — Added `POST /api/terminal` so the backend allocates collision-safe terminal IDs, updated `GET /api/sessions` to surface detached durable tmux sessions, and strengthened terminal deletion to tombstone session IDs and close live sockets with an explicit `session_deleted` code.
+  * `server/ws-handler.js` — Exported explicit close codes/reasons for session takeover and session deletion, rejected reconnects for tombstoned session IDs, and cleared reserved IDs when a WebSocket successfully claims a backend-issued session ID.
+* **🛠️ Codebase:**
+  * `client/src/components/Terminal.jsx` — Added xterm custom wheel handling to block wheel→ArrowUp fallback without scrollback, and stopped reconnecting when the backend closes a socket for session takeover or intentional deletion.
+  * `client/src/components/TerminalArea.jsx` — Removed frontend-authored terminal ID minting, requested fresh session IDs from the backend when opening tabs/splits, preserved empty-state restores until live session hydration arrives, and persisted closed-terminal layout changes immediately so refreshes do not resurrect removed panes.
+  * `client/src/utils/terminalAutoScroll.js` — Added `shouldBlockXtermWheelViewportFallback()` for the no-scrollback mouse-wheel guard.
+  * `client/src/utils/terminalLayoutState.js` — Preserved saved layouts when live session snapshots are temporarily empty and stopped inventing a synthetic `project-1` terminal as the fallback restore state.
+  * `server/terminal-runtime.js` — Added durable tmux session enumeration via `listSessionIds()` and hardened runtime kill paths so deleting a session still works when the in-memory PTY wrapper is already gone.
+  * `server/terminal-session-service.js` — New pure service that allocates the next collision-free terminal session ID across active, deleted, reserved, and recoverable durable sessions.
+  * `server/terminal-session-status-service.js` — New pure service that merges attached in-memory sessions with detached durable tmux sessions for configured projects so the sidebar can reflect backend truth before any project click.
+  * `start.sh` — Added argument validation and explicit child PID cleanup so local start/stop behavior is more predictable during terminal debugging.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalArea.test.js` — Added restore coverage for preserving saved tabs across empty live-session snapshots after server restarts.
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — Added regression tests for backend-issued terminal IDs, hydrating live sessions into an initially empty terminal area, and persisting an empty layout immediately after the last terminal is closed.
+  * `client/src/components/__tests__/TerminalAutoScroll.test.jsx` — Added coverage proving the custom xterm wheel handler blocks ArrowUp fallback when the normal buffer has no scrollback.
+  * `client/src/components/__tests__/TerminalFileDrop.test.jsx` — Updated terminal mocks to cover the added xterm wheel handler API.
+  * `client/src/components/__tests__/TerminalInputResume.test.jsx` — Added regressions proving the terminal does not reconnect after session takeover or explicit session deletion.
+  * `client/src/components/__tests__/hard-refresh-race.test.jsx` — Updated terminal mocks to include the custom wheel handler while preserving replay-race coverage.
+  * `client/src/utils/__tests__/terminalAutoScroll.test.js` — Added unit coverage for the new wheel-fallback blocking helper.
+  * `server/__tests__/terminal-runtime.test.js` — Added coverage for durable tmux session enumeration.
+  * `server/__tests__/ws-handler.test.js` — Added regression coverage for session-takeover close codes and server-side rejection of reconnects to deleted session IDs.
+  * `server/__tests__/terminal-session-service.test.js` — New service-level tests for collision-safe backend terminal ID allocation.
+  * `server/__tests__/terminal-session-status-service.test.js` — New service-level tests for surfacing detached durable sessions while excluding deleted or orphaned tmux sessions.
+
 ## [2026-04-18] - Filter focus-tracking escape sequences from terminal input
 
 ### Executive Summary

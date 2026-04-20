@@ -14,12 +14,17 @@ import {
 } from '../utils/terminalVisibility';
 import {
   isTerminalViewportAtBottom,
+  shouldBlockXtermWheelViewportFallback,
   shouldPauseAutoScrollOnWheel,
 } from '../utils/terminalAutoScroll';
 
 const MAX_RETRIES = 10;
 const BASE_DELAY = 1000;
 const MAX_DELAY = 30000;
+const SESSION_TAKEOVER_CLOSE_CODE = 4001;
+const SESSION_TAKEOVER_CLOSE_REASON = 'session_taken_over';
+const SESSION_DELETED_CLOSE_CODE = 4002;
+const SESSION_DELETED_CLOSE_REASON = 'session_deleted';
 
 const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref) {
   const containerRef = useRef(null);
@@ -358,6 +363,10 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
       }
     };
     containerRef.current.addEventListener('wheel', handleWheel, { passive: true });
+    term.attachCustomWheelEventHandler((event) => {
+      const activeBuffer = term.buffer.active;
+      return !shouldBlockXtermWheelViewportFallback(activeBuffer);
+    });
 
     // Prevent browser from stealing terminal shortcuts (Ctrl+R, Ctrl+W, etc.)
     // We intercept these keys, block both browser and xterm default handling,
@@ -502,11 +511,25 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible }, ref
         // onclose will fire after this — handle reconnection there
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (!mountedRef.current) return;
 
         // Don't retry if the server reported a permanent spawn failure
         if (spawnFailed) return;
+
+        const wasSessionTakeover = event?.code === SESSION_TAKEOVER_CLOSE_CODE
+          || event?.reason === SESSION_TAKEOVER_CLOSE_REASON;
+        if (wasSessionTakeover) {
+          setConnectionStatus('connected');
+          return;
+        }
+
+        const wasSessionDeleted = event?.code === SESSION_DELETED_CLOSE_CODE
+          || event?.reason === SESSION_DELETED_CLOSE_REASON;
+        if (wasSessionDeleted) {
+          setConnectionStatus('disconnected');
+          return;
+        }
 
         if (retryRef.current >= MAX_RETRIES) {
           setConnectionStatus('failed');

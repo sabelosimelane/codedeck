@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { handleWsConnection, computeSessionHealth, computeStallReason, isSubstantialOutput, REPLAY_BUFFER_SIZE } from '../ws-handler.js';
+import {
+  handleWsConnection,
+  computeSessionHealth,
+  computeStallReason,
+  isSubstantialOutput,
+  REPLAY_BUFFER_SIZE,
+  SESSION_TAKEOVER_CLOSE_CODE,
+  SESSION_TAKEOVER_CLOSE_REASON,
+  SESSION_DELETED_CLOSE_CODE,
+  SESSION_DELETED_CLOSE_REASON,
+} from '../ws-handler.js';
 
 // ---------------------------------------------------------------------------
 // Mock factories
@@ -161,7 +171,26 @@ describe('handleWsConnection', () => {
       handleWsConnection(ws2, req, sessions, spawnPty);
 
       expect(ws1.close).toHaveBeenCalledTimes(1);
+      expect(ws1.close).toHaveBeenCalledWith(
+        SESSION_TAKEOVER_CLOSE_CODE,
+        SESSION_TAKEOVER_CLOSE_REASON,
+      );
       expect(sessions.get('test-1').ws).toBe(ws2);
+    });
+
+    it('rejects reconnects for explicitly deleted session ids', () => {
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      const deletedSessionIds = new Set(['test-1']);
+
+      handleWsConnection(ws, req, sessions, spawnPty, deletedSessionIds);
+
+      expect(ws.close).toHaveBeenCalledWith(
+        SESSION_DELETED_CLOSE_CODE,
+        SESSION_DELETED_CLOSE_REASON,
+      );
+      expect(spawnPty.spawn).not.toHaveBeenCalled();
+      expect(sessions.has('test-1')).toBe(false);
     });
   });
 

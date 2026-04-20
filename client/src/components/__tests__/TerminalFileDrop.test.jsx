@@ -40,6 +40,7 @@ vi.mock('@xterm/xterm', () => {
       this.onData = vi.fn();
       this.onScroll = vi.fn();
       this.attachCustomKeyEventHandler = vi.fn();
+      this.attachCustomWheelEventHandler = vi.fn();
       this.buffer = { active: { cursorY: 0, baseY: 0, length: 30 } };
       this.rows = 30;
       this.cols = 120;

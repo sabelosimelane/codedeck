@@ -339,6 +339,41 @@ describe('TerminalArea live session hydration', () => {
     expect(result.state.tabs[0].label).toBe('BookMe-9');
   });
 
+  it('preserves saved tabs when the live session snapshot is empty so durable sessions can reconnect after server restart', async () => {
+    const savedLayout = {
+      tabs: [
+        {
+          id: 'tab-4',
+          label: 'BookMe-9',
+          panes: [{
+            id: 'pane-BookMe-9',
+            sessionId: 'BookMe-9',
+            widthFraction: 1,
+            isConnected: true,
+          }],
+        },
+      ],
+      activeTabId: 'tab-4',
+      tabCounter: 4,
+      sessionCounter: 9,
+    };
+
+    const result = resolveInitialTerminalState({
+      projectName: 'BookMe',
+      projectPath: '/tmp/bookme',
+      savedLayout,
+      liveSessions: [],
+    });
+
+    expect(result.state).toEqual({
+      tabs: savedLayout.tabs,
+      activeTabId: 'tab-4',
+    });
+    expect(result.tabCounter).toBe(4);
+    expect(result.sessionCounter).toBe(9);
+    expect(result.shouldClearSavedLayout).toBe(false);
+  });
+
   it('preserves an intentional zero-terminal saved layout when no live sessions remain', async () => {
     const savedLayout = {
       tabs: [],

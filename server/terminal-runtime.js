@@ -75,6 +75,7 @@ function createPtyRuntime() {
      * Kill a raw PTY session. After this the session is unrecoverable.
      */
     kill(entry, _sessionId) {
+      if (!entry?.pty) return;
       try {
         entry.pty.kill();
       } catch {
@@ -95,6 +96,13 @@ function createPtyRuntime() {
      */
     getSessionCwd(entry) {
       return entry.cwd;
+    },
+
+    /**
+     * Raw PTY sessions do not have external durable sessions to enumerate.
+     */
+    listSessionIds() {
+      return [];
     },
   };
 }
@@ -146,10 +154,12 @@ function createTmuxRuntime() {
      * Kill both the node-pty attachment and the underlying tmux session.
      */
     kill(entry, sessionId) {
-      try {
-        entry.pty.kill();
-      } catch {
-        // PTY wrapper may already be gone
+      if (entry?.pty) {
+        try {
+          entry.pty.kill();
+        } catch {
+          // PTY wrapper may already be gone
+        }
       }
       const tmuxName = sanitizeTmuxName(sessionId);
       try {
@@ -185,6 +195,26 @@ function createTmuxRuntime() {
         return cwd || entry.cwd;
       } catch {
         return entry.cwd;
+      }
+    },
+
+    /**
+     * List known durable tmux session ids so the backend can allocate a fresh
+     * browser terminal id without colliding with hidden historical sessions.
+     */
+    listSessionIds() {
+      try {
+        const output = execFileSync(
+          'tmux',
+          ['list-sessions', '-F', '#S'],
+          { stdio: 'pipe', encoding: 'utf8' }
+        );
+        return output
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean);
+      } catch {
+        return [];
       }
     },
   };

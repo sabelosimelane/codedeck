@@ -54,8 +54,14 @@ function ShortcutHint({ label, keys, children }) {
 let tabCounter = 0;
 let sessionCounter = 0;
 
-function createPane(projectName) {
-  const sessionId = `${projectName}-${++sessionCounter}`;
+function getSessionNumber(projectName, sessionId) {
+  if (!projectName || !sessionId) return null;
+  const escapedName = projectName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = sessionId.match(new RegExp(`^${escapedName}-(\\d+)$`));
+  return match ? Number(match[1]) : null;
+}
+
+function createPane(sessionId) {
   return {
     id: `pane-${sessionId}`,
     sessionId,
@@ -64,8 +70,8 @@ function createPane(projectName) {
   };
 }
 
-function createTab(projectName) {
-  const pane = createPane(projectName);
+function createTab(sessionId) {
+  const pane = createPane(sessionId);
   return {
     id: `tab-${++tabCounter}`,
     label: getTerminalTabLabel([pane]),
@@ -75,6 +81,84 @@ function createTab(projectName) {
 
 // --- localStorage layout persistence helpers ---
 const LAYOUT_KEY_PREFIX = 'codedeck-layout-';
+const DELETED_SESSIONS_KEY_PREFIX = 'codedeck-deleted-sessions-';
+
+function readDeletedSessionIds(projectName) {
+  if (!projectName) return new Set();
+
+  try {
+    const raw = localStorage.getItem(DELETED_SESSIONS_KEY_PREFIX + projectName);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeDeletedSessionIds(projectName, sessionIds) {
+  if (!projectName) return;
+
+  try {
+    const values = Array.from(new Set(sessionIds.filter(Boolean)));
+    if (values.length === 0) {
+      localStorage.removeItem(DELETED_SESSIONS_KEY_PREFIX + projectName);
+      return;
+    }
+    localStorage.setItem(DELETED_SESSIONS_KEY_PREFIX + projectName, JSON.stringify(values));
+  } catch {
+    // non-critical
+  }
+}
+
+function markDeletedSessionIds(projectName, sessionIds) {
+  const next = readDeletedSessionIds(projectName);
+  sessionIds.forEach(sessionId => next.add(sessionId));
+  writeDeletedSessionIds(projectName, Array.from(next));
+
+  try {
+    const rawLayout = localStorage.getItem(LAYOUT_KEY_PREFIX + projectName);
+    if (!rawLayout) return;
+    const layout = JSON.parse(rawLayout);
+    const prunedLayout = pruneLayoutByDeletedSessionIds(layout, next);
+    localStorage.setItem(LAYOUT_KEY_PREFIX + projectName, JSON.stringify(prunedLayout));
+  } catch {
+    // non-critical
+  }
+}
+
+function unmarkDeletedSessionIds(projectName, sessionIds) {
+  const next = readDeletedSessionIds(projectName);
+  sessionIds.forEach(sessionId => next.delete(sessionId));
+  writeDeletedSessionIds(projectName, Array.from(next));
+}
+
+function pruneLayoutByDeletedSessionIds(layout, deletedSessionIds) {
+  if (!layout) return null;
+  if (!deletedSessionIds || deletedSessionIds.size === 0) return layout;
+
+  const tabs = layout.tabs
+    .map(tab => {
+      const panes = tab.panes.filter(pane => !deletedSessionIds.has(pane.sessionId));
+      if (panes.length === 0) return null;
+      return {
+        ...tab,
+        label: getTerminalTabLabel(panes, tab.label),
+        panes,
+      };
+    })
+    .filter(Boolean);
+
+  const activeTabId = tabs.find(tab => tab.id === layout.activeTabId)
+    ? layout.activeTabId
+    : tabs[tabs.length - 1]?.id ?? null;
+
+  return {
+    ...layout,
+    tabs,
+    activeTabId,
+  };
+}
 
 function saveLayout(projectName, state) {
   if (!projectName) return;
@@ -86,6 +170,15 @@ function saveLayout(projectName, state) {
       sessionCounter,
     };
     localStorage.setItem(LAYOUT_KEY_PREFIX + projectName, JSON.stringify(data));
+
+    const persistedSessionIds = new Set(
+      state.tabs.flatMap(tab => tab.panes.map(pane => pane.sessionId))
+    );
+    const deletedSessionIds = readDeletedSessionIds(projectName);
+    const remainingDeletedSessionIds = Array.from(deletedSessionIds).filter(
+      sessionId => persistedSessionIds.has(sessionId)
+    );
+    writeDeletedSessionIds(projectName, remainingDeletedSessionIds);
   } catch {
     // localStorage full or unavailable — non-critical, skip silently
   }
@@ -95,7 +188,8 @@ function loadLayout(projectName) {
   try {
     const raw = localStorage.getItem(LAYOUT_KEY_PREFIX + projectName);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const layout = JSON.parse(raw);
+    return pruneLayoutByDeletedSessionIds(layout, readDeletedSessionIds(projectName));
   } catch {
     return null;
   }
@@ -104,6 +198,7 @@ function loadLayout(projectName) {
 function clearLayout(projectName) {
   try {
     localStorage.removeItem(LAYOUT_KEY_PREFIX + projectName);
+    localStorage.removeItem(DELETED_SESSIONS_KEY_PREFIX + projectName);
   } catch {
     // non-critical
   }
@@ -141,11 +236,13 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
   const [inspectingSessionId, setInspectingSessionId] = useState(null);
+  const stateRef = useRef(state);
   const containerRef = useRef(null);
   const terminalRefs = useRef(new Map());
   const prevProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
   const restoringRef = useRef(false);
+  const awaitingSessionHydrationRef = useRef(false);
   const pendingSessionIdsRef = useRef(new Set());
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
@@ -155,6 +252,26 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
     prevProjectName: prevProjectRef.current,
   });
   const { showToast } = useToast();
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  const updateTerminalState = useCallback((updater, { persistImmediately = false } = {}) => {
+    const nextState = typeof updater === 'function'
+      ? updater(stateRef.current)
+      : updater;
+
+    stateRef.current = nextState;
+    setState(nextState);
+
+    if (persistImmediately) {
+      clearTimeout(saveTimerRef.current);
+      saveLayout(project.name, nextState);
+    }
+
+    return nextState;
+  }, [project.name]);
 
   // Persist layout to localStorage on state changes (debounced).
   // Skips saves while a project-switch restore is in progress to avoid
@@ -208,21 +325,24 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
 
         tabCounter = resolved.tabCounter;
         sessionCounter = resolved.sessionCounter;
+        awaitingSessionHydrationRef.current = resolved.state.tabs.length === 0;
         setState(resolved.state);
       } catch {
         if (saved) {
           tabCounter = saved.tabCounter ?? saved.tabs?.length ?? 0;
           sessionCounter = saved.sessionCounter ?? 0;
-          setState({
+          const restoredState = {
             tabs: saved.tabs ?? [],
             activeTabId: saved.activeTabId ?? saved.tabs?.[0]?.id ?? null,
-          });
+          };
+          awaitingSessionHydrationRef.current = restoredState.tabs.length === 0;
+          setState(restoredState);
         } else {
-          // Backend unreachable and no saved layout exists — start fresh
+          // Backend unreachable and no saved layout exists — show the empty state
           tabCounter = 0;
           sessionCounter = 0;
-          const tab = createTab(project.name);
-          setState({ tabs: [tab], activeTabId: tab.id });
+          awaitingSessionHydrationRef.current = true;
+          setState({ tabs: [], activeTabId: null });
         }
       } finally {
         if (!cancelled) restoringRef.current = false;
@@ -232,8 +352,33 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
     return () => { cancelled = true; restoringRef.current = false; };
   }, [project.name]);
 
+  useEffect(() => {
+    if (restoringRef.current) return;
+    if (!awaitingSessionHydrationRef.current) return;
+    if (tabs.length > 0) return;
+
+    const resolved = resolveInitialTerminalState({
+      projectName: project.name,
+      projectPath: project.path,
+      savedLayout: {
+        tabs: [],
+        activeTabId: null,
+        tabCounter,
+        sessionCounter,
+      },
+      liveSessions: sessionStatus,
+    });
+
+    if (resolved.state.tabs.length === 0) return;
+
+    tabCounter = resolved.tabCounter;
+    sessionCounter = resolved.sessionCounter;
+    awaitingSessionHydrationRef.current = false;
+    setState(resolved.state);
+  }, [project.name, project.path, sessionStatus, tabs.length]);
+
   const setActiveTabId = useCallback((id) => {
-    setState(prev => {
+    updateTerminalState(prev => {
       const tab = prev.tabs.find(t => t.id === id);
       setActivePaneId(tab?.panes[0]?.id ?? null);
       return { ...prev, activeTabId: id };
@@ -305,37 +450,73 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
     }
   }, [setSessionsPending, showToast]);
 
+  const requestTerminalSessionId = useCallback(async (successMessage) => {
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectName: project.name }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: err.error || 'Failed to create terminal' });
+        return null;
+      }
+
+      const data = await res.json();
+      const sessionNumber = getSessionNumber(project.name, data.sessionId);
+      if (sessionNumber !== null) {
+        sessionCounter = Math.max(sessionCounter, sessionNumber);
+      }
+      showToast({ type: 'success', message: successMessage || `Opened ${data.sessionId}` });
+      return data.sessionId;
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+      return null;
+    }
+  }, [project.name, showToast]);
+
   // Split right — add pane to active tab, redistribute widths equally
-  const splitRight = useCallback(() => {
+  const splitRight = useCallback(async () => {
     if (!activeTabId) return;
-    const pane = createPane(project.name);
+    const sessionId = await requestTerminalSessionId('Opened terminal split');
+    if (!sessionId) return;
+    const pane = createPane(sessionId);
     setActivePaneId(pane.id);
-    setState(prev => ({
+    updateTerminalState(prev => ({
       ...prev,
       tabs: prev.tabs.map(tab => {
         if (tab.id !== prev.activeTabId) return tab;
         const newPanes = [...tab.panes, pane];
         const fraction = 1 / newPanes.length;
-        return { ...tab, panes: newPanes.map(p => ({ ...p, widthFraction: fraction })) };
+        return { ...tab, label: getTerminalTabLabel(newPanes, tab.label), panes: newPanes.map(p => ({ ...p, widthFraction: fraction })) };
       }),
-    }));
-  }, [activeTabId, project.name]);
+    }), { persistImmediately: true });
+  }, [activeTabId, requestTerminalSessionId, updateTerminalState]);
 
   // New tab with one pane
-  const addTab = useCallback(() => {
-    const tab = createTab(project.name);
-    setState(prev => ({
+  const addTab = useCallback(async () => {
+    const sessionId = await requestTerminalSessionId('Opened terminal');
+    if (!sessionId) return;
+    const tab = createTab(sessionId);
+    setActivePaneId(tab.panes[0].id);
+    updateTerminalState(prev => ({
       tabs: [...prev.tabs, tab],
       activeTabId: tab.id,
-    }));
-  }, [project.name]);
+    }), { persistImmediately: true });
+  }, [requestTerminalSessionId, updateTerminalState]);
 
   // Close a single pane — redistribute, or close tab if last pane
   const closePane = useCallback(async (tabId, paneId, sessionId) => {
+    markDeletedSessionIds(project.name, [sessionId]);
     const deletedSessionIds = await deleteTerminalSessions([sessionId], 'close');
-    if (!deletedSessionIds.has(sessionId)) return;
+    if (!deletedSessionIds.has(sessionId)) {
+      unmarkDeletedSessionIds(project.name, [sessionId]);
+      return;
+    }
 
-    setState(prev => {
+    updateTerminalState(prev => {
       const tab = prev.tabs.find(t => t.id === tabId);
       if (!tab) return prev;
 
@@ -376,22 +557,33 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         tabs: remainingTabs,
         activeTabId: newActiveTabId,
       };
-    });
-  }, [deleteTerminalSessions, activePaneId]);
+    }, { persistImmediately: true });
+  }, [deleteTerminalSessions, activePaneId, project.name]);
 
   // Close entire tab — kill all PTY sessions
   const closeTab = useCallback(async (tabId) => {
     const tab = tabs.find(candidate => candidate.id === tabId);
     if (!tab) return;
 
+    const requestedSessionIds = tab.panes.map(pane => pane.sessionId);
+    markDeletedSessionIds(project.name, requestedSessionIds);
+
     const deletedSessionIds = await deleteTerminalSessions(
-      tab.panes.map(pane => pane.sessionId),
+      requestedSessionIds,
       'close'
     );
 
-    if (deletedSessionIds.size === 0) return;
+    if (deletedSessionIds.size === 0) {
+      unmarkDeletedSessionIds(project.name, requestedSessionIds);
+      return;
+    }
 
-    setState(prev => {
+    const failedSessionIds = requestedSessionIds.filter(sessionId => !deletedSessionIds.has(sessionId));
+    if (failedSessionIds.length > 0) {
+      unmarkDeletedSessionIds(project.name, failedSessionIds);
+    }
+
+    updateTerminalState(prev => {
       const currentTab = prev.tabs.find(candidate => candidate.id === tabId);
       if (!currentTab) return prev;
 
@@ -421,8 +613,8 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
           ? remainingTabs[remainingTabs.length - 1]?.id ?? null
           : prev.activeTabId,
       };
-    });
-  }, [deleteTerminalSessions, tabs]);
+    }, { persistImmediately: true });
+  }, [deleteTerminalSessions, tabs, project.name]);
 
   const clearPane = useCallback((paneId) => {
     const terminal = terminalRefs.current.get(paneId);

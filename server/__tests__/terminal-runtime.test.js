@@ -25,6 +25,7 @@ describe('createTerminalRuntime', () => {
     const runtime = createTerminalRuntime('pty');
 
     expect(runtime.getSessionCwd({ cwd: '/tmp/original' }, 'demo-1')).toBe('/tmp/original');
+    expect(runtime.listSessionIds()).toEqual([]);
     expect(execFileSync).not.toHaveBeenCalled();
   });
 
@@ -59,5 +60,24 @@ describe('createTerminalRuntime', () => {
     const runtime = createTerminalRuntime('tmux');
 
     expect(runtime.getSessionCwd({ cwd: '/tmp/original' }, 'demo-1')).toBe('/tmp/original');
+  });
+
+  it('lists durable tmux session ids', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.4';
+      if (args[0] === 'list-sessions') return 'demo-1\ndemo-3\n';
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(runtime.listSessionIds()).toEqual(['demo-1', 'demo-3']);
+    expect(execFileSync).toHaveBeenCalledWith(
+      'tmux',
+      ['list-sessions', '-F', '#S'],
+      { stdio: 'pipe', encoding: 'utf8' }
+    );
   });
 });

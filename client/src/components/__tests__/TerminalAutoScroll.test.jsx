@@ -27,7 +27,8 @@ vi.mock('@xterm/xterm', () => {
       this.onData = vi.fn();
       this.onScroll = vi.fn();
       this.attachCustomKeyEventHandler = vi.fn();
-      this.buffer = { active: { viewportY: 24, baseY: 24, length: 60 } };
+      this.attachCustomWheelEventHandler = vi.fn();
+      this.buffer = { active: { type: 'normal', viewportY: 24, baseY: 24, length: 60 } };
       this.rows = 30;
       this.cols = 120;
       mocks.term = this;
@@ -118,5 +119,17 @@ describe('Terminal auto-scroll mouse takeover', () => {
       fastScrollSensitivity: 5,
       smoothScrollDuration: 0,
     }));
+  });
+
+  it('blocks xterm from translating wheel-up into ArrowUp when the normal buffer has no scrollback', () => {
+    render(<Terminal sessionId="s3" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    expect(mocks.term.attachCustomWheelEventHandler).toHaveBeenCalledTimes(1);
+
+    const wheelHandler = mocks.term.attachCustomWheelEventHandler.mock.calls[0][0];
+    mocks.term.buffer.active = { type: 'normal', viewportY: 0, baseY: 0, length: 30 };
+
+    expect(wheelHandler({ deltaY: -36 })).toBe(false);
   });
 });

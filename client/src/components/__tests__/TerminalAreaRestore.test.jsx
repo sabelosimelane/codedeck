@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import React from 'react';
 
 const mocks = vi.hoisted(() => ({
@@ -107,5 +107,132 @@ describe('TerminalArea restore fallback', () => {
     await waitFor(() => {
       expect(onSessionStatusRefresh).toHaveBeenCalledWith(liveSessions);
     });
+  });
+
+  it('creates new terminals with a backend-issued session id', async () => {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({
+      tabs: [],
+      activeTabId: null,
+      tabCounter: 4,
+      sessionCounter: 9,
+    }));
+
+    global.fetch = vi.fn(async (url, options = {}) => {
+      if (url === '/api/sessions') {
+        return {
+          ok: true,
+          json: async () => [],
+        };
+      }
+
+      if (url === '/api/terminal' && options.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({ sessionId: 'BookMe-12' }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const view = render(
+      <TerminalArea project={PROJECT} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />
+    );
+
+    await waitFor(() => {
+      expect(view.getByText('No terminals open')).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByText('Open terminal'));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith('/api/terminal', expect.objectContaining({
+        method: 'POST',
+      }));
+      expect(view.getAllByText('BookMe-12').length).toBeGreaterThan(0);
+    });
+  });
+
+  it('hydrates live sessions from sessionStatus after an empty restore snapshot', async () => {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({
+      tabs: [],
+      activeTabId: null,
+      tabCounter: 4,
+      sessionCounter: 9,
+    }));
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    });
+
+    const liveSessions = [
+      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+    ];
+
+    const view = render(
+      <TerminalArea project={PROJECT} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />
+    );
+
+    await waitFor(() => {
+      expect(view.getByText('No terminals open')).toBeTruthy();
+    });
+
+    view.rerender(
+      <TerminalArea project={PROJECT} sessionStatus={liveSessions} onSessionStatusRefresh={onSessionStatusRefresh} />
+    );
+
+    await waitFor(() => {
+      expect(view.queryByText('No terminals open')).toBeNull();
+      expect(view.getAllByText('BookMe-9').length).toBeGreaterThan(0);
+    });
+  });
+
+  it('persists an empty layout immediately after closing the last terminal', async () => {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(SAVED_LAYOUT));
+
+    let liveSessions = [
+      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+    ];
+
+    global.fetch = vi.fn(async (url, options = {}) => {
+      if (url === '/api/sessions') {
+        return {
+          ok: true,
+          json: async () => liveSessions,
+        };
+      }
+
+      if (url === '/api/terminal/BookMe-9' && options.method === 'DELETE') {
+        liveSessions = [];
+        return {
+          ok: true,
+          json: async () => ({ ok: true }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const firstView = render(
+      <TerminalArea project={PROJECT} sessionStatus={liveSessions} onSessionStatusRefresh={onSessionStatusRefresh} />
+    );
+
+    await waitFor(() => {
+      expect(firstView.getAllByText('BookMe-9').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(firstView.container.querySelector('.pane-close-btn'));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith('/api/terminal/BookMe-9', { method: 'DELETE' });
+    });
+
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe(JSON.stringify({
+      tabs: [],
+      activeTabId: null,
+      tabCounter: 4,
+      sessionCounter: 9,
+    }));
   });
 });

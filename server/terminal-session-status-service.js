@@ -1,0 +1,84 @@
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isProjectSessionId(sessionId, projectName) {
+  if (!sessionId || !projectName) return false;
+  return new RegExp(`^${escapeRegExp(projectName)}-\\d+$`).test(sessionId);
+}
+
+function doesSessionBelongToConfiguredProject(sessionId, projects = []) {
+  return projects.some(project => isProjectSessionId(sessionId, project.name));
+}
+
+export function listTerminalSessions({
+  sessions,
+  runtime,
+  projects = [],
+  deletedSessionIds = new Set(),
+  computeHealth,
+  computeStallReason,
+  sanitizePreviewLine,
+} = {}) {
+  const result = [];
+  const seenSessionIds = new Set();
+
+  for (const [sessionId, entry] of sessions) {
+    const cwd = runtime.getSessionCwd?.(entry, sessionId) || entry.cwd;
+    seenSessionIds.add(sessionId);
+
+    result.push({
+      sessionId,
+      cwd,
+      startedAt: entry.startedAt,
+      lastOutputAt: entry.lastOutputAt,
+      lastSubstantialOutputAt: entry.lastSubstantialOutputAt ?? entry.lastOutputAt,
+      lastOutputLine: sanitizePreviewLine(entry.lastOutputLine || ''),
+      alive: entry.alive,
+      runtimeType: entry.runtimeType ?? runtime.type ?? 'pty',
+      wsAttached: entry.wsAttached ?? false,
+      lastAttachAt: entry.lastAttachAt ?? null,
+      lastClientAckAt: entry.lastClientAckAt ?? null,
+      lastSeq: entry.lastSeq ?? 0,
+      health: computeHealth(entry),
+      stallReason: computeStallReason(entry),
+    });
+  }
+
+  for (const sessionId of runtime.listSessionIds?.() || []) {
+    if (seenSessionIds.has(sessionId)) continue;
+    if (deletedSessionIds.has(sessionId)) continue;
+    if (!doesSessionBelongToConfiguredProject(sessionId, projects)) continue;
+
+    const detachedEntry = {
+      alive: true,
+      wsAttached: false,
+      runtimeType: runtime.type ?? 'pty',
+      lastOutputAt: null,
+      lastSubstantialOutputAt: null,
+      lastOutputLine: '',
+      lastAttachAt: null,
+      lastClientAckAt: null,
+      lastSeq: 0,
+    };
+
+    result.push({
+      sessionId,
+      cwd: runtime.getSessionCwd?.({ cwd: null }, sessionId) || null,
+      startedAt: null,
+      lastOutputAt: null,
+      lastSubstantialOutputAt: null,
+      lastOutputLine: '',
+      alive: true,
+      runtimeType: runtime.type ?? 'pty',
+      wsAttached: false,
+      lastAttachAt: null,
+      lastClientAckAt: null,
+      lastSeq: 0,
+      health: computeHealth(detachedEntry),
+      stallReason: computeStallReason(detachedEntry),
+    });
+  }
+
+  return result;
+}
