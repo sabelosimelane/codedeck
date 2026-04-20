@@ -70,8 +70,8 @@ codedeck/
 │   ├── specifications/   # Feature specs
 │   ├── steering/         # These files
 │   └── todos/            # Implementation tracking
-├── start.sh              # Launches both servers (foreground)
-├── server.sh             # Service manager (background start/stop/status)
+├── start.sh              # Foreground launcher; starts backend + frontend, traps Ctrl-C/TERM for cleanup
+├── server.sh             # Detached service manager; port checks, PID/log files, status/logs/restart
 └── package.json          # Workspace root (devDependencies: vitest, supertest)
 ```
 
@@ -101,6 +101,7 @@ codedeck/
 - Output sequencing: each PTY output chunk gets a monotonic `seq`, stored in a bounded replay buffer (1000 entries) for loss-aware recovery
 - WebSocket messages are JSON: `{ type: 'input'|'output'|'resize'|'session'|'spawn_error'|'heartbeat'|'resume'|'replay'|'visibility_change'|'recovery_action', ... }`
 - File tree reads are depth-limited (3 levels) and skip: `node_modules`, `.git`, `.next`, `dist`, `build`, `target`, `.idea`, `__pycache__`, `.DS_Store`
+- Process orchestration is shell-script based rather than npm-root-script based: `start.sh` owns foreground lifecycle, while `server.sh` handles detached launch, port checks, PID tracking, and log tailing
 
 ## API Conventions
 - Base path: `/api/` (no versioning — single-user tool)
@@ -130,5 +131,7 @@ codedeck/
 - NEVER pass unsanitized paths to shell commands — validate existence first
 - ALWAYS show toast feedback for mutating actions (success and failure)
 - ALWAYS handle WebSocket disconnect/reconnect visibly
-- ALWAYS start servers via `./server.sh` — never run `node server/index.js` directly (blocks the terminal)
+- ALWAYS start normal local sessions via `./server.sh start` — it provides detached launch, port conflict checks, logs, and PID management
+- ONLY use `./start.sh` when you intentionally want a foreground dev session that dies with the terminal
+- NEVER document `node server/index.js` as the normal startup path — the supported backend dev entrypoint is `cd server && npm run dev`
 - ALWAYS use the existing CSS custom properties for colors — no hardcoded hex values in components (except in the theme definition itself)
