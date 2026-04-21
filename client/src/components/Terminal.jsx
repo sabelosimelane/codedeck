@@ -4,20 +4,19 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
-import { ChevronsDown } from 'lucide-react';
+import { AlertTriangle, ChevronsDown } from 'lucide-react';
 import { shouldResumeFromSessionHandshake } from '../utils/terminalResume';
 import { buildTerminalWebSocketUrl } from '../utils/terminalWsUrl';
 import { isTerminalProtocolReply } from '../utils/terminalProtocolReplies';
+import { buildTerminalSnapshotReplay } from '../utils/terminalSnapshotRestore';
 import {
   shouldSyncVisibleTerminal,
   shouldWriteTerminalViewport,
 } from '../utils/terminalVisibility';
 import {
-  getTmuxHistoryScrollLines,
   isTerminalViewportAtBottom,
   shouldBlockXtermWheelViewportFallback,
   shouldPauseAutoScrollOnWheel,
-  shouldRouteWheelToTmuxHistory,
 } from '../utils/terminalAutoScroll';
 
 const MAX_RETRIES = 10;
@@ -28,6 +27,8 @@ const SESSION_TAKEOVER_CLOSE_CODE = 4001;
 const SESSION_TAKEOVER_CLOSE_REASON = 'session_taken_over';
 const SESSION_DELETED_CLOSE_CODE = 4002;
 const SESSION_DELETED_CLOSE_REASON = 'session_deleted';
+const DEFAULT_FAILURE_MESSAGE = 'Unable to connect to server. Check that the backend is running.';
+const DEFAULT_HISTORY_WARNING_MESSAGE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
 
 const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runtimeType = 'pty' }, ref) {
   const containerRef = useRef(null);
@@ -39,6 +40,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
   const heartbeatRef = useRef(null);
   const mountedRef = useRef(true);
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connected' | 'connecting' | 'disconnected' | 'failed'
+  const [failureMessage, setFailureMessage] = useState(DEFAULT_FAILURE_MESSAGE);
+  const [historyWarning, setHistoryWarning] = useState(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const userScrolledUpRef = useRef(false);
   // Client-side diagnostics for visibility-aware recovery (Phase 2)
@@ -47,12 +50,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
   const lastResizeAtRef = useRef(null);
   const documentVisibilityRef = useRef(document.visibilityState === 'visible' ? 'visible' : 'hidden');
   const isVisibleRef = useRef(isVisible);
-  const runtimeTypeRef = useRef(runtimeType);
   // Sequence tracking for loss-aware replay (Phase 3)
   const lastSeenSeqRef = useRef(0);
   const reconnectCountRef = useRef(0);
   const resumeInFlightRef = useRef(false);
   const pendingOutputRef = useRef([]);
+  const pendingSnapshotRef = useRef(null);
   const inputBufferRef = useRef([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
@@ -136,16 +139,6 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
     }
   }, []);
 
-  const handlePaste = useCallback((e) => {
-    const files = e.clipboardData && e.clipboardData.files;
-    if (files && files.length > 0) {
-      e.preventDefault();
-      e.stopPropagation();
-      handleFilesDrop(Array.from(files));
-    }
-    // No files — let xterm.js handle normal text paste
-  }, []);
-
   function setAutoScrollEnabled(enabled) {
     userScrolledUpRef.current = !enabled;
     setShowScrollBtn(!enabled);
@@ -169,26 +162,51 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
     });
   }
 
-  function requestTmuxHistoryScroll(deltaY) {
-    const lines = getTmuxHistoryScrollLines(deltaY);
-    if (lines <= 0) return false;
-
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-
-    ws.send(JSON.stringify({
-      type: 'scroll_history',
-      direction: deltaY < 0 ? 'up' : 'down',
-      lines,
-    }));
-    return true;
-  }
-
   function canPaintCurrentViewport() {
     return shouldWriteTerminalViewport({
       isVisible: isVisibleRef.current,
       documentVisibility: documentVisibilityRef.current,
     });
+  }
+
+  function resetTerminalForSnapshot(term) {
+    if (typeof term.reset === 'function') {
+      term.reset();
+    }
+    if (typeof term.clear === 'function') {
+      term.clear();
+    }
+  }
+
+  function hydrateSnapshot(term, snapshot) {
+    resetTerminalForSnapshot(term);
+    if (typeof snapshot.lastSeq === 'number') {
+      lastSeenSeqRef.current = snapshot.lastSeq;
+    }
+    const snapshotReplay = buildTerminalSnapshotReplay(snapshot);
+    if (snapshotReplay) {
+      term.write(snapshotReplay);
+      lastPaintAtRef.current = new Date().toISOString();
+    }
+    setAutoScrollEnabled(true);
+    term.scrollToBottom();
+  }
+
+  function bufferOrHydrateSnapshot(term, snapshot) {
+    resumeInFlightRef.current = false;
+    pendingOutputRef.current = [];
+
+    if (typeof snapshot.lastSeq === 'number') {
+      lastSeenSeqRef.current = snapshot.lastSeq;
+    }
+
+    if (!canPaintCurrentViewport()) {
+      pendingSnapshotRef.current = snapshot;
+      return;
+    }
+
+    pendingSnapshotRef.current = null;
+    hydrateSnapshot(term, snapshot);
   }
 
   function writeChunkToTerminal(term, chunk) {
@@ -218,6 +236,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
   function flushPendingOutput() {
     const term = termRef.current;
     if (!term || !canPaintCurrentViewport()) return;
+
+    if (pendingSnapshotRef.current) {
+      const snapshot = pendingSnapshotRef.current;
+      pendingSnapshotRef.current = null;
+      hydrateSnapshot(term, snapshot);
+    }
 
     if (pendingOutputRef.current.length > 0) {
       for (const chunk of pendingOutputRef.current) {
@@ -254,7 +278,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
           requestResume(currentWs);
         }
       }
-    } catch {}
+    } catch (err) {
+      console.warn(`[terminal] viewport sync failed session=${sessionId} error=${err.message}`);
+    }
 
     // Focus MUST happen outside the try/catch and outside flushPendingOutput.
     // Focus is an input concern — it must not be blocked by fit() errors
@@ -271,6 +297,10 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       ws.send(JSON.stringify({ type: 'recovery_action', action }));
     }
   }
+
+  useEffect(() => {
+    setHistoryWarning(null);
+  }, [sessionId]);
 
   useImperativeHandle(ref, () => ({
     focus() {
@@ -303,7 +333,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       }
     },
     redraw() {
-      // Force xterm repaint and resize sync
+      // Force a non-destructive xterm repaint and resize sync. This must stay
+      // local-only: a reconnect-style snapshot rehydrate is too heavy-handed
+      // for a healthy live pane and can itself disturb the visible layout.
       if (termRef.current && fitRef.current) {
         syncTerminalViewport({ focus: true });
         sendRecoveryAction('redraw');
@@ -364,6 +396,53 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
     term.open(containerRef.current);
     fitRef.current = fitAddon;
     termRef.current = term;
+
+    let fontSyncCancelled = false;
+    const fontSet = document.fonts;
+    const scheduleFontMeasurementSync = () => {
+      if (fontSyncCancelled) return;
+      requestAnimationFrame(() => {
+        if (fontSyncCancelled || !mountedRef.current) return;
+        syncTerminalViewport();
+      });
+    };
+
+    // xterm measures character cells during boot. If JetBrains Mono arrives a
+    // beat later than the initial mount, those measurements can be based on a
+    // fallback font and fullscreen TUIs render against stale cols/rows until a
+    // manual resize/redraw happens. Re-fit once fonts are ready and whenever a
+    // late font load completes.
+    if (fontSet?.ready && typeof fontSet.ready.then === 'function') {
+      fontSet.ready
+        .then(() => {
+          scheduleFontMeasurementSync();
+        })
+        .catch((err) => {
+          console.warn(`[terminal] font readiness sync failed session=${sessionId} error=${err?.message || err}`);
+        });
+    }
+    fontSet?.addEventListener?.('loadingdone', scheduleFontMeasurementSync);
+
+    const handleNativePaste = (event) => {
+      const files = event.clipboardData?.files;
+      if (files && files.length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleFilesDrop(Array.from(files));
+        return;
+      }
+
+      const text = event.clipboardData?.getData?.('text/plain') ?? '';
+      if (!text) return;
+
+      // Route text paste through xterm's dedicated paste path so line endings
+      // are normalized and bracketed-paste mode is honored when enabled.
+      event.preventDefault();
+      event.stopPropagation();
+      term.paste(text);
+    };
+    containerRef.current.addEventListener('paste', handleNativePaste, true);
+
     requestAnimationFrame(() => {
       syncTerminalViewport();
     });
@@ -383,18 +462,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       }
     };
     containerRef.current.addEventListener('wheel', handleWheel, { passive: true });
-    term.attachCustomWheelEventHandler((event) => {
+    term.attachCustomWheelEventHandler(() => {
       const activeBuffer = term.buffer.active;
 
-      if (shouldRouteWheelToTmuxHistory({
-        runtimeType: runtimeTypeRef.current,
-        buffer: activeBuffer,
-        deltaY: event.deltaY,
-      })) {
-        requestTmuxHistoryScroll(event.deltaY);
-        return false;
-      }
-
+      // Keep ordinary wheel/trackpad scrolling purely local to xterm so the
+      // browser viewport always behaves like a normal terminal emulator.
+      // The only interception left is blocking xterm's no-scrollback fallback,
+      // which can translate wheel-up into ArrowUp input for the shell.
       return !shouldBlockXtermWheelViewportFallback(activeBuffer);
     });
 
@@ -468,10 +542,10 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
         wasConnectedBefore = true;
         retryRef.current = 0;
         setConnectionStatus('connected');
+        setFailureMessage(DEFAULT_FAILURE_MESSAGE);
         if (wasReconnect) {
           reconnectCountRef.current += 1;
           showToast({ type: 'success', message: 'Reconnected' });
-          requestResume(ws);
         }
         // Flush any input that was typed during reconnection
         if (inputBufferRef.current.length > 0) {
@@ -504,12 +578,34 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
         try {
           const msg = JSON.parse(event.data);
           lastMessageAtRef.current = new Date().toISOString();
-          if (msg.type === 'output') {
+          if (msg.type === 'session') {
+            if (msg.historyGuaranteed === true) {
+              setHistoryWarning(null);
+            }
+            if (shouldResumeFromSessionHandshake(msg, resumeInFlightRef.current)) {
+              requestResume(ws);
+            }
+          } else if (msg.type === 'snapshot') {
+            if (msg.historyGuaranteed !== false) {
+              setHistoryWarning(null);
+            }
+            bufferOrHydrateSnapshot(term, {
+              data: msg.data ?? '',
+              lastSeq: msg.lastSeq,
+              terminalState: msg.terminalState ?? null,
+            });
+            if (isVisibleRef.current && documentVisibilityRef.current === 'visible') {
+              term.focus();
+            }
+          } else if (msg.type === 'history_warning') {
+            const message = msg.message || DEFAULT_HISTORY_WARNING_MESSAGE;
+            setHistoryWarning({
+              reason: msg.reason || 'snapshot_unavailable',
+              message,
+            });
+            showToast({ type: 'warning', message });
+          } else if (msg.type === 'output') {
             bufferOrWriteChunk(term, { data: msg.data, seq: msg.seq });
-          } else if (msg.type === 'history') {
-            bufferOrWriteChunk(term, { data: msg.data });
-          } else if (shouldResumeFromSessionHandshake(msg, resumeInFlightRef.current)) {
-            requestResume(ws);
           } else if (msg.type === 'replay') {
             // Write chunks BEFORE clearing resumeInFlight. term.write()
             // causes xterm.js to process terminal queries embedded in the
@@ -531,8 +627,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
           } else if (msg.type === 'spawn_error') {
             spawnFailed = true;
             term.write(msg.data);
+            setFailureMessage(msg.message || DEFAULT_FAILURE_MESSAGE);
             setConnectionStatus('failed');
-            showToast({ type: 'error', message: 'Failed to start terminal — check node-pty installation' });
+            showToast({ type: 'error', message: msg.message || 'Failed to start terminal' });
           }
         } catch {
           term.write(event.data);
@@ -564,6 +661,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
         }
 
         if (retryRef.current >= MAX_RETRIES) {
+          setFailureMessage(DEFAULT_FAILURE_MESSAGE);
           setConnectionStatus('failed');
           return;
         }
@@ -579,6 +677,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
     // before a WebSocket is ever created
     const connectTimer = setTimeout(connect, 0);
 
+    function scheduleViewportRecovery() {
+      setTimeout(() => {
+        syncTerminalViewport({ focus: true, requestResumeAfterSync: true });
+      }, 50);
+    }
+
     // Track browser-level visibility changes for deterministic refocus recovery
     function handleVisibilityChange() {
       const state = document.visibilityState === 'visible' ? 'visible' : 'hidden';
@@ -591,12 +695,24 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
 
       // On refocus: force fit, resend dimensions, request replay of missed output
       if (state === 'visible') {
-        setTimeout(() => {
-          syncTerminalViewport({ focus: true, requestResumeAfterSync: true });
-        }, 50);
+        scheduleViewportRecovery();
       }
     }
+
+    function handleWindowFocus() {
+      if (document.visibilityState === 'visible') {
+        scheduleViewportRecovery();
+      }
+    }
+
+    function handlePageShow() {
+      documentVisibilityRef.current = document.visibilityState === 'visible' ? 'visible' : 'hidden';
+      scheduleViewportRecovery();
+    }
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+    window.addEventListener('pageshow', handlePageShow);
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
@@ -609,18 +725,21 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       clearTimeout(connectTimer);
       clearTimeout(retryTimerRef.current);
       clearInterval(heartbeatRef.current);
+      pendingOutputRef.current = [];
+      pendingSnapshotRef.current = null;
       inputBufferRef.current = [];
+      fontSyncCancelled = true;
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('pageshow', handlePageShow);
+      document.fonts?.removeEventListener?.('loadingdone', scheduleFontMeasurementSync);
       containerRef.current?.removeEventListener('wheel', handleWheel);
+      containerRef.current?.removeEventListener('paste', handleNativePaste, true);
       resizeObserver.disconnect();
       if (wsRef.current) wsRef.current.close();
       term.dispose();
     };
   }, [sessionId, cwd]);
-
-  useEffect(() => {
-    runtimeTypeRef.current = runtimeType;
-  }, [runtimeType]);
 
   // Re-fit and sync dimensions when tab becomes visible (React-level tab switch)
   useEffect(() => {
@@ -639,7 +758,6 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      onPaste={handlePaste}
     >
       {/* Reconnecting overlay — dims terminal and shows spinner so user knows input is paused */}
       {connectionStatus === 'disconnected' && (
@@ -653,8 +771,14 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       {connectionStatus === 'failed' && (
         <div style={failedOverlayStyle}>
           <div style={{ ...reconnectCardStyle, borderColor: 'rgba(248, 113, 113, 0.3)' }}>
-            <span>Unable to connect to server. Check that the backend is running.</span>
+            <span>{failureMessage}</span>
           </div>
+        </div>
+      )}
+      {historyWarning && (
+        <div style={historyWarningBannerStyle}>
+          <AlertTriangle size={14} />
+          <span style={historyWarningTextStyle}>{historyWarning.message}</span>
         </div>
       )}
       {/* Drop zone overlay — shown during file drag */}
@@ -749,6 +873,30 @@ const reconnectCardStyle = {
   fontSize: '12px',
   color: 'var(--text-secondary)',
   boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
+};
+
+const historyWarningBannerStyle = {
+  position: 'absolute',
+  top: 12,
+  left: 12,
+  right: 12,
+  zIndex: 11,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '10px 12px',
+  borderRadius: 8,
+  background: 'rgba(69, 26, 3, 0.96)',
+  border: '1px solid rgba(217, 119, 6, 0.5)',
+  color: '#fde68a',
+  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.35)',
+  pointerEvents: 'none',
+};
+
+const historyWarningTextStyle = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: '11px',
+  lineHeight: 1.45,
 };
 
 const dropZoneOverlayStyle = {

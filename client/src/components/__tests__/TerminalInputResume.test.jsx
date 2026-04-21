@@ -88,6 +88,8 @@ import Terminal from '../Terminal';
 describe('Terminal input resume after refocus', () => {
   let visibilityState;
   let visibilityHandler;
+  let windowFocusHandler;
+  let pageShowHandler;
   let wsInstances;
 
   beforeEach(() => {
@@ -121,10 +123,17 @@ describe('Terminal input resume after refocus', () => {
     });
 
     visibilityHandler = null;
+    windowFocusHandler = null;
+    pageShowHandler = null;
     vi.spyOn(document, 'addEventListener').mockImplementation((event, cb) => {
       if (event === 'visibilitychange') visibilityHandler = cb;
     });
     vi.spyOn(document, 'removeEventListener').mockImplementation(() => {});
+    vi.spyOn(window, 'addEventListener').mockImplementation((event, cb) => {
+      if (event === 'focus') windowFocusHandler = cb;
+      if (event === 'pageshow') pageShowHandler = cb;
+    });
+    vi.spyOn(window, 'removeEventListener').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -193,6 +202,44 @@ describe('Terminal input resume after refocus', () => {
     expect(mocks.term.focus).toHaveBeenCalled();
   });
 
+  it('re-syncs terminal layout when the browser window regains focus without a visibility change', () => {
+    render(<Terminal sessionId="s-focus" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.send.mockClear();
+    mocks.term.focus.mockClear();
+
+    expect(windowFocusHandler).not.toBeNull();
+
+    windowFocusHandler?.();
+    vi.advanceTimersByTime(100);
+
+    expect(mocks.term.focus).toHaveBeenCalled();
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30 }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resume', lastSeenSeq: 0 }));
+  });
+
+  it('re-syncs terminal layout after pageshow restores the app shell', () => {
+    render(<Terminal sessionId="s-pageshow" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.send.mockClear();
+    mocks.term.focus.mockClear();
+
+    expect(pageShowHandler).not.toBeNull();
+
+    pageShowHandler?.({ persisted: true });
+    vi.advanceTimersByTime(100);
+
+    expect(mocks.term.focus).toHaveBeenCalled();
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30 }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resume', lastSeenSeq: 0 }));
+  });
+
   it('drops focus tracking protocol replies instead of forwarding them to the PTY', () => {
     render(<Terminal sessionId="s4" cwd="/tmp" isVisible={true} />);
     vi.advanceTimersByTime(16);
@@ -256,5 +303,21 @@ describe('Terminal input resume after refocus', () => {
     vi.advanceTimersByTime(16);
 
     expect(wsInstances).toHaveLength(1);
+  });
+
+  it('keeps redraw as a non-destructive local viewport sync', () => {
+    const terminalRef = React.createRef();
+    render(<Terminal ref={terminalRef} sessionId="s8" cwd="/tmp" isVisible={true} runtimeType="tmux" />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.send.mockClear();
+
+    terminalRef.current?.redraw();
+
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30 }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'recovery_action', action: 'redraw' }));
+    expect(mocks.ws.send).not.toHaveBeenCalledWith(JSON.stringify({ type: 'rehydrate' }));
   });
 });

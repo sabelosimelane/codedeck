@@ -15,7 +15,7 @@ import {
   SESSION_DELETED_CLOSE_CODE,
   SESSION_DELETED_CLOSE_REASON,
 } from './ws-handler.js';
-import { createTerminalRuntime } from './terminal-runtime.js';
+import { createTerminalRuntime, getTerminalRuntimeStatus, TERMINAL_SNAPSHOT_WINDOW_LINES } from './terminal-runtime.js';
 import { allocateTerminalSessionId } from './terminal-session-service.js';
 import { listTerminalSessions } from './terminal-session-status-service.js';
 import { pruneTerminalSessions } from './session-gc.js';
@@ -299,6 +299,14 @@ app.post('/api/terminal', (req, res) => {
     return res.status(404).json({ error: 'project not found' });
   }
 
+  const runtimeStatus = getTerminalRuntimeStatus(terminalRuntime);
+  if (!runtimeStatus.terminalCreationAllowed) {
+    return res.status(503).json({
+      error: runtimeStatus.terminalRuntimeBlockedMessage,
+      ...runtimeStatus,
+    });
+  }
+
   try {
     const allocation = allocateTerminalSessionId({
       projectName,
@@ -338,6 +346,7 @@ app.get('/api/sessions', (req, res) => {
 // REST API: Debug terminal health (rich diagnostics)
 // -------------------------------------------------------------------
 app.get('/api/debug/terminal-health', (req, res) => {
+  const runtimeStatus = getTerminalRuntimeStatus(terminalRuntime);
   const sessionList = [];
   for (const [sessionId, entry] of sessions) {
     entry.cwd = terminalRuntime.getSessionCwd?.(entry, sessionId) || entry.cwd;
@@ -347,6 +356,11 @@ app.get('/api/debug/terminal-health', (req, res) => {
       health: computeSessionHealth(entry),
       ptyAlive: entry.alive,
       runtimeType: entry.runtimeType ?? 'pty',
+      snapshotWindowLines: entry.snapshotWindowLines ?? (entry.runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null),
+      historyGuaranteed: entry.historyGuaranteed ?? (entry.runtimeType === 'tmux'),
+      historyWarningReason: entry.historyWarningReason ?? null,
+      historyWarningMessage: entry.historyWarningMessage ?? null,
+      ...runtimeStatus,
       wsAttached: entry.wsAttached ?? false,
       cwd: entry.cwd,
       startedAt: entry.startedAt,
@@ -371,6 +385,8 @@ app.get('/api/debug/terminal-health', (req, res) => {
   }
   res.json({
     generatedAt: new Date().toISOString(),
+    status: runtimeStatus.terminalCreationAllowed ? 'ok' : 'degraded',
+    runtime: runtimeStatus,
     sessions: sessionList,
   });
 });
@@ -381,10 +397,12 @@ app.get('/api/debug/terminal-health', (req, res) => {
 const startedAt = Date.now();
 
 app.get('/api/health', (req, res) => {
+  const runtimeStatus = getTerminalRuntimeStatus(terminalRuntime);
+
   res.json({
-    status: 'ok',
+    status: runtimeStatus.terminalCreationAllowed ? 'ok' : 'degraded',
     uptime: Math.floor((Date.now() - startedAt) / 1000),
-    terminalRuntime: terminalRuntime.type,
+    ...runtimeStatus,
   });
 });
 
@@ -399,7 +417,8 @@ const sessions = new Map();
 const deletedSessionIds = new Set();
 const reservedSessionIds = new Set();
 
-// Resolve terminal runtime mode: env var > SQLite config > default 'tmux'
+// Resolve the requested runtime hint: env var > SQLite config > default 'tmux'.
+// createTerminalRuntime() still enforces the tmux-required terminal contract.
 const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
   || getConfig('terminalRuntime')
   || 'tmux';

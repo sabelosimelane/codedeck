@@ -1,3 +1,5 @@
+import { getTerminalRuntimeStatus, TERMINAL_SNAPSHOT_WINDOW_LINES } from './terminal-runtime.js';
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -22,6 +24,7 @@ export function listTerminalSessions({
 } = {}) {
   const result = [];
   const seenSessionIds = new Set();
+  const runtimeStatus = getTerminalRuntimeStatus(runtime);
 
   for (const [sessionId, entry] of sessions) {
     const cwd = runtime.getSessionCwd?.(entry, sessionId) || entry.cwd;
@@ -36,6 +39,11 @@ export function listTerminalSessions({
       lastOutputLine: sanitizePreviewLine(entry.lastOutputLine || ''),
       alive: entry.alive,
       runtimeType: entry.runtimeType ?? runtime.type ?? 'pty',
+      snapshotWindowLines: entry.snapshotWindowLines ?? (entry.runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null),
+      historyGuaranteed: entry.historyGuaranteed ?? (entry.runtimeType === 'tmux'),
+      historyWarningReason: entry.historyWarningReason ?? null,
+      historyWarningMessage: entry.historyWarningMessage ?? null,
+      ...runtimeStatus,
       wsAttached: entry.wsAttached ?? false,
       lastAttachAt: entry.lastAttachAt ?? null,
       lastClientAckAt: entry.lastClientAckAt ?? null,
@@ -71,6 +79,11 @@ export function listTerminalSessions({
       lastOutputLine: '',
       alive: true,
       runtimeType: runtime.type ?? 'pty',
+      snapshotWindowLines: runtime.type === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
+      historyGuaranteed: runtime.type === 'tmux',
+      historyWarningReason: null,
+      historyWarningMessage: null,
+      ...runtimeStatus,
       wsAttached: false,
       lastAttachAt: null,
       lastClientAckAt: null,

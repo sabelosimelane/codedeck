@@ -1,5 +1,48 @@
 # Changelog
 
+## [2026-04-22] - Stop reconnects from lying about terminal history
+
+### Executive Summary
+* CodeDeck terminals now reconnect with a truthful recent-history model instead of stitching together stale browser state, replay buffers, and best-effort redraws. The terminal runtime now requires tmux, every durable reattach reseeds from a fresh snapshot of tmux’s recent window, degraded restores warn visibly when history cannot be guaranteed, and follow-on fixes hardened redraw recovery so refreshes, browser closes, backend restarts, and scrollback inspection behave much more like a trustworthy local terminal.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Durable tmux terminals could reconnect with stale or duplicated visible history, lose output during bootstrap recovery, redraw against stale geometry, misrestore modeful sessions, and corrupt restored scrollback while scrolling through snapshot-seeded history.
+  * **Solution:** Made tmux the only supported runtime, moved browser reattach to a snapshot-first tmux restore contract, buffered reconnect output correctly, restored tmux-reported terminal state, resized tmux before snapshot capture, and serialized snapshot rows as CRLF-delimited terminal rows instead of newline-only logical text.
+* **🛠️ Codebase:**
+  * `README.md` — Documented the tmux-required runtime contract, truthful reconnect semantics, and the new distinction between transport replay and preserved-history authority.
+  * `client/src/components/Terminal.jsx` — Rebuilt reconnects around authoritative tmux snapshots, added visible history-warning/failure states, kept wheel scrolling local to xterm, improved paste/font/layout recovery, and exposed a manual redraw hook for pane re-measurement.
+  * `client/src/components/TerminalArea.jsx` — Fetched runtime health, blocked terminal creation when tmux is unavailable, surfaced a tmux-required empty state, and added a pane-level redraw action.
+  * `client/src/components/TerminalInspector.jsx` — Surfaced snapshot-window and history-guarantee diagnostics for durable tmux sessions.
+  * `client/src/utils/terminalAutoScroll.js` — Switched to VS Code-style local scroll authority and removed ordinary tmux-history wheel routing from the viewport model.
+  * `client/src/utils/terminalResume.js` — Prevented snapshot-backed reconnects from asking replay to impersonate preserved history.
+  * `client/src/utils/terminalSnapshotRestore.js` — New snapshot restore helper that reapplies tmux-reported terminal state, including forward-compatible bracketed-paste restore when tmux exposes it.
+  * `docs/plans/2026-04-21-truthful-terminal-scrollback-design.md` — Added the implementation design for the snapshot-first truthful scrollback architecture.
+  * `docs/specifications/truthful-terminal-scrollback-spec.md` — Added the product/spec contract for tmux-required truthful scrollback and reconnect behavior.
+  * `docs/steering/product.md` — Updated product steering to describe truthful scrollback behavior and tmux-required terminals.
+  * `docs/steering/structure.md` — Updated structure steering to reflect the new terminal runtime, reconnect, and test surfaces.
+  * `docs/steering/tech.md` — Updated technical steering with the tmux-required runtime and snapshot-first reconnect model.
+  * `docs/todos/tmux-reconnect-review-fixes.md` — Tracked and closed the tmux reconnect review findings, including the residual stock-tmux bracketed-paste limitation and the upstream investigation notes.
+  * `docs/todos/truthful-terminal-scrollback.md` — Recorded phase-by-phase implementation, manual verification, and final completion notes for the truthful scrollback feature.
+  * `server/index.js` — Blocked terminal creation when tmux is unavailable and exposed runtime/guarantee metadata through health and diagnostic APIs.
+  * `server/terminal-runtime.js` — Enforced tmux-only terminals, added snapshot capture/state probing, direct tmux window resizing before reconnect snapshots, CRLF row snapshots, and forward-compatible bracketed-paste probing.
+  * `server/terminal-session-status-service.js` — Added snapshot-window and history-guarantee metadata to terminal session summaries.
+  * `server/ws-handler.js` — Replaced hybrid history hydration with snapshot-first attach/reconnect sequencing, added guarantee metadata, fixed bootstrap/replay boundary bugs, restored geometry before snapshot capture, and hardened durable recovery ordering.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — Added restore coverage for manual redraw actions and updated terminal-area restore behavior around durable panes.
+  * `client/src/components/__tests__/TerminalAutoScroll.test.jsx` — Added coverage for detached viewport stability, Latest behavior, and local-only wheel semantics.
+  * `client/src/components/__tests__/TerminalFileDrop.test.jsx` — Updated paste/drop coverage to match xterm’s native paste path and file-handling behavior.
+  * `client/src/components/__tests__/TerminalFontSync.test.jsx` — New regression coverage for late font measurement recovery and terminal re-fit.
+  * `client/src/components/__tests__/TerminalHistoryRestore.test.jsx` — Expanded reconnect coverage for authoritative snapshots, warning states, and modeful terminal-state restore.
+  * `client/src/components/__tests__/TerminalInputResume.test.jsx` — Added coverage for visibility/focus recovery and reconnect-safe input handling.
+  * `client/src/components/__tests__/TerminalRuntimeBlocked.test.jsx` — New coverage for the tmux-required runtime gate in the terminal UI.
+  * `client/src/components/__tests__/terminalResume.test.js` — Updated session-handshake coverage so snapshot-backed reconnects no longer request replay.
+  * `client/src/utils/__tests__/terminalAutoScroll.test.js` — Expanded unit coverage for the revised auto-follow and wheel-blocking semantics.
+  * `client/src/utils/__tests__/terminalSnapshotRestore.test.js` — New unit coverage for tmux terminal-state replay, including forward-compatible bracketed paste.
+  * `server/__tests__/terminal-runtime.test.js` — Added coverage for tmux runtime gating, snapshot capture modes, direct window resize before reconnect capture, and CRLF row snapshot output.
+  * `server/__tests__/terminal-session-status-service.test.js` — Added coverage for session summary runtime and history-guarantee metadata.
+  * `server/__tests__/ws-handler.test.js` — Added and updated regression coverage for snapshot-first reconnect sequencing, bootstrap buffering, geometry-safe captures, modeful snapshots, and durable recovery ordering.
+
 ## [2026-04-20] - Prevent new terminals from dropping input during metadata sync
 
 ### Executive Summary

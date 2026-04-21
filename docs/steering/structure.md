@@ -40,8 +40,8 @@ The backend is an Express app in `server/index.js` with WebSocket connection han
 codedeck/
 ├── server/
 │   ├── index.js          # REST routes, WebSocket server, PTY spawn factory
-│   ├── ws-handler.js     # WebSocket connection handler, diagnostics, replay (extracted for testability)
-│   ├── terminal-runtime.js # Runtime abstraction: raw PTY or tmux-backed sessions
+│   ├── ws-handler.js     # WebSocket connection handler, snapshot-first attach, diagnostics, transport replay
+│   ├── terminal-runtime.js # tmux-required terminal runtime + snapshot capture helpers
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
 │   └── __tests__/
@@ -55,7 +55,7 @@ codedeck/
 │       ├── components/
 │       │   ├── Sidebar.jsx           # Project list, status cockpit, file browse trigger
 │       │   ├── TerminalArea.jsx      # Tab bar, N-pane layout, localStorage persistence
-│       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, heartbeat, replay, visibility recovery
+│       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, snapshot hydration, transport replay, visibility recovery
 │       │   ├── TerminalInspector.jsx # Debug inspector: health, timeline, recovery actions, snapshot copy
 │       │   ├── PaneDivider.jsx       # Draggable vertical divider between terminal panes
 │       │   ├── FileTree.jsx          # Directory tree renderer
@@ -94,12 +94,12 @@ codedeck/
 ### Backend Patterns
 - REST routes in `server/index.js` — grouped by concern with comment headers
 - WebSocket connection handling extracted to `server/ws-handler.js` — receives `(ws, req, sessions, runtime)` for testability via dependency injection
-- Terminal runtime abstraction in `server/terminal-runtime.js` — factory returns either raw PTY or tmux-backed runtime, injected into ws-handler
+- Terminal runtime contract in `server/terminal-runtime.js` — exported factory always enforces tmux-backed sessions, captures authoritative reconnect snapshots, and is injected into `ws-handler.js`
 - Synchronous SQLite via better-sqlite3 (no async/await needed for DB calls)
 - PTY sessions stored in a `Map<sessionId, { pty, ws, cwd, startedAt, lastOutputAt, alive, wsAttached, lastSeq, replayBuffer, events[], ... }>` in memory
 - PTY listeners (onData, onExit) registered ONCE per PTY at creation — they read `entry.ws` to route to the current WebSocket, avoiding stale closure references on reconnect
-- Output sequencing: each PTY output chunk gets a monotonic `seq`, stored in a bounded replay buffer (1000 entries) for loss-aware recovery
-- WebSocket messages are JSON: `{ type: 'input'|'output'|'resize'|'session'|'spawn_error'|'heartbeat'|'resume'|'replay'|'visibility_change'|'recovery_action', ... }`
+- Output sequencing: each PTY output chunk gets a monotonic `seq`, stored in a bounded replay buffer (1000 entries) for transport catch-up and loss-aware recovery
+- WebSocket messages are JSON: `{ type: 'input'|'output'|'resize'|'session'|'snapshot'|'history_warning'|'spawn_error'|'heartbeat'|'resume'|'replay'|'visibility_change'|'recovery_action', ... }`
 - File tree reads are depth-limited (3 levels) and skip: `node_modules`, `.git`, `.next`, `dist`, `build`, `target`, `.idea`, `__pycache__`, `.DS_Store`
 - Process orchestration is shell-script based rather than npm-root-script based: `start.sh` owns foreground lifecycle, while `server.sh` handles detached launch, port checks, PID tracking, and log tailing
 

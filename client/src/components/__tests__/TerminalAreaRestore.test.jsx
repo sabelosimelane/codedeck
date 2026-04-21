@@ -4,6 +4,7 @@ import React from 'react';
 
 const mocks = vi.hoisted(() => ({
   showToast: vi.fn(),
+  terminalApis: new Map(),
 }));
 
 vi.mock('lucide-react', () => {
@@ -14,12 +15,21 @@ vi.mock('lucide-react', () => {
     Columns: Icon,
     Eraser: Icon,
     Bug: Icon,
+    Paintbrush: Icon,
     TerminalSquare: Icon,
   };
 });
 
 vi.mock('../Terminal', () => ({
-  default: React.forwardRef(function MockTerminal(_props, _ref) {
+  default: React.forwardRef(function MockTerminal(props, ref) {
+    const api = React.useMemo(() => ({
+      clear: vi.fn(),
+      redraw: vi.fn(),
+      focus: vi.fn(),
+    }), []);
+
+    React.useImperativeHandle(ref, () => api, [api]);
+    mocks.terminalApis.set(props.sessionId, api);
     return null;
   }),
 }));
@@ -68,6 +78,7 @@ describe('TerminalArea restore fallback', () => {
   beforeEach(() => {
     originalFetch = global.fetch;
     mocks.showToast.mockReset();
+    mocks.terminalApis = new Map();
     onSessionStatusRefresh = vi.fn();
     localStorage.clear();
   });
@@ -186,6 +197,36 @@ describe('TerminalArea restore fallback', () => {
       expect(view.queryByText('No terminals open')).toBeNull();
       expect(view.getAllByText('BookMe-9').length).toBeGreaterThan(0);
     });
+  });
+
+  it('lets the user manually re-measure a pane layout from the header', async () => {
+    let liveSessions = [
+      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+    ];
+
+    global.fetch = vi.fn(async (url) => {
+      if (url === '/api/sessions') {
+        return {
+          ok: true,
+          json: async () => liveSessions,
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const view = render(
+      <TerminalArea project={PROJECT} sessionStatus={liveSessions} onSessionStatusRefresh={onSessionStatusRefresh} />
+    );
+
+    await waitFor(() => {
+      expect(view.getAllByText('BookMe-9').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(view.container.querySelector('[title="Re-measure terminal layout"]'));
+
+    expect(mocks.terminalApis.get('BookMe-9')?.redraw).toHaveBeenCalledTimes(1);
+    expect(mocks.showToast).toHaveBeenCalledWith({ type: 'success', message: 'Re-measuring terminal layout...' });
   });
 
   it('persists an empty layout immediately after closing the last terminal', async () => {

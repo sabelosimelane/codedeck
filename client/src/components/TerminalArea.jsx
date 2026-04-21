@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, Bug, TerminalSquare } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare } from 'lucide-react';
 import TerminalInspector from './TerminalInspector';
 import { useToast } from './ToastContext';
 import {
@@ -14,6 +14,7 @@ import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
 
 const IS_MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+const DEFAULT_RUNTIME_BLOCKED_MESSAGE = 'Install tmux to enable durable CodeDeck terminals.';
 
 function ShortcutHint({ label, keys, children }) {
   const [visible, setVisible] = useState(false);
@@ -236,6 +237,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
   const [inspectingSessionId, setInspectingSessionId] = useState(null);
+  const [terminalRuntimeStatus, setTerminalRuntimeStatus] = useState(null);
   const stateRef = useRef(state);
   const containerRef = useRef(null);
   const terminalRefs = useRef(new Map());
@@ -252,6 +254,8 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
     prevProjectName: prevProjectRef.current,
   });
   const { showToast } = useToast();
+  const isTerminalRuntimeBlocked = terminalRuntimeStatus?.terminalCreationAllowed === false;
+  const terminalRuntimeBlockedMessage = terminalRuntimeStatus?.terminalRuntimeBlockedMessage || DEFAULT_RUNTIME_BLOCKED_MESSAGE;
 
   useEffect(() => {
     stateRef.current = state;
@@ -299,17 +303,29 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
     }
     prevProjectRef.current = project.name;
     restoringRef.current = true;
+    setTerminalRuntimeStatus(null);
 
     const saved = loadLayout(project.name);
     let cancelled = false;
     (async () => {
       try {
+        let nextTerminalRuntimeStatus = null;
+        try {
+          const healthRes = await fetch('/api/health');
+          if (healthRes.ok) {
+            nextTerminalRuntimeStatus = await healthRes.json();
+          }
+        } catch {
+          nextTerminalRuntimeStatus = null;
+        }
+
         const res = await fetch('/api/sessions');
         if (!res.ok) throw new Error('Failed to fetch sessions');
         const liveSessions = await res.json();
 
         if (cancelled) return;
 
+        setTerminalRuntimeStatus(nextTerminalRuntimeStatus);
         onSessionStatusRefresh(liveSessions);
 
         const resolved = resolveInitialTerminalState({
@@ -451,6 +467,11 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
   }, [setSessionsPending, showToast]);
 
   const requestTerminalSessionId = useCallback(async (successMessage) => {
+    if (isTerminalRuntimeBlocked) {
+      showToast({ type: 'error', message: terminalRuntimeBlockedMessage });
+      return null;
+    }
+
     try {
       const res = await fetch('/api/terminal', {
         method: 'POST',
@@ -475,7 +496,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
       showToast({ type: 'error', message: 'Server unreachable' });
       return null;
     }
-  }, [project.name, showToast]);
+  }, [project.name, showToast, isTerminalRuntimeBlocked, terminalRuntimeBlockedMessage]);
 
   // Split right — add pane to active tab, redistribute widths equally
   const splitRight = useCallback(async () => {
@@ -621,6 +642,16 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
     terminal?.clear?.();
   }, []);
 
+  const redrawPane = useCallback((paneId) => {
+    const terminal = terminalRefs.current.get(paneId);
+    if (!terminal?.redraw) {
+      showToast({ type: 'error', message: 'Terminal not ready to redraw yet' });
+      return;
+    }
+
+    terminal.redraw();
+    showToast({ type: 'success', message: 'Re-measuring terminal layout...' });
+  }, [showToast]);
 
   const registerTerminalRef = useCallback((paneId, instance) => {
     if (instance) {
@@ -840,13 +871,15 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         >
           <button
             onClick={splitRight}
-            disabled={!activeTab}
+            aria-label="Split right"
+            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : undefined}
+            disabled={!activeTab || isTerminalRuntimeBlocked}
             style={{
               padding: 4,
               borderRadius: 4,
-              color: activeTab ? 'var(--text-muted)' : 'rgba(138, 146, 166, 0.45)',
-              opacity: activeTab ? 1 : 0.5,
-              cursor: activeTab ? 'pointer' : 'not-allowed',
+              color: activeTab && !isTerminalRuntimeBlocked ? 'var(--text-muted)' : 'rgba(138, 146, 166, 0.45)',
+              opacity: activeTab && !isTerminalRuntimeBlocked ? 1 : 0.5,
+              cursor: activeTab && !isTerminalRuntimeBlocked ? 'pointer' : 'not-allowed',
             }}
           >
             <Columns size={14} />
@@ -858,14 +891,47 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         >
           <button
             onClick={addTab}
-            style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)' }}
+            aria-label="New terminal"
+            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : undefined}
+            disabled={isTerminalRuntimeBlocked}
+            style={{
+              padding: 4,
+              borderRadius: 4,
+              color: isTerminalRuntimeBlocked ? 'rgba(138, 146, 166, 0.45)' : 'var(--text-muted)',
+              opacity: isTerminalRuntimeBlocked ? 0.5 : 1,
+              cursor: isTerminalRuntimeBlocked ? 'not-allowed' : 'pointer',
+            }}
           >
             <Plus size={14} />
           </button>
         </ShortcutHint>
       </div>
 
-      {tabs.length === 0 && (
+      {isTerminalRuntimeBlocked && (
+        <div
+          className="terminal-empty-state"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 24,
+          }}
+        >
+          <div className="terminal-empty-card">
+            <div className="terminal-empty-icon">
+              <TerminalSquare size={18} />
+            </div>
+            <div className="terminal-empty-label">tmux required</div>
+            <div className="terminal-empty-copy">
+              {terminalRuntimeBlockedMessage} Restart CodeDeck after installing tmux, then open or reattach your terminals.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!isTerminalRuntimeBlocked && tabs.length === 0 && (
         <div
           className="terminal-empty-state"
           style={{
@@ -897,7 +963,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
       )}
 
       {/* Pane groups — render ALL tabs, hide inactive ones to preserve terminal state */}
-      {shouldRenderTerminals && tabs.map(tab => {
+      {!isTerminalRuntimeBlocked && shouldRenderTerminals && tabs.map(tab => {
         const isActive = tab.id === activeTabId;
         return (
           <div
@@ -1017,6 +1083,16 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        <ShortcutHint label="Re-measure terminal layout" keys={[]}>
+                          <button
+                            onClick={() => redrawPane(pane.id)}
+                            className="terminal-action-btn"
+                            title="Re-measure terminal layout"
+                            disabled={isPending}
+                          >
+                            <Paintbrush size={13} />
+                          </button>
+                        </ShortcutHint>
                         <ShortcutHint label="Inspect terminal" keys={[]}>
                           <button
                             onClick={() => setInspectingSessionId(pane.sessionId)}

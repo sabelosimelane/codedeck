@@ -28,7 +28,22 @@ global.ResizeObserver = class { observe() {} disconnect() {} };
 vi.mock('@xterm/xterm', () => {
   class MockTerminal {
     constructor() {
-      this.open = vi.fn();
+      this.open = vi.fn((container) => {
+        const screen = document.createElement('div');
+        screen.className = 'xterm-test-screen';
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'xterm-helper-textarea';
+        // Emulate xterm's native paste listeners, which stop bubbling before
+        // ancestor React onPaste handlers can observe the event.
+        textarea.addEventListener('paste', (event) => {
+          event.stopPropagation();
+        });
+
+        screen.appendChild(textarea);
+        container.appendChild(screen);
+        this.textarea = textarea;
+      });
       this.dispose = vi.fn();
       this.write = vi.fn();
       this.focus = vi.fn();
@@ -41,6 +56,7 @@ vi.mock('@xterm/xterm', () => {
       this.onScroll = vi.fn();
       this.attachCustomKeyEventHandler = vi.fn();
       this.attachCustomWheelEventHandler = vi.fn();
+      this.paste = vi.fn();
       this.buffer = { active: { cursorY: 0, baseY: 0, length: 30 } };
       this.rows = 30;
       this.cols = 120;
@@ -110,6 +126,10 @@ async function flushAsync() {
   for (let i = 0; i < 5; i++) {
     await vi.advanceTimersByTimeAsync(0);
   }
+}
+
+function getPasteTarget(container) {
+  return container.querySelector('.xterm-helper-textarea');
 }
 
 // --- Tests ---
@@ -249,34 +269,41 @@ describe('Terminal file drag-and-drop and paste', () => {
       });
 
       const { container } = mountAndConnect();
-      const wrapper = container.firstChild;
+      const pasteTarget = getPasteTarget(container);
 
       const file = createFile('screenshot.png');
-      const pasteEvent = new Event('paste', { bubbles: true });
+      const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
       Object.defineProperty(pasteEvent, 'clipboardData', {
-        value: { files: [file] },
+        value: { files: [file], getData: vi.fn(() => '') },
       });
-      wrapper.dispatchEvent(pasteEvent);
+      pasteTarget.dispatchEvent(pasteEvent);
 
       await flushAsync();
 
       expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(pasteEvent.defaultPrevented).toBe(true);
       expect(mocks.ws.send).toHaveBeenCalledWith(
         JSON.stringify({ type: 'input', data: '"/tmp/codedeck-drops/456-screenshot.png"' })
       );
     });
 
-    it('does not intercept text-only paste (no files)', () => {
+    it('routes text-only paste through xterm before the nested terminal stops propagation', () => {
       const { container } = mountAndConnect();
-      const wrapper = container.firstChild;
+      const pasteTarget = getPasteTarget(container);
 
       const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
       Object.defineProperty(pasteEvent, 'clipboardData', {
-        value: { files: [] },
+        value: {
+          files: [],
+          getData: vi.fn((type) => (type === 'text/plain' ? 'first line\r\nsecond line\r\n' : '')),
+        },
       });
-      wrapper.dispatchEvent(pasteEvent);
+      pasteTarget.dispatchEvent(pasteEvent);
 
-      expect(pasteEvent.defaultPrevented).toBe(false);
+      expect(pasteEvent.defaultPrevented).toBe(true);
+      expect(mocks.term.paste).toHaveBeenCalledWith('first line\r\nsecond line\r\n');
+      const inputSends = mocks.ws.send.mock.calls.filter(([arg]) => arg.includes('"type":"input"'));
+      expect(inputSends).toHaveLength(0);
     });
   });
 

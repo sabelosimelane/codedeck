@@ -14,13 +14,14 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Unlimited split panes** — side-by-side terminals with draggable dividers per tab
 - **Live sidebar cockpit** — per-project status (active/idle/dead), terminal count, elapsed time
 - **Per-project file browsing** — browse any project's files and open them in your editor
-- **Terminal resilience** — debug inspector, replay buffer, visibility-aware recovery, heartbeat monitoring
-- **Durable sessions** — tmux-backed by default; terminals survive browser detaches and server restarts
+- **Truthful terminal scrollback** — VS Code-style scrolling, snapshot-first reconnects, and visible warnings when preserved history cannot be guaranteed
+- **Terminal resilience** — debug inspector, transport replay catch-up, visibility-aware recovery, heartbeat monitoring
+- **Durable sessions** — tmux-backed sessions survive browser detaches and server restarts
 - **Toast notifications** — success/error feedback on every action, no silent failures
 
 ## Setup
 
-Prerequisites: Node.js 22+, npm 10+. Optional: tmux (for durable terminal sessions).
+Prerequisites: Node.js 22+, npm 10+, and `tmux` (required for terminal sessions).
 
 ```bash
 # Install dependencies
@@ -53,22 +54,22 @@ Open `http://localhost:43000` in your browser.
 CodeDeck includes built-in resilience features for debugging and recovering misbehaving panes:
 
 - **Debug inspector** — click the bug icon on any pane to see health status, lifecycle timeline, and diagnostics
-- **Recovery actions** — Reconnect, Resync (replay without teardown), and Redraw (force repaint)
-- **Visibility-aware recovery** — returning to a backgrounded tab automatically resizes, resyncs, and replays missed output
-- **Replay buffer** — bounded per-session output buffer replays missed data on reconnect
+- **Recovery actions** — Reconnect, Resync (transport catch-up without teardown), and Redraw (force repaint)
+- **Truthful reconnects** — every attach/reconnect clears stale browser history and reseeds from a fresh tmux snapshot of the recent 10,000-line window
+- **Visibility-aware recovery** — returning to a backgrounded tab automatically resizes, resyncs, and catches up missed live output
+- **Replay buffer** — bounded per-session output buffer is transport-only catch-up, not the preserved-history authority
 - **Heartbeat & stall detection** — detects stale views (throttled, paint lag) and surfaces the reason
 
 ### Terminal Runtime
 
-CodeDeck defaults to `tmux`-backed sessions. If `tmux` is not installed, it falls back to raw PTY mode.
+CodeDeck requires `tmux` for all terminal sessions. If `tmux` is missing, the UI blocks terminal creation and prompts you to install it instead of silently downgrading durability.
 
 ```bash
-# Force durable tmux-backed sessions
+# Supported terminal runtime contract
 CODEDECK_TERMINAL_RUNTIME=tmux ./server.sh start
-
-# Force raw PTY sessions
-CODEDECK_TERMINAL_RUNTIME=pty ./server.sh start
 ```
+
+Legacy non-`tmux` runtime values are ignored; the backend still enforces tmux-required terminals.
 
 ### Prevent macOS Sleep
 

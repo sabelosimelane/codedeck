@@ -77,14 +77,40 @@ function createMockReq({ sessionId, cwd, cols, rows } = {}) {
  * Creates a mock terminal runtime (pty mode by default).
  * Wraps the spawn function and provides kill/isSessionRecoverable stubs.
  */
+const TMUX_BOOTSTRAP_REDRAW = '\x1b[?1049h\x1b[H\x1b[2J\x1b[1;1Hrestored pane\x1b[2;1H$ ';
+
 function createMockRuntime(spawnFn, opts = {}) {
+  const snapshotData = opts.snapshotData ?? opts.scrollback ?? '';
+  const snapshotWindowLines = opts.snapshotWindowLines ?? 10000;
+  const snapshotLineCount = typeof opts.snapshotLineCount === 'number'
+    ? opts.snapshotLineCount
+    : (snapshotData ? snapshotData.split('\n').filter(Boolean).length : 0);
+  const snapshotTerminalState = opts.terminalState ?? null;
+  const snapshotHistoryGuaranteed = typeof opts.historyGuaranteed === 'boolean'
+    ? opts.historyGuaranteed
+    : ((opts.type || 'pty') === 'tmux');
+  const snapshotHistoryWarningReason = opts.historyWarningReason ?? null;
+  const snapshotHistoryWarningMessage = opts.historyWarningMessage
+    ?? (snapshotHistoryWarningReason
+      ? 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.'
+      : null);
+
   return {
     type: opts.type || 'pty',
     spawn: spawnFn,
     kill: vi.fn((entry) => { entry.pty.kill(); }),
+    isAvailable: vi.fn(() => opts.available ?? true),
     isSessionRecoverable: vi.fn(() => opts.recoverable || false),
-    getSessionScrollback: vi.fn(() => opts.scrollback || ''),
-    scrollSessionHistory: vi.fn(() => true),
+    resizeSession: vi.fn(),
+    captureSessionSnapshot: vi.fn(() => ({
+      data: snapshotData,
+      lineCount: snapshotLineCount,
+      windowLines: snapshotWindowLines,
+      ...(snapshotTerminalState ? { terminalState: snapshotTerminalState } : {}),
+      historyGuaranteed: snapshotHistoryGuaranteed,
+      historyWarningReason: snapshotHistoryWarningReason,
+      historyWarningMessage: snapshotHistoryWarningMessage,
+    })),
   };
 }
 
@@ -382,7 +408,14 @@ describe('handleWsConnection', () => {
       handleWsConnection(ws, req, sessions, spawnPty);
 
       expect(ws.send).toHaveBeenCalledWith(
-        JSON.stringify({ type: 'session', sessionId: 'test-1', existing: false })
+        JSON.stringify({
+          type: 'session',
+          sessionId: 'test-1',
+          existing: false,
+          runtimeType: 'pty',
+          snapshotWindowLines: null,
+          historyGuaranteed: false,
+        })
       );
     });
 
@@ -395,7 +428,14 @@ describe('handleWsConnection', () => {
       handleWsConnection(ws2, req, sessions, spawnPty);
 
       expect(ws2.send).toHaveBeenCalledWith(
-        JSON.stringify({ type: 'session', sessionId: 'test-1', existing: true })
+        JSON.stringify({
+          type: 'session',
+          sessionId: 'test-1',
+          existing: true,
+          runtimeType: 'pty',
+          snapshotWindowLines: null,
+          historyGuaranteed: false,
+        })
       );
     });
 
@@ -505,19 +545,19 @@ describe('handleWsConnection', () => {
       expect(mockPty.write).toHaveBeenCalledWith('raw input');
     });
 
-    it('routes scroll_history messages to the tmux runtime instead of the PTY stdin', () => {
+    it('ignores legacy scroll_history messages so browser scrolling no longer drives tmux copy-mode', () => {
       const runtime = createMockRuntime(vi.fn(() => mockPty), { type: 'tmux' });
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
 
       handleWsConnection(ws, req, sessions, runtime);
+      mockPty.write.mockClear();
+      mockPty.resize.mockClear();
+
       ws._emit('message', JSON.stringify({ type: 'scroll_history', direction: 'up', lines: 5 }));
 
-      expect(runtime.scrollSessionHistory).toHaveBeenCalledWith('test-1', {
-        direction: 'up',
-        lines: 5,
-      });
       expect(mockPty.write).not.toHaveBeenCalled();
+      expect(mockPty.resize).not.toHaveBeenCalled();
     });
   });
 
@@ -988,6 +1028,85 @@ describe('handleWsConnection', () => {
       expect(sessions.get('test-1').lastClientAckAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     });
 
+    it('sends a fresh tmux snapshot when the client requests view rehydration', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        snapshotData: 'older line 1\nolder line 2\n',
+      });
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+      ws.send.mockClear();
+
+      runtime.captureSessionSnapshot.mockImplementation(() => {
+        mockPty.emitData('live after rehydrate');
+        return {
+          data: 'older line 1\nolder line 2\n',
+          lineCount: 2,
+          windowLines: 10000,
+          historyGuaranteed: true,
+        };
+      });
+
+      ws._emit('message', JSON.stringify({ type: 'rehydrate' }));
+
+      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      expect(messages).toEqual([
+        {
+          type: 'snapshot',
+          sessionId: 'test-1',
+          windowLines: 10000,
+          lineCount: 2,
+          historyGuaranteed: true,
+          lastSeq: 0,
+          data: 'older line 1\nolder line 2\n',
+        },
+        {
+          type: 'output',
+          seq: 1,
+          data: 'live after rehydrate',
+        },
+      ]);
+    });
+
+    it('advances the rehydrate snapshot boundary when captured output is already present in the snapshot', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        snapshotData: 'older line 1\nolder line 2\n',
+      });
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+      ws.send.mockClear();
+
+      runtime.captureSessionSnapshot.mockImplementation(() => {
+        mockPty.emitData('live after rehydrate\n');
+        return {
+          data: 'older line 1\nolder line 2\nlive after rehydrate\n',
+          lineCount: 3,
+          windowLines: 10000,
+          historyGuaranteed: true,
+        };
+      });
+
+      ws._emit('message', JSON.stringify({ type: 'rehydrate' }));
+
+      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      expect(messages).toEqual([
+        {
+          type: 'snapshot',
+          sessionId: 'test-1',
+          windowLines: 10000,
+          lineCount: 3,
+          historyGuaranteed: true,
+          lastSeq: 1,
+          data: 'older line 1\nolder line 2\nlive after rehydrate\n',
+        },
+      ]);
+    });
+
     it('records replay_requested and replay_served timeline events', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
@@ -1361,6 +1480,27 @@ describe('runtime abstraction (Phase 5)', () => {
     mockPty = createMockPty();
   });
 
+  it('fails visibly when tmux is unavailable instead of spawning a fallback PTY', () => {
+    const runtime = createMockRuntime(vi.fn(() => mockPty), {
+      type: 'tmux',
+      available: false,
+    });
+    const ws = createMockWs();
+    const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+    handleWsConnection(ws, req, sessions, runtime);
+
+    expect(runtime.spawn).not.toHaveBeenCalled();
+    expect(sessions.has('test-1')).toBe(false);
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'spawn_error',
+      reason: 'missing_tmux',
+      message: 'Install tmux to enable durable CodeDeck terminals.',
+      data: '\r\nInstall tmux to enable durable CodeDeck terminals.\r\n',
+    }));
+    expect(ws.close).toHaveBeenCalled();
+  });
+
   it('stores runtimeType on session entry from runtime.type', () => {
     const runtime = createMockRuntime(vi.fn(() => mockPty), { type: 'tmux' });
     const ws = createMockWs();
@@ -1458,12 +1598,12 @@ describe('runtime abstraction (Phase 5)', () => {
     });
   });
 
-  describe('tmux scrollback hydration', () => {
-    it('sends tmux scrollback to a newly attached browser when the durable session already exists', () => {
+  describe('tmux snapshot hydration', () => {
+    it('sends an authoritative snapshot for durable tmux recovery instead of legacy history backfill', () => {
       const runtime = createMockRuntime(vi.fn(() => mockPty), {
         type: 'tmux',
         recoverable: true,
-        scrollback: 'older line 1\nolder line 2\n',
+        snapshotData: 'older line 1\nolder line 2\n',
       });
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
@@ -1471,11 +1611,283 @@ describe('runtime abstraction (Phase 5)', () => {
       handleWsConnection(ws, req, sessions, runtime);
 
       const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
-      expect(messages).toContainEqual({
-        type: 'history',
-        data: 'older line 1\nolder line 2\n',
+      expect(messages).toEqual([
+        {
+          type: 'session',
+          sessionId: 'test-1',
+          existing: true,
+          runtimeType: 'tmux',
+          snapshotWindowLines: 10000,
+          historyGuaranteed: true,
+        },
+        {
+          type: 'snapshot',
+          sessionId: 'test-1',
+          windowLines: 10000,
+          lineCount: 2,
+          historyGuaranteed: true,
+          lastSeq: 0,
+          data: 'older line 1\nolder line 2\n',
+        },
+      ]);
+      expect(runtime.captureSessionSnapshot).toHaveBeenCalledWith('test-1', 10000);
+      expect(messages.some(message => message.type === 'history')).toBe(false);
+    });
+
+    it('resizes the tmux window before capturing a durable-recovery snapshot without an in-memory entry', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        recoverable: true,
       });
-      expect(runtime.getSessionScrollback).toHaveBeenCalledWith('test-1');
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp', cols: 80, rows: 24 });
+      const events = [];
+
+      runtime.resizeSession.mockImplementation((sessionId, cols, rows) => {
+        events.push(['resize-session', sessionId, cols, rows]);
+      });
+      runtime.captureSessionSnapshot.mockImplementation(() => {
+        events.push(['capture']);
+        return {
+          data: 'older line 1\nolder line 2\n',
+          lineCount: 2,
+          windowLines: 10000,
+          historyGuaranteed: true,
+        };
+      });
+
+      handleWsConnection(ws, req, sessions, runtime);
+
+      expect(events).toEqual([
+        ['resize-session', 'test-1', 80, 24],
+        ['capture'],
+      ]);
+    });
+
+    it('includes pane terminal state metadata in tmux snapshots for modeful reconnects', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        recoverable: true,
+        snapshotData: '\x1b[32m~\x1b[39m\n',
+        terminalState: {
+          screenMode: 'alternate',
+          paneMode: null,
+          cursorX: 4,
+          cursorY: 2,
+          cursorVisible: true,
+          cursorShape: 'bar',
+          cursorBlinking: false,
+          cursorVeryVisible: false,
+          insertMode: false,
+          originMode: false,
+          autoWrap: true,
+          keypadMode: false,
+          applicationCursorKeys: true,
+          mouseMode: 'all',
+          mouseEncoding: 'sgr',
+          bracketedPaste: true,
+        },
+      });
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+
+      const snapshotMessage = ws.send.mock.calls
+        .map(([payload]) => JSON.parse(payload))
+        .find(message => message.type === 'snapshot');
+
+      expect(snapshotMessage).toMatchObject({
+        sessionId: 'test-1',
+        data: '\x1b[32m~\x1b[39m\n',
+        terminalState: {
+          screenMode: 'alternate',
+          cursorX: 4,
+          cursorY: 2,
+          cursorShape: 'bar',
+          applicationCursorKeys: true,
+          mouseMode: 'all',
+          mouseEncoding: 'sgr',
+          bracketedPaste: true,
+        },
+      });
+    });
+
+    it('sends an explicit history warning when preserved tmux snapshot history is unavailable', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        recoverable: true,
+        snapshotData: '',
+        snapshotLineCount: 0,
+        historyGuaranteed: false,
+        historyWarningReason: 'snapshot_unavailable',
+      });
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+
+      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      expect(messages).toEqual([
+        {
+          type: 'session',
+          sessionId: 'test-1',
+          existing: true,
+          runtimeType: 'tmux',
+          snapshotWindowLines: 10000,
+          historyGuaranteed: false,
+        },
+        {
+          type: 'snapshot',
+          sessionId: 'test-1',
+          windowLines: 10000,
+          lineCount: 0,
+          historyGuaranteed: false,
+          lastSeq: 0,
+          data: '',
+        },
+        {
+          type: 'history_warning',
+          sessionId: 'test-1',
+          reason: 'snapshot_unavailable',
+          message: 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.',
+        },
+      ]);
+      expect(sessions.get('test-1')).toMatchObject({
+        historyGuaranteed: false,
+        historyWarningReason: 'snapshot_unavailable',
+        historyWarningMessage: 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.',
+      });
+    });
+
+    it('buffers live output until after the reconnect snapshot has been sent', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        snapshotData: 'older line 1\nolder line 2\n',
+      });
+      const ws1 = createMockWs();
+      const ws2 = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws1, req, sessions, runtime);
+      ws1.send.mockClear();
+      runtime.captureSessionSnapshot.mockImplementation(() => {
+        mockPty.emitData('live after snapshot');
+        return {
+          data: 'older line 1\nolder line 2\n',
+          lineCount: 2,
+          windowLines: 10000,
+        };
+      });
+
+      handleWsConnection(ws2, req, sessions, runtime);
+
+      const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      expect(messages).toEqual([
+        {
+          type: 'session',
+          sessionId: 'test-1',
+          existing: true,
+          runtimeType: 'tmux',
+          snapshotWindowLines: 10000,
+          historyGuaranteed: true,
+        },
+        {
+          type: 'snapshot',
+          sessionId: 'test-1',
+          windowLines: 10000,
+          lineCount: 2,
+          historyGuaranteed: true,
+          lastSeq: 0,
+          data: 'older line 1\nolder line 2\n',
+        },
+        {
+          type: 'output',
+          seq: 1,
+          data: 'live after snapshot',
+        },
+      ]);
+    });
+
+    it('resizes the live tmux pane before capturing a reconnect snapshot', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        snapshotData: 'older line 1\nolder line 2\n',
+      });
+      const ws1 = createMockWs();
+      const ws2 = createMockWs();
+      const req1 = createMockReq({ sessionId: 'test-1', cwd: '/tmp', cols: 120, rows: 30 });
+      const req2 = createMockReq({ sessionId: 'test-1', cwd: '/tmp', cols: 80, rows: 24 });
+      const events = [];
+
+      runtime.resizeSession.mockImplementation((sessionId, cols, rows) => {
+        events.push(['resize-session', sessionId, cols, rows]);
+      });
+      runtime.captureSessionSnapshot.mockImplementation(() => {
+        events.push(['capture']);
+        return {
+          data: 'older line 1\nolder line 2\n',
+          lineCount: 2,
+          windowLines: 10000,
+          historyGuaranteed: true,
+        };
+      });
+
+      handleWsConnection(ws1, req1, sessions, runtime);
+      ws1.send.mockClear();
+
+      handleWsConnection(ws2, req2, sessions, runtime);
+
+      expect(events.slice(0, 2)).toEqual([
+        ['resize-session', 'test-1', 80, 24],
+        ['capture'],
+      ]);
+      expect(mockPty.resize).toHaveBeenCalledWith(80, 24);
+    });
+
+    it('advances the reconnect snapshot boundary when captured output is already present in the snapshot', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), {
+        type: 'tmux',
+        snapshotData: 'older line 1\nolder line 2\n',
+      });
+      const ws1 = createMockWs();
+      const ws2 = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws1, req, sessions, runtime);
+      ws1.send.mockClear();
+      runtime.captureSessionSnapshot.mockImplementation(() => {
+        mockPty.emitData('live after snapshot\n');
+        return {
+          data: 'older line 1\nolder line 2\nlive after snapshot\n',
+          lineCount: 3,
+          windowLines: 10000,
+          historyGuaranteed: true,
+        };
+      });
+
+      handleWsConnection(ws2, req, sessions, runtime);
+
+      const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      expect(messages).toEqual([
+        {
+          type: 'session',
+          sessionId: 'test-1',
+          existing: true,
+          runtimeType: 'tmux',
+          snapshotWindowLines: 10000,
+          historyGuaranteed: true,
+        },
+        {
+          type: 'snapshot',
+          sessionId: 'test-1',
+          windowLines: 10000,
+          lineCount: 3,
+          historyGuaranteed: true,
+          lastSeq: 1,
+          data: 'older line 1\nolder line 2\nlive after snapshot\n',
+        },
+      ]);
     });
   });
 
@@ -1505,6 +1917,114 @@ describe('runtime abstraction (Phase 5)', () => {
       expect(entry.pty).toBe(newPty);
       expect(entry.ws).toBe(ws2);
       expect(entry.events.some(e => e.type === 'tmux_reattach')).toBe(true);
+    });
+
+    it('captures reconnect-recovery snapshots after respawning the tmux client at the new geometry', () => {
+      const newPty = createMockPty();
+      const events = [];
+      let spawnCount = 0;
+      const runtime = createMockRuntime(
+        vi.fn(() => {
+          if (spawnCount++ === 0) return mockPty;
+          events.push(['spawn']);
+          return newPty;
+        }),
+        { type: 'tmux', recoverable: true }
+      );
+      const ws1 = createMockWs();
+      const ws2 = createMockWs();
+      const req1 = createMockReq({ sessionId: 'test-1', cwd: '/tmp', cols: 120, rows: 30 });
+      const req2 = createMockReq({ sessionId: 'test-1', cwd: '/tmp', cols: 80, rows: 24 });
+
+      runtime.resizeSession.mockImplementation((sessionId, cols, rows) => {
+        events.push(['resize-session', sessionId, cols, rows]);
+      });
+      runtime.captureSessionSnapshot.mockImplementation(() => {
+        events.push(['capture']);
+        return {
+          data: 'older line 1\nolder line 2\n',
+          lineCount: 2,
+          windowLines: 10000,
+          historyGuaranteed: true,
+        };
+      });
+
+      handleWsConnection(ws1, req1, sessions, runtime);
+      events.length = 0;
+
+      const entry = sessions.get('test-1');
+      entry.alive = false;
+
+      handleWsConnection(ws2, req2, sessions, runtime);
+
+      expect(events).toEqual([
+        ['spawn'],
+        ['resize-session', 'test-1', 80, 24],
+        ['capture'],
+      ]);
+    });
+
+    it('suppresses bootstrap redraw noise while flushing later live output after reconnecting to a dead tmux entry', () => {
+      vi.useFakeTimers();
+
+      try {
+        const newPty = createMockPty();
+        let spawnCount = 0;
+        const runtime = createMockRuntime(
+          vi.fn(() => spawnCount++ === 0 ? mockPty : newPty),
+          { type: 'tmux', recoverable: true }
+        );
+        const ws1 = createMockWs();
+        const ws2 = createMockWs();
+        const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+        handleWsConnection(ws1, req, sessions, runtime);
+
+        const entry = sessions.get('test-1');
+        entry.alive = false;
+
+        handleWsConnection(ws2, req, sessions, runtime);
+        ws2.send.mockClear();
+
+        newPty.emitData(TMUX_BOOTSTRAP_REDRAW);
+        newPty.emitData('build still running\n');
+
+        expect(entry.lastSeq).toBe(0);
+        expect(entry.replayBuffer).toEqual([]);
+        expect(ws2.send).not.toHaveBeenCalled();
+
+        vi.runAllTimers();
+
+        const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
+        expect(messages).toEqual([
+          {
+            type: 'output',
+            seq: 1,
+            data: 'build still running\n',
+          },
+        ]);
+        expect(entry.lastSeq).toBe(1);
+        expect(entry.replayBuffer).toEqual([
+          { seq: 1, data: 'build still running\n' },
+        ]);
+        ws2.send.mockClear();
+
+        ws2._emit('message', JSON.stringify({ type: 'resume', lastSeenSeq: 0 }));
+
+        const replayMessages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
+        expect(replayMessages).toEqual([
+          {
+            type: 'replay',
+            chunks: [
+              { seq: 1, data: 'build still running\n' },
+            ],
+            overflow: false,
+            missedCount: 0,
+          },
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('does NOT re-attach in pty mode even if session is dead', () => {

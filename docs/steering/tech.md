@@ -26,7 +26,7 @@
 
 ## Development Setup
 
-Prerequisites: Node.js 22+, npm 10+. Optional: `tmux` for durable terminal sessions on the default runtime path.
+Prerequisites: Node.js 22+, npm 10+, and `tmux` for terminal sessions.
 
 ```bash
 # Install all dependencies (workspace root installs both server and client)
@@ -81,10 +81,10 @@ Open `http://localhost:43000` in the browser.
 - No environment variables are required for the default local setup.
 - `PORT` overrides the backend Express/WebSocket port (default: `43001`).
 - `FRONTEND_PORT` overrides the frontend listener port checked and reported by `server.sh` (default: `43000`).
-- `CODEDECK_TERMINAL_RUNTIME=tmux|pty` forces the terminal runtime mode; default behavior prefers `tmux` when available and falls back to raw PTY.
+- `CODEDECK_TERMINAL_RUNTIME=tmux` is the supported runtime contract; legacy non-`tmux` values are ignored and the backend still enforces tmux-required terminals.
 - `CODEDECK_CAFFEINATE=1` re-execs `./start.sh` under macOS `caffeinate -i` to prevent idle sleep while CodeDeck is running.
 - Application config is stored in SQLite `configs` table key-value rows; documented keys include `defaultPath` and `editorCommand`.
-- `~/.codedeck.db` is the main persistent state file; terminal sessions are durable across server restarts only when using the `tmux` runtime.
+- `~/.codedeck.db` is the main persistent state file; terminal durability and truthful scrollback depend on tmux-backed sessions plus snapshot-first reconnects.
 
 ## Source Control
 - Git repository hosted on GitHub: `github.com/sabelosimelane/codedeck`

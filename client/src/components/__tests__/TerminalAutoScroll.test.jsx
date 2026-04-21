@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, fireEvent, screen } from '@testing-library/react';
+import { render, fireEvent, screen, act, cleanup } from '@testing-library/react';
 import React from 'react';
 
 const mocks = vi.hoisted(() => ({
@@ -64,6 +64,35 @@ vi.mock('../ToastContext', () => ({
 
 import Terminal from '../Terminal';
 
+function mountTerminal(props = {}) {
+  const result = render(
+    <Terminal
+      sessionId={props.sessionId ?? 's1'}
+      cwd="/tmp"
+      isVisible={true}
+      runtimeType={props.runtimeType ?? 'pty'}
+    />
+  );
+  vi.advanceTimersByTime(16);
+  return result;
+}
+
+function connectSocket() {
+  mocks.ws.readyState = 1;
+  mocks.ws.onopen?.();
+  mocks.ws.send.mockClear();
+}
+
+function detachViewport({ viewportY = 12, baseY = 24 } = {}) {
+  const onScroll = mocks.term.onScroll.mock.calls[0]?.[0];
+  expect(onScroll).toBeTruthy();
+
+  act(() => {
+    mocks.term.buffer.active = { type: 'normal', viewportY, baseY, length: 60 };
+    onScroll();
+  });
+}
+
 describe('Terminal auto-scroll mouse takeover', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -93,26 +122,37 @@ describe('Terminal auto-scroll mouse takeover', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it('shows the Latest button when the user wheels while pinned at the bottom with scrollback', () => {
-    render(<Terminal sessionId="s1" cwd="/tmp" isVisible={true} />);
-    vi.advanceTimersByTime(16);
+  it('shows the Latest button when the user wheels upward while pinned at the bottom with scrollback', () => {
+    mountTerminal({ sessionId: 's1' });
+
+    const terminalViewport = mocks.term.open.mock.calls[0]?.[0];
+    expect(terminalViewport).toBeTruthy();
+
+    fireEvent.wheel(terminalViewport, { deltaY: -36 });
+
+    expect(screen.getByTitle('Scroll to bottom')).toBeTruthy();
+    expect(screen.getByText('Latest')).toBeTruthy();
+  });
+
+  it('keeps auto-follow enabled when the user wheels downward at the live bottom', () => {
+    mountTerminal({ sessionId: 's2' });
 
     const terminalViewport = mocks.term.open.mock.calls[0]?.[0];
     expect(terminalViewport).toBeTruthy();
 
     fireEvent.wheel(terminalViewport, { deltaY: 36 });
 
-    expect(screen.getByTitle('Scroll to bottom')).toBeTruthy();
-    expect(screen.getByText('Latest')).toBeTruthy();
+    expect(screen.queryByTitle('Scroll to bottom')).toBeNull();
+    expect(screen.queryByText('Latest')).toBeNull();
   });
 
   it('passes explicit wheel scroll sensitivity options to xterm', () => {
-    render(<Terminal sessionId="s2" cwd="/tmp" isVisible={true} />);
-    vi.advanceTimersByTime(16);
+    mountTerminal({ sessionId: 's3' });
 
     expect(mocks.termOptions).toEqual(expect.objectContaining({
       scrollback: 10000,
@@ -123,8 +163,7 @@ describe('Terminal auto-scroll mouse takeover', () => {
   });
 
   it('blocks xterm from translating wheel-up into ArrowUp when the normal buffer has no scrollback', () => {
-    render(<Terminal sessionId="s3" cwd="/tmp" isVisible={true} />);
-    vi.advanceTimersByTime(16);
+    mountTerminal({ sessionId: 's4' });
 
     expect(mocks.term.attachCustomWheelEventHandler).toHaveBeenCalledTimes(1);
 
@@ -134,32 +173,20 @@ describe('Terminal auto-scroll mouse takeover', () => {
     expect(wheelHandler({ deltaY: -36 })).toBe(false);
   });
 
-  it('routes wheel scrolling to tmux history instead of enabling tmux mouse mode', () => {
-    render(<Terminal sessionId="s4" cwd="/tmp" isVisible={true} runtimeType="tmux" />);
-    vi.advanceTimersByTime(16);
-
-    mocks.ws.readyState = 1;
-    mocks.ws.onopen?.();
-    mocks.ws.send.mockClear();
+  it('keeps wheel scrolling local to xterm even for tmux-backed sessions', () => {
+    mountTerminal({ sessionId: 's5', runtimeType: 'tmux' });
+    connectSocket();
 
     const wheelHandler = mocks.term.attachCustomWheelEventHandler.mock.calls[0][0];
     mocks.term.buffer.active = { type: 'alternate', viewportY: 0, baseY: 0, length: 30 };
 
-    expect(wheelHandler({ deltaY: -120 })).toBe(false);
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({
-      type: 'scroll_history',
-      direction: 'up',
-      lines: 5,
-    }));
+    expect(wheelHandler({ deltaY: -120 })).toBe(true);
+    expect(mocks.ws.send).not.toHaveBeenCalled();
   });
 
-  it('updates tmux wheel routing when runtimeType metadata arrives without recreating the terminal', () => {
-    const { rerender } = render(<Terminal sessionId="s5" cwd="/tmp" isVisible={true} runtimeType="pty" />);
-    vi.advanceTimersByTime(16);
-
-    mocks.ws.readyState = 1;
-    mocks.ws.onopen?.();
-    mocks.ws.send.mockClear();
+  it('does not change wheel behavior when runtime metadata later switches to tmux', () => {
+    const { rerender } = mountTerminal({ sessionId: 's6', runtimeType: 'pty' });
+    connectSocket();
 
     const wheelHandler = mocks.term.attachCustomWheelEventHandler.mock.calls[0][0];
     mocks.term.buffer.active = { type: 'alternate', viewportY: 0, baseY: 0, length: 30 };
@@ -167,13 +194,51 @@ describe('Terminal auto-scroll mouse takeover', () => {
     expect(wheelHandler({ deltaY: -120 })).toBe(true);
     expect(mocks.ws.send).not.toHaveBeenCalled();
 
-    rerender(<Terminal sessionId="s5" cwd="/tmp" isVisible={true} runtimeType="tmux" />);
+    rerender(<Terminal sessionId="s6" cwd="/tmp" isVisible={true} runtimeType="tmux" />);
 
-    expect(wheelHandler({ deltaY: -120 })).toBe(false);
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({
-      type: 'scroll_history',
-      direction: 'up',
-      lines: 5,
-    }));
+    expect(wheelHandler({ deltaY: -120 })).toBe(true);
+    expect(mocks.ws.send).not.toHaveBeenCalled();
+  });
+
+  it('keeps the viewport detached while live output arrives below it', () => {
+    mountTerminal({ sessionId: 's7' });
+    connectSocket();
+    detachViewport();
+
+    mocks.term.scrollToBottom.mockClear();
+    mocks.term.write.mockClear();
+
+    act(() => {
+      mocks.ws.onmessage?.({
+        data: JSON.stringify({ type: 'output', seq: 1, data: 'new output\r\n' }),
+      });
+    });
+
+    expect(screen.getByText('Latest')).toBeTruthy();
+    expect(mocks.term.write).toHaveBeenCalledWith('new output\r\n');
+    expect(mocks.term.scrollToBottom).not.toHaveBeenCalled();
+  });
+
+  it('re-enables auto-follow when the user clicks Latest', () => {
+    mountTerminal({ sessionId: 's8' });
+    connectSocket();
+    detachViewport();
+
+    mocks.term.scrollToBottom.mockClear();
+
+    fireEvent.click(screen.getByTitle('Scroll to bottom'));
+
+    expect(mocks.term.scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Latest')).toBeNull();
+
+    mocks.term.scrollToBottom.mockClear();
+
+    act(() => {
+      mocks.ws.onmessage?.({
+        data: JSON.stringify({ type: 'output', seq: 2, data: '$ ' }),
+      });
+    });
+
+    expect(mocks.term.scrollToBottom).toHaveBeenCalledTimes(1);
   });
 });

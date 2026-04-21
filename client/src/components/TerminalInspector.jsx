@@ -139,6 +139,11 @@ export default function TerminalInspector({ sessionId, onClose, onAction }) {
                   Stall reason: {data.stallReason}
                 </div>
               )}
+              {data.historyGuaranteed === false && data.historyWarningMessage && (
+                <div style={historyWarningStyle}>
+                  Preserved history unavailable: {data.historyWarningMessage}
+                </div>
+              )}
             </div>
 
             {/* State Snapshot */}
@@ -149,6 +154,8 @@ export default function TerminalInspector({ sessionId, onClose, onAction }) {
                   {[
                     ['PTY Alive', data.ptyAlive ? 'Yes' : 'No'],
                     ['Runtime', data.runtimeType || 'pty'],
+                    ['Recent History', data.historyGuaranteed === false ? 'Unavailable' : 'Guaranteed'],
+                    ['History Warning', data.historyWarningReason || '--'],
                     ['WS Attached', data.wsAttached ? 'Yes' : 'No'],
                     ['Doc Visibility', data.documentVisibility || '--'],
                     ['CWD', data.cwd],
@@ -253,6 +260,18 @@ export default function TerminalInspector({ sessionId, onClose, onAction }) {
     </div>
   );
 }
+
+const historyWarningStyle = {
+  marginTop: 8,
+  padding: '8px 10px',
+  borderRadius: 6,
+  background: 'rgba(69, 26, 3, 0.9)',
+  border: '1px solid rgba(217, 119, 6, 0.45)',
+  color: '#fde68a',
+  fontSize: 11,
+  lineHeight: 1.5,
+  fontFamily: 'var(--font-mono)',
+};
 
 const overlayStyle = {
   position: 'fixed',

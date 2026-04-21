@@ -11,6 +11,13 @@
  * @param {object} runtime - Terminal runtime (from terminal-runtime.js) with spawn/kill/isSessionRecoverable
  */
 
+import {
+  getTerminalHistoryWarningMessage,
+  getTerminalRuntimeStatus,
+  TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE,
+  TERMINAL_SNAPSHOT_WINDOW_LINES,
+} from './terminal-runtime.js';
+
 const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const DCS_RE = /\x1bP[\s\S]*?\x1b\\/g;
@@ -39,6 +46,20 @@ function stripTerminalControl(rawData) {
     .replace(/\r/g, '')
     .replace(CONTROL_CHAR_RE, '')
     .trim();
+}
+
+function normalizeSnapshotComparableText(rawData) {
+  if (!rawData) return '';
+
+  return rawData
+    .replace(OSC_RE, '')
+    .replace(DCS_RE, '')
+    .replace(STRING_ESCAPE_RE, '')
+    .replace(ISO2022_CHARSET_RE, '')
+    .replace(CSI_RE, '')
+    .replace(ESC_SINGLE_RE, '')
+    .replace(/\r/g, '')
+    .replace(CONTROL_CHAR_RE, '');
 }
 
 export function sanitizePreviewLine(line) {
@@ -99,6 +120,233 @@ function pushTimelineEvent(entry, type, detail) {
   }
 }
 
+function safeCloseSocket(ws, { sessionId, context, code, reason } = {}) {
+  try {
+    if (typeof code === 'number') {
+      ws.close(code, reason);
+      return;
+    }
+
+    ws.close();
+  } catch (err) {
+    console.warn(`[terminal] ws_close_failed session=${sessionId} context=${context} error=${err.message}`);
+  }
+}
+
+function safeResizePty(entry, cols, rows, sessionId) {
+  try {
+    entry.pty.resize(cols, rows);
+  } catch (err) {
+    console.warn(`[terminal] pty_resize_failed session=${sessionId} cols=${cols} rows=${rows} error=${err.message}`);
+  }
+}
+
+function beginBufferedAttach(entry, snapshotSeq) {
+  const attachState = {
+    mode: 'buffer_live_output',
+    snapshotSeq,
+    bufferedChunks: [],
+  };
+  entry.attachState = attachState;
+  return attachState;
+}
+
+function beginBootstrapDropAttach(entry, snapshotSeq) {
+  const attachState = {
+    mode: 'drop_bootstrap_output',
+    snapshotSeq,
+    bufferedChunks: [],
+  };
+  entry.attachState = attachState;
+  return attachState;
+}
+
+function trackOutputChunk(entry, data) {
+  const now = new Date().toISOString();
+  entry.lastOutputAt = now;
+  if (isSubstantialOutput(data)) {
+    entry.lastSubstantialOutputAt = now;
+  }
+
+  entry.lastSeq += 1;
+  const seq = entry.lastSeq;
+  const line = extractLastLine(data);
+  if (line) entry.lastOutputLine = line;
+  entry.replayBuffer.push({ seq, data });
+  if (entry.replayBuffer.length > REPLAY_BUFFER_SIZE) {
+    entry.replayBuffer = entry.replayBuffer.slice(-REPLAY_BUFFER_SIZE);
+  }
+
+  return { seq, data };
+}
+
+function isLikelyBootstrapRedraw(rawData) {
+  if (!rawData) return false;
+
+  const stripped = stripTerminalControl(rawData);
+  if (!stripped) return false;
+
+  const csiMatches = rawData.match(CSI_RE) ?? [];
+  const hasCursorHome = /\x1b\[[0-9;]*H/.test(rawData);
+  const hasEraseDisplay = /\x1b\[[0-9;]*J/.test(rawData);
+  const hasEraseLine = /\x1b\[[0-9;]*K/.test(rawData);
+  const hasAltScreenToggle = /\x1b\[\?(?:47|1047|1048|1049)[hl]/.test(rawData);
+  const hasSaveRestoreCursor = (rawData.includes('\x1b7') || rawData.includes('\x1b[s'))
+    && (rawData.includes('\x1b8') || rawData.includes('\x1b[u'));
+  const hasFullScreenPaint = hasCursorHome && (hasEraseDisplay || hasEraseLine || csiMatches.length >= 3);
+
+  return hasAltScreenToggle || hasFullScreenPaint || (hasSaveRestoreCursor && csiMatches.length >= 3);
+}
+
+function dropBootstrapRedrawPrefix(bufferedChunks) {
+  let firstDeliverableIndex = 0;
+
+  while (
+    firstDeliverableIndex < bufferedChunks.length
+    && isLikelyBootstrapRedraw(bufferedChunks[firstDeliverableIndex])
+  ) {
+    firstDeliverableIndex += 1;
+  }
+
+  return bufferedChunks.slice(firstDeliverableIndex);
+}
+
+function alignSnapshotBoundaryWithBufferedOutput(snapshotHydration, attachState) {
+  if (!attachState || attachState.mode !== 'buffer_live_output' || attachState.bufferedChunks.length === 0) {
+    return snapshotHydration;
+  }
+
+  const snapshotComparable = normalizeSnapshotComparableText(
+    snapshotHydration?.snapshotMessage?.data ?? ''
+  );
+  if (!snapshotComparable) {
+    return snapshotHydration;
+  }
+
+  let overlappedChunkCount = 0;
+  let overlappedComparable = '';
+  let effectiveSnapshotSeq = attachState.snapshotSeq ?? 0;
+
+  for (const chunk of attachState.bufferedChunks) {
+    const chunkComparable = normalizeSnapshotComparableText(chunk.data);
+    if (!chunkComparable) break;
+
+    const candidateOverlap = `${overlappedComparable}${chunkComparable}`;
+    if (!snapshotComparable.endsWith(candidateOverlap)) {
+      break;
+    }
+
+    overlappedComparable = candidateOverlap;
+    overlappedChunkCount += 1;
+    effectiveSnapshotSeq = chunk.seq;
+  }
+
+  if (overlappedChunkCount === 0) {
+    return snapshotHydration;
+  }
+
+  attachState.bufferedChunks = attachState.bufferedChunks.slice(overlappedChunkCount);
+  attachState.snapshotSeq = effectiveSnapshotSeq;
+  snapshotHydration.snapshotMessage.lastSeq = effectiveSnapshotSeq;
+  return snapshotHydration;
+}
+
+function flushBufferedAttachOutput(entry) {
+  const attachState = entry.attachState;
+  if (!attachState || attachState.mode !== 'buffer_live_output') return;
+  if (!entry.ws || entry.ws.readyState !== 1) return;
+
+  for (const chunk of attachState.bufferedChunks) {
+    entry.ws.send(JSON.stringify({ type: 'output', seq: chunk.seq, data: chunk.data }));
+  }
+
+  entry.attachState = null;
+}
+
+function releaseBootstrapAttachOutput(entry, attachState) {
+  if (!attachState || attachState.mode !== 'drop_bootstrap_output') return;
+
+  setTimeout(() => {
+    if (entry.attachState !== attachState) {
+      return;
+    }
+
+    const deliverableChunks = dropBootstrapRedrawPrefix(attachState.bufferedChunks);
+    entry.attachState = null;
+
+    for (const data of deliverableChunks) {
+      const chunk = trackOutputChunk(entry, data);
+      if (entry.ws && entry.ws.readyState === 1) {
+        entry.ws.send(JSON.stringify({ type: 'output', seq: chunk.seq, data: chunk.data }));
+      }
+    }
+  }, 0);
+}
+
+function resolveSnapshotHydration(runtime, sessionId, snapshotSeq = 0) {
+  const snapshot = typeof runtime.captureSessionSnapshot === 'function'
+    ? runtime.captureSessionSnapshot(sessionId, TERMINAL_SNAPSHOT_WINDOW_LINES)
+    : {
+        data: '',
+        lineCount: 0,
+        windowLines: TERMINAL_SNAPSHOT_WINDOW_LINES,
+      };
+
+  const historyGuaranteed = snapshot.historyGuaranteed ?? (runtime.type === 'tmux');
+  const historyWarningReason = historyGuaranteed
+    ? null
+    : (snapshot.historyWarningReason ?? TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE);
+  const historyWarningMessage = historyWarningReason
+    ? snapshot.historyWarningMessage ?? getTerminalHistoryWarningMessage(historyWarningReason)
+    : null;
+  const historyState = {
+    historyGuaranteed,
+    historyWarningReason,
+    historyWarningMessage,
+  };
+
+  return {
+    historyState,
+    snapshotMessage: {
+      type: 'snapshot',
+      sessionId,
+      windowLines: snapshot.windowLines ?? TERMINAL_SNAPSHOT_WINDOW_LINES,
+      lineCount: snapshot.lineCount ?? 0,
+      historyGuaranteed,
+      lastSeq: snapshotSeq,
+      data: snapshot.data ?? '',
+      ...(snapshot.terminalState ? { terminalState: snapshot.terminalState } : {}),
+    },
+    historyWarningEvent: historyWarningReason
+      ? {
+          type: 'history_warning',
+          sessionId,
+          reason: historyWarningReason,
+          message: historyWarningMessage,
+        }
+      : null,
+  };
+}
+
+function applySnapshotHistoryState(entry, historyState) {
+  if (!entry || !historyState) return;
+  entry.historyGuaranteed = historyState.historyGuaranteed;
+  entry.historyWarningReason = historyState.historyWarningReason ?? null;
+  entry.historyWarningMessage = historyState.historyWarningMessage ?? null;
+}
+
+function buildSessionHandshake(entry, sessionId, existing) {
+  const runtimeType = entry?.runtimeType ?? 'pty';
+  return {
+    type: 'session',
+    sessionId,
+    existing,
+    runtimeType,
+    snapshotWindowLines: runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
+    historyGuaranteed: entry?.historyGuaranteed ?? (runtimeType === 'tmux'),
+  };
+}
+
 /**
  * Register a PTY onData handler that routes output to the session's replay buffer
  * and current WebSocket. Extracted to avoid duplicating this across initial spawn,
@@ -107,23 +355,23 @@ function pushTimelineEvent(entry, type, detail) {
 function registerPtyDataHandler(ptyProcess, sessionId, sessions) {
   ptyProcess.onData((data) => {
     const s = sessions.get(sessionId);
-    if (s) {
-      const now = new Date().toISOString();
-      s.lastOutputAt = now;
-      if (isSubstantialOutput(data)) {
-        s.lastSubstantialOutputAt = now;
-      }
-      s.lastSeq += 1;
-      const seq = s.lastSeq;
-      const line = extractLastLine(data);
-      if (line) s.lastOutputLine = line;
-      s.replayBuffer.push({ seq, data });
-      if (s.replayBuffer.length > REPLAY_BUFFER_SIZE) {
-        s.replayBuffer = s.replayBuffer.slice(-REPLAY_BUFFER_SIZE);
-      }
-      if (s.ws && s.ws.readyState === 1) {
-        s.ws.send(JSON.stringify({ type: 'output', seq, data }));
-      }
+    if (!s) return;
+
+    const attachState = s.attachState;
+    if (attachState?.mode === 'drop_bootstrap_output') {
+      attachState.bufferedChunks.push(data);
+      return;
+    }
+
+    const chunk = trackOutputChunk(s, data);
+
+    if (attachState?.mode === 'buffer_live_output') {
+      attachState.bufferedChunks.push(chunk);
+      return;
+    }
+
+    if (s.ws && s.ws.readyState === 1) {
+      s.ws.send(JSON.stringify({ type: 'output', seq: chunk.seq, data: chunk.data }));
     }
   });
 }
@@ -224,29 +472,61 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
   const params = new URL(req.url, 'http://localhost').searchParams;
   const cwd = params.get('cwd') || process.env.HOME;
   const sessionId = params.get('sessionId') || `s-${Date.now()}`;
-  const cols = parseInt(params.get('cols') || '120');
-  const rows = parseInt(params.get('rows') || '30');
+  const cols = parseInt(params.get('cols') || '120', 10);
+  const rows = parseInt(params.get('rows') || '30', 10);
 
   if (deletedSessionIds.has(sessionId)) {
-    try {
-      ws.close(SESSION_DELETED_CLOSE_CODE, SESSION_DELETED_CLOSE_REASON);
-    } catch {}
+    safeCloseSocket(ws, {
+      sessionId,
+      context: 'deleted_session',
+      code: SESSION_DELETED_CLOSE_CODE,
+      reason: SESSION_DELETED_CLOSE_REASON,
+    });
     return;
   }
 
   reservedSessionIds.delete(sessionId);
 
+  if (runtime.type === 'tmux') {
+    const runtimeStatus = getTerminalRuntimeStatus(runtime);
+    if (!runtimeStatus.terminalCreationAllowed) {
+      ws.send(JSON.stringify({
+        type: 'spawn_error',
+        reason: runtimeStatus.terminalRuntimeBlockedReason,
+        message: runtimeStatus.terminalRuntimeBlockedMessage,
+        data: `\r\n${runtimeStatus.terminalRuntimeBlockedMessage}\r\n`,
+      }));
+      safeCloseSocket(ws, {
+        sessionId,
+        context: 'runtime_blocked',
+      });
+      return;
+    }
+  }
+
   let entry = sessions.get(sessionId);
-  const isExisting = !!entry;
-  let initialScrollback = '';
+  const recoverableTmuxWithoutEntry = !entry
+    && runtime.type === 'tmux'
+    && runtime.isSessionRecoverable(sessionId);
+  const recoverableTmuxDeadEntry = !!entry
+    && entry.runtimeType === 'tmux'
+    && !entry.alive
+    && runtime.isSessionRecoverable(sessionId);
+  const isExisting = !!entry || recoverableTmuxWithoutEntry || recoverableTmuxDeadEntry;
+  let snapshotMessage = null;
+  let historyWarningEvent = null;
+  let snapshotHistoryState = null;
+  let attachState = null;
 
   if (!entry) {
-    if (
-      runtime.type === 'tmux'
-      && runtime.isSessionRecoverable(sessionId)
-      && typeof runtime.getSessionScrollback === 'function'
-    ) {
-      initialScrollback = runtime.getSessionScrollback(sessionId);
+    if (recoverableTmuxWithoutEntry) {
+      if (typeof runtime.resizeSession === 'function') {
+        runtime.resizeSession(sessionId, cols, rows);
+      }
+      const snapshotHydration = resolveSnapshotHydration(runtime, sessionId, 0);
+      snapshotMessage = snapshotHydration.snapshotMessage;
+      historyWarningEvent = snapshotHydration.historyWarningEvent;
+      snapshotHistoryState = snapshotHydration.historyState;
     }
 
     // New session — spawn PTY and register listeners ONCE
@@ -254,7 +534,13 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     try {
       ptyProcess = runtime.spawn({ cwd, cols, rows, sessionId });
     } catch (err) {
-      ws.send(JSON.stringify({ type: 'spawn_error', data: `\r\nFailed to start terminal: ${err.message}\r\n` }));
+      const message = `Failed to start terminal: ${err.message}`;
+      ws.send(JSON.stringify({
+        type: 'spawn_error',
+        reason: 'spawn_failed',
+        message,
+        data: `\r\n${message}\r\n`,
+      }));
       ws.close();
       return;
     }
@@ -271,6 +557,11 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
       alive: true,
       // Runtime type (Phase 5 — durable sessions)
       runtimeType: runtime.type,
+      snapshotWindowLines: runtime.type === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
+      historyGuaranteed: runtime.type === 'tmux',
+      historyWarningReason: null,
+      historyWarningMessage: null,
+      attachState: null,
       // Diagnostic metadata (Phase 1)
       wsAttached: true,
       lastAttachAt: now,
@@ -290,10 +581,21 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
       clientLastSeenSeq: 0,
       clientReconnectCount: 0,
     };
+
+    if (snapshotHistoryState) {
+      applySnapshotHistoryState(entry, snapshotHistoryState);
+    }
+
+    if (recoverableTmuxWithoutEntry) {
+      attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
+    }
+
     sessions.set(sessionId, entry);
 
-    pushTimelineEvent(entry, 'attach', `initial connection`);
-    console.log(`[terminal] attach session=${sessionId} cwd=${cwd} type=initial`);
+    const attachDetail = recoverableTmuxWithoutEntry ? 'durable recovery' : 'initial connection';
+    const attachType = recoverableTmuxWithoutEntry ? 'durable_recovery' : 'initial';
+    pushTimelineEvent(entry, 'attach', attachDetail);
+    console.log(`[terminal] attach session=${sessionId} cwd=${cwd} type=${attachType}`);
 
     // PTY -> Browser: registered ONCE, reads entry.ws for current WebSocket
     registerPtyDataHandler(ptyProcess, sessionId, sessions);
@@ -303,22 +605,42 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     // if the tmux session is still alive, re-attach automatically.
     registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, rows);
   } else {
+    if (entry.runtimeType === 'tmux' && entry.alive) {
+      const snapshotSeq = entry.lastSeq ?? 0;
+      attachState = beginBufferedAttach(entry, snapshotSeq);
+      if (typeof runtime.resizeSession === 'function') {
+        runtime.resizeSession(sessionId, cols, rows);
+      }
+      const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(
+        resolveSnapshotHydration(runtime, sessionId, snapshotSeq),
+        attachState,
+      );
+      snapshotMessage = snapshotHydration.snapshotMessage;
+      historyWarningEvent = snapshotHydration.historyWarningEvent;
+      snapshotHistoryState = snapshotHydration.historyState;
+    } else if (recoverableTmuxDeadEntry) {
+      attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
+    }
+
     // Existing session — update the active WebSocket reference
     const previousWs = entry.ws;
     if (previousWs && previousWs !== ws) {
-      try {
-        previousWs.close(SESSION_TAKEOVER_CLOSE_CODE, SESSION_TAKEOVER_CLOSE_REASON);
-      } catch {}
+      safeCloseSocket(previousWs, {
+        sessionId,
+        context: 'session_takeover',
+        code: SESSION_TAKEOVER_CLOSE_CODE,
+        reason: SESSION_TAKEOVER_CLOSE_REASON,
+      });
     }
     entry.ws = ws;
     entry.wsAttached = true;
     entry.lastAttachAt = new Date().toISOString();
-    pushTimelineEvent(entry, 'attach', 'reconnect');
-    console.log(`[terminal] attach session=${sessionId} type=reconnect`);
+    pushTimelineEvent(entry, 'attach', recoverableTmuxDeadEntry ? 'reconnect_recovery' : 'reconnect');
+    console.log(`[terminal] attach session=${sessionId} type=${recoverableTmuxDeadEntry ? 'reconnect_recovery' : 'reconnect'}`);
 
     // In tmux mode, the old PTY wrapper may have died while the tmux session
     // is still alive. Re-spawn the attachment if needed.
-    if (entry.runtimeType === 'tmux' && !entry.alive && runtime.isSessionRecoverable(sessionId)) {
+    if (recoverableTmuxDeadEntry) {
       try {
         const newPty = runtime.spawn({ cwd: entry.cwd, cols, rows, sessionId });
         entry.pty = newPty;
@@ -331,10 +653,22 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
         pushTimelineEvent(entry, 'tmux_reattach_failed', err.message);
         console.log(`[terminal] tmux_reattach_failed session=${sessionId} error=${err.message}`);
       }
+
+      if (typeof runtime.resizeSession === 'function') {
+        runtime.resizeSession(sessionId, cols, rows);
+      }
+      const snapshotHydration = resolveSnapshotHydration(runtime, sessionId, entry.lastSeq ?? 0);
+      snapshotMessage = snapshotHydration.snapshotMessage;
+      historyWarningEvent = snapshotHydration.historyWarningEvent;
+      snapshotHistoryState = snapshotHydration.historyState;
+    }
+
+    if (snapshotHistoryState) {
+      applySnapshotHistoryState(entry, snapshotHistoryState);
     }
 
     // Resize to match the new client's dimensions
-    try { entry.pty.resize(cols, rows); } catch {}
+    safeResizePty(entry, cols, rows, sessionId);
   }
 
   // Browser -> PTY
@@ -385,23 +719,36 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
         entry.lastClientAckAt = new Date().toISOString();
         pushTimelineEvent(entry, 'replay_served', `${chunks.length} chunks, overflow=${overflow}`);
         console.log(`[terminal] replay session=${sessionId} chunks=${chunks.length} overflow=${overflow} missedCount=${missedCount}`);
+      } else if (parsed.type === 'rehydrate') {
+        if (entry.runtimeType !== 'tmux' || typeof runtime.captureSessionSnapshot !== 'function') {
+          pushTimelineEvent(entry, 'rehydrate_skipped', 'snapshot hydration unavailable');
+          return;
+        }
+
+        const snapshotSeq = entry.lastSeq ?? 0;
+        const attachState = beginBufferedAttach(entry, snapshotSeq);
+        const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(
+          resolveSnapshotHydration(runtime, sessionId, snapshotSeq),
+          attachState,
+        );
+        applySnapshotHistoryState(entry, snapshotHydration.historyState);
+
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify(snapshotHydration.snapshotMessage));
+          if (snapshotHydration.historyWarningEvent) {
+            ws.send(JSON.stringify(snapshotHydration.historyWarningEvent));
+          }
+        }
+
+        flushBufferedAttachOutput(entry);
+        entry.lastClientAckAt = new Date().toISOString();
+        pushTimelineEvent(entry, 'rehydrate_served', `snapshot seq ${snapshotSeq}`);
+        console.log(`[terminal] rehydrate session=${sessionId} snapshotSeq=${snapshotSeq}`);
       } else if (parsed.type === 'recovery_action') {
         const action = parsed.action || 'unknown';
         pushTimelineEvent(entry, `recovery_${action}`, `user-initiated ${action}`);
         console.log(`[terminal] recovery action=${action} session=${sessionId}`);
-      } else if (parsed.type === 'scroll_history') {
-        if (entry.runtimeType === 'tmux' && typeof runtime.scrollSessionHistory === 'function') {
-          try {
-            runtime.scrollSessionHistory(sessionId, {
-              direction: parsed.direction,
-              lines: parsed.lines,
-            });
-          } catch (err) {
-            console.warn(`[terminal] scroll_history_failed session=${sessionId} error=${err.message}`);
-          }
-        }
       } else if (parsed.type === 'visibility_change') {
-        const prevVisibility = entry.documentVisibility;
         entry.documentVisibility = parsed.state || 'visible';
         const eventType = parsed.state === 'hidden' ? 'visibility_hidden' : 'visibility_visible';
         pushTimelineEvent(entry, eventType);
@@ -429,10 +776,20 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     console.log(`[terminal] detach session=${sessionId}`);
   });
 
-  if (initialScrollback && ws.readyState === 1) {
-    ws.send(JSON.stringify({ type: 'history', data: initialScrollback }));
+  const sessionHandshake = buildSessionHandshake(entry, sessionId, isExisting);
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify(sessionHandshake));
+    if (snapshotMessage) {
+      ws.send(JSON.stringify(snapshotMessage));
+    }
+    if (historyWarningEvent) {
+      ws.send(JSON.stringify(historyWarningEvent));
+    }
   }
 
-  // Send session info — existing sessions let the client decide whether replay is needed
-  ws.send(JSON.stringify({ type: 'session', sessionId, existing: isExisting }));
+  if (attachState?.mode === 'buffer_live_output') {
+    flushBufferedAttachOutput(entry);
+  } else if (attachState?.mode === 'drop_bootstrap_output') {
+    releaseBootstrapAttachOutput(entry, attachState);
+  }
 }

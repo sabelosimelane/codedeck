@@ -23,8 +23,8 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Toast notification system — success/error feedback on all actions
 - Connection awareness — detect backend unreachable, show reconnection banner with exponential backoff
 - Keyboard shortcut passthrough — Ctrl+R/W/T/N forwarded to PTY instead of browser
-- Terminal resilience — pane-local debug inspector, visibility-aware refocus recovery, heartbeat/sequence-tracked replay, explicit recovery actions (reconnect/resync/redraw)
-- Durable sessions by default — tmux-backed terminal runtime is the default when available; raw PTY remains available via explicit override
+- Terminal resilience — pane-local debug inspector, visibility-aware refocus recovery, heartbeat/sequence-tracked transport replay, explicit recovery actions (reconnect/resync/redraw)
+- Truthful durable terminals — tmux is required, reconnects reseed from fresh snapshots, and degraded preserved history is warned explicitly instead of silently bluffing
 - Optional sleep prevention — `CODEDECK_CAFFEINATE=1` wraps startup under macOS `caffeinate`
 
 **Future (not yet specified):**
@@ -32,7 +32,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 
 ## Domain Model
 - **Project**: a named directory on disk. Stored as `{ name, path }` in SQLite config.
-- **Terminal session**: a PTY process (node-pty or tmux-backed) keyed by `${projectName}-N`. Lives in server memory. Survives WebSocket reconnects; tmux-backed sessions also survive server restarts.
+- **Terminal session**: a tmux-backed PTY attachment keyed by `${projectName}-N`. Live browser attachments are tracked in server memory, while the underlying tmux session survives WebSocket reconnects, browser closes, and server restarts.
 - **Config**: generic key-value store in SQLite. Currently holds `projects` list and `defaultPath` setting.
 
 ## Domain Terminology
@@ -45,6 +45,6 @@ Developers who juggle multiple codebases daily. The core pain points are:
 ## Business Rules
 - Projects are directories — they must exist on disk when added
 - Project paths are unique (no duplicates)
-- Terminal sessions are ephemeral — they don't persist across server restarts
+- Terminal durability depends on tmux — when tmux is unavailable, the UI must block terminal creation and ask the user to install it
 - The backend is the source of truth for all state — frontend never holds authoritative state
 - Every user action that modifies state must round-trip through the backend
