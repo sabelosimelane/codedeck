@@ -141,6 +141,16 @@ function safeResizePty(entry, cols, rows, sessionId) {
   }
 }
 
+function safeResizeRuntimeSession(runtime, sessionId, cols, rows) {
+  if (typeof runtime?.resizeSession !== 'function') return;
+
+  try {
+    runtime.resizeSession(sessionId, cols, rows);
+  } catch (err) {
+    console.warn(`[terminal] runtime_resize_failed session=${sessionId} cols=${cols} rows=${rows} error=${err.message}`);
+  }
+}
+
 function beginBufferedAttach(entry, snapshotSeq) {
   const attachState = {
     mode: 'buffer_live_output',
@@ -520,9 +530,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
 
   if (!entry) {
     if (recoverableTmuxWithoutEntry) {
-      if (typeof runtime.resizeSession === 'function') {
-        runtime.resizeSession(sessionId, cols, rows);
-      }
+      safeResizeRuntimeSession(runtime, sessionId, cols, rows);
       const snapshotHydration = resolveSnapshotHydration(runtime, sessionId, 0);
       snapshotMessage = snapshotHydration.snapshotMessage;
       historyWarningEvent = snapshotHydration.historyWarningEvent;
@@ -608,9 +616,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     if (entry.runtimeType === 'tmux' && entry.alive) {
       const snapshotSeq = entry.lastSeq ?? 0;
       attachState = beginBufferedAttach(entry, snapshotSeq);
-      if (typeof runtime.resizeSession === 'function') {
-        runtime.resizeSession(sessionId, cols, rows);
-      }
+      safeResizeRuntimeSession(runtime, sessionId, cols, rows);
       const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(
         resolveSnapshotHydration(runtime, sessionId, snapshotSeq),
         attachState,
@@ -654,9 +660,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
         console.log(`[terminal] tmux_reattach_failed session=${sessionId} error=${err.message}`);
       }
 
-      if (typeof runtime.resizeSession === 'function') {
-        runtime.resizeSession(sessionId, cols, rows);
-      }
+      safeResizeRuntimeSession(runtime, sessionId, cols, rows);
       const snapshotHydration = resolveSnapshotHydration(runtime, sessionId, entry.lastSeq ?? 0);
       snapshotMessage = snapshotHydration.snapshotMessage;
       historyWarningEvent = snapshotHydration.historyWarningEvent;
@@ -680,6 +684,9 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
       if (parsed.type === 'input') {
         entry.pty.write(parsed.data);
       } else if (parsed.type === 'resize') {
+        if (entry.runtimeType === 'tmux') {
+          safeResizeRuntimeSession(runtime, sessionId, parsed.cols, parsed.rows);
+        }
         entry.pty.resize(parsed.cols, parsed.rows);
       } else if (parsed.type === 'heartbeat') {
         entry.lastClientAckAt = new Date().toISOString();

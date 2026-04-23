@@ -78,6 +78,259 @@ export function isTmuxAvailable() {
   }
 }
 
+// Unicode ranges whose code points occupy two terminal cells. Sourced from
+// UAX #11 East Asian Width (classes W and F) plus the emoji-presentation
+// promotions defined in UTS #51; xterm renders every codepoint in these
+// ranges as a double-width cell, so truncation must count them the same way.
+// Kept sorted so the linear scan can short-circuit once the codepoint is
+// below the current range's lower bound.
+const TERMINAL_WIDE_RANGES = [
+  [0x1100, 0x115F],   // Hangul Jamo
+  [0x231A, 0x231B],   // ⌚ watch, ⌛ hourglass
+  [0x2329, 0x232A],   // angle brackets
+  [0x23E9, 0x23EC],   // ⏩⏪⏫⏬ fast-forward / rewind double arrows
+  [0x23F0, 0x23F0],   // ⏰ alarm clock
+  [0x23F3, 0x23F3],   // ⏳ hourglass with flowing sand
+  [0x25FD, 0x25FE],   // ◽◾ white/black medium small squares
+  [0x2614, 0x2615],   // ☔ umbrella, ☕ hot beverage
+  [0x2648, 0x2653],   // ♈–♓ zodiac signs
+  [0x267F, 0x267F],   // ♿ wheelchair
+  [0x2693, 0x2693],   // ⚓ anchor
+  [0x26A1, 0x26A1],   // ⚡ high voltage
+  [0x26AA, 0x26AB],   // ⚪⚫ medium circles
+  [0x26BD, 0x26BE],   // ⚽ soccer, ⚾ baseball
+  [0x26C4, 0x26C5],   // ⛄ snowman, ⛅ sun behind cloud
+  [0x26CE, 0x26CE],   // ⛎ Ophiuchus
+  [0x26D4, 0x26D4],   // ⛔ no entry
+  [0x26EA, 0x26EA],   // ⛪ church
+  [0x26F2, 0x26F3],   // ⛲ fountain, ⛳ flag in hole
+  [0x26F5, 0x26F5],   // ⛵ sailboat
+  [0x26FA, 0x26FA],   // ⛺ tent
+  [0x26FD, 0x26FD],   // ⛽ fuel pump
+  [0x2705, 0x2705],   // ✅ white heavy check mark
+  [0x270A, 0x270B],   // ✊ raised fist, ✋ raised hand
+  [0x2728, 0x2728],   // ✨ sparkles
+  [0x274C, 0x274C],   // ❌ cross mark
+  [0x274E, 0x274E],   // ❎ negative squared cross mark
+  [0x2753, 0x2755],   // ❓❔❕ question / exclamation glyphs
+  [0x2757, 0x2757],   // ❗ heavy exclamation mark
+  [0x2795, 0x2797],   // ➕➖➗ plus / minus / divide
+  [0x27B0, 0x27B0],   // ➰ curly loop
+  [0x27BF, 0x27BF],   // ➿ double curly loop
+  [0x2B1B, 0x2B1C],   // ⬛⬜ large squares
+  [0x2B50, 0x2B50],   // ⭐ medium star
+  [0x2B55, 0x2B55],   // ⭕ heavy large circle
+  [0x2E80, 0x303E],   // CJK Radicals / Kangxi / CJK Symbols (excl. 0x303F)
+  [0x3041, 0x33FF],   // Hiragana, Katakana, Bopomofo, CJK compat
+  [0x3400, 0x4DBF],   // CJK Unified Ideographs Extension A
+  [0x4E00, 0x9FFF],   // CJK Unified Ideographs
+  [0xA000, 0xA4CF],   // Yi Syllables / Radicals
+  [0xAC00, 0xD7A3],   // Hangul Syllables
+  [0xF900, 0xFAFF],   // CJK Compatibility Ideographs
+  [0xFE30, 0xFE4F],   // CJK Compatibility Forms
+  [0xFF00, 0xFF60],   // Fullwidth Forms
+  [0xFFE0, 0xFFE6],   // Fullwidth Signs
+  [0x1F1E6, 0x1F1FF], // Regional Indicator Symbols (flag emoji halves)
+  [0x1F300, 0x1F64F], // Miscellaneous Symbols and Pictographs + Emoticons
+  [0x1F680, 0x1F6FF], // Transport and Map
+  [0x1F900, 0x1F9FF], // Supplemental Symbols and Pictographs
+  [0x1FA00, 0x1FAFF], // Symbols and Pictographs Extended-A
+  [0x20000, 0x2FFFD], // CJK Unified Ideographs Extensions B–F
+  [0x30000, 0x3FFFD], // CJK Unified Ideographs Extension G
+];
+
+const VARIATION_SELECTOR_16 = 0xFE0F;
+const COMBINING_ENCLOSING_KEYCAP = 0x20E3;
+const ZERO_WIDTH_JOINER = 0x200D;
+const REGIONAL_INDICATOR_START = 0x1F1E6;
+const REGIONAL_INDICATOR_END = 0x1F1FF;
+const EMOJI_MODIFIER_START = 0x1F3FB;
+const EMOJI_MODIFIER_END = 0x1F3FF;
+const TAG_COMPONENT_START = 0xE0020;
+const TAG_COMPONENT_END = 0xE007F;
+const COMBINING_MARK_REGEX = /\p{Mark}/u;
+const EXTENDED_PICTOGRAPHIC_REGEX = /\p{Extended_Pictographic}/u;
+
+function isWideCodepoint(cp) {
+  for (const [lo, hi] of TERMINAL_WIDE_RANGES) {
+    if (cp < lo) return false;
+    if (cp <= hi) return true;
+  }
+  return false;
+}
+
+function isExtendedPictographicCodepoint(cp) {
+  return EXTENDED_PICTOGRAPHIC_REGEX.test(String.fromCodePoint(cp));
+}
+
+function isCombiningMarkCodepoint(cp) {
+  return COMBINING_MARK_REGEX.test(String.fromCodePoint(cp));
+}
+
+function isRegionalIndicatorCodepoint(cp) {
+  return cp >= REGIONAL_INDICATOR_START && cp <= REGIONAL_INDICATOR_END;
+}
+
+function isEmojiModifierCodepoint(cp) {
+  return cp >= EMOJI_MODIFIER_START && cp <= EMOJI_MODIFIER_END;
+}
+
+function isTagComponentCodepoint(cp) {
+  return cp >= TAG_COMPONENT_START && cp <= TAG_COMPONENT_END;
+}
+
+function readCodepoint(text, index) {
+  const cp = text.codePointAt(index);
+  const ch = String.fromCodePoint(cp);
+  return { cp, ch, nextIndex: index + ch.length };
+}
+
+function* iterateFallbackTerminalGraphemes(text) {
+  let index = 0;
+
+  while (index < text.length) {
+    const start = index;
+    let { cp, ch, nextIndex } = readCodepoint(text, index);
+    let segment = ch;
+    index = nextIndex;
+
+    // Approximate UAX #29 for the emoji-heavy cases that matter here:
+    // regional-indicator flags, combining-mark/keycap sequences, emoji
+    // modifiers, tag-based flags, and ZWJ emoji families/professions.
+    if (isRegionalIndicatorCodepoint(cp) && index < text.length) {
+      const next = readCodepoint(text, index);
+      if (isRegionalIndicatorCodepoint(next.cp)) {
+        segment += next.ch;
+        index = next.nextIndex;
+      }
+    }
+
+    while (index < text.length) {
+      const next = readCodepoint(text, index);
+
+      if (
+        isCombiningMarkCodepoint(next.cp)
+        || isEmojiModifierCodepoint(next.cp)
+        || isTagComponentCodepoint(next.cp)
+      ) {
+        segment += next.ch;
+        index = next.nextIndex;
+        continue;
+      }
+
+      if (next.cp === ZERO_WIDTH_JOINER) {
+        segment += next.ch;
+        index = next.nextIndex;
+
+        if (index >= text.length) {
+          break;
+        }
+
+        const joined = readCodepoint(text, index);
+        segment += joined.ch;
+        index = joined.nextIndex;
+        cp = joined.cp;
+        continue;
+      }
+
+      break;
+    }
+
+    yield { segment, index: start };
+  }
+}
+
+function* iterateTerminalGraphemes(text) {
+  if (!text) {
+    return;
+  }
+
+  if (GRAPHEME_SEGMENTER) {
+    yield* GRAPHEME_SEGMENTER.segment(text);
+    return;
+  }
+
+  yield* iterateFallbackTerminalGraphemes(text);
+}
+
+function measureTerminalGraphemeWidth(segment) {
+  let hasEmojiPresentationSelector = false;
+  let hasKeycapComposition = false;
+  let hasExtendedPictographicBase = false;
+
+  for (const ch of segment) {
+    const cp = ch.codePointAt(0);
+
+    if (isWideCodepoint(cp)) {
+      return 2;
+    }
+
+    if (cp === VARIATION_SELECTOR_16) {
+      hasEmojiPresentationSelector = true;
+      continue;
+    }
+
+    if (cp === COMBINING_ENCLOSING_KEYCAP) {
+      hasKeycapComposition = true;
+      continue;
+    }
+
+    if (isExtendedPictographicCodepoint(cp)) {
+      hasExtendedPictographicBase = true;
+    }
+  }
+
+  if (hasKeycapComposition) {
+    return 2;
+  }
+
+  // Some emoji-presenting graphemes stay in narrow Unicode blocks until FE0F
+  // promotes them to emoji presentation (for example ✈️ or ☑️). xterm renders
+  // those graphemes as double-width, so measuring only the first codepoint
+  // undercounts them and lets replayed rows overflow the live pane width.
+  if (hasEmojiPresentationSelector && hasExtendedPictographicBase) {
+    return 2;
+  }
+
+  return 1;
+}
+
+const GRAPHEME_SEGMENTER = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+  ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+  : null;
+
+/**
+ * Measure the display width of a string in terminal cells. Iterates by
+ * grapheme cluster so combining marks attach to their base character and
+ * surrogate pairs are treated as a single codepoint.
+ */
+export function measureTerminalCellWidth(text) {
+  if (!text) return 0;
+  let cells = 0;
+  for (const { segment } of iterateTerminalGraphemes(text)) {
+    cells += measureTerminalGraphemeWidth(segment);
+  }
+  return cells;
+}
+
+/**
+ * Truncate a string so it fits inside `maxCells` terminal cells, cutting on
+ * grapheme boundaries. Callers can rely on the returned string to never
+ * exceed the pane width when xterm replays it.
+ */
+export function truncateToTerminalCells(text, maxCells) {
+  if (!text || maxCells <= 0) return '';
+  let cells = 0;
+  let end = 0;
+  for (const { segment, index } of iterateTerminalGraphemes(text)) {
+    const width = measureTerminalGraphemeWidth(segment);
+    if (cells + width > maxCells) break;
+    cells += width;
+    end = index + segment.length;
+  }
+  return text.slice(0, end);
+}
+
 // ---------------------------------------------------------------------------
 // Raw PTY runtime
 // ---------------------------------------------------------------------------
@@ -450,6 +703,7 @@ function createTmuxRuntime() {
         const normalizedWindowLines = Math.max(1, parseInt(windowLines, 10) || TERMINAL_SNAPSHOT_WINDOW_LINES);
         const terminalState = getTmuxPaneSnapshotState(tmuxName);
         const captureArgs = ['capture-pane', '-p'];
+        let primaryPaneWidth = 0;
 
         if (terminalState.screenMode === 'mode') {
           captureArgs.push('-M', '-e', '-N');
@@ -460,6 +714,7 @@ function createTmuxRuntime() {
           const visiblePaneLines = Math.max(1, paneHeight || 0);
           const historyLines = Math.max(normalizedWindowLines - visiblePaneLines, 0);
           const startLine = historyLines > 0 ? `-${historyLines}` : '0';
+          primaryPaneWidth = getTmuxPaneNumberValue(tmuxName, '#{pane_width}');
           // Preserve the current tmux row layout for primary-screen scrollback
           // instead of joining wrapped rows into logical lines. Re-wrapping
           // joined rows on restore can recreate redraw corruption while
@@ -469,10 +724,24 @@ function createTmuxRuntime() {
 
         captureArgs.push('-t', tmuxName);
 
-        const output = execFileSync('tmux', captureArgs, {
+        const rawOutput = execFileSync('tmux', captureArgs, {
           stdio: 'pipe',
           encoding: 'utf8',
         });
+
+        // tmux keeps historical scrollback at the width it was rendered at, so
+        // a narrow pane today can still surface rows that were captured at a
+        // wider layout. Replaying those wide rows into xterm wraps them and
+        // stamps a stray column of wrapped remnants down the right edge.
+        // Clamp each primary-screen row to the live pane width so the replayed
+        // snapshot mirrors what tmux itself shows in the current viewport.
+        // pane_width is counted in terminal cells, so we have to truncate by
+        // display cells and grapheme boundaries — otherwise CJK, emoji or
+        // surrogate-pair content still overflows the pane (or gets sliced in
+        // half) and the right-edge wrap artifact survives.
+        const output = primaryPaneWidth > 0
+          ? rawOutput.split('\n').map(row => truncateToTerminalCells(row, primaryPaneWidth)).join('\n')
+          : rawOutput;
 
         return normalizeCapturedSnapshot(output, normalizedWindowLines, {
           historyGuaranteed: true,

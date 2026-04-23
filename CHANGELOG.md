@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-04-23] - Keep tmux pane width truthful across restore and resize
+
+### Executive Summary
+* Hardened CodeDeck’s terminal rendering so pane resizes no longer leave stale wrapped gutters or right-edge corruption behind. Durable tmux sessions now correct both restored history and live output against the current pane geometry, while the browser adds a one-shot post-font-settle recovery pass so terminals repaint cleanly without asking the user to manually redraw or reconnect.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Durable tmux terminals could keep rendering against stale pane geometry after reconnect recovery, late font settling, or ordinary live pane resizes. That left restored rows wider than the visible pane, undercounted some emoji-heavy graphemes, and let live tmux output continue wrapping at the old width.
+  * **Solution:** Added grapheme-aware terminal-cell truncation for tmux snapshots, introduced a delayed post-hydration viewport re-fit with a one-shot in-place rehydrate when geometry actually shifts, and made normal browser resize messages update the underlying tmux session as well as the PTY wrapper.
+* **🛠️ Codebase:**
+  * `client/src/components/Terminal.jsx` — Added delayed post-snapshot viewport sync, one-shot geometry tracking, and targeted rehydrate behavior so late font/pane settling fixes stale columns without turning ordinary user resizes into destructive redraws.
+  * `server/terminal-runtime.js` — Added grapheme-aware terminal cell measurement and truncation so restored tmux rows respect pane width even with wide CJK, VS16 emoji, keycaps, flags, and fallback no-`Intl.Segmenter` environments.
+  * `server/ws-handler.js` — Ensured live resize messages resize the authoritative tmux session during normal interaction instead of only resizing the browser-facing PTY attachment.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalFontSync.test.jsx` — Added regression coverage for delayed re-fit, one-shot tmux rehydrate, and the guard that prevents later user-driven resizes from replaying the full viewport.
+  * `server/__tests__/terminal-runtime.test.js` — Added regression coverage for pane-width row clamping, emoji/keycap width accounting, and fallback grapheme grouping when `Intl.Segmenter` is unavailable.
+  * `server/__tests__/ws-handler.test.js` — Added regression coverage proving live resize events resize the underlying tmux session as well as the PTY wrapper.
+
 ## [2026-04-22] - Stop reconnects from lying about terminal history
 
 ### Executive Summary

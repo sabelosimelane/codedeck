@@ -126,7 +126,8 @@ describe('Terminal font-measurement recovery', () => {
     render(<Terminal sessionId="font-sync" cwd="/tmp" isVisible={true} />);
     vi.advanceTimersByTime(16);
 
-    expect(mocks.fitAddon.fit).toHaveBeenCalledTimes(1);
+    const initialFitCount = mocks.fitAddon.fit.mock.calls.length;
+    expect(initialFitCount).toBeGreaterThanOrEqual(1);
 
     await act(async () => {
       resolveFontsReady();
@@ -134,6 +135,122 @@ describe('Terminal font-measurement recovery', () => {
     });
     vi.advanceTimersByTime(16);
 
-    expect(mocks.fitAddon.fit).toHaveBeenCalledTimes(2);
+    const afterReadyFitCount = mocks.fitAddon.fit.mock.calls.length;
+    expect(afterReadyFitCount).toBeGreaterThan(initialFitCount);
+
+    vi.advanceTimersByTime(100);
+
+    expect(mocks.fitAddon.fit.mock.calls.length).toBeGreaterThan(afterReadyFitCount);
+  });
+
+  it('runs a delayed re-fit after snapshot hydration to clear stale edge columns', () => {
+    render(<Terminal sessionId="font-sync-snapshot" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.fitAddon.fit.mockClear();
+
+    act(() => {
+      mocks.ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'snapshot',
+          sessionId: 'font-sync-snapshot',
+          lastSeq: 1,
+          data: 'restored line\r\n',
+        }),
+      });
+    });
+
+    const fitCountBeforeDelayedRecovery = mocks.fitAddon.fit.mock.calls.length;
+
+    vi.advanceTimersByTime(100);
+
+    expect(mocks.fitAddon.fit.mock.calls.length).toBeGreaterThan(fitCountBeforeDelayedRecovery);
+  });
+
+  it('requests an in-place tmux rehydrate when delayed fit changes snapshot geometry', () => {
+    render(<Terminal sessionId="font-sync-rehydrate" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.send.mockClear();
+
+    act(() => {
+      mocks.ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'snapshot',
+          sessionId: 'font-sync-rehydrate',
+          lastSeq: 1,
+          data: 'restored line\r\n',
+        }),
+      });
+    });
+
+    mocks.fitAddon.fit.mockImplementation(() => {
+      mocks.term.cols = 100;
+      mocks.term.rows = 28;
+    });
+
+    vi.advanceTimersByTime(100);
+
+    const sentMessages = mocks.ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+    expect(sentMessages).toContainEqual({ type: 'resize', cols: 100, rows: 28 });
+    expect(sentMessages).toContainEqual({ type: 'rehydrate' });
+    expect(sentMessages.findIndex(message => message.type === 'resize'))
+      .toBeLessThan(sentMessages.findIndex(message => message.type === 'rehydrate'));
+  });
+
+  it('does not request a rehydrate on user-driven resizes after the delayed post-font-settle fit', () => {
+    // Rehydrate is meant as a one-shot correction for the single delayed fit
+    // that runs after snapshot hydration — font metrics or container width
+    // may have settled a beat later. Any subsequent geometry change comes
+    // from the user (dragging a split, focusing the tab, pageshow) and must
+    // not rewrite the whole viewport, because doing so wipes scroll position
+    // and repaints history during an ordinary resize.
+    render(<Terminal sessionId="font-sync-user-resize" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+
+    act(() => {
+      mocks.ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'snapshot',
+          sessionId: 'font-sync-user-resize',
+          lastSeq: 1,
+          data: 'restored line\r\n',
+        }),
+      });
+    });
+
+    // The delayed fit runs at t≈100ms with no font-metric shift, so geometry
+    // is still identical to the hydration geometry. This consumes the
+    // one-shot — the client has made its best pass at correcting snapshot
+    // geometry and must not attempt it again from later call paths.
+    vi.advanceTimersByTime(100);
+
+    mocks.ws.send.mockClear();
+
+    // Simulate a user drag that changes the pane geometry a few hundred ms
+    // later. scheduleViewportRecovery (triggered by pageshow/focus/visibility
+    // and the React-level isVisible change) calls syncTerminalViewport on a
+    // 50ms timer — exactly the same codepath a ResizeObserver would take.
+    mocks.fitAddon.fit.mockImplementation(() => {
+      mocks.term.cols = 80;
+      mocks.term.rows = 20;
+    });
+
+    act(() => {
+      window.dispatchEvent(new Event('pageshow'));
+    });
+    vi.advanceTimersByTime(50);
+
+    const sentMessages = mocks.ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+    expect(sentMessages.some(message => message.type === 'rehydrate')).toBe(false);
+    // Resize must still be forwarded so the backend tracks the new geometry.
+    expect(sentMessages).toContainEqual({ type: 'resize', cols: 80, rows: 20 });
   });
 });

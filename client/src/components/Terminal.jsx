@@ -57,6 +57,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
   const pendingOutputRef = useRef([]);
   const pendingSnapshotRef = useRef(null);
   const inputBufferRef = useRef([]);
+  const delayedViewportSyncTimerRef = useRef(null);
+  const snapshotGeometryRef = useRef(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
   const { showToast } = useToast();
@@ -169,6 +171,41 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
     });
   }
 
+  function scheduleDelayedViewportSync({ focus = false } = {}) {
+    if (delayedViewportSyncTimerRef.current) {
+      clearTimeout(delayedViewportSyncTimerRef.current);
+    }
+
+    delayedViewportSyncTimerRef.current = setTimeout(() => {
+      delayedViewportSyncTimerRef.current = null;
+
+      // Remember what geometry the snapshot was hydrated at so we can tell
+      // whether the delayed fit actually corrected anything. Consume the
+      // reference as a one-shot: later user-driven resizes (ResizeObserver,
+      // pageshow/focus/visibility) reach syncTerminalViewport too, and must
+      // not rewrite the whole viewport just because cols/rows changed.
+      const hydrationGeometry = snapshotGeometryRef.current;
+      snapshotGeometryRef.current = null;
+
+      syncTerminalViewport({ focus });
+
+      const term = termRef.current;
+      const ws = wsRef.current;
+      if (
+        hydrationGeometry
+        && term
+        && ws
+        && ws.readyState === WebSocket.OPEN
+        && (
+          term.cols !== hydrationGeometry.cols
+          || term.rows !== hydrationGeometry.rows
+        )
+      ) {
+        ws.send(JSON.stringify({ type: 'rehydrate' }));
+      }
+    }, 100);
+  }
+
   function resetTerminalForSnapshot(term) {
     if (typeof term.reset === 'function') {
       term.reset();
@@ -188,8 +225,17 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       term.write(snapshotReplay);
       lastPaintAtRef.current = new Date().toISOString();
     }
+    // Record the geometry the snapshot was painted at so the delayed
+    // post-font-settle fit can tell whether anything actually shifted. The
+    // ref is consumed as a one-shot by scheduleDelayedViewportSync so later
+    // user-driven resizes never trip a full-viewport rewrite.
+    snapshotGeometryRef.current = { cols: term.cols, rows: term.rows };
     setAutoScrollEnabled(true);
     term.scrollToBottom();
+    // Some devices settle font metrics and pane width a beat after the initial
+    // snapshot paint. Re-fit once more so restored scrollback does not keep the
+    // stale right-edge column until the user manually resizes the pane.
+    scheduleDelayedViewportSync();
   }
 
   function bufferOrHydrateSnapshot(term, snapshot) {
@@ -404,6 +450,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       requestAnimationFrame(() => {
         if (fontSyncCancelled || !mountedRef.current) return;
         syncTerminalViewport();
+        scheduleDelayedViewportSync();
       });
     };
 
@@ -725,6 +772,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
       clearTimeout(connectTimer);
       clearTimeout(retryTimerRef.current);
       clearInterval(heartbeatRef.current);
+      clearTimeout(delayedViewportSyncTimerRef.current);
+      delayedViewportSyncTimerRef.current = null;
+      snapshotGeometryRef.current = null;
       pendingOutputRef.current = [];
       pendingSnapshotRef.current = null;
       inputBufferRef.current = [];

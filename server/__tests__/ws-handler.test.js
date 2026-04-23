@@ -534,6 +534,19 @@ describe('handleWsConnection', () => {
       expect(mockPty.resize).toHaveBeenCalledWith(80, 24);
     });
 
+    it('resizes the underlying tmux session on live resize messages', () => {
+      const runtime = createMockRuntime(vi.fn(() => mockPty), { type: 'tmux' });
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+
+      ws._emit('message', JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
+
+      expect(runtime.resizeSession).toHaveBeenCalledWith('test-1', 80, 24);
+      expect(mockPty.resize).toHaveBeenCalledWith(80, 24);
+    });
+
     it('falls back to raw string input when JSON parsing fails', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
