@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-04-23] - Define the installable PWA shell rollout
+
+### Executive Summary
+* Added the planning artifacts for making CodeDeck installable from Chrome on macOS without pretending it is an offline desktop terminal. The new spec and phased todo plan keep the feature tightly scoped around a truthful installed shell: users can launch CodeDeck like an app, but live backend, session, and terminal state remain authoritative and online-only.
+
+### Technical Details
+* **✨ New Feature:**
+  * `docs/specifications/installable-pwa-shell-spec.md` — New feature specification for an installable Chrome PWA shell, including manifest requirements, shell-only caching rules, authority boundaries, and explicit non-goals around offline terminal behavior.
+* **🛠️ Codebase:**
+  * `docs/todos/installable-pwa-shell.md` — New phased implementation plan covering installability metadata, truthful shell-only caching, launch-behavior polish, and final verification steps.
+
 ## [2026-04-23] - Keep tmux pane width truthful across restore and resize
 
 ### Executive Summary
