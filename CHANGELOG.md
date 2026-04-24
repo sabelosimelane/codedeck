@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-04-24] - Plan terminal bake-off decision gate and VS Code parity work
+
+### Executive Summary
+* Added planning artifacts that frame the next terminal investment as an evidence-driven decision rather than a speculative rewrite. A new bake-off spec and phased todo define how CodeDeck will compare its current terminal against a minimal xterm/node-pty control and mature contenders (`ttyd`, `Wetty`) before committing to hardening, refactoring, integrating, or deferring. A parallel VS Code terminal parity todo captures the downstream implementation plan the bake-off will ultimately route work into.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `docs/specifications/terminal-bakeoff-spec.md` — New feature spec defining candidate list, torture-suite evaluation dimensions, pass/minor/major/fail scoring model, adoption-risk notes, decision rules (`current-hardening`, `current-core-refactor`, `external-integration`, `defer`), default bias toward keeping the current stack, and explicit non-goals so the bake-off does not change production behavior.
+  * `docs/todos/terminal-bakeoff.md` — New phased todo covering harness setup, current CodeDeck baseline scoring, minimal xterm/node-pty control, mature contender evaluation, VS Code-like reference calibration, and the final decision report.
+  * `docs/todos/vscode-terminal-parity.md` — New phased todo for VS Code terminal parity work: shell fidelity baseline on the tmux path, deliberate keyboard shortcut contract, reconnect/snapshot hardening, feature parity UX decisions, component simplification, and final verification.
+
 ## [2026-04-24] - Make CodeDeck installable as a live-runtime shell
 
 ### Executive Summary
