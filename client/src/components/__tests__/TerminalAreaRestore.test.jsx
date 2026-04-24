@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import React from 'react';
 
 const mocks = vi.hoisted(() => ({
@@ -84,23 +84,30 @@ describe('TerminalArea restore fallback', () => {
   });
 
   afterEach(() => {
+    cleanup();
     global.fetch = originalFetch;
     vi.restoreAllMocks();
   });
 
-  it('preserves the saved layout when /api/sessions fails during restore', async () => {
+  it('preserves but does not render the saved layout when /api/sessions fails during restore', async () => {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify(SAVED_LAYOUT));
     global.fetch = vi.fn().mockRejectedValue(new Error('backend unavailable'));
 
-    render(<TerminalArea project={PROJECT} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />);
+    const view = render(<TerminalArea project={PROJECT} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />);
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith('/api/sessions');
     });
 
     await waitFor(() => {
+      expect(view.getByText('No terminals open')).toBeTruthy();
+      expect(view.queryByText('BookMe-9')).toBeNull();
+      expect(mocks.showToast).toHaveBeenCalledWith({ type: 'error', message: 'Server unreachable' });
       expect(localStorage.getItem(LAYOUT_KEY)).toBe(JSON.stringify(SAVED_LAYOUT));
     });
+
+    await new Promise(resolve => setTimeout(resolve, 350));
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe(JSON.stringify(SAVED_LAYOUT));
   });
 
   it('publishes restore-time session snapshots to the app shell', async () => {

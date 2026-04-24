@@ -245,6 +245,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
   const saveTimerRef = useRef(null);
   const restoringRef = useRef(false);
   const awaitingSessionHydrationRef = useRef(false);
+  const layoutPersistenceSuspendedRef = useRef(false);
   const pendingSessionIdsRef = useRef(new Set());
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
@@ -286,6 +287,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
       prevProjectName: prevProjectRef.current,
       tabsLength: tabs.length,
       isRestoring: restoringRef.current,
+      isPersistenceSuspended: layoutPersistenceSuspendedRef.current,
     })) return;
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
@@ -325,6 +327,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
 
         if (cancelled) return;
 
+        layoutPersistenceSuspendedRef.current = false;
         setTerminalRuntimeStatus(nextTerminalRuntimeStatus);
         onSessionStatusRefresh(liveSessions);
 
@@ -344,22 +347,13 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         awaitingSessionHydrationRef.current = resolved.state.tabs.length === 0;
         setState(resolved.state);
       } catch {
-        if (saved) {
-          tabCounter = saved.tabCounter ?? saved.tabs?.length ?? 0;
-          sessionCounter = saved.sessionCounter ?? 0;
-          const restoredState = {
-            tabs: saved.tabs ?? [],
-            activeTabId: saved.activeTabId ?? saved.tabs?.[0]?.id ?? null,
-          };
-          awaitingSessionHydrationRef.current = restoredState.tabs.length === 0;
-          setState(restoredState);
-        } else {
-          // Backend unreachable and no saved layout exists — show the empty state
-          tabCounter = 0;
-          sessionCounter = 0;
-          awaitingSessionHydrationRef.current = true;
-          setState({ tabs: [], activeTabId: null });
-        }
+        if (cancelled) return;
+        layoutPersistenceSuspendedRef.current = true;
+        tabCounter = saved?.tabCounter ?? 0;
+        sessionCounter = saved?.sessionCounter ?? 0;
+        awaitingSessionHydrationRef.current = true;
+        showToast({ type: 'error', message: 'Server unreachable' });
+        setState({ tabs: [], activeTabId: null });
       } finally {
         if (!cancelled) restoringRef.current = false;
       }
@@ -389,6 +383,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
 
     tabCounter = resolved.tabCounter;
     sessionCounter = resolved.sessionCounter;
+    layoutPersistenceSuspendedRef.current = false;
     awaitingSessionHydrationRef.current = false;
     setState(resolved.state);
   }, [project.name, project.path, sessionStatus, tabs.length]);

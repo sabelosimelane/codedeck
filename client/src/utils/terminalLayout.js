@@ -1,5 +1,5 @@
-export function shouldPersistLayout({ projectName, prevProjectName, tabsLength, isRestoring }) {
-  if (!projectName || isRestoring) return false;
+export function shouldPersistLayout({ projectName, prevProjectName, tabsLength, isRestoring, isPersistenceSuspended = false }) {
+  if (!projectName || isRestoring || isPersistenceSuspended) return false;
   return prevProjectName === null || prevProjectName === projectName;
 }
 

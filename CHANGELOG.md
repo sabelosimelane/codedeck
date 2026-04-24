@@ -1,5 +1,35 @@
 # Changelog
 
+## [2026-04-24] - Make CodeDeck installable as a live-runtime shell
+
+### Executive Summary
+* CodeDeck can now be installed from Chrome on macOS and launched as a standalone app while preserving the live-runtime truth model. The installed shell improves launch ergonomics, caches only the UI shell, and avoids showing stale projects, sessions, or terminals when the backend is unavailable.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/index.html` — Added manifest, app-name, and install icon metadata using relative shell asset URLs.
+  * `client/public/manifest.webmanifest` — Added Chrome installability metadata with standalone display mode, relative app identity, and live-runtime description.
+  * `client/public/pwa-icon-192.png` — Added a 192px install icon for Chrome and macOS install surfaces.
+  * `client/public/pwa-icon-512.png` — Added a 512px install icon for Chrome and macOS install surfaces.
+  * `client/public/pwa-maskable-icon-512.png` — Added a maskable 512px install icon for adaptive launch surfaces.
+  * `client/src/registerServiceWorker.js` — Added a root-scoped service-worker registration helper with visible registration failure logging.
+* **🐛 Bug Fix:**
+  * **Problem:** A previously saved terminal layout could be rendered as if it were live truth when `/api/sessions` was unavailable.
+  * **Solution:** Suspended layout rendering and persistence after failed live session restore, while keeping the saved layout intact for later backend recovery.
+* **🛠️ Codebase:**
+  * `client/public/notification-sw.js` — Added shell-only fetch handling, network-first navigation fallback, cache-first static shell assets, live-only API/WebSocket bypass, and an inline fallback classifier for cold service-worker startup.
+  * `client/public/pwa-cache-policy.js` — Added shared request classification for shell assets, Vite dev modules, live-only routes, mutating requests, websockets, and cross-origin traffic.
+  * `client/src/main.jsx` — Replaced inline service-worker setup with the reusable registration helper.
+  * `client/src/components/TerminalArea.jsx` — Kept persisted terminal layouts non-authoritative until live session data is available.
+  * `client/src/utils/terminalLayout.js` — Added an explicit persistence-suspension guard for unverified restores.
+  * `docs/todos/installable-pwa-shell.md` — Marked all phases complete and recorded final browser, build, and test verification.
+* **🧪 Tests:**
+  * `client/src/__tests__/registerServiceWorker.test.js` — Added coverage for root-scoped registration, immediate loaded-document registration, unavailable service workers, failure logging, and exported registration contract.
+  * `client/src/__tests__/pwaCachePolicy.test.js` — Added cache-policy coverage for navigation, static shell assets, Vite dev modules, API routes, WebSocket paths, cross-origin requests, mutating requests, and index normalization.
+  * `client/src/__tests__/notificationServiceWorker.test.js` — Added coverage proving the fetch handler remains available when imported cache-policy loading fails.
+  * `client/src/components/__tests__/TerminalArea.test.js` — Added layout-persistence guard coverage for suspended backend-truth restores.
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — Updated restore coverage so saved layouts are preserved but not rendered when `/api/sessions` fails.
+
 ## [2026-04-23] - Define the installable PWA shell rollout
 
 ### Executive Summary

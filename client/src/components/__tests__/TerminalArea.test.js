@@ -41,6 +41,16 @@ describe('TerminalArea layout persistence guard', () => {
       isRestoring: true,
     })).toBe(false);
   });
+
+  it('skips persistence while the last restore lacked live backend truth', () => {
+    expect(shouldPersistLayout({
+      projectName: 'alpha',
+      prevProjectName: 'alpha',
+      tabsLength: 0,
+      isRestoring: false,
+      isPersistenceSuspended: true,
+    })).toBe(false);
+  });
 });
 
 describe('TerminalArea project-switch render guard', () => {
