@@ -219,6 +219,32 @@ describe('Terminal auto-scroll mouse takeover', () => {
     expect(mocks.term.scrollToBottom).not.toHaveBeenCalled();
   });
 
+  it('keeps the viewport detached when focus recovery replays active output below it', () => {
+    mountTerminal({ sessionId: 's9' });
+    connectSocket();
+    detachViewport();
+
+    mocks.term.scrollToBottom.mockClear();
+    mocks.term.write.mockClear();
+
+    act(() => {
+      mocks.ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'replay',
+          chunks: [
+            { seq: 1, data: 'replayed output\r\n' },
+          ],
+          overflow: false,
+          missedCount: 0,
+        }),
+      });
+    });
+
+    expect(screen.getByText('Latest')).toBeTruthy();
+    expect(mocks.term.write).toHaveBeenCalledWith('replayed output\r\n');
+    expect(mocks.term.scrollToBottom).not.toHaveBeenCalled();
+  });
+
   it('re-enables auto-follow when the user clicks Latest', () => {
     mountTerminal({ sessionId: 's8' });
     connectSocket();

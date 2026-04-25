@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-04-25] - Survive cold tmux sockets and respect detached terminal viewport on replay
+
+### Executive Summary
+* Fixed two terminal truthfulness bugs. New durable sessions now succeed even when the tmux server has not started yet, instead of crashing on a global option write against a missing socket. And when a user has scrolled up to read older output, transport-replay catch-up no longer yanks the viewport back to the bottom — it only restores follow-mode if the user had not intentionally detached.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** The first durable terminal of a session called `tmux set-window-option -g` before any tmux server existed, which failed with `error connecting to /private/tmp/tmux-*/default (No such file or directory)` and aborted the spawn.
+  * **Solution:** Treat "no server running" / missing-socket errors from the global option write as benign during cold start; the per-session option pass below still pins the snapshot history-limit on the new window.
+* **🐛 Bug Fix:**
+  * **Problem:** When focus recovery replayed buffered output, the client unconditionally re-enabled auto-scroll and snapped to the bottom, stealing the user's reading position.
+  * **Solution:** Only restore bottom-follow on replay when `userScrolledUpRef` is false; otherwise write the chunks but leave the viewport detached and the Latest indicator visible.
+* **🛠️ Codebase:**
+  * `server/terminal-runtime.js` — Added `getCommandErrorText` / `isTmuxMissingServerError` helpers and wrapped `ensureTmuxGlobalWindowOptions()` so cold-socket failures fall through to `new-session` instead of throwing.
+  * `client/src/components/Terminal.jsx` — Guarded the replay-handler's `setAutoScrollEnabled(true)` + `term.scrollToBottom()` behind the user-detached check.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-runtime.test.js` — Added a regression test that simulates the cold-socket error from `set-window-option -g` and asserts `new-session` and the PTY attach still happen with the expected args.
+  * `client/src/components/__tests__/TerminalAutoScroll.test.jsx` — Added a regression test that detaches the viewport, fires a replay message, and asserts the chunk is written, Latest stays visible, and `scrollToBottom` is not called.
+
 ## [2026-04-24] - Plan terminal bake-off decision gate and VS Code parity work
 
 ### Executive Summary

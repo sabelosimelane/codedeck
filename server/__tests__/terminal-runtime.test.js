@@ -139,6 +139,45 @@ describe('createTerminalRuntime', () => {
     expect(newSessionIndex).toBeGreaterThan(globalHistoryIndex);
   });
 
+  it('still creates a new tmux session when global history options fail before a tmux server exists', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'has-session') throw new Error('missing session');
+      if (args[0] === 'new-session') return '';
+      if (args[0] === 'set-option') return '';
+      if (args[0] === 'set-window-option') {
+        if (args[1] === '-g') {
+          throw new Error('error connecting to /private/tmp/tmux-502/default (No such file or directory)');
+        }
+        return '';
+      }
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(() => runtime.spawn({ cwd: '/tmp/demo', cols: 120, rows: 30, sessionId: 'demo-1' })).not.toThrow();
+    expect(execFileSync).toHaveBeenCalledWith(
+      'tmux',
+      [
+        'new-session', '-d',
+        '-s', 'demo-1',
+        '-c', '/tmp/demo',
+        '-x', '120',
+        '-y', '30',
+      ],
+      { stdio: 'pipe' }
+    );
+    expect(ptySpawn).toHaveBeenCalledWith('tmux', ['attach-session', '-t', 'demo-1'], {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd: '/tmp/demo',
+    });
+  });
+
   it('keeps tmux mouse mode off when spawning a durable session so browser selection still works', async () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');

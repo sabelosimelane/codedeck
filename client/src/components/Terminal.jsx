@@ -667,9 +667,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
             if (msg.overflow) {
               showToast({ type: 'warning', message: `Replay buffer overflow — ${msg.missedCount} output chunks lost` });
             }
-            // Reset auto-scroll (rapid writes can trip onScroll) and focus
-            setAutoScrollEnabled(true);
-            term.scrollToBottom();
+            // Rapid replay writes can trip xterm scroll events. Only restore
+            // bottom-follow when the user has not intentionally detached the
+            // viewport to read older output.
+            if (!userScrolledUpRef.current) {
+              setAutoScrollEnabled(true);
+              term.scrollToBottom();
+            }
             term.focus();
           } else if (msg.type === 'spawn_error') {
             spawnFailed = true;

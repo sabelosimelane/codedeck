@@ -66,6 +66,20 @@ function tmuxSessionExists(tmuxName) {
   }
 }
 
+function getCommandErrorText(err) {
+  return [
+    err?.message,
+    err?.stderr?.toString?.(),
+    err?.stdout?.toString?.(),
+  ].filter(Boolean).join('\n');
+}
+
+function isTmuxMissingServerError(err) {
+  const errorText = getCommandErrorText(err);
+  return errorText.includes('no server running')
+    || /error connecting to .*tmux.*No such file or directory/.test(errorText);
+}
+
 /**
  * Check whether the tmux binary is available on this machine.
  */
@@ -590,8 +604,16 @@ function createTmuxRuntime() {
 
       if (!tmuxSessionExists(tmuxName)) {
         // history-limit only affects the initial pane if it is in place before
-        // the tmux session/window is created.
-        ensureTmuxGlobalWindowOptions();
+        // the tmux session/window is created. A cold tmux socket can reject
+        // this global write before any server exists; session options below
+        // still keep the new durable window on the CodeDeck snapshot limit.
+        try {
+          ensureTmuxGlobalWindowOptions();
+        } catch (err) {
+          if (!isTmuxMissingServerError(err)) {
+            throw err;
+          }
+        }
         execFileSync('tmux', [
           'new-session', '-d',
           '-s', tmuxName,
