@@ -27,8 +27,8 @@ describe('listTerminalSessions', () => {
       getSessionCwd: vi.fn((entry, sessionId) => entry?.cwd || `/cwd/${sessionId}`),
       getSessionExecutionState: vi.fn((sessionId) => (
         sessionId === 'Cadence-1'
-          ? { executionStatus: 'running', foregroundCommand: 'npm' }
-          : { executionStatus: 'idle', foregroundCommand: 'zsh' }
+          ? { executionStatus: 'running', foregroundCommand: 'npm', executionReason: 'foreground_command', executionConfidence: 'medium' }
+          : { executionStatus: 'idle', foregroundCommand: 'zsh', executionReason: 'shell_prompt', executionConfidence: 'high' }
       )),
       listSessionIds: vi.fn(() => ['Cadence-1', 'marketing-4', 'orphan-1']),
     };
@@ -57,6 +57,8 @@ describe('listTerminalSessions', () => {
         terminalCreationAllowed: true,
         executionStatus: 'running',
         foregroundCommand: 'npm',
+        executionReason: 'foreground_command',
+        executionConfidence: 'medium',
         snapshotWindowLines: 10000,
         historyGuaranteed: false,
         historyWarningReason: 'snapshot_unavailable',
@@ -74,6 +76,8 @@ describe('listTerminalSessions', () => {
         terminalCreationAllowed: true,
         executionStatus: 'idle',
         foregroundCommand: 'zsh',
+        executionReason: 'shell_prompt',
+        executionConfidence: 'high',
         snapshotWindowLines: 10000,
         historyGuaranteed: true,
         historyWarningReason: null,

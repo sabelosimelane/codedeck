@@ -357,8 +357,18 @@ app.get('/api/debug/terminal-health', (req, res) => {
   for (const [sessionId, entry] of sessions) {
     entry.cwd = terminalRuntime.getSessionCwd?.(entry, sessionId) || entry.cwd;
     const executionState = entry.alive
-      ? terminalRuntime.getSessionExecutionState?.(sessionId) ?? { executionStatus: TERMINAL_EXECUTION_UNKNOWN, foregroundCommand: null }
-      : { executionStatus: TERMINAL_EXECUTION_DEAD, foregroundCommand: null };
+      ? terminalRuntime.getSessionExecutionState?.(sessionId) ?? {
+        executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+        foregroundCommand: null,
+        executionReason: 'runtime_unavailable',
+        executionConfidence: 'low',
+      }
+      : {
+        executionStatus: TERMINAL_EXECUTION_DEAD,
+        foregroundCommand: null,
+        executionReason: 'pane_dead',
+        executionConfidence: 'high',
+      };
 
     sessionList.push({
       sessionId,

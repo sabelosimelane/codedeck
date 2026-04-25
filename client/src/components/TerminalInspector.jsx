@@ -154,6 +154,9 @@ export default function TerminalInspector({ sessionId, onClose, onAction }) {
                   {[
                     ['PTY Alive', data.ptyAlive ? 'Yes' : 'No'],
                     ['Runtime', data.runtimeType || 'pty'],
+                    ['Execution', data.executionStatus ? `${data.executionStatus}${data.executionReason ? ` (${data.executionReason})` : ''}` : '--'],
+                    ['Foreground Command', data.foregroundCommand || '--'],
+                    ['Execution Confidence', data.executionConfidence || '--'],
                     ['Recent History', data.historyGuaranteed === false ? 'Unavailable' : 'Guaranteed'],
                     ['History Warning', data.historyWarningReason || '--'],
                     ['WS Attached', data.wsAttached ? 'Yes' : 'No'],

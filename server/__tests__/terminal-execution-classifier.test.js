@@ -1,0 +1,184 @@
+import { describe, expect, it } from 'vitest';
+import {
+  TERMINAL_EXECUTION_DEAD,
+  TERMINAL_EXECUTION_IDLE,
+  TERMINAL_EXECUTION_RUNNING,
+  TERMINAL_EXECUTION_UNKNOWN,
+  classifyTerminalExecution,
+} from '../terminal-execution-classifier.js';
+
+describe('terminal execution classifier', () => {
+  it('reports dead panes before inspecting snapshot content', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'node',
+      paneDead: '1',
+      snapshotText: '• Working (34s • esc to interrupt)',
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_DEAD,
+      foregroundCommand: null,
+      executionReason: 'pane_dead',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('reports unknown when tmux does not expose a foreground command', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '',
+      paneDead: '0',
+      snapshotText: 'some terminal text',
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+      foregroundCommand: null,
+      executionReason: 'missing_foreground_command',
+      executionConfidence: 'low',
+    });
+  });
+
+  it('treats a visible shell prompt as idle', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'zsh',
+      paneDead: '0',
+      snapshotText: [
+        'Deployment to production completed successfully',
+        '',
+        'Completed at: 2026-04-25 15:17:38',
+        'Total duration: 0m 59s',
+        'sabside@MacBook-Pro frontend.v3 %',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: 'zsh',
+      executionReason: 'shell_prompt',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('keeps an interactive shell pane running when deployment output has not returned to a prompt', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'bash',
+      paneDead: '0',
+      snapshotText: [
+        'Starting deployment process...',
+        'Deploying to production...',
+        'Waiting for rollout to complete...',
+        'Waiting for deployment "backend-deploy" rollout to finish: 1 old replicas are pending termination...',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: 'bash',
+      executionReason: 'shell_without_prompt',
+      executionConfidence: 'medium',
+    });
+  });
+
+  it('does not treat an old shell prompt above fresh deployment output as idle', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'zsh',
+      paneDead: '0',
+      snapshotText: [
+        'sabside@MacBook-Pro frontend.v3 %',
+        'Starting deployment process...',
+        'Deploying to production...',
+        'Building and pushing Docker image registry.gitlab.com/equinox/frontend.v3:25.apr.15.33...',
+        '=> exporting layers 1.2s',
+        '=> exporting manifest sha256:2650ee 0.0s',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: 'zsh',
+      executionReason: 'shell_without_prompt',
+      executionConfidence: 'medium',
+    });
+  });
+
+  it('keeps ordinary silent foreground commands running', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'npm',
+      paneDead: '0',
+      snapshotText: 'running tests without output',
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: 'npm',
+      executionReason: 'foreground_command',
+      executionConfidence: 'medium',
+    });
+  });
+
+  it('keeps active Codex turns running when a Working marker is visible', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'node',
+      paneDead: '0',
+      snapshotText: [
+        '• Working (34s • esc to interrupt)',
+        '',
+        '› Summarize recent commits',
+        '',
+        '  gpt-5.5 medium · ~/git/mace/backend',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: 'node',
+      executionReason: 'agent_working',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('keeps Codex running while it waits on a background terminal despite an input prompt', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'node',
+      paneDead: '0',
+      snapshotText: [
+        '• Full verification is still running. The earlier targeted suites passed.',
+        '',
+        '• Waiting for background terminal (15m 02s • esc to interrupt) · 1 background terminal running',
+        '  └ ./mvnw verify',
+        '',
+        '› Summarize recent commits',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: 'node',
+      executionReason: 'agent_background_terminal',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('treats an idle Codex input prompt as idle', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'node',
+      paneDead: '0',
+      snapshotText: [
+        'Remaining risk: I did not run a live browser/API smoke',
+        '',
+        '› Summarize recent commits',
+        '',
+        '  gpt-5.5 medium · ~/git/equinox/backend',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: 'node',
+      executionReason: 'agent_prompt_idle',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('treats a completed Claude-style prompt as idle', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.114',
+      paneDead: '0',
+      snapshotText: [
+        'Want me to also verify there are not other blocks?',
+        '',
+        '───────────────────────────────────────────────────────────',
+        '❯',
+        '───────────────────────────────────────────────────────────',
+        '  sabside ~/git/equinox/backend Opus 4.7',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: '2.1.114',
+      executionReason: 'agent_prompt_idle',
+      executionConfidence: 'high',
+    });
+  });
+});

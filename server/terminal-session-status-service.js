@@ -37,10 +37,14 @@ export function listTerminalSessions({
       ? runtime.getSessionExecutionState?.(sessionId) ?? {
         executionStatus: TERMINAL_EXECUTION_UNKNOWN,
         foregroundCommand: null,
+        executionReason: 'runtime_unavailable',
+        executionConfidence: 'low',
       }
       : {
         executionStatus: TERMINAL_EXECUTION_DEAD,
         foregroundCommand: null,
+        executionReason: 'pane_dead',
+        executionConfidence: 'high',
       };
     seenSessionIds.add(sessionId);
 
@@ -87,6 +91,8 @@ export function listTerminalSessions({
     const executionState = runtime.getSessionExecutionState?.(sessionId) ?? {
       executionStatus: TERMINAL_EXECUTION_UNKNOWN,
       foregroundCommand: null,
+      executionReason: 'runtime_unavailable',
+      executionConfidence: 'low',
     };
 
     result.push({

@@ -89,9 +89,10 @@ describe('createTerminalRuntime', () => {
     const { createTerminalRuntime } = await import('../terminal-runtime.js');
     const runtime = createTerminalRuntime('tmux');
 
-    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+    expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({
       executionStatus: 'running',
       foregroundCommand: 'npm',
+      executionReason: 'foreground_command',
     });
     expect(execFileSync).toHaveBeenCalledWith(
       'tmux',
@@ -118,9 +119,10 @@ describe('createTerminalRuntime', () => {
     const { createTerminalRuntime } = await import('../terminal-runtime.js');
     const runtime = createTerminalRuntime('tmux');
 
-    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+    expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({
       executionStatus: 'running',
       foregroundCommand: 'node',
+      executionReason: 'agent_working',
     });
   });
 
@@ -145,9 +147,10 @@ describe('createTerminalRuntime', () => {
     const { createTerminalRuntime } = await import('../terminal-runtime.js');
     const runtime = createTerminalRuntime('tmux');
 
-    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+    expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({
       executionStatus: 'running',
       foregroundCommand: 'node',
+      executionReason: 'agent_background_terminal',
     });
   });
 
@@ -170,9 +173,10 @@ describe('createTerminalRuntime', () => {
     const { createTerminalRuntime } = await import('../terminal-runtime.js');
     const runtime = createTerminalRuntime('tmux');
 
-    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+    expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({
       executionStatus: 'idle',
       foregroundCommand: '2.1.114',
+      executionReason: 'agent_prompt_idle',
     });
   });
 
@@ -195,9 +199,10 @@ describe('createTerminalRuntime', () => {
     const { createTerminalRuntime } = await import('../terminal-runtime.js');
     const runtime = createTerminalRuntime('tmux');
 
-    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+    expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({
       executionStatus: 'idle',
       foregroundCommand: 'node',
+      executionReason: 'agent_prompt_idle',
     });
   });
 
@@ -206,15 +211,17 @@ describe('createTerminalRuntime', () => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
       if (args[0] === 'display-message') return 'zsh\t0\n';
+      if (args[0] === 'capture-pane') return 'sabside@MacBook-Pro backend %\n';
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
 
     const { createTerminalRuntime } = await import('../terminal-runtime.js');
     const runtime = createTerminalRuntime('tmux');
 
-    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+    expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({
       executionStatus: 'idle',
       foregroundCommand: 'zsh',
+      executionReason: 'shell_prompt',
     });
   });
 
@@ -229,9 +236,10 @@ describe('createTerminalRuntime', () => {
     const { createTerminalRuntime } = await import('../terminal-runtime.js');
     const runtime = createTerminalRuntime('tmux');
 
-    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+    expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({
       executionStatus: 'unknown',
       foregroundCommand: null,
+      executionReason: 'tmux_lookup_failed',
     });
   });
 

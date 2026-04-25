@@ -9,6 +9,18 @@
 import { spawn } from 'node-pty';
 import { execFileSync } from 'child_process';
 import { buildShellEnv } from './shell-env.js';
+import {
+  TERMINAL_EXECUTION_UNKNOWN,
+  classifyTerminalExecution,
+} from './terminal-execution-classifier.js';
+
+export {
+  TERMINAL_EXECUTION_DEAD,
+  TERMINAL_EXECUTION_IDLE,
+  TERMINAL_EXECUTION_RUNNING,
+  TERMINAL_EXECUTION_UNKNOWN,
+  classifyTerminalExecution,
+} from './terminal-execution-classifier.js';
 
 export const TERMINAL_SNAPSHOT_WINDOW_LINES = 10000;
 const TMUX_HISTORY_LIMIT = TERMINAL_SNAPSHOT_WINDOW_LINES;
@@ -17,21 +29,6 @@ export const TERMINAL_RUNTIME_BLOCKED_REASON = 'missing_tmux';
 export const TERMINAL_RUNTIME_BLOCKED_MESSAGE = 'Install tmux to enable durable CodeDeck terminals.';
 export const TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE = 'snapshot_unavailable';
 export const TERMINAL_HISTORY_WARNING_MESSAGE_SNAPSHOT_UNAVAILABLE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
-export const TERMINAL_EXECUTION_RUNNING = 'running';
-export const TERMINAL_EXECUTION_IDLE = 'idle';
-export const TERMINAL_EXECUTION_DEAD = 'dead';
-export const TERMINAL_EXECUTION_UNKNOWN = 'unknown';
-
-const INTERACTIVE_SHELL_COMMANDS = new Set([
-  'bash',
-  'csh',
-  'dash',
-  'fish',
-  'ksh',
-  'sh',
-  'tcsh',
-  'zsh',
-]);
 
 export function getTerminalHistoryWarningMessage(reason = TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE) {
   if (reason === TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE) {
@@ -67,56 +64,6 @@ export function getTerminalRuntimeStatus(runtime) {
  */
 function sanitizeTmuxName(sessionId) {
   return sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-function normalizeCommandName(command) {
-  if (!command || typeof command !== 'string') return '';
-  return command.trim().split('/').pop() || '';
-}
-
-export function classifyTmuxPaneExecutionState({ paneCurrentCommand, paneDead } = {}) {
-  if (String(paneDead) === '1') {
-    return {
-      executionStatus: TERMINAL_EXECUTION_DEAD,
-      foregroundCommand: null,
-    };
-  }
-
-  const foregroundCommand = normalizeCommandName(paneCurrentCommand);
-  if (!foregroundCommand) {
-    return {
-      executionStatus: TERMINAL_EXECUTION_UNKNOWN,
-      foregroundCommand: null,
-    };
-  }
-
-  return {
-    executionStatus: INTERACTIVE_SHELL_COMMANDS.has(foregroundCommand)
-      ? TERMINAL_EXECUTION_IDLE
-      : TERMINAL_EXECUTION_RUNNING,
-    foregroundCommand,
-  };
-}
-
-export function classifyAgentCliSnapshotExecutionState(snapshotText) {
-  if (!snapshotText || typeof snapshotText !== 'string') return null;
-
-  const lines = snapshotText
-    .replace(/\r/g, '')
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean);
-  const tail = lines.slice(-40);
-
-  if (tail.some(line => /^[•✳✱*]\s*Working\b/i.test(line) || /Waiting for background terminal\b/i.test(line))) {
-    return TERMINAL_EXECUTION_RUNNING;
-  }
-
-  if (tail.some(line => line === '❯' || /^❯\s/.test(line) || /^›\s/.test(line))) {
-    return TERMINAL_EXECUTION_IDLE;
-  }
-
-  return null;
 }
 
 /**
@@ -753,14 +700,17 @@ function createTmuxRuntime() {
     },
 
     /**
-     * Report whether the pane is executing a foreground command. This is the
-     * authoritative v1 busy signal; output timestamps are only activity hints.
+     * Report whether the pane is executing work. tmux foreground metadata and
+     * the visible snapshot tail are classified together so shell scripts,
+     * ordinary commands, and persistent agent CLIs share one evidence path.
      */
     getSessionExecutionState(sessionId) {
       if (!this.isAvailable()) {
         return {
           executionStatus: TERMINAL_EXECUTION_UNKNOWN,
           foregroundCommand: null,
+          executionReason: 'tmux_unavailable',
+          executionConfidence: 'low',
         };
       }
 
@@ -773,26 +723,24 @@ function createTmuxRuntime() {
           { stdio: 'pipe', encoding: 'utf8' }
         ).replace(/\r/g, '').replace(/\n$/, '');
         const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
-        const processState = classifyTmuxPaneExecutionState({ paneCurrentCommand, paneDead });
-
-        if (processState.executionStatus !== TERMINAL_EXECUTION_RUNNING) {
-          return processState;
-        }
 
         const snapshotText = execFileSync(
           'tmux',
           ['capture-pane', '-p', '-S', '-40', '-t', tmuxName],
           { stdio: 'pipe', encoding: 'utf8' }
         );
-        const agentCliStatus = classifyAgentCliSnapshotExecutionState(snapshotText);
 
-        return agentCliStatus
-          ? { ...processState, executionStatus: agentCliStatus }
-          : processState;
+        return classifyTerminalExecution({
+          paneCurrentCommand,
+          paneDead,
+          snapshotText,
+        });
       } catch {
         return {
           executionStatus: TERMINAL_EXECUTION_UNKNOWN,
           foregroundCommand: null,
+          executionReason: 'tmux_lookup_failed',
+          executionConfidence: 'low',
         };
       }
     },

@@ -152,12 +152,14 @@ Add execution-state fields plus `lastOutputLine` to each session entry:
     "alive": true,
     "executionStatus": "running",
     "foregroundCommand": "npm",
+    "executionReason": "foreground_command",
+    "executionConfidence": "medium",
     "lastOutputLine": "[INFO] Building module auth-service..."
   }
 ]
 ```
 
-`executionStatus` is authoritative for busy/done UX. Output timestamps remain preview/activity telemetry only. For persistent agent CLIs that keep a foreground process open after a turn completes, the backend may use the visible tmux snapshot to recognize known idle prompt markers instead of treating the long-lived process itself as proof of activity.
+`executionStatus` is authoritative for busy/done UX. `executionReason` and `executionConfidence` explain the ordered evidence used by the classifier, such as `shell_prompt`, `foreground_command`, `agent_prompt_idle`, `agent_working`, or `agent_background_terminal`. Output timestamps remain preview/activity telemetry only. For persistent agent CLIs that keep a foreground process open after a turn completes, the backend uses the visible tmux snapshot to recognize known active and idle markers instead of treating the long-lived process itself as proof of activity.
 
 ### 5.2 Backend Buffering
 
