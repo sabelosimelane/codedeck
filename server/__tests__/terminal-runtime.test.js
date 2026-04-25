@@ -149,6 +149,31 @@ describe('createTerminalRuntime', () => {
     });
   });
 
+  it('reports an idle Codex CLI pane as idle when the input prompt is visible', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'display-message') return 'node\t0\n';
+      if (args[0] === 'capture-pane') return [
+        'Remaining risk: I did not run a live browser/API smoke',
+        '',
+        '',
+        '› Summarize recent commits',
+        '',
+        '  gpt-5.5 medium · ~/git/equinox/backend',
+      ].join('\n');
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+      executionStatus: 'idle',
+      foregroundCommand: 'node',
+    });
+  });
+
   it('reports an interactive shell foreground tmux command as idle', async () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');

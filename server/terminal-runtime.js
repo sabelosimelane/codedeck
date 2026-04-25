@@ -112,7 +112,7 @@ export function classifyAgentCliSnapshotExecutionState(snapshotText) {
     return TERMINAL_EXECUTION_RUNNING;
   }
 
-  if (tail.some(line => line === '❯' || /^❯\s/.test(line))) {
+  if (tail.some(line => line === '❯' || /^❯\s/.test(line) || /^›\s/.test(line))) {
     return TERMINAL_EXECUTION_IDLE;
   }
 
