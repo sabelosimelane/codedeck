@@ -190,7 +190,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
                 <div style={rowHeaderStyle}>
                   <span style={keyStyle}>terminalFinishCooldownSeconds</span>
                   <span style={descStyle}>
-                    Seconds of continuous activity before a session is treated as finished and alerts can fire.
+                    Seconds a foreground command must run before its return to idle can trigger alerts.
                   </span>
                 </div>
                 <div style={valueColumnStyle}>

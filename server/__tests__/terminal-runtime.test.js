@@ -77,6 +77,62 @@ describe('createTerminalRuntime', () => {
     );
   });
 
+  it('reports a non-shell foreground tmux command as running', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'display-message') return 'npm\t0\n';
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+      executionStatus: 'running',
+      foregroundCommand: 'npm',
+    });
+    expect(execFileSync).toHaveBeenCalledWith(
+      'tmux',
+      ['display-message', '-p', '-t', 'demo-1', '#{pane_current_command}\t#{pane_dead}'],
+      { stdio: 'pipe', encoding: 'utf8' }
+    );
+  });
+
+  it('reports an interactive shell foreground tmux command as idle', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'display-message') return 'zsh\t0\n';
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+      executionStatus: 'idle',
+      foregroundCommand: 'zsh',
+    });
+  });
+
+  it('reports unknown execution state when tmux foreground lookup fails', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'display-message') throw new Error('tmux not reachable');
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+      executionStatus: 'unknown',
+      foregroundCommand: null,
+    });
+  });
+
   it('can resize a durable tmux session window before reconnect snapshot capture', async () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');

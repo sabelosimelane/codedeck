@@ -7,6 +7,11 @@ export const DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS = TERMINAL_COMPLETION_N
 export function getTerminalStatus(session, now = Date.now()) {
   if (!session?.alive) return 'dead';
 
+  if (session.executionStatus === 'running') return 'busy';
+  if (session.executionStatus === 'idle') return 'idle';
+  if (session.executionStatus === 'dead') return 'dead';
+  if (session.executionStatus === 'unknown') return 'unknown';
+
   const activityTimestamp = session.lastSubstantialOutputAt || session.lastOutputAt;
   if (!activityTimestamp) return 'idle';
 
@@ -20,6 +25,7 @@ export function getAggregateTerminalStatus(sessions, now = Date.now()) {
   const statuses = sessions.map(session => getTerminalStatus(session, now));
 
   if (statuses.includes('busy')) return 'busy';
+  if (statuses.includes('unknown')) return 'unknown';
   if (statuses.every(status => status === 'dead')) return 'dead';
   if (statuses.some(status => status === 'idle')) return 'idle';
   return 'none';

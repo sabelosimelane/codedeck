@@ -7,7 +7,7 @@
 
 ## 1. Overview
 
-Add per-terminal activity visibility to the sidebar. Every project with active terminals shows an always-expanded list of individual terminal sessions — each with a live activity indicator, time context, and a subtle preview of the terminal's last output line. When a long-running terminal finishes (busy → idle after 30+ seconds of activity), a browser notification fires so the user sees it even if CodeDeck is in the background. Projects can be muted to suppress notifications.
+Add per-terminal activity visibility to the sidebar. Every project with active terminals shows an always-expanded list of individual terminal sessions — each with a live execution indicator, time context, and a subtle preview of the terminal's last output line. When a long-running foreground command finishes (busy → idle after the configured cooldown), a browser notification fires so the user sees it even if CodeDeck is in the background. Projects can be muted to suppress notifications.
 
 **Key UX goal:** See at a glance which terminals are busy across all projects without switching tabs or clicking anything. The terminal list is purely informational — no click-to-navigate.
 
@@ -50,8 +50,9 @@ Each terminal row consists of two lines, indented further than the summary:
 
 | Status | Dot Color | Animation | Condition |
 |--------|-----------|-----------|-----------|
-| Busy | `var(--accent)` (green) | Pulsing glow — CSS keyframe animation that scales opacity 0.4→1.0 and adds a subtle `box-shadow` glow, 1.5s cycle | `lastOutputAt` within last 5 seconds |
-| Idle | `var(--text-muted)` (gray) | None — static dot | Alive but no output for >5 seconds |
+| Busy | `var(--accent)` (green) | Pulsing glow — CSS keyframe animation that scales opacity 0.4→1.0 and adds a subtle `box-shadow` glow, 1.5s cycle | `executionStatus: "running"` |
+| Idle | `var(--text-muted)` (gray) | None — static dot | `executionStatus: "idle"` |
+| Unknown | `var(--text-muted)` (gray) | None — static dot | tmux foreground state cannot be determined |
 | Dead | `var(--danger)` (red) | None — static dot | `alive: false` (process exited) |
 
 **Busy pulse animation:**
@@ -84,8 +85,8 @@ Updated on each poll cycle.
 ### 3.1 Trigger Logic
 
 A notification fires when ALL of these are true:
-1. The terminal was in "busy" state (output flowing) for at least 30 consecutive seconds
-2. The terminal transitions to "idle" (no output for >5 seconds) or "dead" (process exited)
+1. The terminal was in "busy" state (`executionStatus: "running"`) for at least the configured cooldown
+2. The terminal transitions to "idle" (foreground shell prompt returned) or "dead" (process exited)
 3. The project is not muted
 4. The browser tab is not focused (optional — notify even when focused if user prefers, but standard practice is background-only)
 5. Notification permission has been granted
@@ -105,7 +106,7 @@ On first terminal activity detection (when the polling first sees a busy termina
 ### 3.4 Busy Duration Tracking
 
 The frontend tracks per-session busy duration:
-- When a session first appears as "busy" (output within 5s), record `busyStartedAt = Date.now()`
+- When a session first appears as "busy" (`executionStatus: "running"`), record `busyStartedAt = Date.now()`
 - On each poll, if still busy, keep the timestamp
 - When it transitions to idle/dead: if `Date.now() - busyStartedAt >= 30000`, fire notification
 - Reset `busyStartedAt` when the session becomes busy again after being idle
@@ -139,7 +140,7 @@ Muting only suppresses browser notifications. All visual indicators (activity do
 
 ### 5.1 Extend `GET /api/sessions` Response
 
-Add `lastOutputLine` field to each session entry:
+Add execution-state fields plus `lastOutputLine` to each session entry:
 
 ```json
 [
@@ -149,10 +150,14 @@ Add `lastOutputLine` field to each session entry:
     "startedAt": "2026-04-10T09:30:00.000Z",
     "lastOutputAt": "2026-04-10T09:44:12.000Z",
     "alive": true,
+    "executionStatus": "running",
+    "foregroundCommand": "npm",
     "lastOutputLine": "[INFO] Building module auth-service..."
   }
 ]
 ```
+
+`executionStatus` is authoritative for busy/done UX. Output timestamps remain preview/activity telemetry only.
 
 ### 5.2 Backend Buffering
 
@@ -201,7 +206,7 @@ App.jsx polls GET /api/sessions every 2s
 - `busyTracker` ref — `Map<sessionId, { busyStartedAt: number }>` for notification timing
 
 **New helpers:**
-- `getTerminalStatus(session)` — returns `'busy' | 'idle' | 'dead'` based on `lastOutputAt` and `alive`
+- `getTerminalStatus(session)` — returns `'busy' | 'idle' | 'dead' | 'unknown'` based on `executionStatus` and `alive`
 - `formatTimeSince(isoString)` — returns "just now", "Ns ago", "Nm ago", "Nh ago"
 - `checkAndNotify(projectName, session, prevStatus, newStatus)` — fires browser notification if conditions met
 

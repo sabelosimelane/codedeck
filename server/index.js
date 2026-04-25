@@ -15,7 +15,13 @@ import {
   SESSION_DELETED_CLOSE_CODE,
   SESSION_DELETED_CLOSE_REASON,
 } from './ws-handler.js';
-import { createTerminalRuntime, getTerminalRuntimeStatus, TERMINAL_SNAPSHOT_WINDOW_LINES } from './terminal-runtime.js';
+import {
+  createTerminalRuntime,
+  getTerminalRuntimeStatus,
+  TERMINAL_EXECUTION_DEAD,
+  TERMINAL_EXECUTION_UNKNOWN,
+  TERMINAL_SNAPSHOT_WINDOW_LINES,
+} from './terminal-runtime.js';
 import { allocateTerminalSessionId } from './terminal-session-service.js';
 import { listTerminalSessions } from './terminal-session-status-service.js';
 import { pruneTerminalSessions } from './session-gc.js';
@@ -350,6 +356,9 @@ app.get('/api/debug/terminal-health', (req, res) => {
   const sessionList = [];
   for (const [sessionId, entry] of sessions) {
     entry.cwd = terminalRuntime.getSessionCwd?.(entry, sessionId) || entry.cwd;
+    const executionState = entry.alive
+      ? terminalRuntime.getSessionExecutionState?.(sessionId) ?? { executionStatus: TERMINAL_EXECUTION_UNKNOWN, foregroundCommand: null }
+      : { executionStatus: TERMINAL_EXECUTION_DEAD, foregroundCommand: null };
 
     sessionList.push({
       sessionId,
@@ -366,6 +375,7 @@ app.get('/api/debug/terminal-health', (req, res) => {
       startedAt: entry.startedAt,
       lastOutputAt: entry.lastOutputAt,
       lastOutputLine: sanitizePreviewLine(entry.lastOutputLine || ''),
+      ...executionState,
       lastAttachAt: entry.lastAttachAt ?? null,
       lastDetachAt: entry.lastDetachAt ?? null,
       lastClientAckAt: entry.lastClientAckAt ?? null,

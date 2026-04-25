@@ -25,6 +25,11 @@ describe('listTerminalSessions', () => {
     const runtime = {
       type: 'tmux',
       getSessionCwd: vi.fn((entry, sessionId) => entry?.cwd || `/cwd/${sessionId}`),
+      getSessionExecutionState: vi.fn((sessionId) => (
+        sessionId === 'Cadence-1'
+          ? { executionStatus: 'running', foregroundCommand: 'npm' }
+          : { executionStatus: 'idle', foregroundCommand: 'zsh' }
+      )),
       listSessionIds: vi.fn(() => ['Cadence-1', 'marketing-4', 'orphan-1']),
     };
 
@@ -50,6 +55,8 @@ describe('listTerminalSessions', () => {
         terminalRuntimeContract: 'tmux_required',
         tmuxAvailable: true,
         terminalCreationAllowed: true,
+        executionStatus: 'running',
+        foregroundCommand: 'npm',
         snapshotWindowLines: 10000,
         historyGuaranteed: false,
         historyWarningReason: 'snapshot_unavailable',
@@ -65,6 +72,8 @@ describe('listTerminalSessions', () => {
         terminalRuntime: 'tmux',
         tmuxAvailable: true,
         terminalCreationAllowed: true,
+        executionStatus: 'idle',
+        foregroundCommand: 'zsh',
         snapshotWindowLines: 10000,
         historyGuaranteed: true,
         historyWarningReason: null,

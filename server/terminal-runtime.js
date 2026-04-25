@@ -17,6 +17,21 @@ export const TERMINAL_RUNTIME_BLOCKED_REASON = 'missing_tmux';
 export const TERMINAL_RUNTIME_BLOCKED_MESSAGE = 'Install tmux to enable durable CodeDeck terminals.';
 export const TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE = 'snapshot_unavailable';
 export const TERMINAL_HISTORY_WARNING_MESSAGE_SNAPSHOT_UNAVAILABLE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
+export const TERMINAL_EXECUTION_RUNNING = 'running';
+export const TERMINAL_EXECUTION_IDLE = 'idle';
+export const TERMINAL_EXECUTION_DEAD = 'dead';
+export const TERMINAL_EXECUTION_UNKNOWN = 'unknown';
+
+const INTERACTIVE_SHELL_COMMANDS = new Set([
+  'bash',
+  'csh',
+  'dash',
+  'fish',
+  'ksh',
+  'sh',
+  'tcsh',
+  'zsh',
+]);
 
 export function getTerminalHistoryWarningMessage(reason = TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE) {
   if (reason === TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE) {
@@ -52,6 +67,35 @@ export function getTerminalRuntimeStatus(runtime) {
  */
 function sanitizeTmuxName(sessionId) {
   return sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function normalizeCommandName(command) {
+  if (!command || typeof command !== 'string') return '';
+  return command.trim().split('/').pop() || '';
+}
+
+export function classifyTmuxPaneExecutionState({ paneCurrentCommand, paneDead } = {}) {
+  if (String(paneDead) === '1') {
+    return {
+      executionStatus: TERMINAL_EXECUTION_DEAD,
+      foregroundCommand: null,
+    };
+  }
+
+  const foregroundCommand = normalizeCommandName(paneCurrentCommand);
+  if (!foregroundCommand) {
+    return {
+      executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+      foregroundCommand: null,
+    };
+  }
+
+  return {
+    executionStatus: INTERACTIVE_SHELL_COMMANDS.has(foregroundCommand)
+      ? TERMINAL_EXECUTION_IDLE
+      : TERMINAL_EXECUTION_RUNNING,
+    foregroundCommand,
+  };
 }
 
 /**
@@ -684,6 +728,37 @@ function createTmuxRuntime() {
         return cwd || entry.cwd;
       } catch {
         return entry.cwd;
+      }
+    },
+
+    /**
+     * Report whether the pane is executing a foreground command. This is the
+     * authoritative v1 busy signal; output timestamps are only activity hints.
+     */
+    getSessionExecutionState(sessionId) {
+      if (!this.isAvailable()) {
+        return {
+          executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+          foregroundCommand: null,
+        };
+      }
+
+      const tmuxName = sanitizeTmuxName(sessionId);
+
+      try {
+        const raw = execFileSync(
+          'tmux',
+          ['display-message', '-p', '-t', tmuxName, '#{pane_current_command}\t#{pane_dead}'],
+          { stdio: 'pipe', encoding: 'utf8' }
+        ).replace(/\r/g, '').replace(/\n$/, '');
+        const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
+
+        return classifyTmuxPaneExecutionState({ paneCurrentCommand, paneDead });
+      } catch {
+        return {
+          executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+          foregroundCommand: null,
+        };
       }
     },
 

@@ -224,6 +224,12 @@ const TAB_STATUS_STYLES = {
     borderColor: 'rgba(154, 165, 184, 0.22)',
     textColor: 'var(--text-secondary)',
   },
+  unknown: {
+    dotColor: 'var(--text-muted)',
+    dotShadow: 'none',
+    borderColor: 'rgba(154, 165, 184, 0.18)',
+    textColor: 'var(--text-muted)',
+  },
   dead: {
     dotColor: 'var(--danger)',
     dotShadow: '0 0 10px rgba(248, 113, 113, 0.22)',

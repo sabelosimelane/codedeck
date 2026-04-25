@@ -47,6 +47,7 @@ function getProjectStatus(sessions) {
 const STATUS_COLORS = {
   active: 'var(--accent)',
   idle: 'var(--text-muted)',
+  unknown: 'var(--text-muted)',
   dead: 'var(--danger)',
 };
 

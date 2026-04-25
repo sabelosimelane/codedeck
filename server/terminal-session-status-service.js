@@ -1,4 +1,9 @@
-import { getTerminalRuntimeStatus, TERMINAL_SNAPSHOT_WINDOW_LINES } from './terminal-runtime.js';
+import {
+  getTerminalRuntimeStatus,
+  TERMINAL_EXECUTION_DEAD,
+  TERMINAL_EXECUTION_UNKNOWN,
+  TERMINAL_SNAPSHOT_WINDOW_LINES,
+} from './terminal-runtime.js';
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -28,6 +33,15 @@ export function listTerminalSessions({
 
   for (const [sessionId, entry] of sessions) {
     const cwd = runtime.getSessionCwd?.(entry, sessionId) || entry.cwd;
+    const executionState = entry.alive
+      ? runtime.getSessionExecutionState?.(sessionId) ?? {
+        executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+        foregroundCommand: null,
+      }
+      : {
+        executionStatus: TERMINAL_EXECUTION_DEAD,
+        foregroundCommand: null,
+      };
     seenSessionIds.add(sessionId);
 
     result.push({
@@ -38,6 +52,7 @@ export function listTerminalSessions({
       lastSubstantialOutputAt: entry.lastSubstantialOutputAt ?? entry.lastOutputAt,
       lastOutputLine: sanitizePreviewLine(entry.lastOutputLine || ''),
       alive: entry.alive,
+      ...executionState,
       runtimeType: entry.runtimeType ?? runtime.type ?? 'pty',
       snapshotWindowLines: entry.snapshotWindowLines ?? (entry.runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null),
       historyGuaranteed: entry.historyGuaranteed ?? (entry.runtimeType === 'tmux'),
@@ -69,6 +84,10 @@ export function listTerminalSessions({
       lastClientAckAt: null,
       lastSeq: 0,
     };
+    const executionState = runtime.getSessionExecutionState?.(sessionId) ?? {
+      executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+      foregroundCommand: null,
+    };
 
     result.push({
       sessionId,
@@ -78,6 +97,7 @@ export function listTerminalSessions({
       lastSubstantialOutputAt: null,
       lastOutputLine: '',
       alive: true,
+      ...executionState,
       runtimeType: runtime.type ?? 'pty',
       snapshotWindowLines: runtime.type === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
       historyGuaranteed: runtime.type === 'tmux',

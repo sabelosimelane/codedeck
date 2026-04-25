@@ -23,6 +23,36 @@ describe('terminalActivity', () => {
     expect(getTerminalStatus(session, now)).toBe('busy');
   });
 
+  it('keeps a foreground-running terminal busy even when output is stale', () => {
+    const session = {
+      alive: true,
+      executionStatus: 'running',
+      lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 10_000).toISOString(),
+    };
+
+    expect(getTerminalStatus(session, now)).toBe('busy');
+  });
+
+  it('keeps a prompt-idle terminal idle even when output was recent', () => {
+    const session = {
+      alive: true,
+      executionStatus: 'idle',
+      lastOutputAt: new Date(now - 1000).toISOString(),
+    };
+
+    expect(getTerminalStatus(session, now)).toBe('idle');
+  });
+
+  it('does not pretend unknown execution state is idle', () => {
+    const session = {
+      alive: true,
+      executionStatus: 'unknown',
+      lastOutputAt: new Date(now - 1000).toISOString(),
+    };
+
+    expect(getTerminalStatus(session, now)).toBe('unknown');
+  });
+
   it('marks stale live output as idle', () => {
     const session = {
       alive: true,
@@ -51,6 +81,13 @@ describe('terminalActivity', () => {
     expect(getAggregateTerminalStatus([{ alive: false }, { alive: false }], now)).toBe('dead');
   });
 
+  it('aggregates unknown execution state distinctly from idle', () => {
+    expect(getAggregateTerminalStatus([
+      { alive: true, executionStatus: 'idle' },
+      { alive: true, executionStatus: 'unknown' },
+    ], now)).toBe('unknown');
+  });
+
   it('derives tab status from its pane session ids', () => {
     const tab = {
       panes: [
@@ -71,6 +108,7 @@ describe('terminalActivity', () => {
       sessionId: 'BookMe-1',
       cwd: '/tmp/bookme',
       alive: true,
+      executionStatus: 'idle',
       lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
       lastOutputLine: 'Tests passed',
     };
@@ -88,11 +126,53 @@ describe('terminalActivity', () => {
     });
   });
 
+  it('skips completion notification while a stale-output terminal is still running', () => {
+    const session = {
+      sessionId: 'BookMe-1',
+      cwd: '/tmp/bookme',
+      alive: true,
+      executionStatus: 'running',
+      lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
+      lastOutputLine: 'Running tests',
+    };
+
+    expect(getTerminalCompletionNotification(session, {
+      activeProjects: [{ name: 'BookMe', path: '/tmp/bookme' }],
+      mutedProjects: [],
+      prevStatus: 'busy',
+      busyStartedAt: now - TERMINAL_COMPLETION_NOTIFICATION_MS - 1,
+      now,
+    })).toBe(null);
+  });
+
+  it('returns completion notification payload when a running terminal dies', () => {
+    const session = {
+      sessionId: 'BookMe-1',
+      cwd: '/tmp/bookme',
+      alive: false,
+      executionStatus: 'dead',
+      lastOutputLine: 'Process exited',
+    };
+
+    expect(getTerminalCompletionNotification(session, {
+      activeProjects: [{ name: 'BookMe', path: '/tmp/bookme' }],
+      mutedProjects: [],
+      prevStatus: 'busy',
+      busyStartedAt: now - TERMINAL_COMPLETION_NOTIFICATION_MS - 1,
+      now,
+    })).toEqual({
+      title: 'CodeDeck — BookMe-1 finished',
+      body: 'Process exited',
+      projectName: 'BookMe',
+    });
+  });
+
   it('skips completion notification for muted projects', () => {
     const session = {
       sessionId: 'BookMe-1',
       cwd: '/tmp/bookme',
       alive: true,
+      executionStatus: 'idle',
       lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
     };
 
@@ -110,6 +190,7 @@ describe('terminalActivity', () => {
       sessionId: 'BookMe-1',
       cwd: '/tmp/bookme',
       alive: false,
+      executionStatus: 'dead',
       lastOutputAt: new Date(now - 1000).toISOString(),
     };
 
@@ -127,6 +208,7 @@ describe('terminalActivity', () => {
       sessionId: 'BookMe-1',
       cwd: '/tmp/bookme',
       alive: true,
+      executionStatus: 'idle',
       lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
     };
 
