@@ -157,7 +157,7 @@ Add execution-state fields plus `lastOutputLine` to each session entry:
 ]
 ```
 
-`executionStatus` is authoritative for busy/done UX. Output timestamps remain preview/activity telemetry only.
+`executionStatus` is authoritative for busy/done UX. Output timestamps remain preview/activity telemetry only. For persistent agent CLIs that keep a foreground process open after a turn completes, the backend may use the visible tmux snapshot to recognize known idle prompt markers instead of treating the long-lived process itself as proof of activity.
 
 ### 5.2 Backend Buffering
 

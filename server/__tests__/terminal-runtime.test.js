@@ -82,6 +82,7 @@ describe('createTerminalRuntime', () => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
       if (args[0] === 'display-message') return 'npm\t0\n';
+      if (args[0] === 'capture-pane') return 'running tests without output\n';
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
 
@@ -97,6 +98,55 @@ describe('createTerminalRuntime', () => {
       ['display-message', '-p', '-t', 'demo-1', '#{pane_current_command}\t#{pane_dead}'],
       { stdio: 'pipe', encoding: 'utf8' }
     );
+  });
+
+  it('keeps a working agent CLI pane running even when its prompt line is visible', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'display-message') return 'node\t0\n';
+      if (args[0] === 'capture-pane') return [
+        '• Working (34s • esc to interrupt)',
+        '',
+        '› Summarize recent commits',
+        '',
+        '  gpt-5.5 medium · ~/git/mace/backend',
+      ].join('\n');
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+      executionStatus: 'running',
+      foregroundCommand: 'node',
+    });
+  });
+
+  it('reports a completed agent CLI pane as idle when the prompt is visible', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'display-message') return '2.1.114\t0\n';
+      if (args[0] === 'capture-pane') return [
+        'Want me to also verify there are not other blocks?',
+        '',
+        '───────────────────────────────────────────────────────────',
+        '❯',
+        '───────────────────────────────────────────────────────────',
+        '  sabside ~/git/equinox/backend Opus 4.7',
+      ].join('\n');
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+      executionStatus: 'idle',
+      foregroundCommand: '2.1.114',
+    });
   });
 
   it('reports an interactive shell foreground tmux command as idle', async () => {

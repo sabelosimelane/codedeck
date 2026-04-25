@@ -98,6 +98,27 @@ export function classifyTmuxPaneExecutionState({ paneCurrentCommand, paneDead } 
   };
 }
 
+export function classifyAgentCliSnapshotExecutionState(snapshotText) {
+  if (!snapshotText || typeof snapshotText !== 'string') return null;
+
+  const lines = snapshotText
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+  const tail = lines.slice(-40);
+
+  if (tail.some(line => /^[•✳✱*]\s*Working\b/i.test(line))) {
+    return TERMINAL_EXECUTION_RUNNING;
+  }
+
+  if (tail.some(line => line === '❯' || /^❯\s/.test(line))) {
+    return TERMINAL_EXECUTION_IDLE;
+  }
+
+  return null;
+}
+
 /**
  * Check whether a tmux session with the given name exists.
  */
@@ -752,8 +773,22 @@ function createTmuxRuntime() {
           { stdio: 'pipe', encoding: 'utf8' }
         ).replace(/\r/g, '').replace(/\n$/, '');
         const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
+        const processState = classifyTmuxPaneExecutionState({ paneCurrentCommand, paneDead });
 
-        return classifyTmuxPaneExecutionState({ paneCurrentCommand, paneDead });
+        if (processState.executionStatus !== TERMINAL_EXECUTION_RUNNING) {
+          return processState;
+        }
+
+        const snapshotText = execFileSync(
+          'tmux',
+          ['capture-pane', '-p', '-S', '-40', '-t', tmuxName],
+          { stdio: 'pipe', encoding: 'utf8' }
+        );
+        const agentCliStatus = classifyAgentCliSnapshotExecutionState(snapshotText);
+
+        return agentCliStatus
+          ? { ...processState, executionStatus: agentCliStatus }
+          : processState;
       } catch {
         return {
           executionStatus: TERMINAL_EXECUTION_UNKNOWN,
