@@ -127,6 +127,50 @@ describe('TerminalArea restore fallback', () => {
     });
   });
 
+  it('renders pane header status from backend execution state', async () => {
+    const liveSessions = [
+      {
+        sessionId: 'BookMe-9',
+        cwd: '/tmp/bookme',
+        alive: true,
+        wsAttached: true,
+        executionStatus: 'running',
+        executionReason: 'shell_without_prompt',
+        foregroundCommand: 'bash',
+      },
+    ];
+
+    global.fetch = vi.fn(async (url) => {
+      if (url === '/api/health') {
+        return {
+          ok: true,
+          json: async () => ({ terminalCreationAllowed: true }),
+        };
+      }
+
+      if (url === '/api/sessions') {
+        return {
+          ok: true,
+          json: async () => liveSessions,
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const view = render(
+      <TerminalArea project={PROJECT} sessionStatus={liveSessions} onSessionStatusRefresh={onSessionStatusRefresh} />
+    );
+
+    await waitFor(() => {
+      expect(view.getAllByText('BookMe-9').length).toBeGreaterThan(0);
+    });
+
+    const statusDot = view.getByTitle('BookMe-9: running (shell_without_prompt)');
+    expect(statusDot.className).toContain('terminal-dot-busy');
+    expect(view.getByText('Running')).toBeTruthy();
+  });
+
   it('creates new terminals with a backend-issued session id', async () => {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify({
       tabs: [],

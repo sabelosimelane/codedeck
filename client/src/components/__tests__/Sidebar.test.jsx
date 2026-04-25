@@ -57,7 +57,7 @@ vi.mock('../../utils/browserNotifications', () => ({
 
 import Sidebar from '../Sidebar';
 
-function renderSidebar() {
+function renderSidebar(overrides = {}) {
   return render(
     <Sidebar
       activeProjects={[]}
@@ -76,11 +76,12 @@ function renderSidebar() {
       sessionStatus={[]}
       onBrowseFiles={vi.fn()}
       onShowShortcuts={vi.fn()}
+      {...overrides}
     />
   );
 }
 
-describe('Sidebar settings bootstrap', () => {
+describe('Sidebar', () => {
   let originalFetch;
 
   beforeEach(() => {
@@ -107,5 +108,31 @@ describe('Sidebar settings bootstrap', () => {
     });
 
     expect(global.fetch).not.toHaveBeenCalledWith('/api/config/terminalFinishCooldownSeconds');
+  });
+
+  it('marks a stale-output terminal busy when executionStatus is running', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ terminalFinishCooldownSeconds: 45 }),
+    });
+
+    const view = renderSidebar({
+      activeProjects: [{ name: 'Equinox', path: '/Users/sabside/git/equinox/backend' }],
+      sessionStatus: [{
+        sessionId: 'Equinox-3',
+        cwd: '/Users/sabside/git/equinox/backend',
+        alive: true,
+        executionStatus: 'running',
+        lastOutputAt: '2026-04-25T13:00:00.000Z',
+        lastOutputLine: 'Waiting for deployment rollout to finish...',
+      }],
+    });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith('/api/config');
+    });
+
+    const dot = view.getByTitle('Terminal Equinox-3: busy');
+    expect(dot.className).toContain('terminal-dot-busy');
   });
 });

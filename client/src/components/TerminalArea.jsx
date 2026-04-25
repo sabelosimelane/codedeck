@@ -9,7 +9,7 @@ import {
   shouldRenderProjectTerminals,
 } from '../utils/terminalLayout';
 import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
-import { getTabTerminalStatus } from '../utils/terminalActivity';
+import { getTabTerminalStatus, getTerminalStatus } from '../utils/terminalActivity';
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
 
@@ -237,6 +237,33 @@ const TAB_STATUS_STYLES = {
     textColor: 'var(--text-primary)',
   },
 };
+
+const PANE_STATUS_LABELS = {
+  none: 'Live terminal attached',
+  busy: 'Running',
+  idle: 'Idle',
+  unknown: 'Unknown',
+  dead: 'Disconnected',
+};
+
+const PANE_STATUS_TITLES = {
+  none: 'status unavailable',
+  busy: 'running',
+  idle: 'idle',
+  unknown: 'unknown',
+  dead: 'disconnected',
+};
+
+function getPaneTerminalStatus(session) {
+  return session ? getTerminalStatus(session) : 'unknown';
+}
+
+function getPaneStatusTitle(sessionId, status, session) {
+  const baseTitle = `${sessionId}: ${PANE_STATUS_TITLES[status] || status}`;
+  return session?.executionReason
+    ? `${baseTitle} (${session.executionReason})`
+    : baseTitle;
+}
 
 export default function TerminalArea({ project, sessionStatus = [], onSessionStatusRefresh = () => {} }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
@@ -982,6 +1009,11 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                 projectPath: project.path,
                 sessionLookup,
               });
+              const paneSession = sessionLookup.get(pane.sessionId);
+              const paneStatus = getPaneTerminalStatus(paneSession);
+              const paneStatusStyle = TAB_STATUS_STYLES[paneStatus] || TAB_STATUS_STYLES.unknown;
+              const paneStatusLabel = PANE_STATUS_LABELS[paneStatus] || PANE_STATUS_LABELS.unknown;
+              const paneStatusTitle = getPaneStatusTitle(pane.sessionId, paneStatus, paneSession);
               const isPending = pendingSessionIds.includes(pane.sessionId);
 
               return (
@@ -1036,12 +1068,15 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <span
+                            className={paneStatus === 'busy' ? 'terminal-dot-busy' : undefined}
+                            title={paneStatusTitle}
                             style={{
                               width: 8,
                               height: 8,
                               borderRadius: '50%',
-                              background: 'var(--accent)',
-                              boxShadow: '0 0 14px rgba(110, 231, 183, 0.55)',
+                              background: paneStatusStyle.dotColor,
+                              boxShadow: paneStatusStyle.dotShadow,
+                              flexShrink: 0,
                             }}
                           />
                           <span
@@ -1066,7 +1101,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                             color: 'var(--text-muted)',
                           }}
                         >
-                          Live terminal attached
+                          {paneStatusLabel}
                         </span>
                         <span
                           title={paneCwd}
