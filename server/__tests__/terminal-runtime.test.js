@@ -124,6 +124,33 @@ describe('createTerminalRuntime', () => {
     });
   });
 
+  it('keeps a Codex CLI pane running while it waits on a background terminal', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'display-message') return 'node\t0\n';
+      if (args[0] === 'capture-pane') return [
+        '• Full verification is still running. The earlier targeted suites passed.',
+        '',
+        '• Waiting for background terminal (15m 02s • esc to interrupt) · 1 background terminal running',
+        '  └ ./mvnw verify',
+        '',
+        '› Summarize recent commits',
+        '',
+        '  gpt-5.5 medium · ~/git/mace/backend',
+      ].join('\n');
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(runtime.getSessionExecutionState('demo-1')).toEqual({
+      executionStatus: 'running',
+      foregroundCommand: 'node',
+    });
+  });
+
   it('reports a completed agent CLI pane as idle when the prompt is visible', async () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');

@@ -108,7 +108,7 @@ export function classifyAgentCliSnapshotExecutionState(snapshotText) {
     .filter(Boolean);
   const tail = lines.slice(-40);
 
-  if (tail.some(line => /^[•✳✱*]\s*Working\b/i.test(line))) {
+  if (tail.some(line => /^[•✳✱*]\s*Working\b/i.test(line) || /Waiting for background terminal\b/i.test(line))) {
     return TERMINAL_EXECUTION_RUNNING;
   }
 
