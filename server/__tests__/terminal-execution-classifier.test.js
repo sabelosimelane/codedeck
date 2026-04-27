@@ -314,4 +314,52 @@ describe('terminal execution classifier', () => {
       executionConfidence: 'high',
     });
   });
+
+  it('does not let Codex transcript-truncation markers like "… +48 lines (ctrl + t to view transcript)" pin an idle pane to running', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'node',
+      paneDead: '0',
+      snapshotText: [
+        '• Ran git diff --stat && git diff --name-only --diff-filter=U',
+        '  └  .workflow/whatsapp-bookme-parity-alignment.md      |   7 +',
+        '     CLAUDE.md                                          |   2 +',
+        '    … +48 lines (ctrl + t to view transcript)',
+        '     src/manifest.webmanifest                           |   6 +-',
+        '',
+        '• Done. The frontend working tree is now committed on local main.',
+        '',
+        '› Explain this codebase',
+        '',
+        '  gpt-5.5 medium · ~/git/equinox/backend',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: 'node',
+      executionReason: 'agent_prompt_idle',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('does not let Codex pipe-continuation truncation markers like "│ … +16 lines" pin an idle pane to running', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'node',
+      paneDead: '0',
+      snapshotText: [
+        '• Ran git commit -m "Land passwordless login and staff TOTP locally" -m "This brings the',
+        '  │ frontend auth surface onto the passwordless OTP flow and adds the staff TOTP login/',
+        '  │ profile management experience on local main. The tenant portal now redirects through',
+        '  │ … +16 lines',
+        '  └ [main 6101665] Land passwordless login and staff TOTP locally',
+        '',
+        '› Explain this codebase',
+        '',
+        '  gpt-5.5 medium · ~/git/equinox/backend',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: 'node',
+      executionReason: 'agent_prompt_idle',
+      executionConfidence: 'high',
+    });
+  });
 });

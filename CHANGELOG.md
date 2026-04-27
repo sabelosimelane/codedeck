@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-04-27] - Stop Codex transcript-truncation markers from misclassifying idle panes as busy
+
+### Executive Summary
+* Follow-up fix to the streaming-busy classifier. After the previous loosening, Codex's transcript-truncation markers — lines like `… +48 lines (ctrl + t to view transcript)` and the pipe-continuation variant `│ … +16 lines` — were tripping the spinner-shape rule and pinning idle Codex panes to busy. The classifier now requires the typographic ellipsis to follow a word character (matching real spinners like `Smooshing…` / `Tests…` where `…` sits next to letters) and excludes a leading `…` glyph (which only appears in transcript markers, never in spinners).
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Codex prints transcript-truncation lines such as `    … +48 lines (ctrl + t to view transcript)` and `  │ … +16 lines` while it sits at its idle `›` prompt. After `normalizeSnapshotLines` trims leading whitespace, the first variant begins with `…` and the second begins with `│ ` followed by `…`. Both passed the loose shape check `/^[^\w\s⏺❯›]\s/u` plus `line.includes('…')`, so the classifier returned `running/agent_streaming` for an idle Codex pane.
+  * **Solution:** Added `…` to the leading-character exclusion class (`/^[^\w\s⏺❯›…]\s/u`) so a line that starts with the ellipsis itself is rejected, and tightened the ellipsis presence check from `line.includes('…')` to `/\w…/.test(line)` so the ellipsis must come right after a word character — which is the actual structural difference between a spinner (`Verb…`) and a truncation marker (`<glyph?> … +N lines`).
+* **🛠️ Codebase:**
+  * `server/terminal-execution-classifier.js` — Two surgical changes inside `hasAgentInterruptIndicator`: extended the leading-glyph exclusion to drop `…`, and replaced `line.includes('…')` with `/\w…/.test(line)`.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-execution-classifier.test.js` — Added two regression tests captured from the live `Equinox-13` Codex session: a tail containing `… +48 lines (ctrl + t to view transcript)` plus the `›` prompt must classify idle, and a tail containing the pipe-continuation `│ … +16 lines` plus the `›` prompt must also classify idle.
+
 ## [2026-04-27] - Match Claude Code spinners with multi-token text before the ellipsis
 
 ### Executive Summary

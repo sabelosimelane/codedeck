@@ -64,8 +64,8 @@ function hasAgentIdlePrompt(line) {
 
 function hasAgentInterruptIndicator(line) {
   if (/\besc to interrupt\b/i.test(line)) return true;
-  if (!/^[^\w\s⏺❯›]\s/u.test(line)) return false;
-  return line.includes('…');
+  if (!/^[^\w\s⏺❯›…]\s/u.test(line)) return false;
+  return /\w…/.test(line);
 }
 
 function classifySnapshotTail(snapshotText) {
