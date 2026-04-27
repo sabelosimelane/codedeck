@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-04-27] - Match Claude Code spinners with multi-token text before the ellipsis
+
+### Executive Summary
+* Follow-up fix to the streaming-busy classifier. The first cut required the typographic ellipsis to come immediately after a single capitalised verb, which missed Claude Code spinners that include phase or task labels — for example `✽ Phase 3.10: Tests… (7m 54s · ↓ 17.3k tokens · thought for 3s)` from a long-running agent. The classifier now keys on the spinner's structural shape (a non-word, non-prompt, non-summary glyph plus space, and a `…` somewhere on the line) so any current Claude Code spinner verb wording is recognised as busy. Tool-call summaries (`⏺ … (ctrl+o to expand)`) and chevron lines that happen to contain a typed-in `…` are explicitly excluded so finished panes still return to idle.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** `hasAgentInterruptIndicator`'s pattern `/^\S\s+[A-Z]\w+…/u` required `…` to come directly after the first capitalised word. Real spinners frequently insert phase or step labels between the verb and the ellipsis (e.g. `✽ Phase 3.10: Tests…`), so the regex missed them and the pane fell through to the idle-prompt rule and was reported idle while actively streaming.
+  * **Solution:** Switched to a shape-based check: `/^[^\w\s⏺❯›]\s/u` plus `line.includes('…')`. This accepts any glyph-led spinner, regardless of how many tokens come between the glyph and the ellipsis, while excluding tool-call summary glyphs (`⏺`), input chevrons (`❯`/`›`), and prose lines that happen to start with a letter or digit.
+* **🛠️ Codebase:**
+  * `server/terminal-execution-classifier.js` — Replaced the verb-immediately-before-ellipsis regex with a shape-based glyph + `…` check, keeping the `esc to interrupt` short-circuit and the explicit exclusions for tool-call summaries and idle chevrons.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-execution-classifier.test.js` — Added a regression test reproducing the live `✽ Phase 3.10: Tests…` spinner from `dev-orchestrator-3` (must classify `running/agent_streaming`) and a regression test asserting that a chevron line carrying typed-in `…` text stays `idle/agent_prompt_idle`.
+
 ## [2026-04-27] - Recognize streaming Claude Code panes as busy
 
 ### Executive Summary

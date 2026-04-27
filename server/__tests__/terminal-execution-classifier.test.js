@@ -269,4 +269,49 @@ describe('terminal execution classifier', () => {
       executionConfidence: 'high',
     });
   });
+
+  it('matches Claude Code spinners that put multi-token text between the verb and the ellipsis', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.114',
+      paneDead: '0',
+      snapshotText: [
+        '⏺ Write(server/tests/services/devPromptService.test.js)',
+        '  ⎿  Wrote 117 lines to server/tests/services/devPromptService.test.js',
+        '',
+        '✽ Phase 3.10: Tests… (7m 54s · ↓ 17.3k tokens · thought for 3s)',
+        '  ⎿  ✔ Phase 3.1: Add executionMode + pendingStepReview persistence',
+        '     ◼ Phase 3.10: Tests',
+        '',
+        '──────────────────────────────────────────────────────────',
+        '❯',
+        '──────────────────────────────────────────────────────────',
+        '  sabside ~/git/dev-orchestrator Opus 4.7 (1M context) | ctx: 15% used',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: '2.1.114',
+      executionReason: 'agent_streaming',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('treats a chevron line carrying typed-in ellipsis as idle, not streaming', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.114',
+      paneDead: '0',
+      snapshotText: [
+        '✻ Worked for 1m 12s',
+        '',
+        '──────────────────────────────────────────────────────────',
+        '❯ Tell me more about that…',
+        '──────────────────────────────────────────────────────────',
+        '  sabside ~/git/foo Opus 4.7',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: '2.1.114',
+      executionReason: 'agent_prompt_idle',
+      executionConfidence: 'high',
+    });
+  });
 });
