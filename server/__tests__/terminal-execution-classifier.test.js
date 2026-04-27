@@ -181,4 +181,92 @@ describe('terminal execution classifier', () => {
       executionConfidence: 'high',
     });
   });
+
+  it('keeps a streaming Claude Code pane running even when the input chevron is visible', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.114',
+      paneDead: '0',
+      snapshotText: [
+        '✢ Smooshing…',
+        '',
+        '──────────────────────────────────────────────────────────',
+        '❯',
+        '──────────────────────────────────────────────────────────',
+        '  sabside ~/git/equinox/frontend.v3 Sonnet 4.6 | ctx: 100% used',
+        '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: '2.1.114',
+      executionReason: 'agent_streaming',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('keeps a long-running Claude Code turn running when the spinner reports tokens without esc-to-interrupt', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.114',
+      paneDead: '0',
+      snapshotText: [
+        '⏺ Calling bash-server, kube-mcp 11 times… (ctrl+o to expand)',
+        '',
+        '· Orchestrating… (3m 30s · ↑ 1.5k tokens)',
+        '',
+        '──────────────────────────────────────────────────────────',
+        '❯',
+        '──────────────────────────────────────────────────────────',
+        '  sabside ~/git/equinox/frontend.v3 Opus 4.7 (1M context) | ctx: 8% used',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: '2.1.114',
+      executionReason: 'agent_streaming',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('still classifies a completed Claude turn as idle when only past-tense markers are visible', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.114',
+      paneDead: '0',
+      snapshotText: [
+        '⏺ Done — backend now distinguishes 404 from 500.',
+        '',
+        '✻ Crunched for 37s',
+        '',
+        '──────────────────────────────────────────────────────────',
+        '❯',
+        '──────────────────────────────────────────────────────────',
+        '  sabside ~/git/equinox/backend Opus 4.7',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: '2.1.114',
+      executionReason: 'agent_prompt_idle',
+      executionConfidence: 'high',
+    });
+  });
+
+  it('does not let stale tool-call summary lines with mid-line ellipsis stick a finished pane in running', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.114',
+      paneDead: '0',
+      snapshotText: [
+        '⏺ Calling bash-server, kube-mcp 11 times… (ctrl+o to expand)',
+        '⏺ Read 3 files (ctrl+o to expand)',
+        '',
+        '✻ Worked for 7m 21s',
+        '',
+        '──────────────────────────────────────────────────────────',
+        '❯',
+        '──────────────────────────────────────────────────────────',
+        '  sabside ~/git/equinox/frontend.v3 Opus 4.7 (1M context) | ctx: 9% used',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: '2.1.114',
+      executionReason: 'agent_prompt_idle',
+      executionConfidence: 'high',
+    });
+  });
 });

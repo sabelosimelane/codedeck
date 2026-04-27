@@ -62,6 +62,11 @@ function hasAgentIdlePrompt(line) {
     || /^›\s/.test(line);
 }
 
+function hasAgentInterruptIndicator(line) {
+  if (/\besc to interrupt\b/i.test(line)) return true;
+  return /^\S\s+[A-Z]\w+…/u.test(line);
+}
+
 function classifySnapshotTail(snapshotText) {
   const tail = normalizeSnapshotLines(snapshotText).slice(-40);
   const lastLine = tail[tail.length - 1] || '';
@@ -78,6 +83,14 @@ function classifySnapshotTail(snapshotText) {
     return {
       executionStatus: TERMINAL_EXECUTION_RUNNING,
       executionReason: 'agent_background_terminal',
+      executionConfidence: 'high',
+    };
+  }
+
+  if (tail.some(hasAgentInterruptIndicator)) {
+    return {
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      executionReason: 'agent_streaming',
       executionConfidence: 'high',
     };
   }

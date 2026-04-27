@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-04-27] - Recognize streaming Claude Code panes as busy
+
+### Executive Summary
+* Fixed the busy indicator misreporting actively-streaming Claude Code panes as idle. The execution classifier previously recognized only Codex's "Working" verb with `[•✳✱*]` glyphs, so Claude Code's many spinner verbs (`Smooshing`, `Orchestrating`, `Precipitating`, …) under their `✻`/`·`/`✢` glyphs fell through to the idle-prompt rule — which then matched the input chevron Claude Code keeps visible during streaming. The classifier now treats any glyph + capitalized verb followed directly by a typographic ellipsis (`…`) as a streaming indicator (alongside the existing `esc to interrupt` phrase) and reports `executionReason: agent_streaming` so the sidebar dot turns busy mid-turn and returns to idle the moment the turn completes.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** A streaming Claude Code pane was classified `idle/agent_prompt_idle` because `hasAgentWorkingMarker` only matched Codex's "Working" verb. The active spinner line slipped past every snapshot rule, and the always-visible `❯` input chevron then triggered `hasAgentIdlePrompt` and pinned the pane to idle even though the model was actively generating.
+  * **Solution:** Added a new `hasAgentInterruptIndicator` predicate ahead of the idle-prompt check. It matches both the literal `esc to interrupt` phrase (for short Claude turns and Codex parity) and a tightened glyph-plus-verb spinner pattern (`/^\S\s+[A-Z]\w+…/u`) where the ellipsis must come directly after the verb. Past-tense completion lines (`✻ Worked for 7m 21s`, `✻ Crunched for 37s`) and tool-call summary lines with mid-line ellipsis (`⏺ Calling bash-server, kube-mcp 11 times… (ctrl+o to expand)`) are correctly excluded so finished panes return to idle.
+* **🛠️ Codebase:**
+  * `server/terminal-execution-classifier.js` — Added `hasAgentInterruptIndicator(line)` and a new `running/agent_streaming/high` branch in `classifySnapshotTail`, slotted between the background-terminal check and the idle-prompt check so Codex's specific reasons (`agent_working`, `agent_background_terminal`) remain authoritative for those cases.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-execution-classifier.test.js` — Added four regression tests using real captured tmux bytes from a streaming Claude Code session: the spinner-with-visible-chevron case, a long-running `Orchestrating…` variant that lacks `esc to interrupt`, a past-tense completion staying idle, and a stale tool-call summary line that must not be mistaken for an active spinner.
+
 ## [2026-04-25] - Survive cold tmux sockets and respect detached terminal viewport on replay
 
 ### Executive Summary
