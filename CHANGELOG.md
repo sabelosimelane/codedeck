@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-04-29] - Keep terminal focus on the clicked pane after window/tab recovery
+
+### Executive Summary
+* Fixed a focus-stealing bug in multi-pane tabs. When you navigated away from the CodeDeck tab/window and came back, focus jumped to the last-mounted pane regardless of which pane you clicked — typing then went into the wrong terminal. Every Terminal component registers its own `visibilitychange`/`focus`/`pageshow` listeners and four separate code paths could call `term.focus()`. With multiple panes in the active tab, every pane refocused on recovery and the last-mounted one won. Terminal now receives an `isActivePane` prop and gates each focus path on it so only the user-selected pane refocuses; the bug fix has parity for terminal-tab switches and for resume/replay round-trips.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** With two panes side-by-side in the same tab, after switching browser tabs and coming back the user would click pane 1, watch focus appear there briefly, then watch focus jump to pane 2. Cause: every mounted Terminal listens to global `document.visibilitychange`, `window.focus`, and `window.pageshow`. Each handler scheduled a 50ms `term.focus()` via `scheduleViewportRecovery`, the React-level `isVisible` useEffect did the same on tab activation, the snapshot message handler called `term.focus()` on hydrate, and the replay handler called `term.focus()` unconditionally. Timers fired in mount order, so the last pane won. Verified live in the browser against `Mace-21` / `Mace-38`.
+  * **Solution:** Added a new `isActivePane` prop to `Terminal` (default `true`, preserves single-pane semantics for existing tests), tracked via `isActivePaneRef`, and gated all four focus call sites on it. `TerminalArea` now passes `isActivePane={isActive && activePaneId === pane.id}` so only the active pane in the active tab refocuses on recovery. Inactive siblings still resize, request replay, and catch up — they just don't yank focus away from the user's clicked pane.
+* **🛠️ Codebase:**
+  * `client/src/components/Terminal.jsx` — added `isActivePane = true` prop and `isActivePaneRef` plus a sync useEffect; gated the four refocus paths: `scheduleViewportRecovery`, the `isVisible` tab-switch useEffect, the snapshot-message handler, and the replay-message handler.
+  * `client/src/components/TerminalArea.jsx` — passes `isActivePane={isActive && activePaneId === pane.id}` to each `Terminal`.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalMultiPaneFocus.test.jsx` — new file with two regression tests. The first mounts two panes (active + inactive), asserts that after a `window.focus` event past the 50ms recovery timer the inactive sibling's `term.focus` was not called. The second feeds a `replay` message to the inactive pane's WebSocket and asserts the same — covering the path that scheduled-recovery resume requests round-trip through.
+
 ## [2026-04-27] - Stop Codex transcript-truncation markers from misclassifying idle panes as busy
 
 ### Executive Summary

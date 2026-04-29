@@ -1173,6 +1173,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                         sessionId={pane.sessionId}
                         cwd={project.path}
                         isVisible={isActive}
+                        isActivePane={isActive && activePaneId === pane.id}
                         runtimeType={sessionLookup.get(pane.sessionId)?.runtimeType ?? 'pty'}
                       />
                     </div>

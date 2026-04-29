@@ -30,7 +30,7 @@ const SESSION_DELETED_CLOSE_REASON = 'session_deleted';
 const DEFAULT_FAILURE_MESSAGE = 'Unable to connect to server. Check that the backend is running.';
 const DEFAULT_HISTORY_WARNING_MESSAGE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
 
-const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runtimeType = 'pty' }, ref) {
+const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isActivePane = true, runtimeType = 'pty' }, ref) {
   const containerRef = useRef(null);
   const wsRef = useRef(null);
   const fitRef = useRef(null);
@@ -50,6 +50,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
   const lastResizeAtRef = useRef(null);
   const documentVisibilityRef = useRef(document.visibilityState === 'visible' ? 'visible' : 'hidden');
   const isVisibleRef = useRef(isVisible);
+  // Whether this pane is the user-selected pane within its tab. Browser-level
+  // recovery (visibilitychange/window-focus/pageshow) and the React-level
+  // tab-switch refocus must only refocus the active pane — every Terminal
+  // listens to the same global events, so without this gate the
+  // last-mounted pane wins and steals focus from the user's clicked pane.
+  const isActivePaneRef = useRef(isActivePane);
   // Sequence tracking for loss-aware replay (Phase 3)
   const lastSeenSeqRef = useRef(0);
   const reconnectCountRef = useRef(0);
@@ -641,7 +647,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
               lastSeq: msg.lastSeq,
               terminalState: msg.terminalState ?? null,
             });
-            if (isVisibleRef.current && documentVisibilityRef.current === 'visible') {
+            if (
+              isActivePaneRef.current
+              && isVisibleRef.current
+              && documentVisibilityRef.current === 'visible'
+            ) {
               term.focus();
             }
           } else if (msg.type === 'history_warning') {
@@ -674,7 +684,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
               setAutoScrollEnabled(true);
               term.scrollToBottom();
             }
-            term.focus();
+            // Only refocus this pane if it is the user-selected one. Every
+            // pane's WS gets its own replay after window/visibility recovery,
+            // so an unconditional focus here lets the last replay-handler win
+            // and steals focus from the pane the user actually clicked.
+            if (isActivePaneRef.current) {
+              term.focus();
+            }
           } else if (msg.type === 'spawn_error') {
             spawnFailed = true;
             term.write(msg.data);
@@ -730,7 +746,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
 
     function scheduleViewportRecovery() {
       setTimeout(() => {
-        syncTerminalViewport({ focus: true, requestResumeAfterSync: true });
+        syncTerminalViewport({ focus: isActivePaneRef.current, requestResumeAfterSync: true });
       }, 50);
     }
 
@@ -800,10 +816,17 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, runti
     isVisibleRef.current = isVisible;
     if (isVisible && fitRef.current && termRef.current) {
       setTimeout(() => {
-        syncTerminalViewport({ focus: true, requestResumeAfterSync: true });
+        syncTerminalViewport({ focus: isActivePaneRef.current, requestResumeAfterSync: true });
       }, 50);
     }
   }, [isVisible]);
+
+  // Keep isActivePaneRef in sync with the prop. Refs must be used here because
+  // the timers above read the value at firing time, after the prop may have
+  // changed (e.g., user clicks an inactive pane mid-recovery).
+  useEffect(() => {
+    isActivePaneRef.current = isActivePane;
+  }, [isActivePane]);
 
   return (
     <div
