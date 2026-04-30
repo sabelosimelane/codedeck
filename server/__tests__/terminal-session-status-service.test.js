@@ -106,4 +106,103 @@ describe('listTerminalSessions', () => {
 
     expect(result).toEqual([]);
   });
+
+  it('uses cached status values without synchronous tmux lookups on the request path', () => {
+    const sessions = new Map([
+      ['Mace-39', {
+        cwd: '/fallback/mace',
+        startedAt: '2026-04-30T08:00:00.000Z',
+        lastOutputAt: '2026-04-30T08:01:00.000Z',
+        lastOutputLine: 'running',
+        alive: true,
+        runtimeType: 'tmux',
+        wsAttached: true,
+        lastAttachAt: '2026-04-30T08:00:05.000Z',
+        lastClientAckAt: '2026-04-30T08:01:00.000Z',
+        lastSeq: 12,
+      }],
+    ]);
+
+    const runtime = {
+      type: 'tmux',
+      getSessionCwd: vi.fn(() => {
+        throw new Error('sync cwd lookup should not run');
+      }),
+      getSessionExecutionState: vi.fn(() => {
+        throw new Error('sync execution lookup should not run');
+      }),
+      listSessionIds: vi.fn(() => {
+        throw new Error('sync session list should not run');
+      }),
+    };
+    const statusCache = {
+      getSessionCwd: vi.fn((_entry, sessionId) => (
+        sessionId === 'Mace-39' ? '/cached/mace' : null
+      )),
+      getSessionExecutionState: vi.fn((_entry, sessionId) => (
+        sessionId === 'Mace-39'
+          ? {
+              executionStatus: 'running',
+              foregroundCommand: 'node',
+              executionReason: 'agent_working',
+              executionConfidence: 'high',
+            }
+          : {
+              executionStatus: 'unknown',
+              foregroundCommand: null,
+              executionReason: 'status_refresh_pending',
+              executionConfidence: 'low',
+            }
+      )),
+      getDetachedSessionIds: vi.fn(() => ['BookMe-1']),
+    };
+
+    const result = listTerminalSessions({
+      sessions,
+      runtime,
+      projects: [
+        { name: 'Mace', path: '/repo/mace' },
+        { name: 'BookMe', path: '/repo/bookme' },
+      ],
+      deletedSessionIds: new Set(),
+      computeHealth: computeSessionHealth,
+      computeStallReason,
+      sanitizePreviewLine,
+      statusCache,
+    });
+
+    expect(runtime.getSessionCwd).not.toHaveBeenCalled();
+    expect(runtime.getSessionExecutionState).not.toHaveBeenCalled();
+    expect(runtime.listSessionIds).not.toHaveBeenCalled();
+    expect(statusCache.getSessionCwd).toHaveBeenCalledWith(
+      sessions.get('Mace-39'),
+      'Mace-39'
+    );
+    expect(statusCache.getSessionExecutionState).toHaveBeenCalledWith(
+      sessions.get('Mace-39'),
+      'Mace-39'
+    );
+    expect(statusCache.getDetachedSessionIds).toHaveBeenCalledWith({
+      projects: [
+        { name: 'Mace', path: '/repo/mace' },
+        { name: 'BookMe', path: '/repo/bookme' },
+      ],
+      deletedSessionIds: new Set(),
+      seenSessionIds: new Set(['Mace-39']),
+    });
+    expect(result).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: 'Mace-39',
+        cwd: '/cached/mace',
+        executionStatus: 'running',
+        executionReason: 'agent_working',
+      }),
+      expect.objectContaining({
+        sessionId: 'BookMe-1',
+        cwd: null,
+        executionStatus: 'unknown',
+        executionReason: 'status_refresh_pending',
+      }),
+    ]));
+  });
 });

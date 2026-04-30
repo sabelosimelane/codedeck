@@ -26,20 +26,25 @@ export function listTerminalSessions({
   computeHealth,
   computeStallReason,
   sanitizePreviewLine,
+  statusCache = null,
 } = {}) {
   const result = [];
   const seenSessionIds = new Set();
   const runtimeStatus = getTerminalRuntimeStatus(runtime);
 
   for (const [sessionId, entry] of sessions) {
-    const cwd = runtime.getSessionCwd?.(entry, sessionId) || entry.cwd;
+    const cwd = statusCache?.getSessionCwd
+      ? statusCache.getSessionCwd(entry, sessionId)
+      : runtime.getSessionCwd?.(entry, sessionId) || entry.cwd;
     const executionState = entry.alive
-      ? runtime.getSessionExecutionState?.(sessionId) ?? {
-        executionStatus: TERMINAL_EXECUTION_UNKNOWN,
-        foregroundCommand: null,
-        executionReason: 'runtime_unavailable',
-        executionConfidence: 'low',
-      }
+      ? statusCache?.getSessionExecutionState
+        ? statusCache.getSessionExecutionState(entry, sessionId)
+        : runtime.getSessionExecutionState?.(sessionId) ?? {
+          executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+          foregroundCommand: null,
+          executionReason: 'runtime_unavailable',
+          executionConfidence: 'low',
+        }
       : {
         executionStatus: TERMINAL_EXECUTION_DEAD,
         foregroundCommand: null,
@@ -72,7 +77,11 @@ export function listTerminalSessions({
     });
   }
 
-  for (const sessionId of runtime.listSessionIds?.() || []) {
+  const detachedSessionIds = statusCache?.getDetachedSessionIds
+    ? statusCache.getDetachedSessionIds({ projects, deletedSessionIds, seenSessionIds })
+    : runtime.listSessionIds?.() || [];
+
+  for (const sessionId of detachedSessionIds) {
     if (seenSessionIds.has(sessionId)) continue;
     if (deletedSessionIds.has(sessionId)) continue;
     if (!doesSessionBelongToConfiguredProject(sessionId, projects)) continue;
@@ -88,16 +97,21 @@ export function listTerminalSessions({
       lastClientAckAt: null,
       lastSeq: 0,
     };
-    const executionState = runtime.getSessionExecutionState?.(sessionId) ?? {
-      executionStatus: TERMINAL_EXECUTION_UNKNOWN,
-      foregroundCommand: null,
-      executionReason: 'runtime_unavailable',
-      executionConfidence: 'low',
-    };
+    const cwd = statusCache?.getSessionCwd
+      ? statusCache.getSessionCwd(detachedEntry, sessionId)
+      : runtime.getSessionCwd?.({ cwd: null }, sessionId) || null;
+    const executionState = statusCache?.getSessionExecutionState
+      ? statusCache.getSessionExecutionState(detachedEntry, sessionId)
+      : runtime.getSessionExecutionState?.(sessionId) ?? {
+        executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+        foregroundCommand: null,
+        executionReason: 'runtime_unavailable',
+        executionConfidence: 'low',
+      };
 
     result.push({
       sessionId,
-      cwd: runtime.getSessionCwd?.({ cwd: null }, sessionId) || null,
+      cwd,
       startedAt: null,
       lastOutputAt: null,
       lastSubstantialOutputAt: null,

@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const execFileSync = vi.fn();
+const execFile = vi.fn();
 const ptySpawn = vi.fn();
 
 vi.mock('child_process', () => ({
+  execFile,
   execFileSync,
 }));
 
@@ -13,6 +15,7 @@ vi.mock('node-pty', () => ({
 
 describe('createTerminalRuntime', () => {
   beforeEach(() => {
+    execFile.mockReset();
     execFileSync.mockReset();
     ptySpawn.mockReset();
     ptySpawn.mockReturnValue({});

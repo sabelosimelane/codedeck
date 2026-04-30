@@ -24,6 +24,7 @@ import {
 } from './terminal-runtime.js';
 import { allocateTerminalSessionId } from './terminal-session-service.js';
 import { listTerminalSessions } from './terminal-session-status-service.js';
+import { createTerminalStatusCache } from './terminal-session-status-cache.js';
 import { pruneTerminalSessions } from './session-gc.js';
 import { readTree } from './file-tree.js';
 import { readFilePreview } from './file-preview.js';
@@ -345,6 +346,7 @@ app.get('/api/sessions', (req, res) => {
     computeHealth: computeSessionHealth,
     computeStallReason,
     sanitizePreviewLine,
+    statusCache: terminalStatusCache,
   }));
 });
 
@@ -443,6 +445,8 @@ const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
   || getConfig('terminalRuntime')
   || 'tmux';
 const terminalRuntime = createTerminalRuntime(runtimeMode);
+const terminalStatusCache = createTerminalStatusCache({ runtime: terminalRuntime });
+terminalStatusCache.refreshSessionList();
 const sessionPruneTimer = setInterval(() => {
   pruneTerminalSessions({
     sessions,
@@ -480,6 +484,7 @@ app.delete('/api/terminal/:sessionId', (req, res) => {
   } catch (error) {
     console.warn(`[terminal] delete failed session=${req.params.sessionId} error=${error.message}`);
   } finally {
+    terminalStatusCache.invalidateSession(req.params.sessionId);
     sessions.delete(req.params.sessionId);
   }
 

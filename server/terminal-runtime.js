@@ -7,7 +7,8 @@
  */
 
 import { spawn } from 'node-pty';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
+import { promisify } from 'util';
 import { buildShellEnv } from './shell-env.js';
 import {
   TERMINAL_EXECUTION_UNKNOWN,
@@ -29,6 +30,7 @@ export const TERMINAL_RUNTIME_BLOCKED_REASON = 'missing_tmux';
 export const TERMINAL_RUNTIME_BLOCKED_MESSAGE = 'Install tmux to enable durable CodeDeck terminals.';
 export const TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE = 'snapshot_unavailable';
 export const TERMINAL_HISTORY_WARNING_MESSAGE_SNAPSHOT_UNAVAILABLE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
+const execFileAsync = promisify(execFile);
 
 export function getTerminalHistoryWarningMessage(reason = TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE) {
   if (reason === TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE) {
@@ -699,6 +701,22 @@ function createTmuxRuntime() {
       }
     },
 
+    async getSessionCwdAsync(entry, sessionId) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+
+      try {
+        const { stdout } = await execFileAsync(
+          'tmux',
+          ['display-message', '-p', '-t', tmuxName, '#{pane_current_path}'],
+          { encoding: 'utf8' }
+        );
+        const cwd = stdout.trim();
+        return cwd || entry?.cwd || null;
+      } catch {
+        return entry?.cwd || null;
+      }
+    },
+
     /**
      * Report whether the pane is executing work. tmux foreground metadata and
      * the visible snapshot tail are classified together so shell scripts,
@@ -729,6 +747,40 @@ function createTmuxRuntime() {
           ['capture-pane', '-p', '-S', '-40', '-t', tmuxName],
           { stdio: 'pipe', encoding: 'utf8' }
         );
+
+        return classifyTerminalExecution({
+          paneCurrentCommand,
+          paneDead,
+          snapshotText,
+        });
+      } catch {
+        return {
+          executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+          foregroundCommand: null,
+          executionReason: 'tmux_lookup_failed',
+          executionConfidence: 'low',
+        };
+      }
+    },
+
+    async getSessionExecutionStateAsync(sessionId) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+
+      try {
+        const [{ stdout: rawOutput }, { stdout: snapshotText }] = await Promise.all([
+          execFileAsync(
+            'tmux',
+            ['display-message', '-p', '-t', tmuxName, '#{pane_current_command}\t#{pane_dead}'],
+            { encoding: 'utf8' }
+          ),
+          execFileAsync(
+            'tmux',
+            ['capture-pane', '-p', '-S', '-40', '-t', tmuxName],
+            { encoding: 'utf8' }
+          ),
+        ]);
+        const raw = rawOutput.replace(/\r/g, '').replace(/\n$/, '');
+        const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
 
         return classifyTerminalExecution({
           paneCurrentCommand,
@@ -848,6 +900,22 @@ function createTmuxRuntime() {
           { stdio: 'pipe', encoding: 'utf8' }
         );
         return output
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+
+    async listSessionIdsAsync() {
+      try {
+        const { stdout } = await execFileAsync(
+          'tmux',
+          ['list-sessions', '-F', '#S'],
+          { encoding: 'utf8' }
+        );
+        return stdout
           .split('\n')
           .map(line => line.trim())
           .filter(Boolean);
