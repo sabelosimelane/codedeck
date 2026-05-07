@@ -1,6 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { ChevronRight, ChevronDown, ExternalLink, File, Folder } from 'lucide-react';
+import { ChevronRight, ChevronDown, ExternalLink, File, Folder, FolderSearch } from 'lucide-react';
 import FileContextMenu from './FileContextMenu';
+import DirectoryBrowser from './DirectoryBrowser';
+
+function buildBreadcrumb(absPath) {
+  if (!absPath) return [];
+  const parts = absPath.split('/').filter(Boolean);
+  const segments = [];
+  let acc = '';
+  for (const part of parts) {
+    acc = acc + '/' + part;
+    segments.push({ name: part, path: acc });
+  }
+  return segments;
+}
 
 function collectDirectoryPaths(nodes) {
   const paths = [];
@@ -107,20 +120,44 @@ function TreeNode({ node, expandedPaths, onOpenFile, onPreviewFile, onToggleDir,
 export default function FileTree({ root, onOpenFile, onPreviewFile, width = 260 }) {
   const [tree, setTree] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [expandedPaths, setExpandedPaths] = useState(() => new Set());
   const [contextMenu, setContextMenu] = useState(null);
+  const [currentRoot, setCurrentRoot] = useState(root);
+  const [showBrowser, setShowBrowser] = useState(false);
 
   useEffect(() => {
+    setCurrentRoot(root);
+  }, [root]);
+
+  useEffect(() => {
+    if (!currentRoot) return;
+    let cancelled = false;
     setLoading(true);
-    fetch(`/api/files?root=${encodeURIComponent(root)}`)
-      .then(r => r.json())
-      .then(data => {
-        setTree(data);
-        setExpandedPaths(new Set());
+    setError(null);
+    fetch(`/api/files?root=${encodeURIComponent(currentRoot)}`)
+      .then(async r => {
+        const data = await r.json().catch(() => null);
+        if (cancelled) return;
+        if (!r.ok) {
+          setTree([]);
+          setError(data?.error || 'Failed to load directory');
+        } else {
+          setTree(Array.isArray(data) ? data : []);
+          setExpandedPaths(new Set());
+        }
         setLoading(false);
       })
-      .catch(() => { setTree([]); setLoading(false); });
-  }, [root]);
+      .catch(err => {
+        if (cancelled) return;
+        setTree([]);
+        setError(err.message || 'Failed to load directory');
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [currentRoot]);
+
+  const breadcrumb = buildBreadcrumb(currentRoot);
 
   const handleToggleDir = (dirPath) => {
     setExpandedPaths(prev => {
@@ -166,6 +203,14 @@ export default function FileTree({ root, onOpenFile, onPreviewFile, width = 260 
           Files
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            type="button"
+            style={treeControlBtnStyle}
+            onClick={() => setShowBrowser(true)}
+            title="Browse for a directory"
+          >
+            <FolderSearch size={11} />
+          </button>
           <button type="button" style={treeControlBtnStyle} onClick={handleExpandAll}>
             Expand
           </button>
@@ -174,8 +219,63 @@ export default function FileTree({ root, onOpenFile, onPreviewFile, width = 260 
           </button>
         </div>
       </div>
+      <div
+        title={currentRoot}
+        style={{
+          padding: '0 12px 8px',
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: 2,
+          fontSize: '11px',
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-muted)',
+          borderBottom: '1px solid var(--border)',
+          marginBottom: 4,
+          paddingBottom: 8,
+        }}
+      >
+        {breadcrumb.length === 0 && (
+          <span style={{ color: 'var(--text-muted)' }}>/</span>
+        )}
+        {breadcrumb.map((seg, idx) => {
+          const isLast = idx === breadcrumb.length - 1;
+          return (
+            <React.Fragment key={seg.path}>
+              <button
+                type="button"
+                onClick={() => { if (!isLast) setCurrentRoot(seg.path); }}
+                disabled={isLast}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: '1px 3px',
+                  borderRadius: 3,
+                  cursor: isLast ? 'default' : 'pointer',
+                  color: isLast ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  fontWeight: isLast ? 600 : 400,
+                  fontSize: '11px',
+                  fontFamily: 'var(--font-mono)',
+                }}
+                onMouseEnter={e => { if (!isLast) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                title={seg.path}
+              >
+                {seg.name}
+              </button>
+              {!isLast && (
+                <span style={{ color: 'var(--text-muted)', userSelect: 'none' }}>/</span>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
       {loading ? (
         <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>
+      ) : error ? (
+        <div style={{ padding: 16, color: 'var(--accent-danger, #f87171)', fontSize: 12 }}>
+          {error}
+        </div>
       ) : (
         tree.map(node => (
           <TreeNode
@@ -194,8 +294,15 @@ export default function FileTree({ root, onOpenFile, onPreviewFile, width = 260 
           x={contextMenu.x}
           y={contextMenu.y}
           path={contextMenu.path}
-          root={root}
+          root={currentRoot}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+      {showBrowser && (
+        <DirectoryBrowser
+          initialPath={currentRoot}
+          onSelect={(picked) => { setCurrentRoot(picked); setShowBrowser(false); }}
+          onCancel={() => setShowBrowser(false)}
         />
       )}
     </div>

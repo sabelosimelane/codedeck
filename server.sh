@@ -94,6 +94,13 @@ start_server() {
 
   echo -n "Waiting for servers"
   for i in {1..30}; do
+    if ! ps -p "$DETACHED_PID" >/dev/null 2>&1; then
+      echo -e "\n${RED}Launcher exited before both servers became ready${NC}"
+      tail -20 "$LOG_FILE" 2>/dev/null
+      rm -f "$PID_FILE"
+      return 1
+    fi
+
     local backend_pid
     local frontend_pid
     backend_pid="$(listener_pid "$PORT")"
@@ -149,21 +156,36 @@ check_status() {
     local pid
     local backend_pid
     local frontend_pid
+    local missing=0
     pid=$(cat "$PID_FILE")
     backend_pid="$(listener_pid "$PORT")"
     frontend_pid="$(listener_pid "$FRONTEND_PORT")"
-    echo -e "${GREEN}Server is running${NC} (launcher PID: $pid, backend port: $PORT, frontend port: $FRONTEND_PORT)"
+    if [[ -n "$backend_pid" && -n "$frontend_pid" ]]; then
+      echo -e "${GREEN}Server is running${NC} (launcher PID: $pid, backend port: $PORT, frontend port: $FRONTEND_PORT)"
+    else
+      missing=1
+      echo -e "${YELLOW}Server is degraded${NC} (launcher PID: $pid, backend port: $PORT, frontend port: $FRONTEND_PORT)"
+    fi
+
     if [[ -n "$frontend_pid" ]]; then
       echo -e "${GREEN}Frontend listener PID:${NC} $frontend_pid"
+    else
+      echo -e "${RED}Frontend listener missing:${NC} port $FRONTEND_PORT is not accepting connections"
     fi
+
     if [[ -n "$backend_pid" ]]; then
       echo -e "${GREEN}Backend listener PID:${NC} $backend_pid"
+    else
+      echo -e "${RED}Backend listener missing:${NC} port $PORT is not accepting connections"
     fi
+
     [[ -f "$LOG_FILE" ]] && { echo -e "\n${YELLOW}Recent logs:${NC}"; tail -5 "$LOG_FILE"; }
+    return "$missing"
   else
     echo -e "${RED}Server is not running${NC}"
     port_in_use "$PORT" && echo -e "${YELLOW}Warning: backend port $PORT is in use by another process${NC}"
     port_in_use "$FRONTEND_PORT" && echo -e "${YELLOW}Warning: frontend port $FRONTEND_PORT is in use by another process${NC}"
+    return 1
   fi
 }
 
