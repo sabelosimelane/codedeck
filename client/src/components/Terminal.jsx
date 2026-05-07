@@ -409,6 +409,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
       scrollSensitivity: 3,
       fastScrollSensitivity: 5,
       smoothScrollDuration: 0,
+      macOptionClickForcesSelection: true,
       theme: {
         background: '#0e0e10',
         foreground: '#e4e4e8',
@@ -505,6 +506,25 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
       const buffer = term.buffer.active;
       setAutoScrollEnabled(isTerminalViewportAtBottom(buffer));
     });
+
+    // Copy-on-select: mirror native terminal emulator behaviour so text is
+    // always on the clipboard after a drag selection (needed because tmux
+    // mouse mode prevents normal browser selection).
+    let selectionCopyTimer = null;
+    if (typeof term.onSelectionChange === 'function') {
+      term.onSelectionChange(() => {
+        if (selectionCopyTimer) {
+          clearTimeout(selectionCopyTimer);
+        }
+        selectionCopyTimer = setTimeout(() => {
+          selectionCopyTimer = null;
+          const text = term.getSelection();
+          if (text) {
+            navigator.clipboard.writeText(text).catch(() => {});
+          }
+        }, 150);
+      });
+    }
 
     const handleWheel = (event) => {
       if (shouldPauseAutoScrollOnWheel({
@@ -793,6 +813,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
       clearTimeout(retryTimerRef.current);
       clearInterval(heartbeatRef.current);
       clearTimeout(delayedViewportSyncTimerRef.current);
+      clearTimeout(selectionCopyTimer);
       delayedViewportSyncTimerRef.current = null;
       snapshotGeometryRef.current = null;
       pendingOutputRef.current = [];

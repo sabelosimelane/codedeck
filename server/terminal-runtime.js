@@ -435,7 +435,7 @@ function ensureTmuxSessionOptions(tmuxName) {
     'set-window-option', '-t', tmuxName, 'history-limit', String(TMUX_HISTORY_LIMIT),
   ], { stdio: 'pipe' });
   execFileSync('tmux', [
-    'set-option', '-t', tmuxName, 'mouse', 'off',
+    'set-option', '-t', tmuxName, 'mouse', 'on',
   ], { stdio: 'pipe' });
 }
 

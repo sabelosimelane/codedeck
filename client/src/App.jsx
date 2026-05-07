@@ -9,6 +9,7 @@ import PaneDivider from './components/PaneDivider';
 import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
 import { openFilePreviewTab } from './utils/fileActions';
+import { getTerminalStatus } from './utils/terminalActivity';
 
 export default function App() {
   return (
@@ -34,8 +35,10 @@ function AppContent() {
     const saved = localStorage.getItem('codedeck-filetree-width');
     return saved ? parseInt(saved, 10) : 260;
   });
+  const [finishedSessionIds, setFinishedSessionIds] = useState(new Set());
   const { showToast } = useToast();
   const sessionStatusRequestInFlightRef = useRef(false);
+  const prevSessionStatusRef = useRef([]);
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -118,6 +121,54 @@ function AppContent() {
     const id = setInterval(fetchSessionStatus, 2000);
     return () => clearInterval(id);
   }, [fetchSessionStatus]);
+
+  // Detect terminals that transition from busy to idle/unknown and mark them as finished
+  useEffect(() => {
+    setFinishedSessionIds(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      const currentSessionIds = new Set(sessionStatus.map(s => s.sessionId));
+      const prevMap = new Map(prevSessionStatusRef.current.map(s => [s.sessionId, s]));
+
+      // Clean up sessions that no longer exist
+      for (const sessionId of next) {
+        if (!currentSessionIds.has(sessionId)) {
+          next.delete(sessionId);
+          changed = true;
+        }
+      }
+
+      for (const session of sessionStatus) {
+        const prevSession = prevMap.get(session.sessionId);
+        const prevStatus = prevSession ? getTerminalStatus(prevSession) : null;
+        const currentStatus = getTerminalStatus(session);
+
+        if (currentStatus === 'busy') {
+          if (next.has(session.sessionId)) {
+            next.delete(session.sessionId);
+            changed = true;
+          }
+        } else if (prevStatus === 'busy' && (currentStatus === 'idle' || currentStatus === 'unknown')) {
+          if (session.alive && !next.has(session.sessionId)) {
+            next.add(session.sessionId);
+            changed = true;
+          }
+        }
+      }
+
+      prevSessionStatusRef.current = sessionStatus;
+      return changed ? next : prev;
+    });
+  }, [sessionStatus]);
+
+  const resetFinishedSession = useCallback((sessionId) => {
+    setFinishedSessionIds(prev => {
+      if (!prev.has(sessionId)) return prev;
+      const next = new Set(prev);
+      next.delete(sessionId);
+      return next;
+    });
+  }, []);
 
   const addProject = async (name, path) => {
     try {
@@ -262,6 +313,8 @@ function AppContent() {
         onToggleFiles={() => setShowFileTree(prev => !prev)}
         showFileTree={showFileTree}
         sessionStatus={sessionStatus}
+        finishedSessionIds={finishedSessionIds}
+        onResetFinishedSession={resetFinishedSession}
         onBrowseFiles={setFileBrowserProject}
         onShowShortcuts={() => setShowShortcutsOverlay(true)}
       />
@@ -285,6 +338,8 @@ function AppContent() {
             project={activeProject}
             sessionStatus={sessionStatus}
             onSessionStatusRefresh={setSessionStatus}
+            finishedSessionIds={finishedSessionIds}
+            onResetFinishedSession={resetFinishedSession}
           />
         ) : (
           <div style={{

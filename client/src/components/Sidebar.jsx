@@ -15,6 +15,8 @@ import {
 import {
   DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS,
   getAggregateTerminalStatus,
+  getDisplayAggregateTerminalStatus,
+  getDisplayTerminalStatus,
   getTerminalCompletionNotification,
   getTerminalStatus,
   resolveTerminalCompletionNotificationMs,
@@ -34,11 +36,11 @@ function formatTimeSince(isoString) {
   return `${Math.floor(mins / 60)}h ago`;
 }
 
-function getProjectStatus(sessions) {
+function getProjectStatus(sessions, finishedIds) {
   if (!sessions || sessions.length === 0) return { status: 'none' };
   if (!sessions.some(session => session.alive)) return { status: 'dead' };
 
-  const status = getAggregateTerminalStatus(sessions);
+  const status = getDisplayAggregateTerminalStatus(sessions, finishedIds);
   return {
     status: status === 'busy' ? 'active' : status,
   };
@@ -46,12 +48,13 @@ function getProjectStatus(sessions) {
 
 const STATUS_COLORS = {
   active: 'var(--accent)',
+  finished: 'var(--danger)',
   idle: 'var(--text-muted)',
   unknown: 'var(--text-muted)',
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, onBrowseFiles, onShowShortcuts }) {
+export default function Sidebar({ activeProjects, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), onResetFinishedSession = () => {}, onBrowseFiles, onShowShortcuts }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
@@ -385,7 +388,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
             const isActive = activeProject?.name === project.name;
             const isRenaming = renamingProject === project.name;
             const projSessions = getProjectSessions(project);
-            const { status } = getProjectStatus(projSessions);
+            const { status } = getProjectStatus(projSessions, finishedSessionIds);
             return (
               <div
                 key={project.name}
@@ -515,11 +518,11 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
 
                 {/* Per-session details */}
                 {!isCompact && projSessions.length > 0 && projSessions.map(session => {
-                  const termStatus = getTerminalStatus(session);
+                  const termStatus = getDisplayTerminalStatus(session, finishedSessionIds);
                   const timeSince = formatTimeSince(session.lastOutputAt);
                   const dotColor = termStatus === 'busy'
                     ? 'var(--accent)'
-                    : termStatus === 'dead'
+                    : termStatus === 'dead' || termStatus === 'finished'
                     ? 'var(--danger)'
                     : 'var(--text-muted)';
                   return (

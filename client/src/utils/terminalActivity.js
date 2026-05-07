@@ -41,6 +41,37 @@ export function getTabTerminalStatus(tab, sessionLookup, now = Date.now()) {
   return getAggregateTerminalStatus(sessions, now);
 }
 
+export function getDisplayTerminalStatus(session, finishedSessionIds, now = Date.now()) {
+  const base = getTerminalStatus(session, now);
+  if ((base === 'idle' || base === 'unknown') && finishedSessionIds?.has(session.sessionId)) {
+    return 'finished';
+  }
+  return base;
+}
+
+export function getDisplayAggregateTerminalStatus(sessions, finishedSessionIds, now = Date.now()) {
+  if (!sessions || sessions.length === 0) return 'none';
+
+  const statuses = sessions.map(session => getDisplayTerminalStatus(session, finishedSessionIds, now));
+
+  if (statuses.includes('busy')) return 'busy';
+  if (statuses.includes('finished')) return 'finished';
+  if (statuses.includes('unknown')) return 'unknown';
+  if (statuses.every(status => status === 'dead')) return 'dead';
+  if (statuses.some(status => status === 'idle')) return 'idle';
+  return 'none';
+}
+
+export function getDisplayTabTerminalStatus(tab, sessionLookup, finishedSessionIds, now = Date.now()) {
+  if (!tab?.panes?.length || !sessionLookup) return 'none';
+
+  const sessions = tab.panes
+    .map(pane => sessionLookup.get(pane.sessionId))
+    .filter(Boolean);
+
+  return getDisplayAggregateTerminalStatus(sessions, finishedSessionIds, now);
+}
+
 export function resolveTerminalCompletionNotificationMs(value) {
   if (value === null || value === undefined || value === '') {
     return DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS;

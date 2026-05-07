@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-05-07] - Terminal finished-state persistence, tmux mouse mode, and copy-on-select
+
+### Executive Summary
+* Three terminal improvements shipped together. Terminals now turn solid red when a busy command finishes, making it easy to spot which panes need attention without reading every tab label. A reset button acknowledges the red state and fades it back to grey. Separately, tmux mouse mode was re-enabled so wheel scrolling drives tmux history directly (fixing the no-scrollback ArrowUp fallback), and copy-on-select was added so text selected by dragging is automatically copied to the clipboard despite tmux mouse mode blocking normal browser selection.
+
+### Technical Details
+* **✨ New Feature:**
+  * Terminals now latch into a client-side `finished` state when they transition from `busy` (green) to `idle`/`unknown`. The status dot, tab underline, and sidebar indicators all turn solid red. The red state persists across re-renders until explicitly reset or until the terminal starts running again.
+  * Each pane header now shows a **↺ Reset status** button (only when red) that removes the session from `finishedSessionIds` and restores the grey idle appearance.
+  * `App.jsx` tracks `finishedSessionIds` in app-level state, detects busy→idle transitions via `sessionStatus` polling, auto-clears finished sessions that become busy again, and prunes dead sessions from the set.
+* **🛠️ Codebase:**
+  * `client/src/utils/terminalActivity.js` — Added `getDisplayTerminalStatus()`, `getDisplayAggregateTerminalStatus()`, and `getDisplayTabTerminalStatus()` which overlay the client-side `finished` state on top of the server-reported status.
+  * `client/src/App.jsx` — Added `finishedSessionIds` state, transition-detection effect, and `resetFinishedSession` callback passed to both `Sidebar` and `TerminalArea`.
+  * `client/src/components/TerminalArea.jsx` — Added `finished` entry to `TAB_STATUS_STYLES`, `PANE_STATUS_LABELS`, and `PANE_STATUS_TITLES`. Tabs and panes now use the display-status helpers. Added conditional `RotateCcw` reset button in the pane header.
+  * `client/src/components/Sidebar.jsx` — `getProjectStatus()` now accepts `finishedIds` and uses `getDisplayAggregateTerminalStatus()`. Per-session dots turn red for `finished` status. `STATUS_COLORS` gained `finished: 'var(--danger)'`.
+  * `client/src/styles/global.css` — Added `.terminal-tab-finished::after` red underline rule matching the existing busy green underline.
+* **🛠️ Codebase:**
+  * `server/terminal-runtime.js` — Changed tmux session option from `mouse off` to `mouse on` so wheel events scroll tmux history natively instead of falling through to the ArrowUp shell-history fallback.
+  * `client/src/components/Terminal.jsx` — Added `macOptionClickForcesSelection: true` to xterm options. Added copy-on-select via `term.onSelectionChange()` with a 150ms debounce that writes selection text to `navigator.clipboard`, compensating for tmux mouse mode preventing normal browser drag-selection/copy.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-runtime.test.js` — Updated tmux mouse-mode assertion to expect `mouse on`.
+
 ## [2026-05-07] - Detect launcher crashes and browse beyond the project root in the file tree
 
 ### Executive Summary

@@ -347,7 +347,7 @@ describe('createTerminalRuntime', () => {
     });
   });
 
-  it('keeps tmux mouse mode off when spawning a durable session so browser selection still works', async () => {
+  it('enables tmux mouse mode so wheel scrolling works in the terminal', async () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.4';
@@ -365,7 +365,7 @@ describe('createTerminalRuntime', () => {
 
     expect(execFileSync).toHaveBeenCalledWith(
       'tmux',
-      ['set-option', '-t', 'demo-1', 'mouse', 'off'],
+      ['set-option', '-t', 'demo-1', 'mouse', 'on'],
       { stdio: 'pipe' }
     );
   });
