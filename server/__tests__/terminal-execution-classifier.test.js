@@ -43,7 +43,7 @@ describe('terminal execution classifier', () => {
         '',
         'Completed at: 2026-04-25 15:17:38',
         'Total duration: 0m 59s',
-        'sabside@MacBook-Pro frontend.v3 %',
+        'dev@host frontend.v3 %',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
@@ -76,10 +76,10 @@ describe('terminal execution classifier', () => {
       paneCurrentCommand: 'zsh',
       paneDead: '0',
       snapshotText: [
-        'sabside@MacBook-Pro frontend.v3 %',
+        'dev@host frontend.v3 %',
         'Starting deployment process...',
         'Deploying to production...',
-        'Building and pushing Docker image registry.gitlab.com/equinox/frontend.v3:25.apr.15.33...',
+        'Building and pushing Docker image registry.example.com/alpha/frontend.v3:25.apr.15.33...',
         '=> exporting layers 1.2s',
         '=> exporting manifest sha256:2650ee 0.0s',
       ].join('\n'),
@@ -152,7 +152,7 @@ describe('terminal execution classifier', () => {
         '',
         '› Summarize recent commits',
         '',
-        '  gpt-5.5 medium · ~/git/equinox/backend',
+        '  gpt-5.5 medium · ~/git/alpha/backend',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
@@ -172,7 +172,7 @@ describe('terminal execution classifier', () => {
         '───────────────────────────────────────────────────────────',
         '❯',
         '───────────────────────────────────────────────────────────',
-        '  sabside ~/git/equinox/backend Opus 4.7',
+        '  dev ~/git/alpha/backend Opus 4.7',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
@@ -192,7 +192,7 @@ describe('terminal execution classifier', () => {
         '──────────────────────────────────────────────────────────',
         '❯',
         '──────────────────────────────────────────────────────────',
-        '  sabside ~/git/equinox/frontend.v3 Sonnet 4.6 | ctx: 100% used',
+        '  dev ~/git/alpha/frontend.v3 Sonnet 4.6 | ctx: 100% used',
         '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
       ].join('\n'),
     })).toMatchObject({
@@ -215,7 +215,7 @@ describe('terminal execution classifier', () => {
         '──────────────────────────────────────────────────────────',
         '❯',
         '──────────────────────────────────────────────────────────',
-        '  sabside ~/git/equinox/frontend.v3 Opus 4.7 (1M context) | ctx: 8% used',
+        '  dev ~/git/alpha/frontend.v3 Opus 4.7 (1M context) | ctx: 8% used',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_RUNNING,
@@ -237,7 +237,7 @@ describe('terminal execution classifier', () => {
         '──────────────────────────────────────────────────────────',
         '❯',
         '──────────────────────────────────────────────────────────',
-        '  sabside ~/git/equinox/backend Opus 4.7',
+        '  dev ~/git/alpha/backend Opus 4.7',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
@@ -260,7 +260,7 @@ describe('terminal execution classifier', () => {
         '──────────────────────────────────────────────────────────',
         '❯',
         '──────────────────────────────────────────────────────────',
-        '  sabside ~/git/equinox/frontend.v3 Opus 4.7 (1M context) | ctx: 9% used',
+        '  dev ~/git/alpha/frontend.v3 Opus 4.7 (1M context) | ctx: 9% used',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
@@ -285,7 +285,7 @@ describe('terminal execution classifier', () => {
         '──────────────────────────────────────────────────────────',
         '❯',
         '──────────────────────────────────────────────────────────',
-        '  sabside ~/git/dev-orchestrator Opus 4.7 (1M context) | ctx: 15% used',
+        '  dev ~/git/tool-runner Opus 4.7 (1M context) | ctx: 15% used',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_RUNNING,
@@ -305,7 +305,7 @@ describe('terminal execution classifier', () => {
         '──────────────────────────────────────────────────────────',
         '❯ Tell me more about that…',
         '──────────────────────────────────────────────────────────',
-        '  sabside ~/git/foo Opus 4.7',
+        '  dev ~/git/foo Opus 4.7',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
@@ -321,7 +321,7 @@ describe('terminal execution classifier', () => {
       paneDead: '0',
       snapshotText: [
         '• Ran git diff --stat && git diff --name-only --diff-filter=U',
-        '  └  .workflow/whatsapp-bookme-parity-alignment.md      |   7 +',
+        '  └  .workflow/integration-parity-alignment.md         |   7 +',
         '     CLAUDE.md                                          |   2 +',
         '    … +48 lines (ctrl + t to view transcript)',
         '     src/manifest.webmanifest                           |   6 +-',
@@ -330,7 +330,7 @@ describe('terminal execution classifier', () => {
         '',
         '› Explain this codebase',
         '',
-        '  gpt-5.5 medium · ~/git/equinox/backend',
+        '  gpt-5.5 medium · ~/git/alpha/backend',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
@@ -345,15 +345,15 @@ describe('terminal execution classifier', () => {
       paneCurrentCommand: 'node',
       paneDead: '0',
       snapshotText: [
-        '• Ran git commit -m "Land passwordless login and staff TOTP locally" -m "This brings the',
-        '  │ frontend auth surface onto the passwordless OTP flow and adds the staff TOTP login/',
-        '  │ profile management experience on local main. The tenant portal now redirects through',
+        '• Ran git commit -m "Refactor module exports across packages" -m "This consolidates the',
+        '  │ public exports of the affected packages and updates the entry point so downstream',
+        '  │ consumers import from a single re-export rather than reaching into internals',
         '  │ … +16 lines',
-        '  └ [main 6101665] Land passwordless login and staff TOTP locally',
+        '  └ [main 6101665] Refactor module exports across packages',
         '',
         '› Explain this codebase',
         '',
-        '  gpt-5.5 medium · ~/git/equinox/backend',
+        '  gpt-5.5 medium · ~/git/alpha/backend',
       ].join('\n'),
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,

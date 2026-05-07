@@ -91,13 +91,13 @@ describe('terminalActivity', () => {
   it('derives tab status from its pane session ids', () => {
     const tab = {
       panes: [
-        { sessionId: 'BookMe-1' },
-        { sessionId: 'BookMe-2' },
+        { sessionId: 'Gamma-1' },
+        { sessionId: 'Gamma-2' },
       ],
     };
     const sessionLookup = new Map([
-      ['BookMe-1', { alive: true, lastOutputAt: new Date(now - 1000).toISOString() }],
-      ['BookMe-2', { alive: false }],
+      ['Gamma-1', { alive: true, lastOutputAt: new Date(now - 1000).toISOString() }],
+      ['Gamma-2', { alive: false }],
     ]);
 
     expect(getTabTerminalStatus(tab, sessionLookup, now)).toBe('busy');
@@ -105,8 +105,8 @@ describe('terminalActivity', () => {
 
   it('returns completion notification payload for long-running busy terminals that go idle', () => {
     const session = {
-      sessionId: 'BookMe-1',
-      cwd: '/tmp/bookme',
+      sessionId: 'Gamma-1',
+      cwd: '/tmp/gamma',
       alive: true,
       executionStatus: 'idle',
       lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
@@ -114,22 +114,22 @@ describe('terminalActivity', () => {
     };
 
     expect(getTerminalCompletionNotification(session, {
-      activeProjects: [{ name: 'BookMe', path: '/tmp/bookme' }],
+      activeProjects: [{ name: 'Gamma', path: '/tmp/gamma' }],
       mutedProjects: [],
       prevStatus: 'busy',
       busyStartedAt: now - TERMINAL_COMPLETION_NOTIFICATION_MS - 1,
       now,
     })).toEqual({
-      title: 'CodeDeck — BookMe-1 finished',
+      title: 'CodeDeck — Gamma-1 finished',
       body: 'Tests passed',
-      projectName: 'BookMe',
+      projectName: 'Gamma',
     });
   });
 
   it('skips completion notification while a stale-output terminal is still running', () => {
     const session = {
-      sessionId: 'BookMe-1',
-      cwd: '/tmp/bookme',
+      sessionId: 'Gamma-1',
+      cwd: '/tmp/gamma',
       alive: true,
       executionStatus: 'running',
       lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
@@ -137,7 +137,7 @@ describe('terminalActivity', () => {
     };
 
     expect(getTerminalCompletionNotification(session, {
-      activeProjects: [{ name: 'BookMe', path: '/tmp/bookme' }],
+      activeProjects: [{ name: 'Gamma', path: '/tmp/gamma' }],
       mutedProjects: [],
       prevStatus: 'busy',
       busyStartedAt: now - TERMINAL_COMPLETION_NOTIFICATION_MS - 1,
@@ -147,38 +147,38 @@ describe('terminalActivity', () => {
 
   it('returns completion notification payload when a running terminal dies', () => {
     const session = {
-      sessionId: 'BookMe-1',
-      cwd: '/tmp/bookme',
+      sessionId: 'Gamma-1',
+      cwd: '/tmp/gamma',
       alive: false,
       executionStatus: 'dead',
       lastOutputLine: 'Process exited',
     };
 
     expect(getTerminalCompletionNotification(session, {
-      activeProjects: [{ name: 'BookMe', path: '/tmp/bookme' }],
+      activeProjects: [{ name: 'Gamma', path: '/tmp/gamma' }],
       mutedProjects: [],
       prevStatus: 'busy',
       busyStartedAt: now - TERMINAL_COMPLETION_NOTIFICATION_MS - 1,
       now,
     })).toEqual({
-      title: 'CodeDeck — BookMe-1 finished',
+      title: 'CodeDeck — Gamma-1 finished',
       body: 'Process exited',
-      projectName: 'BookMe',
+      projectName: 'Gamma',
     });
   });
 
   it('skips completion notification for muted projects', () => {
     const session = {
-      sessionId: 'BookMe-1',
-      cwd: '/tmp/bookme',
+      sessionId: 'Gamma-1',
+      cwd: '/tmp/gamma',
       alive: true,
       executionStatus: 'idle',
       lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
     };
 
     expect(getTerminalCompletionNotification(session, {
-      activeProjects: [{ name: 'BookMe', path: '/tmp/bookme' }],
-      mutedProjects: ['BookMe'],
+      activeProjects: [{ name: 'Gamma', path: '/tmp/gamma' }],
+      mutedProjects: ['Gamma'],
       prevStatus: 'busy',
       busyStartedAt: now - TERMINAL_COMPLETION_NOTIFICATION_MS - 1,
       now,
@@ -187,15 +187,15 @@ describe('terminalActivity', () => {
 
   it('skips completion notification for short tasks', () => {
     const session = {
-      sessionId: 'BookMe-1',
-      cwd: '/tmp/bookme',
+      sessionId: 'Gamma-1',
+      cwd: '/tmp/gamma',
       alive: false,
       executionStatus: 'dead',
       lastOutputAt: new Date(now - 1000).toISOString(),
     };
 
     expect(getTerminalCompletionNotification(session, {
-      activeProjects: [{ name: 'BookMe', path: '/tmp/bookme' }],
+      activeProjects: [{ name: 'Gamma', path: '/tmp/gamma' }],
       mutedProjects: [],
       prevStatus: 'busy',
       busyStartedAt: now - TERMINAL_COMPLETION_NOTIFICATION_MS + 1,
@@ -205,22 +205,22 @@ describe('terminalActivity', () => {
 
   it('supports a configured finish cooldown override', () => {
     const session = {
-      sessionId: 'BookMe-1',
-      cwd: '/tmp/bookme',
+      sessionId: 'Gamma-1',
+      cwd: '/tmp/gamma',
       alive: true,
       executionStatus: 'idle',
       lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
     };
 
     expect(getTerminalCompletionNotification(session, {
-      activeProjects: [{ name: 'BookMe', path: '/tmp/bookme' }],
+      activeProjects: [{ name: 'Gamma', path: '/tmp/gamma' }],
       mutedProjects: [],
       prevStatus: 'busy',
       busyStartedAt: now - 10_000,
       cooldownMs: 5_000,
       now,
     })).toEqual(expect.objectContaining({
-      title: 'CodeDeck — BookMe-1 finished',
+      title: 'CodeDeck — Gamma-1 finished',
     }));
   });
 

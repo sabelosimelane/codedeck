@@ -115,17 +115,17 @@ describe('browserNotifications', () => {
     win.Notification.permission = 'granted';
 
     await expect(showBrowserNotification(win, {
-      title: 'CodeDeck — BookMe-1 finished',
+      title: 'CodeDeck — Gamma-1 finished',
       body: 'Tests passed',
-      tag: 'BookMe-1-finished',
-      data: { sessionId: 'BookMe-1' },
+      tag: 'Gamma-1-finished',
+      data: { sessionId: 'Gamma-1' },
     })).resolves.toBe('serviceWorker');
 
-    expect(showNotification).toHaveBeenCalledWith('CodeDeck — BookMe-1 finished', {
+    expect(showNotification).toHaveBeenCalledWith('CodeDeck — Gamma-1 finished', {
       body: 'Tests passed',
       icon: DEFAULT_NOTIFICATION_ICON,
-      tag: 'BookMe-1-finished',
-      data: { sessionId: 'BookMe-1' },
+      tag: 'Gamma-1-finished',
+      data: { sessionId: 'Gamma-1' },
       requireInteraction: true,
     });
   });
@@ -148,17 +148,17 @@ describe('browserNotifications', () => {
     };
 
     await expect(showBrowserNotification(win, {
-      title: 'CodeDeck — BookMe-1 finished',
+      title: 'CodeDeck — Gamma-1 finished',
       body: 'Tests passed',
-      tag: 'BookMe-1-finished',
-      data: { sessionId: 'BookMe-1' },
+      tag: 'Gamma-1-finished',
+      data: { sessionId: 'Gamma-1' },
     })).resolves.toBe('window');
 
-    expect(construct).toHaveBeenCalledWith('CodeDeck — BookMe-1 finished', {
+    expect(construct).toHaveBeenCalledWith('CodeDeck — Gamma-1 finished', {
       body: 'Tests passed',
       icon: DEFAULT_NOTIFICATION_ICON,
-      tag: 'BookMe-1-finished',
-      data: { sessionId: 'BookMe-1' },
+      tag: 'Gamma-1-finished',
+      data: { sessionId: 'Gamma-1' },
       requireInteraction: true,
     });
   });

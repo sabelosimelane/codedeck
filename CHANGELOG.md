@@ -26,7 +26,7 @@
 
 ### Technical Details
 * **🐛 Bug Fix:**
-  * **Problem:** With two panes side-by-side in the same tab, after switching browser tabs and coming back the user would click pane 1, watch focus appear there briefly, then watch focus jump to pane 2. Cause: every mounted Terminal listens to global `document.visibilitychange`, `window.focus`, and `window.pageshow`. Each handler scheduled a 50ms `term.focus()` via `scheduleViewportRecovery`, the React-level `isVisible` useEffect did the same on tab activation, the snapshot message handler called `term.focus()` on hydrate, and the replay handler called `term.focus()` unconditionally. Timers fired in mount order, so the last pane won. Verified live in the browser against `Mace-21` / `Mace-38`.
+  * **Problem:** With two panes side-by-side in the same tab, after switching browser tabs and coming back the user would click pane 1, watch focus appear there briefly, then watch focus jump to pane 2. Cause: every mounted Terminal listens to global `document.visibilitychange`, `window.focus`, and `window.pageshow`. Each handler scheduled a 50ms `term.focus()` via `scheduleViewportRecovery`, the React-level `isVisible` useEffect did the same on tab activation, the snapshot message handler called `term.focus()` on hydrate, and the replay handler called `term.focus()` unconditionally. Timers fired in mount order, so the last pane won. Verified live in the browser against `Beta-21` / `Beta-38`.
   * **Solution:** Added a new `isActivePane` prop to `Terminal` (default `true`, preserves single-pane semantics for existing tests), tracked via `isActivePaneRef`, and gated all four focus call sites on it. `TerminalArea` now passes `isActivePane={isActive && activePaneId === pane.id}` so only the active pane in the active tab refocuses on recovery. Inactive siblings still resize, request replay, and catch up — they just don't yank focus away from the user's clicked pane.
 * **🛠️ Codebase:**
   * `client/src/components/Terminal.jsx` — added `isActivePane = true` prop and `isActivePaneRef` plus a sync useEffect; gated the four refocus paths: `scheduleViewportRecovery`, the `isVisible` tab-switch useEffect, the snapshot-message handler, and the replay-message handler.
@@ -46,7 +46,7 @@
 * **🛠️ Codebase:**
   * `server/terminal-execution-classifier.js` — Two surgical changes inside `hasAgentInterruptIndicator`: extended the leading-glyph exclusion to drop `…`, and replaced `line.includes('…')` with `/\w…/.test(line)`.
 * **🧪 Tests:**
-  * `server/__tests__/terminal-execution-classifier.test.js` — Added two regression tests captured from the live `Equinox-13` Codex session: a tail containing `… +48 lines (ctrl + t to view transcript)` plus the `›` prompt must classify idle, and a tail containing the pipe-continuation `│ … +16 lines` plus the `›` prompt must also classify idle.
+  * `server/__tests__/terminal-execution-classifier.test.js` — Added two regression tests captured from the live `Alpha-13` Codex session: a tail containing `… +48 lines (ctrl + t to view transcript)` plus the `›` prompt must classify idle, and a tail containing the pipe-continuation `│ … +16 lines` plus the `›` prompt must also classify idle.
 
 ## [2026-04-27] - Match Claude Code spinners with multi-token text before the ellipsis
 
@@ -60,7 +60,7 @@
 * **🛠️ Codebase:**
   * `server/terminal-execution-classifier.js` — Replaced the verb-immediately-before-ellipsis regex with a shape-based glyph + `…` check, keeping the `esc to interrupt` short-circuit and the explicit exclusions for tool-call summaries and idle chevrons.
 * **🧪 Tests:**
-  * `server/__tests__/terminal-execution-classifier.test.js` — Added a regression test reproducing the live `✽ Phase 3.10: Tests…` spinner from `dev-orchestrator-3` (must classify `running/agent_streaming`) and a regression test asserting that a chevron line carrying typed-in `…` text stays `idle/agent_prompt_idle`.
+  * `server/__tests__/terminal-execution-classifier.test.js` — Added a regression test reproducing the live `✽ Phase 3.10: Tests…` spinner from `tool-runner-3` (must classify `running/agent_streaming`) and a regression test asserting that a chevron line carrying typed-in `…` text stays `idle/agent_prompt_idle`.
 
 ## [2026-04-27] - Recognize streaming Claude Code panes as busy
 

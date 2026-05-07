@@ -37,7 +37,7 @@ describe('allocateTerminalSessionId', () => {
 
   it('starts numbering at 1 when no sessions exist yet', () => {
     const result = allocateTerminalSessionId({
-      projectName: 'BookMe',
+      projectName: 'Gamma',
       activeSessionIds: [],
       deletedSessionIds: [],
       recoverableSessionIds: [],
@@ -45,7 +45,7 @@ describe('allocateTerminalSessionId', () => {
     });
 
     expect(result).toEqual({
-      data: { sessionId: 'BookMe-1' },
+      data: { sessionId: 'Gamma-1' },
     });
   });
 });

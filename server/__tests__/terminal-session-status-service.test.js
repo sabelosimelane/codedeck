@@ -90,15 +90,15 @@ describe('listTerminalSessions', () => {
   it('does not surface deleted durable session ids', () => {
     const runtime = {
       type: 'tmux',
-      getSessionCwd: vi.fn(() => '/tmp/bookme'),
-      listSessionIds: vi.fn(() => ['BookMe-9']),
+      getSessionCwd: vi.fn(() => '/tmp/gamma'),
+      listSessionIds: vi.fn(() => ['Gamma-9']),
     };
 
     const result = listTerminalSessions({
       sessions: new Map(),
       runtime,
-      projects: [{ name: 'BookMe', path: '/tmp/bookme' }],
-      deletedSessionIds: new Set(['BookMe-9']),
+      projects: [{ name: 'Gamma', path: '/tmp/gamma' }],
+      deletedSessionIds: new Set(['Gamma-9']),
       computeHealth: computeSessionHealth,
       computeStallReason,
       sanitizePreviewLine,
@@ -109,8 +109,8 @@ describe('listTerminalSessions', () => {
 
   it('uses cached status values without synchronous tmux lookups on the request path', () => {
     const sessions = new Map([
-      ['Mace-39', {
-        cwd: '/fallback/mace',
+      ['Beta-39', {
+        cwd: '/fallback/beta',
         startedAt: '2026-04-30T08:00:00.000Z',
         lastOutputAt: '2026-04-30T08:01:00.000Z',
         lastOutputLine: 'running',
@@ -137,10 +137,10 @@ describe('listTerminalSessions', () => {
     };
     const statusCache = {
       getSessionCwd: vi.fn((_entry, sessionId) => (
-        sessionId === 'Mace-39' ? '/cached/mace' : null
+        sessionId === 'Beta-39' ? '/cached/beta' : null
       )),
       getSessionExecutionState: vi.fn((_entry, sessionId) => (
-        sessionId === 'Mace-39'
+        sessionId === 'Beta-39'
           ? {
               executionStatus: 'running',
               foregroundCommand: 'node',
@@ -154,15 +154,15 @@ describe('listTerminalSessions', () => {
               executionConfidence: 'low',
             }
       )),
-      getDetachedSessionIds: vi.fn(() => ['BookMe-1']),
+      getDetachedSessionIds: vi.fn(() => ['Gamma-1']),
     };
 
     const result = listTerminalSessions({
       sessions,
       runtime,
       projects: [
-        { name: 'Mace', path: '/repo/mace' },
-        { name: 'BookMe', path: '/repo/bookme' },
+        { name: 'Beta', path: '/repo/beta' },
+        { name: 'Gamma', path: '/repo/gamma' },
       ],
       deletedSessionIds: new Set(),
       computeHealth: computeSessionHealth,
@@ -175,30 +175,30 @@ describe('listTerminalSessions', () => {
     expect(runtime.getSessionExecutionState).not.toHaveBeenCalled();
     expect(runtime.listSessionIds).not.toHaveBeenCalled();
     expect(statusCache.getSessionCwd).toHaveBeenCalledWith(
-      sessions.get('Mace-39'),
-      'Mace-39'
+      sessions.get('Beta-39'),
+      'Beta-39'
     );
     expect(statusCache.getSessionExecutionState).toHaveBeenCalledWith(
-      sessions.get('Mace-39'),
-      'Mace-39'
+      sessions.get('Beta-39'),
+      'Beta-39'
     );
     expect(statusCache.getDetachedSessionIds).toHaveBeenCalledWith({
       projects: [
-        { name: 'Mace', path: '/repo/mace' },
-        { name: 'BookMe', path: '/repo/bookme' },
+        { name: 'Beta', path: '/repo/beta' },
+        { name: 'Gamma', path: '/repo/gamma' },
       ],
       deletedSessionIds: new Set(),
-      seenSessionIds: new Set(['Mace-39']),
+      seenSessionIds: new Set(['Beta-39']),
     });
     expect(result).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        sessionId: 'Mace-39',
-        cwd: '/cached/mace',
+        sessionId: 'Beta-39',
+        cwd: '/cached/beta',
         executionStatus: 'running',
         executionReason: 'agent_working',
       }),
       expect.objectContaining({
-        sessionId: 'BookMe-1',
+        sessionId: 'Gamma-1',
         cwd: null,
         executionStatus: 'unknown',
         executionReason: 'status_refresh_pending',

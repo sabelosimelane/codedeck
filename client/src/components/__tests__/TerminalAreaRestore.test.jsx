@@ -48,18 +48,18 @@ vi.mock('../ToastContext', () => ({
 
 import TerminalArea from '../TerminalArea';
 
-const PROJECT = { name: 'BookMe', path: '/tmp/bookme' };
+const PROJECT = { name: 'Gamma', path: '/tmp/gamma' };
 const LAYOUT_KEY = `codedeck-layout-${PROJECT.name}`;
 
 const SAVED_LAYOUT = {
   tabs: [
     {
       id: 'tab-4',
-      label: 'BookMe-9',
+      label: 'Gamma-9',
       panes: [
         {
-          id: 'pane-BookMe-9',
-          sessionId: 'BookMe-9',
+          id: 'pane-Gamma-9',
+          sessionId: 'Gamma-9',
           widthFraction: 1,
           isConnected: true,
         },
@@ -101,7 +101,7 @@ describe('TerminalArea restore fallback', () => {
 
     await waitFor(() => {
       expect(view.getByText('No terminals open')).toBeTruthy();
-      expect(view.queryByText('BookMe-9')).toBeNull();
+      expect(view.queryByText('Gamma-9')).toBeNull();
       expect(mocks.showToast).toHaveBeenCalledWith({ type: 'error', message: 'Server unreachable' });
       expect(localStorage.getItem(LAYOUT_KEY)).toBe(JSON.stringify(SAVED_LAYOUT));
     });
@@ -112,7 +112,7 @@ describe('TerminalArea restore fallback', () => {
 
   it('publishes restore-time session snapshots to the app shell', async () => {
     const liveSessions = [
-      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true },
     ];
 
     global.fetch = vi.fn().mockResolvedValue({
@@ -130,8 +130,8 @@ describe('TerminalArea restore fallback', () => {
   it('renders pane header status from backend execution state', async () => {
     const liveSessions = [
       {
-        sessionId: 'BookMe-9',
-        cwd: '/tmp/bookme',
+        sessionId: 'Gamma-9',
+        cwd: '/tmp/gamma',
         alive: true,
         wsAttached: true,
         executionStatus: 'running',
@@ -163,10 +163,10 @@ describe('TerminalArea restore fallback', () => {
     );
 
     await waitFor(() => {
-      expect(view.getAllByText('BookMe-9').length).toBeGreaterThan(0);
+      expect(view.getAllByText('Gamma-9').length).toBeGreaterThan(0);
     });
 
-    const statusDot = view.getByTitle('BookMe-9: running (shell_without_prompt)');
+    const statusDot = view.getByTitle('Gamma-9: running (shell_without_prompt)');
     expect(statusDot.className).toContain('terminal-dot-busy');
     expect(view.getByText('Running')).toBeTruthy();
   });
@@ -190,7 +190,7 @@ describe('TerminalArea restore fallback', () => {
       if (url === '/api/terminal' && options.method === 'POST') {
         return {
           ok: true,
-          json: async () => ({ sessionId: 'BookMe-12' }),
+          json: async () => ({ sessionId: 'Gamma-12' }),
         };
       }
 
@@ -211,7 +211,7 @@ describe('TerminalArea restore fallback', () => {
       expect(global.fetch).toHaveBeenCalledWith('/api/terminal', expect.objectContaining({
         method: 'POST',
       }));
-      expect(view.getAllByText('BookMe-12').length).toBeGreaterThan(0);
+      expect(view.getAllByText('Gamma-12').length).toBeGreaterThan(0);
     });
   });
 
@@ -229,7 +229,7 @@ describe('TerminalArea restore fallback', () => {
     });
 
     const liveSessions = [
-      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true },
     ];
 
     const view = render(
@@ -246,13 +246,13 @@ describe('TerminalArea restore fallback', () => {
 
     await waitFor(() => {
       expect(view.queryByText('No terminals open')).toBeNull();
-      expect(view.getAllByText('BookMe-9').length).toBeGreaterThan(0);
+      expect(view.getAllByText('Gamma-9').length).toBeGreaterThan(0);
     });
   });
 
   it('lets the user manually re-measure a pane layout from the header', async () => {
     let liveSessions = [
-      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true },
     ];
 
     global.fetch = vi.fn(async (url) => {
@@ -271,12 +271,12 @@ describe('TerminalArea restore fallback', () => {
     );
 
     await waitFor(() => {
-      expect(view.getAllByText('BookMe-9').length).toBeGreaterThan(0);
+      expect(view.getAllByText('Gamma-9').length).toBeGreaterThan(0);
     });
 
     fireEvent.click(view.container.querySelector('[title="Re-measure terminal layout"]'));
 
-    expect(mocks.terminalApis.get('BookMe-9')?.redraw).toHaveBeenCalledTimes(1);
+    expect(mocks.terminalApis.get('Gamma-9')?.redraw).toHaveBeenCalledTimes(1);
     expect(mocks.showToast).toHaveBeenCalledWith({ type: 'success', message: 'Re-measuring terminal layout...' });
   });
 
@@ -284,7 +284,7 @@ describe('TerminalArea restore fallback', () => {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify(SAVED_LAYOUT));
 
     let liveSessions = [
-      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true },
     ];
 
     global.fetch = vi.fn(async (url, options = {}) => {
@@ -295,7 +295,7 @@ describe('TerminalArea restore fallback', () => {
         };
       }
 
-      if (url === '/api/terminal/BookMe-9' && options.method === 'DELETE') {
+      if (url === '/api/terminal/Gamma-9' && options.method === 'DELETE') {
         liveSessions = [];
         return {
           ok: true,
@@ -311,13 +311,13 @@ describe('TerminalArea restore fallback', () => {
     );
 
     await waitFor(() => {
-      expect(firstView.getAllByText('BookMe-9').length).toBeGreaterThan(0);
+      expect(firstView.getAllByText('Gamma-9').length).toBeGreaterThan(0);
     });
 
     fireEvent.click(firstView.container.querySelector('.pane-close-btn'));
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith('/api/terminal/BookMe-9', { method: 'DELETE' });
+      expect(global.fetch).toHaveBeenCalledWith('/api/terminal/Gamma-9', { method: 'DELETE' });
     });
 
     expect(localStorage.getItem(LAYOUT_KEY)).toBe(JSON.stringify({

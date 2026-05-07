@@ -17,7 +17,7 @@ function createDeferred() {
 describe('createTerminalStatusCache', () => {
   it('returns fallback values immediately and then serves refreshed async tmux status', async () => {
     const runtime = {
-      getSessionCwdAsync: vi.fn(async () => '/live/mace'),
+      getSessionCwdAsync: vi.fn(async () => '/live/beta'),
       getSessionExecutionStateAsync: vi.fn(async () => ({
         executionStatus: 'running',
         foregroundCommand: 'node',
@@ -26,18 +26,18 @@ describe('createTerminalStatusCache', () => {
       })),
       listSessionIdsAsync: vi.fn(async () => []),
     };
-    const entry = { cwd: '/fallback/mace', alive: true };
+    const entry = { cwd: '/fallback/beta', alive: true };
     const cache = createTerminalStatusCache({ runtime });
 
-    expect(cache.getSessionCwd(entry, 'Mace-39')).toBe('/fallback/mace');
-    expect(cache.getSessionExecutionState(entry, 'Mace-39')).toEqual(
+    expect(cache.getSessionCwd(entry, 'Beta-39')).toBe('/fallback/beta');
+    expect(cache.getSessionExecutionState(entry, 'Beta-39')).toEqual(
       STATUS_REFRESH_PENDING_EXECUTION_STATE
     );
 
     await cache.waitForIdle();
 
-    expect(cache.getSessionCwd(entry, 'Mace-39')).toBe('/live/mace');
-    expect(cache.getSessionExecutionState(entry, 'Mace-39')).toMatchObject({
+    expect(cache.getSessionCwd(entry, 'Beta-39')).toBe('/live/beta');
+    expect(cache.getSessionExecutionState(entry, 'Beta-39')).toMatchObject({
       executionStatus: 'running',
       executionReason: 'agent_working',
     });
@@ -53,18 +53,18 @@ describe('createTerminalStatusCache', () => {
       getSessionExecutionStateAsync: vi.fn(() => execution.promise),
       listSessionIdsAsync: vi.fn(async () => []),
     };
-    const entry = { cwd: '/fallback/mace', alive: true };
+    const entry = { cwd: '/fallback/beta', alive: true };
     const cache = createTerminalStatusCache({ runtime });
 
-    cache.getSessionCwd(entry, 'Mace-39');
-    cache.getSessionExecutionState(entry, 'Mace-39');
-    cache.getSessionCwd(entry, 'Mace-39');
-    cache.getSessionExecutionState(entry, 'Mace-39');
+    cache.getSessionCwd(entry, 'Beta-39');
+    cache.getSessionExecutionState(entry, 'Beta-39');
+    cache.getSessionCwd(entry, 'Beta-39');
+    cache.getSessionExecutionState(entry, 'Beta-39');
 
     expect(runtime.getSessionCwdAsync).toHaveBeenCalledTimes(1);
     expect(runtime.getSessionExecutionStateAsync).toHaveBeenCalledTimes(1);
 
-    cwd.resolve('/live/mace');
+    cwd.resolve('/live/beta');
     execution.resolve({
       executionStatus: 'idle',
       foregroundCommand: 'zsh',
@@ -73,8 +73,8 @@ describe('createTerminalStatusCache', () => {
     });
     await cache.waitForIdle();
 
-    expect(cache.getSessionCwd(entry, 'Mace-39')).toBe('/live/mace');
-    expect(cache.getSessionExecutionState(entry, 'Mace-39')).toMatchObject({
+    expect(cache.getSessionCwd(entry, 'Beta-39')).toBe('/live/beta');
+    expect(cache.getSessionExecutionState(entry, 'Beta-39')).toMatchObject({
       executionStatus: 'idle',
       executionReason: 'shell_prompt',
     });
@@ -84,7 +84,7 @@ describe('createTerminalStatusCache', () => {
     const firstCwd = createDeferred();
     const runtime = {
       getSessionCwdAsync: vi.fn((entry, sessionId) => (
-        sessionId === 'Mace-39' ? firstCwd.promise : Promise.resolve(`/live/${sessionId}`)
+        sessionId === 'Beta-39' ? firstCwd.promise : Promise.resolve(`/live/${sessionId}`)
       )),
       getSessionExecutionStateAsync: vi.fn(async () => ({
         executionStatus: 'idle',
@@ -99,44 +99,44 @@ describe('createTerminalStatusCache', () => {
       maxConcurrentRefreshes: 1,
     });
 
-    cache.getSessionCwd({ cwd: '/fallback/mace', alive: true }, 'Mace-39');
-    cache.getSessionCwd({ cwd: '/fallback/bookme', alive: true }, 'BookMe-1');
+    cache.getSessionCwd({ cwd: '/fallback/beta', alive: true }, 'Beta-39');
+    cache.getSessionCwd({ cwd: '/fallback/gamma', alive: true }, 'Gamma-1');
 
     expect(runtime.getSessionCwdAsync).toHaveBeenCalledTimes(1);
     expect(runtime.getSessionCwdAsync).toHaveBeenCalledWith(
-      { cwd: '/fallback/mace', alive: true },
-      'Mace-39'
+      { cwd: '/fallback/beta', alive: true },
+      'Beta-39'
     );
 
-    firstCwd.resolve('/live/mace');
+    firstCwd.resolve('/live/beta');
     await cache.waitForIdle();
 
     expect(runtime.getSessionCwdAsync).toHaveBeenCalledTimes(2);
     expect(
-      cache.getSessionCwd({ cwd: '/fallback/bookme', alive: true }, 'BookMe-1')
-    ).toBe('/live/BookMe-1');
+      cache.getSessionCwd({ cwd: '/fallback/gamma', alive: true }, 'Gamma-1')
+    ).toBe('/live/Gamma-1');
   });
 
   it('filters cached detached tmux sessions without synchronous runtime calls', async () => {
     const runtime = {
       getSessionCwdAsync: vi.fn(async () => null),
       getSessionExecutionStateAsync: vi.fn(async () => STATUS_REFRESH_PENDING_EXECUTION_STATE),
-      listSessionIdsAsync: vi.fn(async () => ['Mace-39', 'BookMe-1', 'orphan-1']),
+      listSessionIdsAsync: vi.fn(async () => ['Beta-39', 'Gamma-1', 'orphan-1']),
     };
     const cache = createTerminalStatusCache({ runtime });
     const params = {
       projects: [
-        { name: 'Mace', path: '/repo/mace' },
-        { name: 'BookMe', path: '/repo/bookme' },
+        { name: 'Beta', path: '/repo/beta' },
+        { name: 'Gamma', path: '/repo/gamma' },
       ],
-      deletedSessionIds: new Set(['BookMe-1']),
+      deletedSessionIds: new Set(['Gamma-1']),
       seenSessionIds: new Set(),
     };
 
     expect(cache.getDetachedSessionIds(params)).toEqual([]);
     await cache.waitForIdle();
 
-    expect(cache.getDetachedSessionIds(params)).toEqual(['Mace-39']);
+    expect(cache.getDetachedSessionIds(params)).toEqual(['Beta-39']);
     expect(runtime.listSessionIdsAsync).toHaveBeenCalledTimes(1);
     expect(runtime.getSessionCwdAsync).not.toHaveBeenCalled();
     expect(runtime.getSessionExecutionStateAsync).not.toHaveBeenCalled();

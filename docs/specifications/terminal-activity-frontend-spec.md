@@ -18,11 +18,11 @@ Add per-terminal activity visibility to the sidebar. Every project with active t
 The terminal list is nested under each project row in the sidebar, below the existing summary line ("2 terminals · 14m"). Always expanded — no toggle, no collapse.
 
 ```
-● Equinox                        📁 ✏ 🗑 🔔
+● Alpha                        📁 ✏ 🗑 🔔
   2 terminals · 14m
-    ● equinox-1 · 3s ago
+    ● alpha-1 · 3s ago
       [INFO] Building module...
-    ○ equinox-2 · 2m ago
+    ○ alpha-2 · 2m ago
       Tests passed: 42/42
 
 ● sentinel                       📁 ✏ 🗑 🔔
@@ -37,7 +37,7 @@ Each terminal row consists of two lines, indented further than the summary:
 
 **Line 1:** Activity dot + session label + time since last output
 - Activity dot: 6px circle, colored by status (see §2.3)
-- Session label: the sessionId (e.g., `equinox-1`)
+- Session label: the sessionId (e.g., `alpha-1`)
 - Time: relative timestamp from `lastOutputAt` — "3s ago", "2m ago", "1h ago"
 
 **Line 2:** Last output line preview
@@ -94,7 +94,7 @@ A notification fires when ALL of these are true:
 ### 3.2 Notification Content
 
 ```
-Title: "CodeDeck — equinox-1 finished"
+Title: "CodeDeck — alpha-1 finished"
 Body: <last output line preview, same as sidebar>
 Icon: (optional — CodeDeck favicon or a green checkmark)
 ```
@@ -145,8 +145,8 @@ Add execution-state fields plus `lastOutputLine` to each session entry:
 ```json
 [
   {
-    "sessionId": "equinox-1",
-    "cwd": "/home/user/projects/equinox",
+    "sessionId": "alpha-1",
+    "cwd": "/home/user/projects/alpha",
     "startedAt": "2026-04-10T09:30:00.000Z",
     "lastOutputAt": "2026-04-10T09:44:12.000Z",
     "alive": true,
@@ -245,7 +245,7 @@ Same visual weight as the existing action buttons (pencil, trash, folder). Doesn
 
 ## 9. Accessibility
 
-- Activity dots use `title` attribute for screen readers: "Terminal equinox-1: busy", "Terminal equinox-2: idle"
+- Activity dots use `title` attribute for screen readers: "Terminal alpha-1: busy", "Terminal alpha-2: idle"
 - Pulse animation respects `prefers-reduced-motion` — degrades to a static bright green dot
 - Mute toggle has `aria-label`: "Mute notifications for {project}" / "Unmute notifications for {project}"
 

@@ -57,19 +57,19 @@ describe('TerminalArea project-switch render guard', () => {
   it('suppresses stale panes on the first render after switching projects', () => {
     expect(shouldRenderProjectTerminals({
       projectName: 'whatsapp',
-      prevProjectName: 'BookMe',
+      prevProjectName: 'Gamma',
     })).toBe(false);
   });
 
   it('renders terminals on first mount and while staying on the same project', () => {
     expect(shouldRenderProjectTerminals({
-      projectName: 'BookMe',
+      projectName: 'Gamma',
       prevProjectName: null,
     })).toBe(true);
 
     expect(shouldRenderProjectTerminals({
-      projectName: 'BookMe',
-      prevProjectName: 'BookMe',
+      projectName: 'Gamma',
+      prevProjectName: 'Gamma',
     })).toBe(true);
   });
 });
@@ -77,23 +77,23 @@ describe('TerminalArea project-switch render guard', () => {
 describe('TerminalArea live session hydration', () => {
   it('restores all live project sessions when saved layout is missing', async () => {
     const sessions = [
-      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true, wsAttached: false },
-      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-1', cwd: '/tmp/gamma', alive: true, wsAttached: false },
+      { sessionId: 'Gamma-2', cwd: '/tmp/gamma', alive: true, wsAttached: true },
       { sessionId: 'Other-1', cwd: '/tmp/other', alive: true, wsAttached: false },
     ];
 
     const result = resolveInitialTerminalState({
-      projectName: 'BookMe',
-      projectPath: '/tmp/bookme',
+      projectName: 'Gamma',
+      projectPath: '/tmp/gamma',
       savedLayout: null,
       liveSessions: sessions,
     });
 
     expect(result.state.tabs).toHaveLength(2);
-    expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
-    expect(result.state.tabs[0].label).toBe('BookMe-1');
-    expect(result.state.tabs[1].panes[0].sessionId).toBe('BookMe-2');
-    expect(result.state.tabs[1].label).toBe('BookMe-2');
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('Gamma-1');
+    expect(result.state.tabs[0].label).toBe('Gamma-1');
+    expect(result.state.tabs[1].panes[0].sessionId).toBe('Gamma-2');
+    expect(result.state.tabs[1].label).toBe('Gamma-2');
     expect(result.state.activeTabId).toBe('tab-2');
     expect(result.sessionCounter).toBe(2);
   });
@@ -134,8 +134,8 @@ describe('TerminalArea live session hydration', () => {
           id: 'tab-1',
           label: 'Terminal 1',
           panes: [{
-            id: 'pane-BookMe-1',
-            sessionId: 'BookMe-1',
+            id: 'pane-Gamma-1',
+            sessionId: 'Gamma-1',
             widthFraction: 1,
             isConnected: true,
           }],
@@ -147,22 +147,22 @@ describe('TerminalArea live session hydration', () => {
     };
 
     const sessions = [
-      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true, wsAttached: true },
-      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true, wsAttached: false },
+      { sessionId: 'Gamma-1', cwd: '/tmp/gamma', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-2', cwd: '/tmp/gamma', alive: true, wsAttached: false },
     ];
 
     const result = resolveInitialTerminalState({
-      projectName: 'BookMe',
-      projectPath: '/tmp/bookme',
+      projectName: 'Gamma',
+      projectPath: '/tmp/gamma',
       savedLayout,
       liveSessions: sessions,
     });
 
     expect(result.state.tabs).toHaveLength(2);
-    expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
-    expect(result.state.tabs[0].label).toBe('BookMe-1');
-    expect(result.state.tabs[1].panes[0].sessionId).toBe('BookMe-2');
-    expect(result.state.tabs[1].label).toBe('BookMe-2');
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('Gamma-1');
+    expect(result.state.tabs[0].label).toBe('Gamma-1');
+    expect(result.state.tabs[1].panes[0].sessionId).toBe('Gamma-2');
+    expect(result.state.tabs[1].label).toBe('Gamma-2');
     expect(result.state.activeTabId).toBe('tab-1');
     expect(result.tabCounter).toBe(2);
     expect(result.sessionCounter).toBe(2);
@@ -176,14 +176,14 @@ describe('TerminalArea live session hydration', () => {
           label: 'Terminal 1',
           panes: [
             {
-              id: 'pane-BookMe-1',
-              sessionId: 'BookMe-1',
+              id: 'pane-Gamma-1',
+              sessionId: 'Gamma-1',
               widthFraction: 0.7,
               isConnected: true,
             },
             {
-              id: 'pane-BookMe-2',
-              sessionId: 'BookMe-2',
+              id: 'pane-Gamma-2',
+              sessionId: 'Gamma-2',
               widthFraction: 0.3,
               isConnected: true,
             },
@@ -196,24 +196,24 @@ describe('TerminalArea live session hydration', () => {
     };
 
     const sessions = [
-      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true, wsAttached: true },
-      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true, wsAttached: false },
+      { sessionId: 'Gamma-1', cwd: '/tmp/gamma', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-2', cwd: '/tmp/gamma', alive: true, wsAttached: false },
     ];
 
     const result = resolveInitialTerminalState({
-      projectName: 'BookMe',
-      projectPath: '/tmp/bookme',
+      projectName: 'Gamma',
+      projectPath: '/tmp/gamma',
       savedLayout,
       liveSessions: sessions,
     });
 
     expect(result.state.tabs).toHaveLength(1);
     expect(result.state.tabs[0].panes).toHaveLength(2);
-    expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('Gamma-1');
     expect(result.state.tabs[0].panes[0].widthFraction).toBe(0.7);
-    expect(result.state.tabs[0].panes[1].sessionId).toBe('BookMe-2');
+    expect(result.state.tabs[0].panes[1].sessionId).toBe('Gamma-2');
     expect(result.state.tabs[0].panes[1].widthFraction).toBe(0.3);
-    expect(result.state.tabs[0].label).toBe('BookMe-1');
+    expect(result.state.tabs[0].label).toBe('Gamma-1');
   });
 
   it('renormalizes widths only when some panes from a saved split are gone', async () => {
@@ -224,14 +224,14 @@ describe('TerminalArea live session hydration', () => {
           label: 'Terminal 1',
           panes: [
             {
-              id: 'pane-BookMe-1',
-              sessionId: 'BookMe-1',
+              id: 'pane-Gamma-1',
+              sessionId: 'Gamma-1',
               widthFraction: 0.7,
               isConnected: true,
             },
             {
-              id: 'pane-BookMe-2',
-              sessionId: 'BookMe-2',
+              id: 'pane-Gamma-2',
+              sessionId: 'Gamma-2',
               widthFraction: 0.3,
               isConnected: true,
             },
@@ -244,22 +244,22 @@ describe('TerminalArea live session hydration', () => {
     };
 
     const sessions = [
-      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: true, wsAttached: true },
-      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: false, wsAttached: false },
+      { sessionId: 'Gamma-1', cwd: '/tmp/gamma', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-2', cwd: '/tmp/gamma', alive: false, wsAttached: false },
     ];
 
     const result = resolveInitialTerminalState({
-      projectName: 'BookMe',
-      projectPath: '/tmp/bookme',
+      projectName: 'Gamma',
+      projectPath: '/tmp/gamma',
       savedLayout,
       liveSessions: sessions,
     });
 
     expect(result.state.tabs).toHaveLength(1);
     expect(result.state.tabs[0].panes).toHaveLength(1);
-    expect(result.state.tabs[0].panes[0].sessionId).toBe('BookMe-1');
+    expect(result.state.tabs[0].panes[0].sessionId).toBe('Gamma-1');
     expect(result.state.tabs[0].panes[0].widthFraction).toBe(1);
-    expect(result.state.tabs[0].label).toBe('BookMe-1');
+    expect(result.state.tabs[0].label).toBe('Gamma-1');
   });
 
   it('preserves intentionally disconnected panes when restoring layout', async () => {
@@ -270,14 +270,14 @@ describe('TerminalArea live session hydration', () => {
           label: 'Terminal 1',
           panes: [
             {
-              id: 'pane-BookMe-1',
-              sessionId: 'BookMe-1',
+              id: 'pane-Gamma-1',
+              sessionId: 'Gamma-1',
               widthFraction: 0.65,
               isConnected: false,
             },
             {
-              id: 'pane-BookMe-2',
-              sessionId: 'BookMe-2',
+              id: 'pane-Gamma-2',
+              sessionId: 'Gamma-2',
               widthFraction: 0.35,
               isConnected: true,
             },
@@ -290,13 +290,13 @@ describe('TerminalArea live session hydration', () => {
     };
 
     const sessions = [
-      { sessionId: 'BookMe-1', cwd: '/tmp/bookme', alive: false, wsAttached: false },
-      { sessionId: 'BookMe-2', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-1', cwd: '/tmp/gamma', alive: false, wsAttached: false },
+      { sessionId: 'Gamma-2', cwd: '/tmp/gamma', alive: true, wsAttached: true },
     ];
 
     const result = resolveInitialTerminalState({
-      projectName: 'BookMe',
-      projectPath: '/tmp/bookme',
+      projectName: 'Gamma',
+      projectPath: '/tmp/gamma',
       savedLayout,
       liveSessions: sessions,
     });
@@ -304,16 +304,16 @@ describe('TerminalArea live session hydration', () => {
     expect(result.state.tabs).toHaveLength(1);
     expect(result.state.tabs[0].panes).toHaveLength(2);
     expect(result.state.tabs[0].panes[0]).toMatchObject({
-      sessionId: 'BookMe-1',
+      sessionId: 'Gamma-1',
       isConnected: false,
       widthFraction: 0.65,
     });
     expect(result.state.tabs[0].panes[1]).toMatchObject({
-      sessionId: 'BookMe-2',
+      sessionId: 'Gamma-2',
       isConnected: true,
       widthFraction: 0.35,
     });
-    expect(result.state.tabs[0].label).toBe('BookMe-1');
+    expect(result.state.tabs[0].label).toBe('Gamma-1');
   });
 
   it('migrates saved Terminal N labels to session-based tab names', async () => {
@@ -323,8 +323,8 @@ describe('TerminalArea live session hydration', () => {
           id: 'tab-1',
           label: 'Terminal 1',
           panes: [{
-            id: 'pane-BookMe-9',
-            sessionId: 'BookMe-9',
+            id: 'pane-Gamma-9',
+            sessionId: 'Gamma-9',
             widthFraction: 1,
             isConnected: true,
           }],
@@ -336,17 +336,17 @@ describe('TerminalArea live session hydration', () => {
     };
 
     const sessions = [
-      { sessionId: 'BookMe-9', cwd: '/tmp/bookme', alive: true, wsAttached: true },
+      { sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true },
     ];
 
     const result = resolveInitialTerminalState({
-      projectName: 'BookMe',
-      projectPath: '/tmp/bookme',
+      projectName: 'Gamma',
+      projectPath: '/tmp/gamma',
       savedLayout,
       liveSessions: sessions,
     });
 
-    expect(result.state.tabs[0].label).toBe('BookMe-9');
+    expect(result.state.tabs[0].label).toBe('Gamma-9');
   });
 
   it('preserves saved tabs when the live session snapshot is empty so durable sessions can reconnect after server restart', async () => {
@@ -354,10 +354,10 @@ describe('TerminalArea live session hydration', () => {
       tabs: [
         {
           id: 'tab-4',
-          label: 'BookMe-9',
+          label: 'Gamma-9',
           panes: [{
-            id: 'pane-BookMe-9',
-            sessionId: 'BookMe-9',
+            id: 'pane-Gamma-9',
+            sessionId: 'Gamma-9',
             widthFraction: 1,
             isConnected: true,
           }],
@@ -369,8 +369,8 @@ describe('TerminalArea live session hydration', () => {
     };
 
     const result = resolveInitialTerminalState({
-      projectName: 'BookMe',
-      projectPath: '/tmp/bookme',
+      projectName: 'Gamma',
+      projectPath: '/tmp/gamma',
       savedLayout,
       liveSessions: [],
     });
@@ -393,8 +393,8 @@ describe('TerminalArea live session hydration', () => {
     };
 
     const result = resolveInitialTerminalState({
-      projectName: 'BookMe',
-      projectPath: '/tmp/bookme',
+      projectName: 'Gamma',
+      projectPath: '/tmp/gamma',
       savedLayout,
       liveSessions: [],
     });

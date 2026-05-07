@@ -117,10 +117,10 @@ describe('Sidebar', () => {
     });
 
     const view = renderSidebar({
-      activeProjects: [{ name: 'Equinox', path: '/Users/sabside/git/equinox/backend' }],
+      activeProjects: [{ name: 'Alpha', path: '/Users/dev/git/alpha/backend' }],
       sessionStatus: [{
-        sessionId: 'Equinox-3',
-        cwd: '/Users/sabside/git/equinox/backend',
+        sessionId: 'Alpha-3',
+        cwd: '/Users/dev/git/alpha/backend',
         alive: true,
         executionStatus: 'running',
         lastOutputAt: '2026-04-25T13:00:00.000Z',
@@ -132,7 +132,7 @@ describe('Sidebar', () => {
       expect(global.fetch).toHaveBeenCalledWith('/api/config');
     });
 
-    const dot = view.getByTitle('Terminal Equinox-3: busy');
+    const dot = view.getByTitle('Terminal Alpha-3: busy');
     expect(dot.className).toContain('terminal-dot-busy');
   });
 });

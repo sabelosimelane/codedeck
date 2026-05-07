@@ -109,7 +109,7 @@ describe('App session polling', () => {
       if (url === '/api/projects') {
         return Promise.resolve({
           ok: true,
-          json: async () => [{ name: 'BookMe', path: '/tmp/bookme' }],
+          json: async () => [{ name: 'Gamma', path: '/tmp/gamma' }],
         });
       }
 
@@ -129,7 +129,7 @@ describe('App session polling', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sessionRequestCount).toBe(1);
 
-    fireEvent.click(screen.getByRole('button', { name: 'BookMe' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Gamma' }));
 
     expect(sessionRequestCount).toBe(2);
   });

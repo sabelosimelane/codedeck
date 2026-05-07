@@ -66,7 +66,7 @@ describe('TerminalArea tmux-required runtime gate', () => {
       if (url === '/api/terminal') {
         return Promise.resolve({
           ok: true,
-          json: async () => ({ sessionId: 'BookMe-1' }),
+          json: async () => ({ sessionId: 'Gamma-1' }),
         });
       }
 
@@ -75,7 +75,7 @@ describe('TerminalArea tmux-required runtime gate', () => {
 
     render(
       <TerminalArea
-        project={{ name: 'BookMe', path: '/tmp/bookme' }}
+        project={{ name: 'Gamma', path: '/tmp/gamma' }}
         sessionStatus={[]}
         onSessionStatusRefresh={onSessionStatusRefresh}
       />

@@ -114,7 +114,7 @@ describe('createTerminalRuntime', () => {
         '',
         '› Summarize recent commits',
         '',
-        '  gpt-5.5 medium · ~/git/mace/backend',
+        '  gpt-5.5 medium · ~/git/beta/backend',
       ].join('\n');
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
@@ -142,7 +142,7 @@ describe('createTerminalRuntime', () => {
         '',
         '› Summarize recent commits',
         '',
-        '  gpt-5.5 medium · ~/git/mace/backend',
+        '  gpt-5.5 medium · ~/git/beta/backend',
       ].join('\n');
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
@@ -168,7 +168,7 @@ describe('createTerminalRuntime', () => {
         '───────────────────────────────────────────────────────────',
         '❯',
         '───────────────────────────────────────────────────────────',
-        '  sabside ~/git/equinox/backend Opus 4.7',
+        '  dev ~/git/alpha/backend Opus 4.7',
       ].join('\n');
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
@@ -194,7 +194,7 @@ describe('createTerminalRuntime', () => {
         '',
         '› Summarize recent commits',
         '',
-        '  gpt-5.5 medium · ~/git/equinox/backend',
+        '  gpt-5.5 medium · ~/git/alpha/backend',
       ].join('\n');
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
@@ -214,7 +214,7 @@ describe('createTerminalRuntime', () => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
       if (args[0] === 'display-message') return 'zsh\t0\n';
-      if (args[0] === 'capture-pane') return 'sabside@MacBook-Pro backend %\n';
+      if (args[0] === 'capture-pane') return 'dev@host backend %\n';
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
 

@@ -293,7 +293,7 @@ describe('handleWsConnection', () => {
     it('stores a clean lastOutputLine when output contains terminal control sequences', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
-      const noisyOutput = '\x1b]0;BookMe-2\x07\x1b[?25l\x1b[2K\rBackend is fully verified\x1b[?25h';
+      const noisyOutput = '\x1b]0;Gamma-2\x07\x1b[?25l\x1b[2K\rBackend is fully verified\x1b[?25h';
 
       handleWsConnection(ws, req, sessions, spawnPty);
       mockPty.emitData(noisyOutput);
