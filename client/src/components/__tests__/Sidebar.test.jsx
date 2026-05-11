@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import React from 'react';
 
 const mocks = vi.hoisted(() => ({
@@ -27,6 +27,10 @@ vi.mock('lucide-react', () => {
     PanelLeftClose: Icon,
     PanelLeftOpen: Icon,
     Keyboard: Icon,
+    Hourglass: Icon,
+    Play: Icon,
+    Copy: Icon,
+    MoreVertical: Icon,
   };
 });
 
@@ -61,6 +65,7 @@ function renderSidebar(overrides = {}) {
   return render(
     <Sidebar
       activeProjects={[]}
+      waitingProjects={[]}
       shelvedProjects={[]}
       activeProject={null}
       isCompact={false}
@@ -68,6 +73,8 @@ function renderSidebar(overrides = {}) {
       onAdd={vi.fn()}
       onRemove={vi.fn()}
       onRename={vi.fn()}
+      onMarkWaiting={vi.fn()}
+      onActivateWaiting={vi.fn()}
       onShelve={vi.fn()}
       onUnshelve={vi.fn()}
       onToggleCompact={vi.fn()}
@@ -91,6 +98,7 @@ describe('Sidebar', () => {
   });
 
   afterEach(() => {
+    cleanup();
     global.fetch = originalFetch;
     vi.restoreAllMocks();
   });
@@ -134,5 +142,110 @@ describe('Sidebar', () => {
 
     const dot = view.getByTitle('Terminal Alpha-3: busy');
     expect(dot.className).toContain('terminal-dot-busy');
+  });
+
+  it('renders waiting projects as compact muted rows below active projects', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ terminalFinishCooldownSeconds: 45 }),
+    });
+
+    const onActivateWaiting = vi.fn();
+    const view = renderSidebar({
+      activeProjects: [{ name: 'Alpha', path: '/tmp/alpha' }],
+      waitingProjects: [{ name: 'Beta', path: '/tmp/beta', waiting: true }],
+      onActivateWaiting,
+      sessionStatus: [{
+        sessionId: 'Beta-1',
+        cwd: '/tmp/beta',
+        alive: true,
+        executionStatus: 'running',
+        lastOutputAt: '2026-05-11T10:00:00.000Z',
+        lastOutputLine: 'long running task',
+      }],
+    });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith('/api/config');
+    });
+
+    expect(view.getByText('Waiting (1)')).toBeTruthy();
+    expect(view.getByText('Beta')).toBeTruthy();
+    expect(view.queryByText('Beta-1')).toBeNull();
+
+    view.getByTitle('Beta — Waiting').click();
+    expect(onActivateWaiting).toHaveBeenCalledWith('Beta');
+  });
+
+  it('keeps copy path visible and moves rename/delete into the project actions menu', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ terminalFinishCooldownSeconds: 45 }),
+    });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+
+    const onRename = vi.fn();
+    const onRemove = vi.fn();
+    const onShelve = vi.fn();
+    const onMarkWaiting = vi.fn();
+    const onBrowseFiles = vi.fn();
+    const view = renderSidebar({
+      activeProjects: [{ name: 'Alpha', path: '/tmp/alpha' }],
+      waitingProjects: [{ name: 'Beta', path: '/tmp/beta', waiting: true }],
+      shelvedProjects: [{ name: 'Gamma', path: '/tmp/gamma', shelved: true }],
+      onRename,
+      onRemove,
+      onShelve,
+      onMarkWaiting,
+      onBrowseFiles,
+    });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith('/api/config');
+    });
+
+    fireEvent.click(view.getByLabelText('Copy path for Alpha'));
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('/tmp/alpha');
+    });
+
+    fireEvent.click(view.getByLabelText('Shelve Alpha'));
+    expect(onShelve).toHaveBeenCalledWith('Alpha');
+
+    fireEvent.click(view.getByLabelText('Move Alpha to Waiting'));
+    expect(onMarkWaiting).toHaveBeenCalledWith('Alpha');
+
+    fireEvent.click(view.getByLabelText('Project actions for Alpha'));
+    expect(view.getByLabelText('Project actions for Alpha').closest('.project-row').className).toContain('project-menu-open');
+    expect(view.queryByText('Shelve project')).toBeNull();
+    expect(view.queryByText('Move to Waiting')).toBeNull();
+    fireEvent.click(view.getByText('Browse files'));
+    expect(onBrowseFiles).toHaveBeenCalledWith({ name: 'Alpha', path: '/tmp/alpha' });
+
+    fireEvent.click(view.getByLabelText('Project actions for Alpha'));
+    fireEvent.click(view.getByText('Rename project'));
+    const renameInput = view.getByDisplayValue('Alpha');
+    fireEvent.change(renameInput, { target: { value: 'Alpha Prime' } });
+    fireEvent.keyDown(renameInput, { key: 'Enter' });
+    expect(onRename).toHaveBeenCalledWith('Alpha', 'Alpha Prime');
+
+    fireEvent.click(view.getByLabelText('Shelve Beta'));
+    expect(onShelve).toHaveBeenCalledWith('Beta');
+
+    fireEvent.click(view.getByLabelText('Project actions for Beta'));
+    expect(view.getByLabelText('Project actions for Beta').closest('.waiting-row').className).toContain('project-menu-open');
+    expect(document.querySelector('.project-menu').className).toContain('project-menu-up');
+    fireEvent.click(view.getByText('Remove project'));
+    fireEvent.click(view.getByText('Confirm remove'));
+    expect(onRemove).toHaveBeenCalledWith('Beta');
+
+    fireEvent.click(view.getByText('Shelved (1)'));
+    fireEvent.click(view.getByLabelText('Project actions for Gamma'));
+    expect(view.getByLabelText('Project actions for Gamma').closest('.shelf-row').className).toContain('project-menu-open');
+    expect(view.getByText('Rename project')).toBeTruthy();
+    expect(view.getByText('Remove project')).toBeTruthy();
   });
 });

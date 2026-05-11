@@ -194,7 +194,7 @@ function AppContent() {
       const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shelved: true, shelvedAt: new Date().toISOString() }),
+        body: JSON.stringify({ shelved: true, shelvedAt: new Date().toISOString(), waiting: false, waitingAt: null }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -209,12 +209,57 @@ function AppContent() {
     }
   };
 
+  const markWaitingProject = async (name) => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ waiting: true, waitingAt: new Date().toISOString() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: err.error || 'Failed to mark project waiting' });
+        return;
+      }
+      if (activeProject?.name === name) setActiveProject(null);
+      showToast({ type: 'success', message: 'Project moved to Waiting' });
+      await fetchProjects();
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
+  };
+
+  const activateWaitingProject = async (projectOrName) => {
+    const name = typeof projectOrName === 'string' ? projectOrName : projectOrName?.name;
+    if (!name) return;
+
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ waiting: false, waitingAt: null }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: err.error || 'Failed to activate project' });
+        return;
+      }
+      const data = await res.json();
+      showToast({ type: 'success', message: 'Project active' });
+      await fetchProjects();
+      setActiveProject(data);
+      fetchSessionStatus();
+    } catch {
+      showToast({ type: 'error', message: 'Server unreachable' });
+    }
+  };
+
   const unshelveProject = async (name) => {
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shelved: false, shelvedAt: null }),
+        body: JSON.stringify({ shelved: false, shelvedAt: null, waiting: false, waitingAt: null }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -284,7 +329,10 @@ function AppContent() {
     }
   };
 
-  const activeProjects = projects.filter(p => !p.shelved);
+  const activeProjects = projects.filter(p => !p.shelved && !p.waiting);
+  const waitingProjects = projects
+    .filter(p => !p.shelved && p.waiting)
+    .sort((a, b) => new Date(b.waitingAt) - new Date(a.waitingAt));
   const shelvedProjects = projects
     .filter(p => p.shelved)
     .sort((a, b) => new Date(b.shelvedAt) - new Date(a.shelvedAt));
@@ -297,6 +345,7 @@ function AppContent() {
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
       <Sidebar
         activeProjects={activeProjects}
+        waitingProjects={waitingProjects}
         shelvedProjects={shelvedProjects}
         activeProject={activeProject}
         isCompact={isSidebarCompact}
@@ -307,6 +356,8 @@ function AppContent() {
         onAdd={addProject}
         onRemove={removeProject}
         onRename={renameProject}
+        onMarkWaiting={markWaitingProject}
+        onActivateWaiting={activateWaitingProject}
         onShelve={shelveProject}
         onUnshelve={unshelveProject}
         onToggleCompact={() => setIsSidebarCompact(prev => !prev)}
@@ -367,8 +418,13 @@ function AppContent() {
       )}
       {showProjectSwitcher && (
         <ProjectSwitcher
-          projects={activeProjects}
+          projects={[...activeProjects, ...waitingProjects]}
           onSelect={(project) => {
+            if (project.waiting) {
+              activateWaitingProject(project);
+              setShowProjectSwitcher(false);
+              return;
+            }
             setActiveProject(project);
             fetchSessionStatus();
             setShowProjectSwitcher(false);

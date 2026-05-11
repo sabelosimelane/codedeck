@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, fireEvent, screen } from '@testing-library/react';
+import { act, render, fireEvent, screen } from '@testing-library/react';
 import React from 'react';
 
 const mocks = vi.hoisted(() => ({
@@ -7,11 +7,16 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('./components/Sidebar', () => ({
-  default: ({ activeProjects = [], onSelect }) => (
+  default: ({ activeProjects = [], waitingProjects = [], onSelect, onActivateWaiting }) => (
     <div>
       {activeProjects.map(project => (
         <button key={project.name} onClick={() => onSelect(project)}>
           {project.name}
+        </button>
+      ))}
+      {waitingProjects.map(project => (
+        <button key={project.name} onClick={() => onActivateWaiting(project.name)}>
+          Waiting: {project.name}
         </button>
       ))}
     </div>
@@ -131,6 +136,59 @@ describe('App session polling', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Gamma' }));
 
+    expect(sessionRequestCount).toBe(2);
+  });
+
+  it('activates a waiting project before selecting it', async () => {
+    let sessionRequestCount = 0;
+    let projectRequestCount = 0;
+
+    global.fetch = vi.fn((url, options = {}) => {
+      if (url === '/api/projects' && !options.method) {
+        projectRequestCount += 1;
+        return Promise.resolve({
+          ok: true,
+          json: async () => projectRequestCount === 1
+            ? [{ name: 'Gamma', path: '/tmp/gamma', waiting: true, waitingAt: '2026-05-11T10:00:00.000Z' }]
+            : [{ name: 'Gamma', path: '/tmp/gamma', waiting: false, waitingAt: null }],
+        });
+      }
+
+      if (url === '/api/projects/Gamma' && options.method === 'PUT') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ name: 'Gamma', path: '/tmp/gamma', waiting: false, waitingAt: null }),
+        });
+      }
+
+      if (url === '/api/sessions') {
+        sessionRequestCount += 1;
+        return Promise.resolve({
+          ok: true,
+          json: async () => [],
+        });
+      }
+
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    render(<App />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Waiting: Gamma' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith('/api/projects/Gamma', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ waiting: false, waitingAt: null }),
+    }));
     expect(sessionRequestCount).toBe(2);
   });
 });

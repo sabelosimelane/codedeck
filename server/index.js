@@ -29,6 +29,7 @@ import { pruneTerminalSessions } from './session-gc.js';
 import { readTree } from './file-tree.js';
 import { readFilePreview } from './file-preview.js';
 import { resolveEditorCommand } from './editor-command.js';
+import { normalizeProjects } from './project-config.js';
 
 const app = express();
 app.use(express.json());
@@ -48,7 +49,7 @@ function setConfig(key, value) {
 
 function loadProjects() {
   const projects = getConfig('projects') || [];
-  return projects.map(p => ({ shelved: false, shelvedAt: null, ...p }));
+  return normalizeProjects(projects);
 }
 
 function saveProjects(projects) {
@@ -91,7 +92,7 @@ app.put('/api/projects/:name', (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'project not found' });
 
   const existing = projects[idx];
-  const { name: newName, path: newPath, shelved, shelvedAt } = req.body;
+  const { name: newName, path: newPath, shelved, shelvedAt, waiting, waitingAt } = req.body;
 
   // If name or path is provided, validate and apply them
   if (newName !== undefined || newPath !== undefined) {
@@ -105,6 +106,8 @@ app.put('/api/projects/:name', (req, res) => {
   // Apply shelf fields if provided
   if (shelved !== undefined) projects[idx] = { ...projects[idx], shelved };
   if (shelvedAt !== undefined) projects[idx] = { ...projects[idx], shelvedAt };
+  if (waiting !== undefined) projects[idx] = { ...projects[idx], waiting };
+  if (waitingAt !== undefined) projects[idx] = { ...projects[idx], waitingAt };
 
   saveProjects(projects);
   res.json(projects[idx]);

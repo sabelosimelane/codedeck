@@ -1,6 +1,26 @@
 # Changelog
 
-## [2026-05-07] - Terminal finished-state persistence, tmux mouse mode, and copy-on-select
+## [2026-05-11] - Waiting state for projects and sidebar action menus
+
+### Executive Summary
+* Projects now have a third state — **Waiting** — between active and shelved. Waiting projects appear in a dimmed section below active projects with their own controls (activate, shelve, copy path, and a context menu). This lets users park projects they aren't actively working on without archiving them. The sidebar's row actions were also redesigned: the most-used actions (copy path, move-to-waiting, shelve) stay visible as inline buttons, while secondary actions (rename, mute, browse files, remove) were consolidated into a portal-based `MoreVertical` dropdown menu to reduce visual clutter.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/project-config.js` — New `normalizeProject()` and `normalizeProjects()` helpers that default every project to `{ shelved: false, shelvedAt: null, waiting: false, waitingAt: null }`. Used by `loadProjects()` in `server/index.js` to replace inline defaults.
+  * `server/index.js` — PUT `/api/projects/:name` now accepts and persists `waiting` and `waitingAt` fields alongside the existing `shelved`/`shelvedAt` pair.
+  * `client/src/App.jsx` — Added `markWaitingProject()`, `activateWaitingProject()` handlers that call the PUT endpoint with the appropriate waiting fields. `unshelveProject()` and `shelveProject()` now also clear waiting state to avoid a project landing in two states at once. `activeProjects` derivation excludes waiting projects; a new `waitingProjects` derivation filters for `!shelved && waiting`, sorted by `waitingAt` desc. `ProjectSwitcher` receives both active and waiting projects, and selecting a waiting project activates it before switching.
+  * `client/src/components/Sidebar.jsx` — New `waitingProjects` prop renders a collapsible "Waiting (N)" section between active projects and the shelf. Each waiting row shows a status dot, project name, inline Play/Copy/Shelve buttons, and a `MoreVertical` menu (rename, remove). Active project rows gained inline Copy, Hourglass (move-to-waiting), and Archive (shelve) buttons, while Rename, Mute, Browse Files, and Remove moved into a `renderProjectMenu()` portal dropdown. Shelved rows now offer inline Copy and page-up menus (rename, remove) instead of flat action buttons. Rename is now an inline input on the row itself for all three sections. `copyProjectPath()` uses `navigator.clipboard.writeText()` with a toast on success/failure.
+  * `client/src/components/ProjectSwitcher.jsx` — Waiting projects appear in the switcher list with a muted "Waiting" badge. `scrollIntoView` call now guarded with a typeof check. Rows gain a `.waiting` CSS class for muted styling.
+* **🛠️ Codebase:**
+  * `client/src/styles/global.css` — Added `.waiting-row`, `.project-inline-actions` (opacity reveal on row hover), `.project-menu-wrap`, `.project-menu`, `.project-menu-fixed`, `.project-menu-up`, `.project-menu-item` (with `.danger` variant), and `.project-switcher-state` badge styles. Project/waiting/shelf rows gain `z-index: 80` when focused or menu-open to prevent z-fighting. `.project-actions` got `overflow: visible`.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/ProjectSwitcher.test.jsx` — New test file verifying waiting projects render with a "Waiting" badge and fire `onSelect` with the full project object.
+  * `client/src/styles/__tests__/global-css.test.js` — New test asserting `.project-menu` uses `background: var(--bg-surface)` (opaque) so rows don't bleed through the dropdown.
+  * `server/__tests__/project-config.test.js` — New test file covering `normalizeProject` defaults and preserving existing waiting metadata.
+  * `client/src/App.test.jsx` — New test: "activates a waiting project before selecting it" — verifies the PUT call clears waiting fields and triggers a session fetch.
+  * `client/src/components/__tests__/Sidebar.test.jsx` — New tests: "renders waiting projects as compact muted rows below active projects" and "keeps copy path visible and moves rename/delete into the project actions menu." Added `cleanup()` to afterEach.
+  * `client/src/utils/__tests__/terminalActivity.test.js` — New test: "skips completion notification for waiting projects that are outside the active set."
 
 ### Executive Summary
 * Three terminal improvements shipped together. Terminals now turn solid red when a busy command finishes, making it easy to spot which panes need attention without reading every tab label. A reset button acknowledges the red state and fades it back to grey. Separately, tmux mouse mode was re-enabled so wheel scrolling drives tmux history directly (fixing the no-scrollback ArrowUp fallback), and copy-on-select was added so text selected by dragging is automatically copied to the clipboard despite tmux mouse mode blocking normal browser selection.

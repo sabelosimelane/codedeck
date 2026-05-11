@@ -185,6 +185,24 @@ describe('terminalActivity', () => {
     })).toBe(null);
   });
 
+  it('skips completion notification for waiting projects that are outside the active set', () => {
+    const session = {
+      sessionId: 'Gamma-1',
+      cwd: '/tmp/gamma',
+      alive: true,
+      executionStatus: 'idle',
+      lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1000).toISOString(),
+    };
+
+    expect(getTerminalCompletionNotification(session, {
+      activeProjects: [],
+      mutedProjects: [],
+      prevStatus: 'busy',
+      busyStartedAt: now - TERMINAL_COMPLETION_NOTIFICATION_MS - 1,
+      now,
+    })).toBe(null);
+  });
+
   it('skips completion notification for short tasks', () => {
     const session = {
       sessionId: 'Gamma-1',

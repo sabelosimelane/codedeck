@@ -118,11 +118,17 @@ input:focus {
 }
 
 .project-row {
+  position: relative;
   animation: fadeIn 200ms ease;
 }
 
 .shelf-row {
+  position: relative;
   animation: fadeIn 200ms ease;
+}
+
+.waiting-row {
+  position: relative;
 }
 
 /* ─── Terminal activity dot pulse ───────────────────────────── */
@@ -192,6 +198,7 @@ input:focus {
   max-height: 36px;
   opacity: 1;
   margin-top: 4px;
+  overflow: visible;
 }
 
 .project-action-btn {
@@ -206,6 +213,29 @@ input:focus {
 .project-action-btn:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+
+.project-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0.72;
+  transition: opacity 120ms ease;
+}
+
+.project-row:hover .project-inline-actions,
+.project-row:focus-within .project-inline-actions {
+  opacity: 1;
+}
+
+.project-row:focus-within,
+.waiting-row:focus-within,
+.shelf-row:focus-within,
+.project-row.project-menu-open,
+.waiting-row.project-menu-open,
+.shelf-row.project-menu-open {
+  z-index: 80;
 }
 
 .brand-lockup {
@@ -254,6 +284,67 @@ input:focus {
 
 .project-action-btn.danger:hover {
   color: var(--danger);
+}
+
+.project-menu-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.project-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 200;
+  min-width: 156px;
+  padding: 4px;
+  margin-top: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-soft);
+}
+
+.project-menu-fixed {
+  position: fixed;
+  top: auto;
+  right: auto;
+  z-index: 2000;
+}
+
+.project-menu-up {
+  top: auto;
+  bottom: 100%;
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+
+.project-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.project-menu-item:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.project-menu-item.danger {
+  color: var(--danger);
+}
+
+.project-menu-item.danger:hover {
+  background: rgba(248, 113, 113, 0.1);
 }
 
 .file-tree-row-action {
@@ -739,6 +830,9 @@ input:focus {
 }
 
 .project-switcher-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 500;
@@ -746,8 +840,22 @@ input:focus {
   white-space: nowrap;
 }
 
+.project-switcher-row.waiting .project-switcher-name,
+.project-switcher-row.waiting .project-switcher-path {
+  color: var(--text-muted);
+}
+
 .project-switcher-row.highlighted .project-switcher-name {
   color: var(--accent);
+}
+
+.project-switcher-state {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 /* ─── Shortcuts Reference Overlay ──────────────────────────── */

@@ -26,7 +26,9 @@ export default function ProjectSwitcher({ projects, onSelect, onClose }) {
     const list = listRef.current;
     if (!list) return;
     const item = list.children[highlightIndex];
-    if (item) item.scrollIntoView({ block: 'nearest' });
+    if (item && typeof item.scrollIntoView === 'function') {
+      item.scrollIntoView({ block: 'nearest' });
+    }
   }, [highlightIndex]);
 
   const handleKeyDown = (e) => {
@@ -86,11 +88,14 @@ export default function ProjectSwitcher({ projects, onSelect, onClose }) {
           {filtered.map((project, i) => (
             <div
               key={project.name}
-              className={`project-switcher-row ${i === highlightIndex ? 'highlighted' : ''}`}
+              className={`project-switcher-row ${i === highlightIndex ? 'highlighted' : ''} ${project.waiting ? 'waiting' : ''}`}
               onClick={() => onSelect(project)}
               onMouseEnter={() => setHighlightIndex(i)}
             >
-              <span className="project-switcher-name">{project.name}</span>
+              <span className="project-switcher-name">
+                {project.name}
+                {project.waiting && <span className="project-switcher-state">Waiting</span>}
+              </span>
               <span className="project-switcher-path">{displayPath(project.path)}</span>
             </div>
           ))}

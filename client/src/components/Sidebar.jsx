@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard, Hourglass, Play, Copy, MoreVertical } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
@@ -54,7 +55,7 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), onResetFinishedSession = () => {}, onBrowseFiles, onShowShortcuts }) {
+export default function Sidebar({ activeProjects, waitingProjects = [], shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), onResetFinishedSession = () => {}, onBrowseFiles, onShowShortcuts }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
@@ -73,6 +74,8 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
     }
   });
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [openProjectMenu, setOpenProjectMenu] = useState(null);
+  const [projectMenuAnchor, setProjectMenuAnchor] = useState(null);
   const renameInputRef = useRef(null);
   const busyTracker = useRef(new Map());
   const prevStatusRef = useRef(new Map());
@@ -220,6 +223,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
 
   const toggleMute = (e, projectName) => {
     e.stopPropagation();
+    setOpenProjectMenu(null);
     setMutedProjects(prev => {
       const next = prev.includes(projectName)
         ? prev.filter(n => n !== projectName)
@@ -227,6 +231,20 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
       localStorage.setItem('codedeck-muted-projects', JSON.stringify(next));
       return next;
     });
+  };
+
+  const copyProjectPath = async (e, project) => {
+    e.stopPropagation();
+    try {
+      if (!navigator.clipboard?.writeText) {
+        showToast({ type: 'error', message: 'Clipboard unavailable' });
+        return;
+      }
+      await navigator.clipboard.writeText(project.path);
+      showToast({ type: 'success', message: 'Project path copied' });
+    } catch {
+      showToast({ type: 'error', message: 'Failed to copy project path' });
+    }
   };
 
   const getProjectSessions = (project) => {
@@ -261,6 +279,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
 
   const startRename = (e, project) => {
     e.stopPropagation();
+    setOpenProjectMenu(null);
     setRenamingProject(project.name);
     setRenameValue(project.name);
   };
@@ -271,6 +290,13 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
     document.addEventListener('click', dismiss);
     return () => document.removeEventListener('click', dismiss);
   }, [confirmDelete]);
+
+  useEffect(() => {
+    if (!openProjectMenu) return;
+    const dismiss = () => setOpenProjectMenu(null);
+    document.addEventListener('click', dismiss);
+    return () => document.removeEventListener('click', dismiss);
+  }, [openProjectMenu]);
 
   useEffect(() => {
     if (renamingProject && renameInputRef.current) {
@@ -300,7 +326,79 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
     });
   };
 
-  const totalProjects = activeProjects.length + shelvedProjects.length;
+  const renderProjectMenu = (project, menuKey, items, placement = 'down') => (
+    <div className="project-menu-wrap">
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          if (openProjectMenu === menuKey) {
+            setOpenProjectMenu(null);
+            setProjectMenuAnchor(null);
+            return;
+          }
+
+          const rect = e.currentTarget.getBoundingClientRect();
+          setProjectMenuAnchor({
+            top: rect.bottom + 4,
+            bottom: window.innerHeight - rect.top + 4,
+            right: window.innerWidth - rect.right,
+          });
+          setOpenProjectMenu(menuKey);
+        }}
+        className="project-action-btn"
+        title="Project actions"
+        aria-label={`Project actions for ${project.name}`}
+      >
+        <MoreVertical size={14} />
+      </button>
+      {openProjectMenu === menuKey && projectMenuAnchor && createPortal(
+        <div
+          className={`project-menu project-menu-fixed ${placement === 'up' ? 'project-menu-up' : ''}`}
+          style={placement === 'up'
+            ? { bottom: projectMenuAnchor.bottom, right: projectMenuAnchor.right }
+            : { top: projectMenuAnchor.top, right: projectMenuAnchor.right }}
+          onClick={e => e.stopPropagation()}
+        >
+          {items.map(item => (
+            <button
+              key={item.label}
+              className={`project-menu-item ${item.danger ? 'danger' : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                item.onClick(e);
+              }}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+
+  const removeMenuItem = (project) => (
+    confirmDelete === project.name
+      ? {
+          label: 'Confirm remove',
+          danger: true,
+          icon: <Trash2 size={13} />,
+          onClick: () => {
+            onRemove(project.name);
+            setConfirmDelete(null);
+            setOpenProjectMenu(null);
+          },
+        }
+      : {
+          label: 'Remove project',
+          danger: true,
+          icon: <Trash2 size={13} />,
+          onClick: () => setConfirmDelete(project.name),
+        }
+  );
+
+  const totalProjects = activeProjects.length + waitingProjects.length + shelvedProjects.length;
   const sidebarWidth = isCompact ? 72 : 220;
 
   return (
@@ -366,7 +464,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
 
         {/* Project list — scrollable */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-          {activeProjects.length === 0 && shelvedProjects.length === 0 && (
+          {activeProjects.length === 0 && waitingProjects.length === 0 && shelvedProjects.length === 0 && (
             <div style={{
               padding: isCompact ? '24px 10px' : '24px 16px',
               color: 'var(--text-muted)',
@@ -393,7 +491,7 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
               <div
                 key={project.name}
                 onClick={() => { if (!isRenaming) onSelect(project); }}
-                className="project-row"
+                className={`project-row ${openProjectMenu === `active:${project.name}` ? 'project-menu-open' : ''}`}
                 title={project.name}
                 style={{
                   padding: isCompact ? '10px 12px' : '8px 16px',
@@ -444,77 +542,65 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                       }}
                     />
                   ) : !isCompact && (
-                    <span style={{
-                      flex: 1,
-                      fontSize: '13px',
-                      fontWeight: isActive ? 500 : 400,
-                      color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}>
-                      {project.name}
-                    </span>
+                    <>
+                      <span style={{
+                        flex: 1,
+                        fontSize: '13px',
+                        fontWeight: isActive ? 500 : 400,
+                        color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {project.name}
+                      </span>
+                      <div className="project-inline-actions">
+                        <button
+                          onClick={(e) => copyProjectPath(e, project)}
+                          className="project-action-btn"
+                          title="Copy path"
+                          aria-label={`Copy path for ${project.name}`}
+                        >
+                          <Copy size={14} />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onMarkWaiting(project.name); }}
+                          className="project-action-btn"
+                          title="Move to Waiting"
+                          aria-label={`Move ${project.name} to Waiting`}
+                        >
+                          <Hourglass size={14} />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onShelve(project.name); }}
+                          className="project-action-btn"
+                          title="Shelve project"
+                          aria-label={`Shelve ${project.name}`}
+                        >
+                          <Archive size={14} />
+                        </button>
+                        {renderProjectMenu(project, `active:${project.name}`, [
+                          {
+                            label: 'Browse files',
+                            icon: <FolderSearch size={13} />,
+                            onClick: () => { onBrowseFiles(project); setOpenProjectMenu(null); },
+                          },
+                          {
+                            label: 'Rename project',
+                            icon: <Pencil size={13} />,
+                            onClick: (e) => startRename(e, project),
+                          },
+                          {
+                            label: mutedProjects.includes(project.name) ? 'Unmute notifications' : 'Mute notifications',
+                            icon: mutedProjects.includes(project.name) ? <BellOff size={13} /> : <Bell size={13} />,
+                            onClick: (e) => toggleMute(e, project.name),
+                          },
+                          removeMenuItem(project),
+                        ])}
+                      </div>
+                    </>
                   )}
                 </div>
-
-                {/* Row 2: action buttons — revealed on hover */}
-                {!isCompact && (
-                  <div className="project-actions" style={{
-                    display: 'flex',
-                    gap: 2,
-                    marginLeft: 16,
-                  }}>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onBrowseFiles(project); }}
-                      className="project-action-btn"
-                      title="Browse files"
-                    >
-                      <FolderSearch size={14} />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onShelve(project.name); }}
-                      className="project-action-btn"
-                      title="Shelve project"
-                      aria-label="Shelve project"
-                    >
-                      <Archive size={14} />
-                    </button>
-                    <button
-                      onClick={(e) => startRename(e, project)}
-                      className="project-action-btn"
-                      title="Rename project"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    {confirmDelete === project.name ? (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onRemove(project.name); setConfirmDelete(null); }}
-                        className="project-action-btn"
-                        title="Click to confirm removal"
-                        style={{ fontSize: '11px', color: 'var(--danger)', fontFamily: 'var(--font-mono)', width: 'auto', padding: '2px 6px' }}
-                      >
-                        Remove?
-                      </button>
-                    ) : (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(project.name); }}
-                        className="project-action-btn danger"
-                        title="Remove project"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
-                    <button
-                      onClick={(e) => toggleMute(e, project.name)}
-                      className="project-action-btn"
-                      title={mutedProjects.includes(project.name) ? 'Unmute notifications' : 'Mute notifications'}
-                      aria-label={mutedProjects.includes(project.name) ? `Unmute notifications for ${project.name}` : `Mute notifications for ${project.name}`}
-                    >
-                      {mutedProjects.includes(project.name) ? <BellOff size={14} /> : <Bell size={14} />}
-                    </button>
-                  </div>
-                )}
 
                 {/* Per-session details */}
                 {!isCompact && projSessions.length > 0 && projSessions.map(session => {
@@ -570,6 +656,165 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
             );
           })}
         </div>
+
+        {/* Waiting — still in the work area, but lower attention */}
+        {waitingProjects.length > 0 && (
+          <div style={{ flexShrink: 0 }}>
+            <div style={{ height: 1, background: 'var(--border)' }} />
+            {isCompact ? (
+              <div style={{
+                padding: '10px 0',
+                display: 'flex',
+                justifyContent: 'center',
+              }}>
+                <button
+                  title={`Waiting projects (${waitingProjects.length})`}
+                  aria-label={`Waiting projects (${waitingProjects.length})`}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 10,
+                    color: 'var(--text-muted)',
+                    background: 'transparent',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    opacity: 0.72,
+                  }}
+                >
+                  <Hourglass size={16} />
+                </button>
+              </div>
+            ) : (
+              <>
+                <div style={{
+                  padding: '8px 16px 4px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  color: 'var(--text-muted)',
+                  fontSize: '11px',
+                  fontFamily: 'var(--font-mono)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  opacity: 0.82,
+                }}>
+                  <Hourglass size={12} />
+                  <span>Waiting ({waitingProjects.length})</span>
+                </div>
+
+                <div style={{ maxHeight: 180, overflowY: 'auto', paddingBottom: 4 }}>
+                  {waitingProjects.map(project => {
+                    const isRenaming = renamingProject === project.name;
+                    const projSessions = getProjectSessions(project);
+                    const { status } = getProjectStatus(projSessions, finishedSessionIds);
+                    const dotColor = status === 'none' ? 'var(--text-muted)' : STATUS_COLORS[status];
+
+                    return (
+                      <div
+                        key={project.name}
+                        className={`waiting-row ${openProjectMenu === `waiting:${project.name}` ? 'project-menu-open' : ''}`}
+                        tabIndex={0}
+                        onClick={() => { if (!isRenaming) onActivateWaiting(project.name); }}
+                        onKeyDown={e => { if (!isRenaming && e.key === 'Enter') onActivateWaiting(project.name); }}
+                        title={`${project.name} — Waiting`}
+                        style={{
+                          padding: '6px 16px',
+                          cursor: 'pointer',
+                          borderLeft: '2px solid transparent',
+                          transition: 'background 0.1s',
+                          opacity: 0.68,
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.opacity = '0.86'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '0.68'; }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{
+                            width: 7,
+                            height: 7,
+                            borderRadius: '50%',
+                            background: dotColor,
+                            flexShrink: 0,
+                            opacity: status === 'active' ? 0.65 : 0.5,
+                          }} title={`Status: ${status}`} />
+                          {isRenaming ? (
+                            <input
+                              ref={renameInputRef}
+                              value={renameValue}
+                              onChange={e => setRenameValue(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') commitRename();
+                                if (e.key === 'Escape') cancelRename();
+                              }}
+                              onBlur={commitRename}
+                              onClick={e => e.stopPropagation()}
+                              spellCheck={false}
+                              style={{
+                                flex: 1,
+                                fontSize: '13px',
+                                fontFamily: 'var(--font-mono)',
+                                padding: '2px 6px',
+                                background: 'var(--bg-surface)',
+                                border: '1px solid var(--accent)',
+                                borderRadius: 4,
+                                color: 'var(--text-primary)',
+                                outline: 'none',
+                                minWidth: 0,
+                              }}
+                            />
+                          ) : (
+                            <span style={{
+                              flex: 1,
+                              fontSize: '13px',
+                              color: 'var(--text-muted)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}>
+                              {project.name}
+                            </span>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onActivateWaiting(project.name); }}
+                            className="project-action-btn"
+                            title="Activate project"
+                            aria-label="Activate waiting project"
+                          >
+                            <Play size={13} />
+                          </button>
+                          <button
+                            onClick={(e) => copyProjectPath(e, project)}
+                            className="project-action-btn"
+                            title="Copy path"
+                            aria-label={`Copy path for ${project.name}`}
+                          >
+                            <Copy size={13} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onShelve(project.name); }}
+                            className="project-action-btn"
+                            title="Shelve project"
+                            aria-label={`Shelve ${project.name}`}
+                          >
+                            <Archive size={13} />
+                          </button>
+                          {renderProjectMenu(project, `waiting:${project.name}`, [
+                            {
+                              label: 'Rename project',
+                              icon: <Pencil size={13} />,
+                              onClick: (e) => startRename(e, project),
+                            },
+                            removeMenuItem(project),
+                          ], 'up')}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Shelf — pinned to bottom, above footer */}
         {shelvedProjects.length > 0 && (() => {
@@ -689,62 +934,91 @@ export default function Sidebar({ activeProjects, shelvedProjects, activeProject
                     </div>
                   )}
 
-                  {displayedProjects.map(project => (
-                    <div
-                      key={project.name}
-                      className="shelf-row"
-                      tabIndex={0}
-                      onClick={() => onUnshelve(project.name)}
-                      onKeyDown={e => { if (e.key === 'Enter') onUnshelve(project.name); }}
-                      style={{
-                        padding: '6px 16px',
-                        cursor: 'pointer',
-                        borderLeft: '2px solid transparent',
-                        transition: 'background 0.1s',
-                      }}
-                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
-                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{
-                          flex: 1,
-                          fontSize: '13px',
-                          color: 'var(--text-muted)',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}>
-                          {project.name}
-                        </span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onUnshelve(project.name); }}
-                          className="project-action-btn"
-                          title="Restore project"
-                          aria-label="Restore project"
-                        >
-                          <ArchiveRestore size={14} />
-                        </button>
-                        {confirmDelete === project.name ? (
+                  {displayedProjects.map(project => {
+                    const isRenaming = renamingProject === project.name;
+
+                    return (
+                      <div
+                        key={project.name}
+                        className={`shelf-row ${openProjectMenu === `shelved:${project.name}` ? 'project-menu-open' : ''}`}
+                        tabIndex={0}
+                        onClick={() => { if (!isRenaming) onUnshelve(project.name); }}
+                        onKeyDown={e => { if (!isRenaming && e.key === 'Enter') onUnshelve(project.name); }}
+                        style={{
+                          padding: '6px 16px',
+                          cursor: isRenaming ? 'default' : 'pointer',
+                          borderLeft: '2px solid transparent',
+                          transition: 'background 0.1s',
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {isRenaming ? (
+                            <input
+                              ref={renameInputRef}
+                              value={renameValue}
+                              onChange={e => setRenameValue(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') commitRename();
+                                if (e.key === 'Escape') cancelRename();
+                              }}
+                              onBlur={commitRename}
+                              onClick={e => e.stopPropagation()}
+                              spellCheck={false}
+                              style={{
+                                flex: 1,
+                                fontSize: '13px',
+                                fontFamily: 'var(--font-mono)',
+                                padding: '2px 6px',
+                                background: 'var(--bg-surface)',
+                                border: '1px solid var(--accent)',
+                                borderRadius: 4,
+                                color: 'var(--text-primary)',
+                                outline: 'none',
+                                minWidth: 0,
+                              }}
+                            />
+                          ) : (
+                            <span style={{
+                              flex: 1,
+                              fontSize: '13px',
+                              color: 'var(--text-muted)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}>
+                              {project.name}
+                            </span>
+                          )}
                           <button
-                            onClick={(e) => { e.stopPropagation(); onRemove(project.name); setConfirmDelete(null); }}
+                            onClick={(e) => { e.stopPropagation(); onUnshelve(project.name); }}
                             className="project-action-btn"
-                            title="Click to confirm removal"
-                            style={{ fontSize: '11px', color: 'var(--danger)', fontFamily: 'var(--font-mono)', width: 'auto', padding: '2px 6px' }}
+                            title="Restore project"
+                            aria-label="Restore project"
                           >
-                            Remove?
+                            <ArchiveRestore size={14} />
                           </button>
-                        ) : (
                           <button
-                            onClick={(e) => { e.stopPropagation(); setConfirmDelete(project.name); }}
-                            className="project-action-btn danger"
-                            title="Remove project"
+                            onClick={(e) => copyProjectPath(e, project)}
+                            className="project-action-btn"
+                            title="Copy path"
+                            aria-label={`Copy path for ${project.name}`}
                           >
-                            <Trash2 size={14} />
+                            <Copy size={13} />
                           </button>
-                        )}
+                          {renderProjectMenu(project, `shelved:${project.name}`, [
+                            {
+                              label: 'Rename project',
+                              icon: <Pencil size={13} />,
+                              onClick: (e) => startRename(e, project),
+                            },
+                            removeMenuItem(project),
+                          ])}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
                 </div>
               )}
