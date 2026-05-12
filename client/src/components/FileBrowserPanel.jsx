@@ -215,10 +215,10 @@ export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
             {project.path}
           </span>
           <div style={treeControlsStyle}>
-            <button type="button" style={treeControlBtnStyle} onClick={handleExpandAll}>
+            <button type="button" style={treeControlBtnStyle} onClick={handleExpandAll} title="Expand all folders">
               Expand all
             </button>
-            <button type="button" style={treeControlBtnStyle} onClick={handleFoldAll}>
+            <button type="button" style={treeControlBtnStyle} onClick={handleFoldAll} title="Fold all folders">
               Fold all
             </button>
           </div>

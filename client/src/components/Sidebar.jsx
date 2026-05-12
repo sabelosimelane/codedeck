@@ -363,6 +363,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
             <button
               key={item.label}
               className={`project-menu-item ${item.danger ? 'danger' : ''}`}
+              title={item.label}
               onClick={(e) => {
                 e.stopPropagation();
                 item.onClick(e);
@@ -503,7 +504,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)'; }}
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
               >
-                {/* Row 1: status dot + project name (full width) */}
+                {/* Row 1: status dot + project name */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: isCompact ? 'center' : 'flex-start' }}>
                   {status !== 'none' ? (
                     <span style={{
@@ -542,65 +543,66 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                       }}
                     />
                   ) : !isCompact && (
-                    <>
-                      <span style={{
-                        flex: 1,
-                        fontSize: '13px',
-                        fontWeight: isActive ? 500 : 400,
-                        color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}>
-                        {project.name}
-                      </span>
-                      <div className="project-inline-actions">
-                        <button
-                          onClick={(e) => copyProjectPath(e, project)}
-                          className="project-action-btn"
-                          title="Copy path"
-                          aria-label={`Copy path for ${project.name}`}
-                        >
-                          <Copy size={14} />
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onMarkWaiting(project.name); }}
-                          className="project-action-btn"
-                          title="Move to Waiting"
-                          aria-label={`Move ${project.name} to Waiting`}
-                        >
-                          <Hourglass size={14} />
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onShelve(project.name); }}
-                          className="project-action-btn"
-                          title="Shelve project"
-                          aria-label={`Shelve ${project.name}`}
-                        >
-                          <Archive size={14} />
-                        </button>
-                        {renderProjectMenu(project, `active:${project.name}`, [
-                          {
-                            label: 'Browse files',
-                            icon: <FolderSearch size={13} />,
-                            onClick: () => { onBrowseFiles(project); setOpenProjectMenu(null); },
-                          },
-                          {
-                            label: 'Rename project',
-                            icon: <Pencil size={13} />,
-                            onClick: (e) => startRename(e, project),
-                          },
-                          {
-                            label: mutedProjects.includes(project.name) ? 'Unmute notifications' : 'Mute notifications',
-                            icon: mutedProjects.includes(project.name) ? <BellOff size={13} /> : <Bell size={13} />,
-                            onClick: (e) => toggleMute(e, project.name),
-                          },
-                          removeMenuItem(project),
-                        ])}
-                      </div>
-                    </>
+                    <span style={{
+                      flex: 1,
+                      fontSize: '13px',
+                      fontWeight: isActive ? 500 : 400,
+                      color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {project.name}
+                    </span>
                   )}
                 </div>
+
+                {!isCompact && !isRenaming && (
+                  <div className="project-inline-actions">
+                    <button
+                      onClick={(e) => copyProjectPath(e, project)}
+                      className="project-action-btn"
+                      title="Copy path"
+                      aria-label={`Copy path for ${project.name}`}
+                    >
+                      <Copy size={14} />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMarkWaiting(project.name); }}
+                      className="project-action-btn"
+                      title="Move to Waiting"
+                      aria-label={`Move ${project.name} to Waiting`}
+                    >
+                      <Hourglass size={14} />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onShelve(project.name); }}
+                      className="project-action-btn"
+                      title="Shelve project"
+                      aria-label={`Shelve ${project.name}`}
+                    >
+                      <Archive size={14} />
+                    </button>
+                    {renderProjectMenu(project, `active:${project.name}`, [
+                      {
+                        label: 'Browse files',
+                        icon: <FolderSearch size={13} />,
+                        onClick: () => { onBrowseFiles(project); setOpenProjectMenu(null); },
+                      },
+                      {
+                        label: 'Rename project',
+                        icon: <Pencil size={13} />,
+                        onClick: (e) => startRename(e, project),
+                      },
+                      {
+                        label: mutedProjects.includes(project.name) ? 'Unmute notifications' : 'Mute notifications',
+                        icon: mutedProjects.includes(project.name) ? <BellOff size={13} /> : <Bell size={13} />,
+                        onClick: (e) => toggleMute(e, project.name),
+                      },
+                      removeMenuItem(project),
+                    ])}
+                  </div>
+                )}
 
                 {/* Per-session details */}
                 {!isCompact && projSessions.length > 0 && projSessions.map(session => {
@@ -774,6 +776,9 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                               {project.name}
                             </span>
                           )}
+                        </div>
+                        {!isRenaming && (
+                          <div className="project-inline-actions">
                           <button
                             onClick={(e) => { e.stopPropagation(); onActivateWaiting(project.name); }}
                             className="project-action-btn"
@@ -806,7 +811,8 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                             },
                             removeMenuItem(project),
                           ], 'up')}
-                        </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -991,6 +997,9 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                               {project.name}
                             </span>
                           )}
+                        </div>
+                        {!isRenaming && (
+                          <div className="project-inline-actions">
                           <button
                             onClick={(e) => { e.stopPropagation(); onUnshelve(project.name); }}
                             className="project-action-btn"
@@ -1015,7 +1024,8 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                             },
                             removeMenuItem(project),
                           ])}
-                        </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

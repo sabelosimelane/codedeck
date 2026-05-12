@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-05-12] - Accessibility tooltips and sidebar/terminal layout improvements
+
+### Executive Summary
+* Every interactive button across the UI now has a `title` attribute with a descriptive tooltip — from refresh/copy/download buttons in the preview panel, to terminal tabs and pane controls, to folder search and tree controls in the file browser. Sidebar project rows were restructured so inline action buttons (copy path, move-to-waiting, shelve, context menu) now render on their own line below the project name instead of competing for space inline. The TerminalArea gained a dedicated project name row above the tab bar, and shortcut keys are now shown in button titles (e.g. "Split right (⌘⇧E)").
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `client/src/components/DirectoryBrowser.jsx` — Added `title` attributes to Cancel and Select Folder buttons.
+  * `client/src/components/FileBrowserPanel.jsx` — Added `title` attributes to Expand all and Fold all buttons.
+  * `client/src/components/FileContextMenu.jsx` — Added `title` attributes to Copy relative path and Copy path menu items.
+  * `client/src/components/FileTree.jsx` — Added `title` attributes to Expand and Fold buttons.
+  * `client/src/components/PreviewPage.jsx` — Added `title` attributes to Refresh, Copy, Download, Open in editor, Zoom controls, and Close diagram buttons.
+  * `client/src/components/SettingsPanel.jsx` — Added `title` attributes to Close and Save buttons with contextual save state messaging.
+  * `client/src/components/Sidebar.jsx` — Extracted `project-inline-actions` from inside the "Row 1" name div to a sibling div on its own line. Applied same restructuring to Waiting and Shelved sections. Added `title` to project menu items. Project name spans are now verified to contain no nested buttons in tests.
+  * `client/src/components/TerminalArea.jsx` — Extracted the project name into a new dedicated row (`data-testid="terminal-project-row"`) above the tab bar with a full project path tooltip. Added `formatShortcutTitle()` helper that appends keyboard shortcut to button titles. Applied to Split right, New terminal, Clear terminal, and Close pane buttons. Added `aria-label` attributes to all pane header buttons. Added `title` to the empty-state CTA, close-tab X, and project menu item buttons.
+  * `client/src/components/TerminalInspector.jsx` — Added `title` to the Copy debug snapshot button.
+  * `client/src/components/ToastContext.jsx` — Added `title` to the dismiss notification button.
+  * `client/src/styles/global.css` — `.project-inline-actions` gains `justify-content: flex-end`, `width: 100%`, `margin-top: 3px`, and `padding-left: 16px` to right-align action buttons on their own line below the project name.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/Sidebar.test.jsx` — New assertions verifying project-inline-actions is a sibling div (not nested inside the name span), and name spans contain no buttons.
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — New test verifying the project name renders in its own row (separate from tab controls). New assertions for shortcut-enhanced button titles and aria-labels on pane header buttons.
+
 ## [2026-05-11] - Waiting state for projects and sidebar action menus
 
 ### Executive Summary

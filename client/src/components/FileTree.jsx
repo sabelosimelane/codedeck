@@ -211,10 +211,10 @@ export default function FileTree({ root, onOpenFile, onPreviewFile, width = 260 
           >
             <FolderSearch size={11} />
           </button>
-          <button type="button" style={treeControlBtnStyle} onClick={handleExpandAll}>
+          <button type="button" style={treeControlBtnStyle} onClick={handleExpandAll} title="Expand tree">
             Expand
           </button>
-          <button type="button" style={treeControlBtnStyle} onClick={handleFoldAll}>
+          <button type="button" style={treeControlBtnStyle} onClick={handleFoldAll} title="Fold tree">
             Fold
           </button>
         </div>

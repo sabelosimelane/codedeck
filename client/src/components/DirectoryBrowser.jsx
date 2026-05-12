@@ -259,12 +259,13 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
             Double-click to navigate • Select a folder
           </span>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={onCancel} style={cancelBtnStyle}>
+            <button onClick={onCancel} style={cancelBtnStyle} title="Cancel folder selection">
               Cancel
             </button>
             <button
               onClick={() => onSelect(current)}
               style={selectBtnStyle}
+              title="Select folder"
             >
               <Check size={14} />
               Select Folder

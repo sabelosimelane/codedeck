@@ -207,6 +207,17 @@ describe('Sidebar', () => {
       expect(global.fetch).toHaveBeenCalledWith('/api/config');
     });
 
+    const alphaRow = view.getByTitle('Alpha').closest('.project-row');
+    expect(alphaRow.children[0].textContent).toBe('Alpha');
+    expect(alphaRow.children[0].querySelector('button')).toBeNull();
+    expect(alphaRow.children[1].className).toContain('project-inline-actions');
+    expect(alphaRow.children[1].querySelectorAll('button').length).toBeGreaterThan(0);
+
+    const betaRow = view.getByTitle('Beta — Waiting').closest('.waiting-row');
+    expect(betaRow.children[0].textContent).toBe('Beta');
+    expect(betaRow.children[0].querySelector('button')).toBeNull();
+    expect(betaRow.children[1].className).toContain('project-inline-actions');
+
     fireEvent.click(view.getByLabelText('Copy path for Alpha'));
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith('/tmp/alpha');
@@ -243,6 +254,11 @@ describe('Sidebar', () => {
     expect(onRemove).toHaveBeenCalledWith('Beta');
 
     fireEvent.click(view.getByText('Shelved (1)'));
+    const gammaRow = view.getByText('Gamma').closest('.shelf-row');
+    expect(gammaRow.children[0].textContent).toBe('Gamma');
+    expect(gammaRow.children[0].querySelector('button')).toBeNull();
+    expect(gammaRow.children[1].className).toContain('project-inline-actions');
+
     fireEvent.click(view.getByLabelText('Project actions for Gamma'));
     expect(view.getByLabelText('Project actions for Gamma').closest('.shelf-row').className).toContain('project-menu-open');
     expect(view.getByText('Rename project')).toBeTruthy();

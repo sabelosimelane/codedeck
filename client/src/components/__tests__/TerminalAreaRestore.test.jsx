@@ -17,6 +17,7 @@ vi.mock('lucide-react', () => {
     Bug: Icon,
     Paintbrush: Icon,
     TerminalSquare: Icon,
+    RotateCcw: Icon,
   };
 });
 
@@ -127,6 +128,37 @@ describe('TerminalArea restore fallback', () => {
     });
   });
 
+  it('renders the project name on its own row above the tab controls', async () => {
+    global.fetch = vi.fn(async (url) => {
+      if (url === '/api/health') {
+        return {
+          ok: true,
+          json: async () => ({ terminalCreationAllowed: true }),
+        };
+      }
+
+      if (url === '/api/sessions') {
+        return {
+          ok: true,
+          json: async () => [],
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const view = render(
+      <TerminalArea project={PROJECT} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />
+    );
+
+    const projectRow = view.getByTestId('terminal-project-row');
+    const tabRow = view.getByTestId('terminal-tab-row');
+
+    expect(projectRow.textContent).toContain(PROJECT.name);
+    expect(tabRow.textContent).not.toContain(PROJECT.name);
+    expect(projectRow.querySelector(`[title="Project: ${PROJECT.name}"]`)).toBeTruthy();
+  });
+
   it('renders pane header status from backend execution state', async () => {
     const liveSessions = [
       {
@@ -169,6 +201,11 @@ describe('TerminalArea restore fallback', () => {
     const statusDot = view.getByTitle('Gamma-9: running (shell_without_prompt)');
     expect(statusDot.className).toContain('terminal-dot-busy');
     expect(view.getByText('Running')).toBeTruthy();
+    expect(view.getByLabelText('Split right').getAttribute('title')).toContain('Split right');
+    expect(view.getByLabelText('New terminal').getAttribute('title')).toContain('New terminal');
+    expect(view.getByLabelText('Inspect terminal Gamma-9').getAttribute('title')).toBe('Inspect terminal Gamma-9');
+    expect(view.getByLabelText('Clear terminal Gamma-9').getAttribute('title')).toContain('Clear terminal Gamma-9');
+    expect(view.getByLabelText('Close pane Gamma-9').getAttribute('title')).toContain('Close pane Gamma-9');
   });
 
   it('creates new terminals with a backend-issued session id', async () => {

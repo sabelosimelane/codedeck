@@ -332,7 +332,7 @@ export default function PreviewPage({ filePath, onOpenFile }) {
             </div>
           </div>
           <div style={actionsStyle}>
-            <button type="button" style={secondaryBtnStyle} onClick={() => window.location.reload()}>
+            <button type="button" style={secondaryBtnStyle} onClick={() => window.location.reload()} title="Refresh preview">
               <RefreshCw size={14} />
               <span>Refresh</span>
             </button>
@@ -344,6 +344,7 @@ export default function PreviewPage({ filePath, onOpenFile }) {
               }}
               onClick={handleCopy}
               disabled={preview.state !== 'ready' || preview.kind !== 'text'}
+              title="Copy preview content"
             >
               <Copy size={14} />
               <span>Copy</span>
@@ -356,11 +357,12 @@ export default function PreviewPage({ filePath, onOpenFile }) {
               }}
               onClick={handleDownload}
               disabled={preview.state !== 'ready' || preview.kind !== 'text'}
+              title="Download preview content"
             >
               <Download size={14} />
               <span>Download</span>
             </button>
-            <button type="button" style={primaryBtnStyle} onClick={() => onOpenFile(filePath)}>
+            <button type="button" style={primaryBtnStyle} onClick={() => onOpenFile(filePath)} title="Open in editor">
               <ExternalLink size={14} />
               <span>Open in editor</span>
             </button>
@@ -403,6 +405,7 @@ export default function PreviewPage({ filePath, onOpenFile }) {
                 }}
                 onClick={() => setLightboxZoom((value) => Math.max(MERMAID_MIN_ZOOM, roundZoom(value - MERMAID_ZOOM_STEP)))}
                 disabled={lightboxZoom <= MERMAID_MIN_ZOOM}
+                title="Zoom out"
               >
                 <Minus size={14} />
                 <span>Zoom out</span>
@@ -415,6 +418,7 @@ export default function PreviewPage({ filePath, onOpenFile }) {
                 }}
                 onClick={() => setLightboxZoom((value) => Math.min(MERMAID_MAX_ZOOM, roundZoom(value + MERMAID_ZOOM_STEP)))}
                 disabled={lightboxZoom >= MERMAID_MAX_ZOOM}
+                title="Zoom in"
               >
                 <Plus size={14} />
                 <span>Zoom in</span>
@@ -427,10 +431,11 @@ export default function PreviewPage({ filePath, onOpenFile }) {
                 }}
                 onClick={() => setLightboxZoom(1)}
                 disabled={lightboxZoom === 1}
+                title="Reset zoom"
               >
                 <span>Reset zoom</span>
               </button>
-              <button type="button" style={secondaryBtnStyle} onClick={() => setActiveMermaid(null)}>
+              <button type="button" style={secondaryBtnStyle} onClick={() => setActiveMermaid(null)} title="Close diagram preview">
                 <X size={14} />
                 <span>Close</span>
               </button>

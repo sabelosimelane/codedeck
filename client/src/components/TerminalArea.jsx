@@ -52,6 +52,10 @@ function ShortcutHint({ label, keys, children }) {
   );
 }
 
+function formatShortcutTitle(label, keys) {
+  return keys.length > 0 ? `${label} (${keys.join('+')})` : label;
+}
+
 let tabCounter = 0;
 let sessionCounter = 0;
 
@@ -298,6 +302,10 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
   const { showToast } = useToast();
   const isTerminalRuntimeBlocked = terminalRuntimeStatus?.terminalCreationAllowed === false;
   const terminalRuntimeBlockedMessage = terminalRuntimeStatus?.terminalRuntimeBlockedMessage || DEFAULT_RUNTIME_BLOCKED_MESSAGE;
+  const splitRightKeys = IS_MAC ? ['⌘', '⇧', 'E'] : ['Ctrl', '⇧', 'E'];
+  const newTerminalKeys = IS_MAC ? ['⌘', '⇧', 'T'] : ['Ctrl', '⇧', 'T'];
+  const clearTerminalKeys = IS_MAC ? ['⌘', '⇧', 'K'] : ['Ctrl', '⇧', 'K'];
+  const closePaneKeys = IS_MAC ? ['⌘', '⇧', 'X'] : ['Ctrl', '⇧', 'X'];
 
   useEffect(() => {
     stateRef.current = state;
@@ -812,29 +820,49 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      {/* Tab bar */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        height: 38,
-        background: 'var(--bg-sidebar)',
-        borderBottom: '1px solid var(--border)',
-        padding: '0 8px',
-        gap: 2,
-        flexShrink: 0,
-      }}>
-        {/* Project name */}
+      {/* Project row */}
+      <div
+        data-testid="terminal-project-row"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          minHeight: 32,
+          background: 'var(--bg-sidebar)',
+          borderBottom: '1px solid var(--border)',
+          padding: '0 12px',
+          flexShrink: 0,
+        }}
+      >
         <span style={{
           fontFamily: 'var(--font-mono)',
           fontSize: '11px',
           color: 'var(--accent)',
           fontWeight: 600,
-          marginRight: 12,
           letterSpacing: '0.3px',
-        }}>
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          minWidth: 0,
+        }}
+        title={`Project: ${project.name}`}
+        >
           {project.name}
         </span>
+      </div>
 
+      {/* Tab bar */}
+      <div
+        data-testid="terminal-tab-row"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          height: 38,
+          background: 'var(--bg-sidebar)',
+          borderBottom: '1px solid var(--border)',
+          padding: '0 8px',
+          gap: 2,
+          flexShrink: 0,
+        }}>
         {/* Tab list */}
         <div style={{ display: 'flex', gap: 2, flex: 1, overflow: 'hidden' }}>
           {tabs.map(tab => {
@@ -886,6 +914,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                       e.stopPropagation();
                       if (!tabHasPendingClose) closeTab(tab.id);
                     }}
+                    title={tabHasPendingClose ? `Closing ${tab.label}` : `Close ${tab.label}`}
                     style={{
                       opacity: tabHasPendingClose ? 0.2 : 0.5,
                       display: 'flex',
@@ -903,12 +932,12 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         {/* Actions */}
         <ShortcutHint
           label="Split right"
-          keys={IS_MAC ? ['⌘', '⇧', 'E'] : ['Ctrl', '⇧', 'E']}
+          keys={splitRightKeys}
         >
           <button
             onClick={splitRight}
             aria-label="Split right"
-            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : undefined}
+            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : formatShortcutTitle('Split right', splitRightKeys)}
             disabled={!activeTab || isTerminalRuntimeBlocked}
             style={{
               padding: 4,
@@ -923,12 +952,12 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         </ShortcutHint>
         <ShortcutHint
           label="New terminal"
-          keys={IS_MAC ? ['⌘', '⇧', 'T'] : ['Ctrl', '⇧', 'T']}
+          keys={newTerminalKeys}
         >
           <button
             onClick={addTab}
             aria-label="New terminal"
-            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : undefined}
+            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : formatShortcutTitle('New terminal', newTerminalKeys)}
             disabled={isTerminalRuntimeBlocked}
             style={{
               padding: 4,
@@ -990,6 +1019,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
             <button
               onClick={addTab}
               className="terminal-empty-cta"
+              title="Open terminal"
             >
               <Plus size={14} />
               <span>Open terminal</span>
@@ -1132,6 +1162,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                             onClick={() => redrawPane(pane.id)}
                             className="terminal-action-btn"
                             title="Re-measure terminal layout"
+                            aria-label={`Re-measure terminal layout for ${pane.sessionId}`}
                             disabled={isPending}
                           >
                             <Paintbrush size={13} />
@@ -1141,6 +1172,8 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                           <button
                             onClick={() => setInspectingSessionId(pane.sessionId)}
                             className="terminal-action-btn"
+                            title={`Inspect terminal ${pane.sessionId}`}
+                            aria-label={`Inspect terminal ${pane.sessionId}`}
                             style={{ opacity: 0.4 }}
                             disabled={isPending}
                           >
@@ -1149,11 +1182,13 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                         </ShortcutHint>
                         <ShortcutHint
                           label="Clear terminal"
-                          keys={IS_MAC ? ['⌘', '⇧', 'K'] : ['Ctrl', '⇧', 'K']}
+                          keys={clearTerminalKeys}
                         >
                           <button
                             onClick={() => clearPane(pane.id)}
                             className="terminal-action-btn"
+                            title={formatShortcutTitle(`Clear terminal ${pane.sessionId}`, clearTerminalKeys)}
+                            aria-label={`Clear terminal ${pane.sessionId}`}
                             disabled={isPending}
                           >
                             <Eraser size={13} />
@@ -1164,7 +1199,8 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                             <button
                               onClick={() => onResetFinishedSession(pane.sessionId)}
                               className="terminal-action-btn"
-                              title="Reset status"
+                              title={`Reset status for ${pane.sessionId}`}
+                              aria-label={`Reset status for ${pane.sessionId}`}
                               disabled={isPending}
                               style={{ color: 'var(--danger)' }}
                             >
@@ -1174,11 +1210,13 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                         )}
                         <ShortcutHint
                           label="Close pane"
-                          keys={IS_MAC ? ['⌘', '⇧', 'X'] : ['Ctrl', '⇧', 'X']}
+                          keys={closePaneKeys}
                         >
                           <button
                             onClick={() => closePane(tab.id, pane.id, pane.sessionId)}
                             className="terminal-action-btn pane-close-btn"
+                            title={formatShortcutTitle(`Close pane ${pane.sessionId}`, closePaneKeys)}
+                            aria-label={`Close pane ${pane.sessionId}`}
                             disabled={isPending}
                           >
                             <X size={13} />

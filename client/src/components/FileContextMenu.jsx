@@ -50,6 +50,7 @@ export default function FileContextMenu({ x, y, path, root, onClose }) {
         type="button"
         onClick={() => handleCopy(relativePath)}
         style={menuItemStyle}
+        title="Copy relative path"
         onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
       >
@@ -60,6 +61,7 @@ export default function FileContextMenu({ x, y, path, root, onClose }) {
         type="button"
         onClick={() => handleCopy(path)}
         style={menuItemStyle}
+        title="Copy path"
         onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
       >

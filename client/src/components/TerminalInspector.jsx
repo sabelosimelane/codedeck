@@ -254,7 +254,7 @@ export default function TerminalInspector({ sessionId, onClose, onAction }) {
 
         {/* Footer Actions */}
         <div style={footerStyle}>
-          <button onClick={copySnapshot} style={copyBtnStyle} disabled={!data}>
+          <button onClick={copySnapshot} style={copyBtnStyle} disabled={!data} title="Copy debug snapshot">
             {copied ? <Check size={13} /> : <Copy size={13} />}
             <span>{copied ? 'Copied' : 'Copy debug snapshot'}</span>
           </button>

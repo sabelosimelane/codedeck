@@ -90,6 +90,7 @@ function Toast({ toast, onDismiss }) {
       <span style={{ flex: 1 }}>{toast.message}</span>
       <button
         onClick={() => onDismiss(toast.id)}
+        title="Dismiss notification"
         style={{
           padding: 2,
           color: colors.text,

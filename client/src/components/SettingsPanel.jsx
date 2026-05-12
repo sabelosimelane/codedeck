@@ -125,7 +125,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
               <Settings size={15} style={{ color: 'var(--accent)' }} />
               <span style={headerTitleStyle}>settings</span>
             </div>
-            <button onClick={onClose} style={closeBtnStyle}>
+            <button onClick={onClose} style={closeBtnStyle} title="Close settings">
               <X size={14} />
             </button>
           </div>
@@ -241,6 +241,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
               <button
                 onClick={handleSave}
                 disabled={!dirty || saving}
+                title={saving ? 'Saving settings' : 'Save settings'}
                 style={{
                   ...saveBtnStyle,
                   opacity: dirty && !saving ? 1 : 0.4,

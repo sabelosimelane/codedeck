@@ -218,8 +218,11 @@ input:focus {
 .project-inline-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
-  flex-shrink: 0;
+  width: 100%;
+  margin-top: 3px;
+  padding-left: 16px;
   opacity: 0.72;
   transition: opacity 120ms ease;
 }
