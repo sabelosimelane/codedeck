@@ -5,6 +5,9 @@ import {
   TERMINAL_COMPLETION_NOTIFICATION_MS,
   findProjectForSession,
   getAggregateTerminalStatus,
+  getDisplayAggregateTerminalStatus,
+  getVisualAggregateTerminalStatus,
+  getVisualTerminalStatus,
   getTerminalCompletionNotification,
   resolveTerminalCompletionNotificationMs,
   getTabTerminalStatus,
@@ -101,6 +104,51 @@ describe('terminalActivity', () => {
     ]);
 
     expect(getTabTerminalStatus(tab, sessionLookup, now)).toBe('busy');
+  });
+
+  it('neutralizes muted running terminals for visual status only', () => {
+    const runningSession = {
+      sessionId: 'Gamma-1',
+      alive: true,
+      executionStatus: 'running',
+      lastOutputAt: new Date(now - 1000).toISOString(),
+    };
+    const idleSession = {
+      sessionId: 'Gamma-2',
+      alive: true,
+      executionStatus: 'idle',
+    };
+
+    expect(getVisualTerminalStatus(runningSession, new Set(), new Set(['Gamma-1']), now)).toBe('idle');
+    expect(getDisplayAggregateTerminalStatus([runningSession, idleSession], new Set(), now)).toBe('busy');
+    expect(getVisualAggregateTerminalStatus(
+      [runningSession, idleSession],
+      new Set(),
+      new Set(['Gamma-1']),
+      now
+    )).toBe('idle');
+  });
+
+  it('neutralizes muted finished terminals for visual status only', () => {
+    const finishedSession = {
+      sessionId: 'Gamma-1',
+      alive: true,
+      executionStatus: 'idle',
+      lastOutputAt: new Date(now - TERMINAL_ACTIVITY_WINDOW_MS - 1).toISOString(),
+    };
+
+    expect(getVisualTerminalStatus(
+      finishedSession,
+      new Set(['Gamma-1']),
+      new Set(['Gamma-1']),
+      now
+    )).toBe('idle');
+    expect(getVisualAggregateTerminalStatus(
+      [finishedSession],
+      new Set(['Gamma-1']),
+      new Set(['Gamma-1']),
+      now
+    )).toBe('idle');
   });
 
   it('returns completion notification payload for long-running busy terminals that go idle', () => {

@@ -61,6 +61,29 @@ describe('createTerminalRuntime', () => {
     expect(runtime.isAvailable()).toBe(true);
   });
 
+  it('blocks terminal creation when the PTY spawn probe fails even if tmux is installed', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command === 'tmux' && args[0] === '-V') return 'tmux 3.6a';
+      throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+    });
+    ptySpawn.mockImplementation(() => {
+      throw new Error('posix_spawnp failed.');
+    });
+
+    const { createTerminalRuntime, getTerminalRuntimeStatus } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+
+    expect(getTerminalRuntimeStatus(runtime)).toMatchObject({
+      terminalRuntime: 'tmux',
+      terminalRuntimeContract: 'tmux_required',
+      tmuxAvailable: true,
+      ptySpawnAvailable: false,
+      terminalCreationAllowed: false,
+      terminalRuntimeBlockedReason: 'pty_spawn_failed',
+      terminalRuntimeBlockedMessage: expect.stringContaining('posix_spawnp failed'),
+    });
+  });
+
   it('reads the live cwd from tmux for tmux-backed sessions', async () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');

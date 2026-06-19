@@ -15,8 +15,8 @@ import {
 } from '../utils/browserNotifications';
 import {
   DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS,
-  getAggregateTerminalStatus,
-  getDisplayAggregateTerminalStatus,
+  getVisualAggregateTerminalStatus,
+  getVisualTerminalStatus,
   getDisplayTerminalStatus,
   getTerminalCompletionNotification,
   getTerminalStatus,
@@ -37,11 +37,11 @@ function formatTimeSince(isoString) {
   return `${Math.floor(mins / 60)}h ago`;
 }
 
-function getProjectStatus(sessions, finishedIds) {
+function getProjectStatus(sessions, finishedIds, mutedStatusSessionIds) {
   if (!sessions || sessions.length === 0) return { status: 'none' };
   if (!sessions.some(session => session.alive)) return { status: 'dead' };
 
-  const status = getDisplayAggregateTerminalStatus(sessions, finishedIds);
+  const status = getVisualAggregateTerminalStatus(sessions, finishedIds, mutedStatusSessionIds);
   return {
     status: status === 'busy' ? 'active' : status,
   };
@@ -49,13 +49,13 @@ function getProjectStatus(sessions, finishedIds) {
 
 const STATUS_COLORS = {
   active: 'var(--accent)',
-  finished: 'var(--danger)',
+  finished: 'var(--warning)',
   idle: 'var(--text-muted)',
   unknown: 'var(--text-muted)',
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, waitingProjects = [], shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), onResetFinishedSession = () => {}, onBrowseFiles, onShowShortcuts }) {
+export default function Sidebar({ activeProjects, waitingProjects = [], shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, onBrowseFiles, onShowShortcuts }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
@@ -487,7 +487,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
             const isActive = activeProject?.name === project.name;
             const isRenaming = renamingProject === project.name;
             const projSessions = getProjectSessions(project);
-            const { status } = getProjectStatus(projSessions, finishedSessionIds);
+            const { status } = getProjectStatus(projSessions, finishedSessionIds, mutedStatusSessionIds);
             return (
               <div
                 key={project.name}
@@ -507,13 +507,15 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                 {/* Row 1: status dot + project name */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: isCompact ? 'center' : 'flex-start' }}>
                   {status !== 'none' ? (
-                    <span style={{
+                    <span
+                      className={status === 'finished' ? 'terminal-dot-finished' : undefined}
+                      style={{
                       width: 8,
                       height: 8,
                       borderRadius: '50%',
                       background: STATUS_COLORS[status],
                       flexShrink: 0,
-                    }} title={`Status: ${status}`} />
+                    }} title={`Status: ${status === 'finished' ? 'finished — needs attention' : status}`} />
                   ) : (
                     <FolderOpen size={14} style={{ color: isActive ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
                   )}
@@ -607,17 +609,21 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                 {/* Per-session details */}
                 {!isCompact && projSessions.length > 0 && projSessions.map(session => {
                   const termStatus = getDisplayTerminalStatus(session, finishedSessionIds);
+                  const visualStatus = getVisualTerminalStatus(session, finishedSessionIds, mutedStatusSessionIds);
+                  const isStatusMuted = mutedStatusSessionIds.has(session.sessionId);
                   const timeSince = formatTimeSince(session.lastOutputAt);
-                  const dotColor = termStatus === 'busy'
+                  const dotColor = visualStatus === 'busy'
                     ? 'var(--accent)'
-                    : termStatus === 'dead' || termStatus === 'finished'
+                    : visualStatus === 'finished'
+                    ? 'var(--warning)'
+                    : visualStatus === 'dead'
                     ? 'var(--danger)'
                     : 'var(--text-muted)';
                   return (
                     <div key={session.sessionId} style={{ marginTop: 4 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 16, minWidth: 0 }}>
                         <span
-                          className={termStatus === 'busy' ? 'terminal-dot-busy' : undefined}
+                          className={visualStatus === 'busy' ? 'terminal-dot-busy' : visualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
                           style={{
                             width: 6,
                             height: 6,
@@ -626,7 +632,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                             flexShrink: 0,
                             display: 'inline-block',
                           }}
-                          title={`Terminal ${session.sessionId}: ${termStatus}`}
+                          title={`Terminal ${session.sessionId}: ${termStatus === 'finished' ? 'finished — needs attention' : termStatus}${isStatusMuted ? ' (status colors muted)' : ''}`}
                         />
                         <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                           {session.sessionId}
@@ -709,7 +715,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                   {waitingProjects.map(project => {
                     const isRenaming = renamingProject === project.name;
                     const projSessions = getProjectSessions(project);
-                    const { status } = getProjectStatus(projSessions, finishedSessionIds);
+                    const { status } = getProjectStatus(projSessions, finishedSessionIds, mutedStatusSessionIds);
                     const dotColor = status === 'none' ? 'var(--text-muted)' : STATUS_COLORS[status];
 
                     return (

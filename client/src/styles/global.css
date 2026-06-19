@@ -14,6 +14,7 @@
   --accent-2: #35beea;
   --accent-dim: rgba(95, 224, 186, 0.16);
   --danger: #f87171;
+  --warning: #fbbf24;
   --font-sans: 'Outfit', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
   --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.28);
@@ -141,6 +142,16 @@ input:focus {
   animation: terminalPulse 1.5s ease-in-out infinite;
 }
 
+/* "Just finished" — slow amber blink to call for attention until acknowledged */
+@keyframes terminalFinishedBlink {
+  0%, 40%, 100% { opacity: 1; box-shadow: 0 0 6px 2px var(--warning); }
+  60%, 90% { opacity: 0.2; box-shadow: 0 0 0 0 var(--warning); }
+}
+
+.terminal-dot-finished {
+  animation: terminalFinishedBlink 2s ease-in-out infinite;
+}
+
 .terminal-tab {
   position: relative;
 }
@@ -165,12 +176,13 @@ input:focus {
   bottom: -6px;
   height: 2px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(248, 113, 113, 0), rgba(248, 113, 113, 0.9), rgba(248, 113, 113, 0));
+  background: linear-gradient(90deg, rgba(251, 191, 36, 0), rgba(251, 191, 36, 0.9), rgba(251, 191, 36, 0));
   opacity: 0.75;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .terminal-dot-busy {
+  .terminal-dot-busy,
+  .terminal-dot-finished {
     animation: none;
     opacity: 1;
   }

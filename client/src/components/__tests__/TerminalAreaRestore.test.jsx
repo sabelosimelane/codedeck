@@ -18,6 +18,8 @@ vi.mock('lucide-react', () => {
     Paintbrush: Icon,
     TerminalSquare: Icon,
     RotateCcw: Icon,
+    Eye: Icon,
+    EyeOff: Icon,
   };
 });
 
@@ -204,8 +206,67 @@ describe('TerminalArea restore fallback', () => {
     expect(view.getByLabelText('Split right').getAttribute('title')).toContain('Split right');
     expect(view.getByLabelText('New terminal').getAttribute('title')).toContain('New terminal');
     expect(view.getByLabelText('Inspect terminal Gamma-9').getAttribute('title')).toBe('Inspect terminal Gamma-9');
+    expect(view.getByLabelText('Mute status colors for Gamma-9').getAttribute('title')).toBe('Mute status colors for Gamma-9');
     expect(view.getByLabelText('Clear terminal Gamma-9').getAttribute('title')).toContain('Clear terminal Gamma-9');
     expect(view.getByLabelText('Close pane Gamma-9').getAttribute('title')).toContain('Close pane Gamma-9');
+  });
+
+  it('lets a pane mute status colors without changing its status label', async () => {
+    const liveSessions = [
+      {
+        sessionId: 'Gamma-9',
+        cwd: '/tmp/gamma',
+        alive: true,
+        wsAttached: true,
+        executionStatus: 'running',
+        executionReason: 'shell_without_prompt',
+      },
+    ];
+    const onToggleMutedStatusSession = vi.fn();
+
+    global.fetch = vi.fn(async (url) => {
+      if (url === '/api/health') {
+        return {
+          ok: true,
+          json: async () => ({ terminalCreationAllowed: true }),
+        };
+      }
+
+      if (url === '/api/sessions') {
+        return {
+          ok: true,
+          json: async () => liveSessions,
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const view = render(
+      <TerminalArea
+        project={PROJECT}
+        sessionStatus={liveSessions}
+        onSessionStatusRefresh={onSessionStatusRefresh}
+        mutedStatusSessionIds={new Set(['Gamma-9'])}
+        onToggleMutedStatusSession={onToggleMutedStatusSession}
+      />
+    );
+
+    await waitFor(() => {
+      expect(view.getAllByText('Gamma-9').length).toBeGreaterThan(0);
+    });
+
+    const statusDot = view.getByTitle('Gamma-9: running (shell_without_prompt) (status colors muted)');
+    expect(statusDot.className).not.toContain('terminal-dot-busy');
+    expect(view.getByText('Running')).toBeTruthy();
+    const showStatusColorsButton = view.getByLabelText('Show status colors for Gamma-9');
+    expect(showStatusColorsButton.getAttribute('title')).toBe('Show status colors for Gamma-9');
+    expect(showStatusColorsButton.style.color).toBe('var(--text-muted)');
+    expect(showStatusColorsButton.style.background).toBe('rgba(154, 165, 184, 0.12)');
+    expect(view.container.querySelector('[data-status-muted="true"] > div').style.border).toContain('rgba(154, 165, 184, 0.28)');
+
+    fireEvent.click(showStatusColorsButton);
+    expect(onToggleMutedStatusSession).toHaveBeenCalledWith('Gamma-9');
   });
 
   it('creates new terminals with a backend-issued session id', async () => {

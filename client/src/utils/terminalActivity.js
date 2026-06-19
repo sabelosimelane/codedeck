@@ -49,6 +49,18 @@ export function getDisplayTerminalStatus(session, finishedSessionIds, now = Date
   return base;
 }
 
+export function isTerminalStatusMuted(sessionId, mutedSessionIds) {
+  if (!sessionId || !mutedSessionIds) return false;
+  return typeof mutedSessionIds.has === 'function'
+    ? mutedSessionIds.has(sessionId)
+    : mutedSessionIds.includes?.(sessionId) === true;
+}
+
+export function getVisualTerminalStatus(session, finishedSessionIds, mutedSessionIds, now = Date.now()) {
+  const status = getDisplayTerminalStatus(session, finishedSessionIds, now);
+  return isTerminalStatusMuted(session?.sessionId, mutedSessionIds) ? 'idle' : status;
+}
+
 export function getDisplayAggregateTerminalStatus(sessions, finishedSessionIds, now = Date.now()) {
   if (!sessions || sessions.length === 0) return 'none';
 
@@ -70,6 +82,29 @@ export function getDisplayTabTerminalStatus(tab, sessionLookup, finishedSessionI
     .filter(Boolean);
 
   return getDisplayAggregateTerminalStatus(sessions, finishedSessionIds, now);
+}
+
+export function getVisualAggregateTerminalStatus(sessions, finishedSessionIds, mutedSessionIds, now = Date.now()) {
+  if (!sessions || sessions.length === 0) return 'none';
+
+  const statuses = sessions.map(session => getVisualTerminalStatus(session, finishedSessionIds, mutedSessionIds, now));
+
+  if (statuses.includes('busy')) return 'busy';
+  if (statuses.includes('finished')) return 'finished';
+  if (statuses.includes('unknown')) return 'unknown';
+  if (statuses.every(status => status === 'dead')) return 'dead';
+  if (statuses.some(status => status === 'idle')) return 'idle';
+  return 'none';
+}
+
+export function getVisualTabTerminalStatus(tab, sessionLookup, finishedSessionIds, mutedSessionIds, now = Date.now()) {
+  if (!tab?.panes?.length || !sessionLookup) return 'none';
+
+  const sessions = tab.panes
+    .map(pane => sessionLookup.get(pane.sessionId))
+    .filter(Boolean);
+
+  return getVisualAggregateTerminalStatus(sessions, finishedSessionIds, mutedSessionIds, now);
 }
 
 export function resolveTerminalCompletionNotificationMs(value) {

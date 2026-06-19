@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff } from 'lucide-react';
 import TerminalInspector from './TerminalInspector';
 import { useToast } from './ToastContext';
 import {
@@ -9,7 +9,12 @@ import {
   shouldRenderProjectTerminals,
 } from '../utils/terminalLayout';
 import { resolveInitialTerminalState } from '../utils/terminalLayoutState';
-import { getTabTerminalStatus, getTerminalStatus, getDisplayTabTerminalStatus, getDisplayTerminalStatus } from '../utils/terminalActivity';
+import {
+  getDisplayTabTerminalStatus,
+  getDisplayTerminalStatus,
+  getVisualTabTerminalStatus,
+  getVisualTerminalStatus,
+} from '../utils/terminalActivity';
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
 
@@ -223,9 +228,9 @@ const TAB_STATUS_STYLES = {
     textColor: 'var(--text-primary)',
   },
   finished: {
-    dotColor: 'var(--danger)',
-    dotShadow: '0 0 10px rgba(248, 113, 113, 0.22)',
-    borderColor: 'rgba(248, 113, 113, 0.28)',
+    dotColor: 'var(--warning)',
+    dotShadow: '0 0 10px rgba(251, 191, 36, 0.3)',
+    borderColor: 'rgba(251, 191, 36, 0.35)',
     textColor: 'var(--text-primary)',
   },
   idle: {
@@ -270,6 +275,10 @@ function getPaneTerminalStatus(session, finishedSessionIds) {
   return session ? getDisplayTerminalStatus(session, finishedSessionIds) : 'unknown';
 }
 
+function getPaneVisualStatus(session, finishedSessionIds, mutedStatusSessionIds) {
+  return session ? getVisualTerminalStatus(session, finishedSessionIds, mutedStatusSessionIds) : 'unknown';
+}
+
 function getPaneStatusTitle(sessionId, status, session) {
   const baseTitle = `${sessionId}: ${PANE_STATUS_TITLES[status] || status}`;
   return session?.executionReason
@@ -277,7 +286,7 @@ function getPaneStatusTitle(sessionId, status, session) {
     : baseTitle;
 }
 
-export default function TerminalArea({ project, sessionStatus = [], onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), onResetFinishedSession = () => {} }) {
+export default function TerminalArea({ project, sessionStatus = [], onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {} }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
@@ -868,13 +877,14 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
           {tabs.map(tab => {
             const isActive = tab.id === activeTabId;
             const tabStatus = getDisplayTabTerminalStatus(tab, sessionLookup, finishedSessionIds);
-            const statusStyle = TAB_STATUS_STYLES[tabStatus] || TAB_STATUS_STYLES.none;
+            const tabVisualStatus = getVisualTabTerminalStatus(tab, sessionLookup, finishedSessionIds, mutedStatusSessionIds);
+            const statusStyle = TAB_STATUS_STYLES[tabVisualStatus] || TAB_STATUS_STYLES.none;
             const tabHasPendingClose = tab.panes.some(pane => pendingSessionIds.includes(pane.sessionId));
             return (
               <button
                 key={tab.id}
                 onClick={() => setActiveTabId(tab.id)}
-                className={tabStatus === 'busy' ? 'terminal-tab terminal-tab-busy' : tabStatus === 'finished' ? 'terminal-tab terminal-tab-finished' : 'terminal-tab'}
+                className={tabVisualStatus === 'busy' ? 'terminal-tab terminal-tab-busy' : tabVisualStatus === 'finished' ? 'terminal-tab terminal-tab-finished' : 'terminal-tab'}
                 style={{
                   padding: '4px 10px',
                   fontSize: '12px',
@@ -886,13 +896,13 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                   alignItems: 'center',
                   gap: 6,
                   border: `1px solid ${isActive ? statusStyle.borderColor : 'transparent'}`,
-                  boxShadow: isActive && tabStatus === 'busy' ? 'inset 0 1px 0 rgba(255, 255, 255, 0.04)' : 'none',
+                  boxShadow: isActive && tabVisualStatus === 'busy' ? 'inset 0 1px 0 rgba(255, 255, 255, 0.04)' : 'none',
                   transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease',
                 }}
                 title={tabStatus === 'none' ? tab.label : `${tab.label} · ${tabStatus}`}
               >
                 <span
-                  className={tabStatus === 'busy' ? 'terminal-dot-busy' : undefined}
+                  className={tabVisualStatus === 'busy' ? 'terminal-dot-busy' : tabVisualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
                   style={{
                     width: 7,
                     height: 7,
@@ -1049,10 +1059,19 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
               });
               const paneSession = sessionLookup.get(pane.sessionId);
               const paneStatus = getPaneTerminalStatus(paneSession, finishedSessionIds);
-              const paneStatusStyle = TAB_STATUS_STYLES[paneStatus] || TAB_STATUS_STYLES.unknown;
+              const paneVisualStatus = getPaneVisualStatus(paneSession, finishedSessionIds, mutedStatusSessionIds);
+              const paneStatusStyle = TAB_STATUS_STYLES[paneVisualStatus] || TAB_STATUS_STYLES.unknown;
               const paneStatusLabel = PANE_STATUS_LABELS[paneStatus] || PANE_STATUS_LABELS.unknown;
-              const paneStatusTitle = getPaneStatusTitle(pane.sessionId, paneStatus, paneSession);
+              const isStatusMuted = mutedStatusSessionIds.has(pane.sessionId);
+              const paneStatusTitle = `${getPaneStatusTitle(pane.sessionId, paneStatus, paneSession)}${isStatusMuted ? ' (status colors muted)' : ''}`;
               const isPending = pendingSessionIds.includes(pane.sessionId);
+              const paneIsActive = activePaneId === pane.id;
+              const paneBorderColor = isStatusMuted
+                ? paneIsActive ? 'rgba(154, 165, 184, 0.28)' : 'rgba(154, 165, 184, 0.12)'
+                : paneIsActive ? 'rgba(110, 231, 183, 0.45)' : 'rgba(110, 231, 183, 0.12)';
+              const paneBackground = isStatusMuted
+                ? 'linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)), #09090b'
+                : 'radial-gradient(circle at top, rgba(110, 231, 183, 0.06), rgba(14, 14, 16, 0) 42%), #09090b';
 
               return (
                 <React.Fragment key={pane.id}>
@@ -1064,6 +1083,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                 )}
                 <div
                   className="pane-wrapper"
+                  data-status-muted={isStatusMuted ? 'true' : undefined}
                   onMouseDown={() => {
                     if (activePaneId !== pane.id) {
                       setActivePaneId(pane.id);
@@ -1084,10 +1104,10 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                       display: 'flex',
                       flexDirection: 'column',
                       minHeight: 0,
-                      border: `1px solid ${activePaneId === pane.id ? 'rgba(110, 231, 183, 0.45)' : 'rgba(110, 231, 183, 0.12)'}`,
+                      border: `1px solid ${paneBorderColor}`,
                       borderRadius: 16,
                       overflow: 'hidden',
-                      background: 'radial-gradient(circle at top, rgba(110, 231, 183, 0.06), rgba(14, 14, 16, 0) 42%), #09090b',
+                      background: paneBackground,
                       boxShadow: '0 20px 45px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.03)',
                       transition: 'border-color 0.15s ease',
                     }}
@@ -1106,7 +1126,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <span
-                            className={paneStatus === 'busy' ? 'terminal-dot-busy' : undefined}
+                            className={paneVisualStatus === 'busy' ? 'terminal-dot-busy' : paneVisualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
                             title={paneStatusTitle}
                             style={{
                               width: 8,
@@ -1180,6 +1200,21 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                             <Bug size={13} />
                           </button>
                         </ShortcutHint>
+                        <ShortcutHint label={isStatusMuted ? 'Show status colors' : 'Mute status colors'} keys={[]}>
+                          <button
+                            onClick={() => onToggleMutedStatusSession(pane.sessionId)}
+                            className="terminal-action-btn"
+                            title={`${isStatusMuted ? 'Show' : 'Mute'} status colors for ${pane.sessionId}`}
+                            aria-label={`${isStatusMuted ? 'Show' : 'Mute'} status colors for ${pane.sessionId}`}
+                            style={{
+                              color: isStatusMuted ? 'var(--text-muted)' : undefined,
+                              background: isStatusMuted ? 'rgba(154, 165, 184, 0.12)' : undefined,
+                            }}
+                            disabled={isPending}
+                          >
+                            {isStatusMuted ? <EyeOff size={13} /> : <Eye size={13} />}
+                          </button>
+                        </ShortcutHint>
                         <ShortcutHint
                           label="Clear terminal"
                           keys={clearTerminalKeys}
@@ -1202,7 +1237,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                               title={`Reset status for ${pane.sessionId}`}
                               aria-label={`Reset status for ${pane.sessionId}`}
                               disabled={isPending}
-                              style={{ color: 'var(--danger)' }}
+                              style={{ color: 'var(--warning)' }}
                             >
                               <RotateCcw size={13} />
                             </button>
@@ -1232,7 +1267,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                         sessionId={pane.sessionId}
                         cwd={project.path}
                         isVisible={isActive}
-                        isActivePane={isActive && activePaneId === pane.id}
+                        isActivePane={isActive && paneIsActive}
                         runtimeType={sessionLookup.get(pane.sessionId)?.runtimeType ?? 'pty'}
                       />
                     </div>

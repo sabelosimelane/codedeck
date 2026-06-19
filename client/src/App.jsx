@@ -36,6 +36,15 @@ function AppContent() {
     return saved ? parseInt(saved, 10) : 260;
   });
   const [finishedSessionIds, setFinishedSessionIds] = useState(new Set());
+  const [mutedStatusSessionIds, setMutedStatusSessionIds] = useState(() => {
+    try {
+      const stored = localStorage.getItem('codedeck-muted-status-sessions');
+      const parsed = stored ? JSON.parse(stored) : [];
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      return new Set();
+    }
+  });
   const { showToast } = useToast();
   const sessionStatusRequestInFlightRef = useRef(false);
   const prevSessionStatusRef = useRef([]);
@@ -122,13 +131,21 @@ function AppContent() {
     return () => clearInterval(id);
   }, [fetchSessionStatus]);
 
-  // Detect terminals that transition from busy to idle/unknown and mark them as finished
+  // Detect terminals that transition from busy to idle/unknown and mark them as finished.
+  // The previous-snapshot read and ref advance happen in the effect body (once per change),
+  // NOT inside the state updater — React StrictMode double-invokes updaters to surface
+  // impurity, and a ref mutation inside one corrupts the prev/current comparison so the
+  // busy→idle transition is never recorded. Keep the updater pure.
   useEffect(() => {
+    const prevSessions = prevSessionStatusRef.current;
+    prevSessionStatusRef.current = sessionStatus;
+
+    const prevMap = new Map(prevSessions.map(s => [s.sessionId, s]));
+    const currentSessionIds = new Set(sessionStatus.map(s => s.sessionId));
+
     setFinishedSessionIds(prev => {
       const next = new Set(prev);
       let changed = false;
-      const currentSessionIds = new Set(sessionStatus.map(s => s.sessionId));
-      const prevMap = new Map(prevSessionStatusRef.current.map(s => [s.sessionId, s]));
 
       // Clean up sessions that no longer exist
       for (const sessionId of next) {
@@ -156,7 +173,6 @@ function AppContent() {
         }
       }
 
-      prevSessionStatusRef.current = sessionStatus;
       return changed ? next : prev;
     });
   }, [sessionStatus]);
@@ -166,6 +182,30 @@ function AppContent() {
       if (!prev.has(sessionId)) return prev;
       const next = new Set(prev);
       next.delete(sessionId);
+      return next;
+    });
+  }, []);
+
+  const toggleMutedStatusSession = useCallback((sessionId) => {
+    setMutedStatusSessionIds(prev => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) {
+        next.delete(sessionId);
+      } else {
+        next.add(sessionId);
+      }
+
+      try {
+        const values = Array.from(next);
+        if (values.length === 0) {
+          localStorage.removeItem('codedeck-muted-status-sessions');
+        } else {
+          localStorage.setItem('codedeck-muted-status-sessions', JSON.stringify(values));
+        }
+      } catch {
+        // Non-critical preference persistence.
+      }
+
       return next;
     });
   }, []);
@@ -365,6 +405,7 @@ function AppContent() {
         showFileTree={showFileTree}
         sessionStatus={sessionStatus}
         finishedSessionIds={finishedSessionIds}
+        mutedStatusSessionIds={mutedStatusSessionIds}
         onResetFinishedSession={resetFinishedSession}
         onBrowseFiles={setFileBrowserProject}
         onShowShortcuts={() => setShowShortcutsOverlay(true)}
@@ -390,7 +431,9 @@ function AppContent() {
             sessionStatus={sessionStatus}
             onSessionStatusRefresh={setSessionStatus}
             finishedSessionIds={finishedSessionIds}
+            mutedStatusSessionIds={mutedStatusSessionIds}
             onResetFinishedSession={resetFinishedSession}
+            onToggleMutedStatusSession={toggleMutedStatusSession}
           />
         ) : (
           <div style={{

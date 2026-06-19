@@ -144,6 +144,34 @@ describe('Sidebar', () => {
     expect(dot.className).toContain('terminal-dot-busy');
   });
 
+  it('keeps a muted running terminal neutral in the project list', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ terminalFinishCooldownSeconds: 45 }),
+    });
+
+    const view = renderSidebar({
+      activeProjects: [{ name: 'Alpha', path: '/Users/dev/git/alpha/backend' }],
+      mutedStatusSessionIds: new Set(['Alpha-3']),
+      sessionStatus: [{
+        sessionId: 'Alpha-3',
+        cwd: '/Users/dev/git/alpha/backend',
+        alive: true,
+        executionStatus: 'running',
+        lastOutputAt: '2026-04-25T13:00:00.000Z',
+        lastOutputLine: 'Waiting for deployment rollout to finish...',
+      }],
+    });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith('/api/config');
+    });
+
+    expect(view.getByTitle('Status: idle')).toBeTruthy();
+    const dot = view.getByTitle('Terminal Alpha-3: busy (status colors muted)');
+    expect(dot.className).not.toContain('terminal-dot-busy');
+  });
+
   it('renders waiting projects as compact muted rows below active projects', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,

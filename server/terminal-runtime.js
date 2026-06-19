@@ -28,6 +28,8 @@ const TMUX_HISTORY_LIMIT = TERMINAL_SNAPSHOT_WINDOW_LINES;
 export const TERMINAL_RUNTIME_CONTRACT = 'tmux_required';
 export const TERMINAL_RUNTIME_BLOCKED_REASON = 'missing_tmux';
 export const TERMINAL_RUNTIME_BLOCKED_MESSAGE = 'Install tmux to enable durable CodeDeck terminals.';
+export const TERMINAL_PTY_SPAWN_BLOCKED_REASON = 'pty_spawn_failed';
+export const TERMINAL_PTY_SPAWN_BLOCKED_MESSAGE = 'Terminal PTY helper cannot start processes.';
 export const TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE = 'snapshot_unavailable';
 export const TERMINAL_HISTORY_WARNING_MESSAGE_SNAPSHOT_UNAVAILABLE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
 const execFileAsync = promisify(execFile);
@@ -44,15 +46,28 @@ export function getTerminalRuntimeStatus(runtime) {
   const tmuxAvailable = runtime?.type === 'tmux'
     ? runtime.isAvailable?.() ?? true
     : false;
-  const terminalCreationAllowed = runtime?.type === 'tmux' && tmuxAvailable;
+  const ptySpawnStatus = runtime?.type === 'tmux' && tmuxAvailable
+    ? runtime.getPtySpawnStatus?.() ?? { available: true, error: null }
+    : { available: false, error: null };
+  const ptySpawnAvailable = ptySpawnStatus.available === true;
+  const terminalCreationAllowed = runtime?.type === 'tmux' && tmuxAvailable && ptySpawnAvailable;
+  const terminalRuntimeBlockedReason = terminalCreationAllowed
+    ? null
+    : (!tmuxAvailable ? TERMINAL_RUNTIME_BLOCKED_REASON : TERMINAL_PTY_SPAWN_BLOCKED_REASON);
+  const terminalRuntimeBlockedMessage = terminalCreationAllowed
+    ? null
+    : (!tmuxAvailable
+      ? TERMINAL_RUNTIME_BLOCKED_MESSAGE
+      : `${TERMINAL_PTY_SPAWN_BLOCKED_MESSAGE} ${ptySpawnStatus.error || ''}`.trim());
 
   return {
     terminalRuntime: runtime?.type ?? 'unknown',
     terminalRuntimeContract: TERMINAL_RUNTIME_CONTRACT,
     tmuxAvailable,
+    ptySpawnAvailable,
     terminalCreationAllowed,
-    terminalRuntimeBlockedReason: terminalCreationAllowed ? null : TERMINAL_RUNTIME_BLOCKED_REASON,
-    terminalRuntimeBlockedMessage: terminalCreationAllowed ? null : TERMINAL_RUNTIME_BLOCKED_MESSAGE,
+    terminalRuntimeBlockedReason,
+    terminalRuntimeBlockedMessage,
   };
 }
 
@@ -595,11 +610,44 @@ function normalizeCapturedSnapshot(output, windowLines = TERMINAL_SNAPSHOT_WINDO
 }
 
 function createTmuxRuntime() {
+  let ptySpawnStatus = null;
+
+  function checkPtySpawnStatus() {
+    if (ptySpawnStatus) return ptySpawnStatus;
+
+    try {
+      const probe = spawn(process.execPath, ['-e', ''], {
+        name: 'xterm-256color',
+        cols: 1,
+        rows: 1,
+        cwd: process.cwd(),
+        env: process.env,
+      });
+      try {
+        probe.kill?.();
+      } catch {
+        // The probe process may already have exited.
+      }
+      ptySpawnStatus = { available: true, error: null };
+    } catch (err) {
+      ptySpawnStatus = {
+        available: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    return ptySpawnStatus;
+  }
+
   return {
     type: 'tmux',
 
     isAvailable() {
       return isTmuxAvailable();
+    },
+
+    getPtySpawnStatus() {
+      return checkPtySpawnStatus();
     },
 
     /**
@@ -612,6 +660,10 @@ function createTmuxRuntime() {
     spawn({ cwd, cols, rows, sessionId }) {
       if (!this.isAvailable()) {
         throw new Error(TERMINAL_RUNTIME_BLOCKED_MESSAGE);
+      }
+      const currentPtySpawnStatus = checkPtySpawnStatus();
+      if (!currentPtySpawnStatus.available) {
+        throw new Error(`${TERMINAL_PTY_SPAWN_BLOCKED_MESSAGE} ${currentPtySpawnStatus.error || ''}`.trim());
       }
 
       const tmuxName = sanitizeTmuxName(sessionId);

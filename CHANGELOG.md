@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-06-20] - Quiet muted terminal indicators and PTY preflight
+
+### Executive Summary
+* Terminal status attention is now easier to control: individual panes can mute their status colors so busy or finished work elsewhere does not keep blinking while you focus on the active pane. The muted state stays visually quiet across the pane header, tab bar, and sidebar while preserving the real running/idle/finished status text. The terminal runtime also reports a clearer blocked state when tmux is present but the PTY helper cannot spawn processes, so startup failures are surfaced before opening a broken terminal.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Muting a terminal status removed the busy dot animation but still left green attention styling on the muted control and active pane frame, so the muted pane could continue drawing focus.
+  * **Solution:** Muted panes now use neutral visual status, neutral frame styling, no dot animation class, no status glow, and a subdued toggle button while keeping the real status label visible.
+  * **Problem:** `getTerminalRuntimeStatus()` treated tmux availability as sufficient for terminal creation, even when `node-pty` could not spawn its helper process.
+  * **Solution:** The tmux runtime now runs and caches a PTY spawn probe; health/status responses block terminal creation with a `pty_spawn_failed` reason and the captured spawn error when the probe fails.
+* **✨ New Feature:**
+  * `client/src/App.jsx` — Added persistent `mutedStatusSessionIds` state in localStorage and passed the preference through to the sidebar and terminal area.
+  * `client/src/components/TerminalArea.jsx` — Added a pane-header control to mute/show status colors per terminal. Tabs and pane chrome now render from muted-aware visual status while preserving actual status labels and tooltips.
+  * `client/src/components/Sidebar.jsx` — Sidebar project/session indicators now use muted-aware visual status so muted terminals do not keep their project row active or finished-colored.
+  * `client/src/utils/terminalActivity.js` — Added visual-status helpers that neutralize muted sessions for rendering without changing the underlying display status or notification logic.
+* **🛠️ Codebase:**
+  * `client/src/styles/global.css` — Added amber warning styling and finished-state blink support with reduced-motion handling.
+  * `server/terminal-runtime.js` — Added PTY spawn status constants, spawn-probe caching, health/status reporting for `ptySpawnAvailable`, and spawn-time blocking when the probe fails.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/Sidebar.test.jsx` — Added coverage proving muted running terminals render neutral in the project list.
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — Added coverage for the mute/show control, neutral muted pane styling, and unchanged status labels.
+  * `client/src/utils/__tests__/terminalActivity.test.js` — Added coverage proving muted running and finished sessions are neutralized only for visual status aggregation.
+  * `server/__tests__/terminal-runtime.test.js` — Added coverage for tmux-present/PTY-spawn-failed health status.
+
 ## [2026-05-12] - Accessibility tooltips and sidebar/terminal layout improvements
 
 ### Executive Summary
