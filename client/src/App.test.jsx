@@ -61,8 +61,24 @@ vi.mock('./utils/fileActions', () => ({
 }));
 
 import App from './App';
+import { SYSTEM_RESOURCES_URL } from './utils/systemResourceTitle';
 
-describe('App session polling', () => {
+function okJson(json) {
+  return Promise.resolve({
+    ok: true,
+    json: async () => json,
+  });
+}
+
+function mockSystemResources(resources = {
+  cpu: { usage_percent: 9.79 },
+  memory: { usage_percent: 81 },
+  disk: { usage_percent: 89 },
+}) {
+  return okJson(resources);
+}
+
+describe('App polling', () => {
   let originalFetch;
 
   beforeEach(() => {
@@ -70,6 +86,7 @@ describe('App session polling', () => {
     originalFetch = global.fetch;
     mocks.showToast.mockReset();
     localStorage.clear();
+    document.title = 'CodeDeck';
     window.history.replaceState({}, '', '/');
   });
 
@@ -83,11 +100,12 @@ describe('App session polling', () => {
     let sessionRequestCount = 0;
 
     global.fetch = vi.fn((url) => {
+      if (url === SYSTEM_RESOURCES_URL) {
+        return mockSystemResources();
+      }
+
       if (url === '/api/projects') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [],
-        });
+        return okJson([]);
       }
 
       if (url === '/api/sessions') {
@@ -111,19 +129,17 @@ describe('App session polling', () => {
     let sessionRequestCount = 0;
 
     global.fetch = vi.fn((url) => {
+      if (url === SYSTEM_RESOURCES_URL) {
+        return mockSystemResources();
+      }
+
       if (url === '/api/projects') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [{ name: 'Gamma', path: '/tmp/gamma' }],
-        });
+        return okJson([{ name: 'Gamma', path: '/tmp/gamma' }]);
       }
 
       if (url === '/api/sessions') {
         sessionRequestCount += 1;
-        return Promise.resolve({
-          ok: true,
-          json: async () => [],
-        });
+        return okJson([]);
       }
 
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
@@ -144,29 +160,24 @@ describe('App session polling', () => {
     let projectRequestCount = 0;
 
     global.fetch = vi.fn((url, options = {}) => {
+      if (url === SYSTEM_RESOURCES_URL) {
+        return mockSystemResources();
+      }
+
       if (url === '/api/projects' && !options.method) {
         projectRequestCount += 1;
-        return Promise.resolve({
-          ok: true,
-          json: async () => projectRequestCount === 1
-            ? [{ name: 'Gamma', path: '/tmp/gamma', waiting: true, waitingAt: '2026-05-11T10:00:00.000Z' }]
-            : [{ name: 'Gamma', path: '/tmp/gamma', waiting: false, waitingAt: null }],
-        });
+        return okJson(projectRequestCount === 1
+          ? [{ name: 'Gamma', path: '/tmp/gamma', waiting: true, waitingAt: '2026-05-11T10:00:00.000Z' }]
+          : [{ name: 'Gamma', path: '/tmp/gamma', waiting: false, waitingAt: null }]);
       }
 
       if (url === '/api/projects/Gamma' && options.method === 'PUT') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ name: 'Gamma', path: '/tmp/gamma', waiting: false, waitingAt: null }),
-        });
+        return okJson({ name: 'Gamma', path: '/tmp/gamma', waiting: false, waitingAt: null });
       }
 
       if (url === '/api/sessions') {
         sessionRequestCount += 1;
-        return Promise.resolve({
-          ok: true,
-          json: async () => [],
-        });
+        return okJson([]);
       }
 
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
@@ -190,5 +201,62 @@ describe('App session polling', () => {
       body: JSON.stringify({ waiting: false, waitingAt: null }),
     }));
     expect(sessionRequestCount).toBe(2);
+  });
+
+  it('shows system resources in the browser title and polls every 30 seconds', async () => {
+    let resourcesRequestCount = 0;
+
+    global.fetch = vi.fn((url) => {
+      if (url === SYSTEM_RESOURCES_URL) {
+        resourcesRequestCount += 1;
+        return mockSystemResources(resourcesRequestCount === 1
+          ? {
+              cpu: { usage_percent: 9.79 },
+              memory: { usage_percent: 81 },
+              disk: { usage_percent: 89 },
+            }
+          : {
+              cpu: { usage_percent: 12.5 },
+              memory: { usage_percent: 82 },
+              disk: { usage_percent: 90 },
+            });
+      }
+
+      if (url === '/api/projects') {
+        return okJson([]);
+      }
+
+      if (url === '/api/sessions') {
+        return okJson([]);
+      }
+
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    render(<App />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+    });
+
+    expect(document.title).toBe('💻 81% · ⚡ 9.79% · 💿 89%');
+    expect(resourcesRequestCount).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29999);
+      await Promise.resolve();
+    });
+
+    expect(resourcesRequestCount).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+    });
+
+    expect(resourcesRequestCount).toBe(2);
+    expect(document.title).toBe('🚨 💻 82% · ⚡ 12.5% · 💿 90%');
+    expect(document.querySelector("link[rel~='icon']")?.href).toContain('data:image/svg+xml');
   });
 });

@@ -30,6 +30,7 @@ import { readTree } from './file-tree.js';
 import { readFilePreview } from './file-preview.js';
 import { resolveEditorCommand } from './editor-command.js';
 import { normalizeProjects } from './project-config.js';
+import { collectSystemResources } from './system-resources.js';
 
 const app = express();
 app.use(express.json());
@@ -147,6 +148,18 @@ app.get('/api/config', (req, res) => {
     result[row.key] = JSON.parse(row.value);
   }
   res.json(result);
+});
+
+// -------------------------------------------------------------------
+// REST API: Local system resources
+// -------------------------------------------------------------------
+app.get('/api/system/resources', async (req, res) => {
+  try {
+    res.json(await collectSystemResources());
+  } catch (error) {
+    console.error('Failed to get system resources:', error);
+    res.status(500).json({ error: 'Failed to retrieve system resources' });
+  }
 });
 
 // -------------------------------------------------------------------

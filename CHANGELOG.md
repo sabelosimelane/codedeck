@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-06-21] - Show system resources in the browser tab
+
+### Executive Summary
+* The browser tab now doubles as a lightweight system monitor, showing live memory, CPU, and disk usage without switching back to the dashboard. CodeDeck collects these resources itself, so open-source installs do not need a separate dev-scripts service. When any resource reaches 90% or higher, the tab becomes more attention-grabbing with an urgent title marker and red warning favicon so pressure is visible even while CodeDeck is in the background.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/index.js` — Added `GET /api/system/resources` so CodeDeck serves its own structured CPU, memory, and disk snapshot.
+  * `server/system-resources.js` — Added structured resource collection for CPU, memory, and disk, ported from the dev-scripts implementation with command-failure fallbacks.
+  * `server/memory-stats.js` — Added cross-platform memory collection using macOS `vm_stat`, Linux `/proc/meminfo`, and a Node `os` fallback.
+  * `client/src/App.jsx` — Added a 30-second same-origin poll against `/api/system/resources`, updates `document.title` with resource percentages, and switches the favicon to a red warning badge when CPU, memory, or disk reaches the 90% alert threshold.
+  * `client/src/utils/systemResourceTitle.js` — Added resource title formatting, alert threshold detection, percent formatting, and red SVG favicon generation for alert states.
+* **🛠️ Codebase:**
+  * `client/src/App.jsx` — Keeps resource polling out of preview tabs, avoids overlapping resource fetches, and restores the default title/favicon on cleanup.
+* **🧪 Tests:**
+  * `server/__tests__/memory-stats.test.js` — Added coverage for macOS `vm_stat` parsing and Linux `/proc/meminfo` parsing.
+  * `server/__tests__/system-resources.test.js` — Added coverage for CPU parsing, disk parsing, structured resource snapshots, and command-failure fallback fields.
+  * `client/src/App.test.jsx` — Added app-level coverage for immediate resource title updates, 30-second polling, and alert favicon switching when a resource reaches 90%.
+  * `client/src/utils/__tests__/systemResourceTitle.test.js` — Added formatter coverage for normal values, CPU display strings, fallback behavior, invalid percentages, threshold detection across CPU/memory/disk, and red favicon generation.
+
 ## [2026-06-20] - Quiet muted terminal indicators and PTY preflight
 
 ### Executive Summary

@@ -10,6 +10,26 @@ import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
 import { openFilePreviewTab } from './utils/fileActions';
 import { getTerminalStatus } from './utils/terminalActivity';
+import {
+  DEFAULT_APP_TITLE,
+  SYSTEM_RESOURCES_URL,
+  createResourceAlertFavicon,
+  formatSystemResourceTitle,
+  hasSystemResourceAlert,
+} from './utils/systemResourceTitle';
+
+const DEFAULT_FAVICON_HREF = '/favicon.svg';
+const SYSTEM_RESOURCES_POLL_INTERVAL_MS = 30000;
+
+function updateResourceFavicon(isAlerting) {
+  const icon = document.querySelector("link[rel~='icon']") || document.createElement('link');
+  icon.rel = 'icon';
+  icon.href = isAlerting ? createResourceAlertFavicon() : DEFAULT_FAVICON_HREF;
+
+  if (!icon.parentNode) {
+    document.head.appendChild(icon);
+  }
+}
 
 export default function App() {
   return (
@@ -47,6 +67,7 @@ function AppContent() {
   });
   const { showToast } = useToast();
   const sessionStatusRequestInFlightRef = useRef(false);
+  const systemResourcesRequestInFlightRef = useRef(false);
   const prevSessionStatusRef = useRef([]);
 
   const fetchProjects = useCallback(async () => {
@@ -64,6 +85,37 @@ function AppContent() {
   }, [showToast]);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
+
+  useEffect(() => {
+    if (previewPath) return undefined;
+
+    const fetchSystemResources = async () => {
+      if (systemResourcesRequestInFlightRef.current) return;
+      systemResourcesRequestInFlightRef.current = true;
+      try {
+        const res = await fetch(SYSTEM_RESOURCES_URL);
+        if (res.ok) {
+          const resources = await res.json();
+          document.title = formatSystemResourceTitle(resources);
+          updateResourceFavicon(hasSystemResourceAlert(resources));
+        }
+      } catch {
+        // Silent — the external resource service is optional while CodeDeck runs.
+      } finally {
+        systemResourcesRequestInFlightRef.current = false;
+      }
+    };
+
+    document.title = DEFAULT_APP_TITLE;
+    fetchSystemResources();
+    const id = setInterval(fetchSystemResources, SYSTEM_RESOURCES_POLL_INTERVAL_MS);
+
+    return () => {
+      clearInterval(id);
+      document.title = DEFAULT_APP_TITLE;
+      updateResourceFavicon(false);
+    };
+  }, [previewPath]);
 
   useEffect(() => {
     localStorage.setItem('codedeck-sidebar-compact', String(isSidebarCompact));
