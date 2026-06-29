@@ -46,8 +46,9 @@ Open `http://localhost:43000` in your browser.
 3. Use **Split right** (columns icon) to add side-by-side terminal panes — drag dividers to resize, double-click to reset.
 4. Use **+** in the tab bar to open new terminal tabs. Each tab has its own set of panes.
 5. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
-6. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
-7. Toast notifications confirm every action and surface errors.
+6. Use the pane **eye icon** — or **Cmd/Ctrl+Shift+M** on the active pane — to mute/show status colors without changing the terminal's real running/idle/finished state.
+7. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
+8. Toast notifications confirm every action and surface errors.
 
 ## Terminal Resilience
 

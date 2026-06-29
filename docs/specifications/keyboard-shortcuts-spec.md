@@ -23,9 +23,9 @@ All shortcuts are chosen to avoid clashing with Chrome browser shortcuts, since 
 | Shortcut | Action | Location |
 |----------|--------|----------|
 | Cmd+B | Toggle sidebar compact/expanded | App.jsx |
-| Cmd+Shift+B | Toggle file tree | App.jsx |
-| Cmd+Shift+D | Split right (add pane) | TerminalArea.jsx |
-| Cmd+Shift+J | New terminal tab | TerminalArea.jsx |
+| Cmd+Shift+F | Toggle file tree | App.jsx |
+| Cmd+Shift+E | Split right (add pane) | TerminalArea.jsx |
+| Cmd+Shift+T | New terminal tab | TerminalArea.jsx |
 
 ### 2.2 What's Missing
 
@@ -143,12 +143,13 @@ The ProjectSwitcher component receives:
 | Action | Shortcut (Mac) | Shortcut (Win/Linux) | Notes |
 |--------|----------------|---------------------|-------|
 | Clear active pane | Cmd+Shift+K | Ctrl+Shift+K | Clears terminal output |
-| Close active pane | Cmd+Shift+W | Ctrl+Shift+W | Kills session, removes pane |
+| Mute/show active pane status colors | Cmd+Shift+M | Ctrl+Shift+M | Toggles the eye/eye-off status control without changing the real execution state |
+| Close active pane | Cmd+Shift+X | Ctrl+Shift+X | Kills session, removes pane |
 | Inspect terminal | No shortcut | No shortcut | Mouse-only (niche debug feature) |
 
 - All pane action shortcuts act on the currently active pane (`activePaneId`)
 - No-op if no pane is active
-- Chrome-safe: Chrome uses Cmd+W (close tab) but not Cmd+Shift+W
+- Chrome-safe: close pane uses Cmd+Shift+X instead of browser-window close shortcuts
 
 ### 6.2 Clear Pane (Cmd+Shift+K)
 
@@ -156,22 +157,29 @@ The ProjectSwitcher component receives:
 - Non-destructive — only clears visible output, doesn't kill the session
 - The existing `clearPane` function in TerminalArea already accepts a paneId
 
-### 6.3 Close Pane (Cmd+Shift+W)
+### 6.3 Mute Status Colors (Cmd+Shift+M)
+
+- Finds the active pane in the active tab and calls `onToggleMutedStatusSession(sessionId)`
+- Non-destructive — only quiets the pane's visual status colors/animation; the running/idle/finished label and backend status remain unchanged
+- No-ops while the pane is pending a destructive action
+
+### 6.4 Close Pane (Cmd+Shift+X)
 
 - Calls `closePane(tabId, paneId, sessionId)` for the active pane
 - This triggers the existing flow: DELETE session API call, remove pane from state, redistribute widths
 - If it's the last pane in the tab, the tab closes (existing behavior)
 - After closing, the adjacent pane (previous, or first remaining) becomes active
 
-### 6.4 Pane Button Tooltips
+### 6.5 Pane Button Tooltips
 
-All 3 pane header buttons get wrapped with the existing `ShortcutHint` component:
+Pane header buttons get wrapped with the existing `ShortcutHint` component:
 
 | Button | Tooltip Label | Keys (Mac) | Keys (Win/Linux) |
 |--------|---------------|------------|-------------------|
 | Bug icon | Inspect terminal | (no keys — label only) | (no keys — label only) |
+| Eye/EyeOff icon | Mute/Show status colors | ⌘ ⇧ M | Ctrl ⇧ M |
 | Eraser icon | Clear terminal | ⌘ ⇧ K | Ctrl ⇧ K |
-| X icon | Close pane | ⌘ ⇧ W | Ctrl ⇧ W |
+| X icon | Close pane | ⌘ ⇧ X | Ctrl ⇧ X |
 
 For Inspect, the `ShortcutHint` wrapper shows the label but no key badges (pass empty `keys` array or omit).
 
@@ -202,14 +210,15 @@ For Inspect, the `ShortcutHint` wrapper shows the label but no key badges (pass 
 │  Select pane 1-9         ⌘ ⌥ 1-9       │
 │                                         │
 │  TERMINALS                              │
-│  New terminal            ⌘ ⇧ J         │
-│  Split right             ⌘ ⇧ D         │
+│  New terminal            ⌘ ⇧ T         │
+│  Split right             ⌘ ⇧ E         │
 │  Clear terminal          ⌘ ⇧ K         │
-│  Close pane              ⌘ ⇧ W         │
+│  Mute status colors      ⌘ ⇧ M         │
+│  Close pane              ⌘ ⇧ X         │
 │                                         │
 │  WORKSPACE                              │
 │  Toggle sidebar          ⌘ B           │
-│  Toggle file tree        ⌘ ⇧ B         │
+│  Toggle file tree        ⌘ ⇧ F         │
 │  Keyboard shortcuts      ⌘ /           │
 │                                         │
 └─────────────────────────────────────────┘
@@ -240,14 +249,15 @@ const SHORTCUTS = [
     { label: 'Select pane 1-9', mac: ['⌘', '⌥', '1-9'], other: ['Ctrl', 'Alt', '1-9'] },
   ]},
   { category: 'Terminals', items: [
-    { label: 'New terminal', mac: ['⌘', '⇧', 'J'], other: ['Ctrl', '⇧', 'J'] },
-    { label: 'Split right', mac: ['⌘', '⇧', 'D'], other: ['Ctrl', '⇧', 'D'] },
+    { label: 'New terminal', mac: ['⌘', '⇧', 'T'], other: ['Ctrl', '⇧', 'T'] },
+    { label: 'Split right', mac: ['⌘', '⇧', 'E'], other: ['Ctrl', '⇧', 'E'] },
     { label: 'Clear terminal', mac: ['⌘', '⇧', 'K'], other: ['Ctrl', '⇧', 'K'] },
-    { label: 'Close pane', mac: ['⌘', '⇧', 'W'], other: ['Ctrl', '⇧', 'W'] },
+    { label: 'Mute status colors', mac: ['⌘', '⇧', 'M'], other: ['Ctrl', '⇧', 'M'] },
+    { label: 'Close pane', mac: ['⌘', '⇧', 'X'], other: ['Ctrl', '⇧', 'X'] },
   ]},
   { category: 'Workspace', items: [
     { label: 'Toggle sidebar', mac: ['⌘', 'B'], other: ['Ctrl', 'B'] },
-    { label: 'Toggle file tree', mac: ['⌘', '⇧', 'B'], other: ['Ctrl', '⇧', 'B'] },
+    { label: 'Toggle file tree', mac: ['⌘', '⇧', 'F'], other: ['Ctrl', '⇧', 'F'] },
     { label: 'Keyboard shortcuts', mac: ['⌘', '/'], other: ['Ctrl', '/'] },
   ]},
 ];
@@ -260,27 +270,28 @@ All keyboard shortcuts after this feature is implemented:
 | Shortcut (Mac) | Shortcut (Win) | Action | Scope | New? |
 |----------------|----------------|--------|-------|------|
 | ⌘ B | Ctrl+B | Toggle sidebar | Global | No |
-| ⌘ ⇧ B | Ctrl+⇧+B | Toggle file tree | Global | No |
+| ⌘ ⇧ F | Ctrl+⇧+F | Toggle file tree | Global | No |
 | ⌘ ⇧ P | Ctrl+⇧+P | Project quick switcher | Global | Yes |
 | ⌘ / | Ctrl+/ | Shortcuts reference | Global | Yes |
-| ⌘ ⇧ D | Ctrl+⇧+D | Split right | Active tab | No |
-| ⌘ ⇧ J | Ctrl+⇧+J | New terminal tab | Active tab | Yes |
+| ⌘ ⇧ E | Ctrl+⇧+E | Split right | Active tab | No |
+| ⌘ ⇧ T | Ctrl+⇧+T | New terminal tab | Active tab | Yes |
 | ⌘ ⌥ 1-9 | Ctrl+Alt+1-9 | Select pane by number | Active tab | Yes |
 | ⌘ ⇧ K | Ctrl+⇧+K | Clear active pane | Active pane | Yes |
-| ⌘ ⇧ W | Ctrl+⇧+W | Close active pane | Active pane | Yes |
+| ⌘ ⇧ M | Ctrl+⇧+M | Mute/show active pane status colors | Active pane | Yes |
+| ⌘ ⇧ X | Ctrl+⇧+X | Close active pane | Active pane | Yes |
 
 ## 9. Keyboard Event Architecture
 
 ### 9.1 Current Pattern
 
-- **App.jsx**: registers `keydown` on `window` (bubble phase) for global shortcuts (Cmd+B, Cmd+Shift+B)
-- **TerminalArea.jsx**: registers `keydown` on `window` with **capture phase** (`true`) to intercept before xterm.js steals key events (Cmd+Shift+D, Cmd+Shift+J)
+- **App.jsx**: registers `keydown` on `window` (bubble phase) for global shortcuts (Cmd+B, Cmd+Shift+F)
+- **TerminalArea.jsx**: registers `keydown` on `window` with **capture phase** (`true`) to intercept before xterm.js steals key events (Cmd+Shift+E, Cmd+Shift+T)
 
 ### 9.2 New Shortcut Registration
 
 New shortcuts follow the same pattern:
 - **Global shortcuts** (project switcher Cmd+Shift+P, shortcuts overlay Cmd+/) — registered in App.jsx's keydown handler
-- **Pane-scoped shortcuts** (pane selection Cmd+Option+N, clear Cmd+Shift+K, close Cmd+Shift+W) — registered in TerminalArea.jsx's capture-phase keydown handler
+- **Pane-scoped shortcuts** (pane selection Cmd+Option+N, clear Cmd+Shift+K, mute/show status Cmd+Shift+M, close Cmd+Shift+X) — registered in TerminalArea.jsx's capture-phase keydown handler
 
 All new handlers call `e.preventDefault()` and `e.stopPropagation()` to prevent Chrome and xterm.js from processing the keys.
 

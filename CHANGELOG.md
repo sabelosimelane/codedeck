@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-06-29] - Keyboard shortcut for pane status mute
+
+### Executive Summary
+* Pane status noise can now be quieted without reaching for the mouse: **Cmd/Ctrl+Shift+M** toggles the active pane's eye/eye-off status mute control. The shortcut uses the same per-session mute path as the header button, so it only changes visual status colors and leaves the real running/idle/finished state intact.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/components/TerminalArea.jsx` — Added Cmd/Ctrl+Shift+M to the capture-phase pane shortcut handler and advertised it in the status mute button tooltip.
+  * `client/src/components/ShortcutsOverlay.jsx` — Added "Mute status colors" to the terminal shortcuts reference.
+* **📝 Documentation:**
+  * `README.md` — Documented the active-pane status mute shortcut in the usage flow.
+  * `docs/specifications/keyboard-shortcuts-spec.md` and `docs/todos/keyboard-shortcuts.md` — Updated the shortcut map and implementation notes with the status mute shortcut.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — Added coverage for the keyboard shortcut and shortcut-enhanced status mute tooltip.
+
 ## [2026-06-21] - Show system resources in the browser tab
 
 ### Executive Summary

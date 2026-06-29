@@ -314,6 +314,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
   const splitRightKeys = IS_MAC ? ['⌘', '⇧', 'E'] : ['Ctrl', '⇧', 'E'];
   const newTerminalKeys = IS_MAC ? ['⌘', '⇧', 'T'] : ['Ctrl', '⇧', 'T'];
   const clearTerminalKeys = IS_MAC ? ['⌘', '⇧', 'K'] : ['Ctrl', '⇧', 'K'];
+  const muteStatusKeys = IS_MAC ? ['⌘', '⇧', 'M'] : ['Ctrl', '⇧', 'M'];
   const closePaneKeys = IS_MAC ? ['⌘', '⇧', 'X'] : ['Ctrl', '⇧', 'X'];
 
   useEffect(() => {
@@ -812,6 +813,17 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         return;
       }
 
+      // Cmd+Shift+M — mute/show status colors for active pane
+      if (key === 'm' && activePaneId && activeTab) {
+        e.preventDefault();
+        e.stopPropagation();
+        const pane = activeTab.panes.find(p => p.id === activePaneId);
+        if (pane && !pendingSessionIds.includes(pane.sessionId)) {
+          onToggleMutedStatusSession(pane.sessionId);
+        }
+        return;
+      }
+
       // Cmd+Shift+X — close active pane
       if (key === 'x' && activePaneId && activeTab) {
         e.preventDefault();
@@ -825,7 +837,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [splitRight, addTab, activeTabId, activeTab, activePaneId, clearPane, closePane]);
+  }, [splitRight, addTab, activeTabId, activeTab, activePaneId, clearPane, closePane, pendingSessionIds, onToggleMutedStatusSession]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -1200,11 +1212,11 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                             <Bug size={13} />
                           </button>
                         </ShortcutHint>
-                        <ShortcutHint label={isStatusMuted ? 'Show status colors' : 'Mute status colors'} keys={[]}>
+                        <ShortcutHint label={isStatusMuted ? 'Show status colors' : 'Mute status colors'} keys={muteStatusKeys}>
                           <button
                             onClick={() => onToggleMutedStatusSession(pane.sessionId)}
                             className="terminal-action-btn"
-                            title={`${isStatusMuted ? 'Show' : 'Mute'} status colors for ${pane.sessionId}`}
+                            title={formatShortcutTitle(`${isStatusMuted ? 'Show' : 'Mute'} status colors for ${pane.sessionId}`, muteStatusKeys)}
                             aria-label={`${isStatusMuted ? 'Show' : 'Mute'} status colors for ${pane.sessionId}`}
                             style={{
                               color: isStatusMuted ? 'var(--text-muted)' : undefined,

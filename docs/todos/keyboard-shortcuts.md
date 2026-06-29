@@ -20,14 +20,15 @@
 
 ## Phase 2: Pane Selection & Action Shortcuts
 > Keyboard-driven pane navigation and actions. Depends on active pane from Phase 1.
-> **Inputs:** keyboard events (Cmd+Option+N, Cmd+Shift+K, Cmd+Shift+W)
-> **Outputs:** pane focus changes, clear/close actions on active pane
-> **Closed when:** all three shortcuts work, actions target the correct pane
+> **Inputs:** keyboard events (Cmd+Option+N, Cmd+Shift+K, Cmd+Shift+M, Cmd+Shift+X)
+> **Outputs:** pane focus changes, clear/mute/close actions on active pane
+> **Closed when:** all pane shortcuts work, actions target the correct pane
 
 - [x] Pane selection by number: Cmd+Option+1-9 (Spec §5 — extend TerminalArea keydown handler, look up pane by index, set active, call term.focus())
 - [x] Clear active pane: Cmd+Shift+K (Spec §6.2 — call existing clearPane with activePaneId)
-- [x] Close active pane: Cmd+Shift+W (Spec §6.3 — call existing closePane for active pane, auto-select next)
-- [x] Wrap 3 pane header buttons with ShortcutHint tooltips (Spec §6.4 — Inspect label-only, Clear with ⌘⇧K, Close with ⌘⇧W)
+- [x] Mute/show active pane status colors: Cmd+Shift+M (Spec §6.3 — call existing status mute toggle for active pane)
+- [x] Close active pane: Cmd+Shift+X (Spec §6.4 — call existing closePane for active pane, auto-select next)
+- [x] Wrap pane header buttons with ShortcutHint tooltips (Spec §6.5 — Inspect label-only, status mute with ⌘⇧M, Clear with ⌘⇧K, Close with ⌘⇧X)
 
 ## Phase 3: Project Quick Switcher
 > Modal overlay to search and jump to projects by name. Independent of pane features.
@@ -57,8 +58,8 @@
 
 - [x] Verify active pane border follows clicks and keyboard selection across tabs
 - [x] Verify project switcher filters, selects, and auto-focuses pane 1
-- [x] Verify all pane shortcuts (select, clear, close) target the correct pane
-- [x] Verify shortcuts overlay lists all 9 shortcuts with correct keys
+- [x] Verify all pane shortcuts (select, clear, mute status colors, close) target the correct pane
+- [x] Verify shortcuts overlay lists all 10 shortcuts with correct keys
 - [x] Verify no Chrome shortcut conflicts in Chrome browser
 - [x] Verify tooltips appear on hover for all pane header buttons
 - [x] Build check: `cd client && npx vite build`
@@ -67,12 +68,12 @@
 **Completed**: Phase 1: Active Pane Tracking & Visual Indicator
 **Key files**: `client/src/components/TerminalArea.jsx`
 **Architecture**: `activePaneId` state in TerminalArea, auto-synced via useEffect on `activeTab?.id`. Active border is `rgba(110, 231, 183, 0.45)` vs `0.12` for inactive, with 0.15s transition. onMouseDown on pane-wrapper sets active. splitRight sets new pane active. closePane selects adjacent (previous or first remaining). setActiveTabId also sets first pane of new tab.
-**Next**: Phase 2: Pane Selection & Action Shortcuts — add Cmd+Option+N pane selection, Cmd+Shift+K clear, Cmd+Shift+W close, and ShortcutHint tooltips on pane header buttons.
+**Next**: Phase 2: Pane Selection & Action Shortcuts — add Cmd+Option+N pane selection, Cmd+Shift+K clear, Cmd+Shift+M status mute, Cmd+Shift+X close, and ShortcutHint tooltips on pane header buttons.
 
 ### Session — 2026-04-13 (Phase 2)
 **Completed**: Phase 2: Pane Selection & Action Shortcuts
 **Key files**: `client/src/components/TerminalArea.jsx`
-**Architecture**: Extended the capture-phase keydown handler to handle three new shortcut patterns: (1) Cmd+Option+1-9 for pane selection — restructured the early-return guard to check `altKey && !shiftKey` separately, uses `e.code` fallback for digit parsing on Mac Option key combos. (2) Cmd+Shift+K calls `clearPane(activePaneId)`. (3) Cmd+Shift+W looks up the active pane in `activeTab.panes` and calls `closePane(tabId, paneId, sessionId)`. All three are no-ops when no active pane/tab exists. Wrapped all 3 pane header buttons (Inspect, Clear, Close) with `ShortcutHint` — Inspect gets label-only (empty keys array), Clear/Close get platform-aware key badges. Updated `ShortcutHint` to conditionally hide the keys span when `keys.length === 0`.
+**Architecture**: Extended the capture-phase keydown handler to handle pane selection and action shortcuts: (1) Cmd+Option+1-9 for pane selection — restructured the early-return guard to check `altKey && !shiftKey` separately, uses `e.code` fallback for digit parsing on Mac Option key combos. (2) Cmd+Shift+K calls `clearPane(activePaneId)`. (3) Cmd+Shift+M toggles muted status colors for the active pane. (4) Cmd+Shift+X looks up the active pane in `activeTab.panes` and calls `closePane(tabId, paneId, sessionId)`. Action shortcuts are no-ops when no active pane/tab exists. Wrapped pane header buttons (Inspect, Status mute, Clear, Close) with `ShortcutHint` — Inspect gets label-only (empty keys array), Status mute/Clear/Close get platform-aware key badges. Updated `ShortcutHint` to conditionally hide the keys span when `keys.length === 0`.
 **Next**: Phase 3: Project Quick Switcher — create `ProjectSwitcher.jsx` component with text filter, arrow key navigation, and Cmd+Shift+P handler in App.jsx.
 
 ### Session — 2026-04-13 (Phase 3)
@@ -90,5 +91,11 @@
 ### Session — 2026-04-14 (Phase 5)
 **Completed**: Phase 5: Verification & Polish
 **Key files**: All files from prior phases — `TerminalArea.jsx`, `ProjectSwitcher.jsx`, `ShortcutsOverlay.jsx`, `App.jsx`, `Sidebar.jsx`, `global.css`
-**Verification**: All 7 checklist items passed. Code review confirmed: active pane tracking works across clicks/keyboard/tab switches, project switcher has filter+arrow nav+enter/escape, all 3 pane shortcuts target `activePaneId`, overlay lists all 9 shortcuts matching spec §7.5, no Chrome conflicts, all pane buttons have ShortcutHint tooltips, Vite build passes cleanly.
+**Verification**: All 7 checklist items passed. Code review confirmed: active pane tracking works across clicks/keyboard/tab switches, project switcher has filter+arrow nav+enter/escape, all pane shortcuts target `activePaneId`, overlay lists all shortcuts matching spec §7.5, no Chrome conflicts, all pane buttons have ShortcutHint tooltips, Vite build passes cleanly.
 **Status**: Feature complete. All 5 phases done.
+
+### Session — 2026-06-29 (Status mute shortcut)
+**Completed**: Added the pane status mute shortcut to the completed keyboard shortcut set.
+**Key files**: `client/src/components/TerminalArea.jsx`, `client/src/components/ShortcutsOverlay.jsx`
+**Architecture**: Cmd/Ctrl+Shift+M now runs through the existing TerminalArea capture-phase shortcut handler, resolves `activePaneId` to its `sessionId`, and calls the same `onToggleMutedStatusSession` path as the eye/eye-off button. The shortcut is non-destructive and only changes visual status colors; backend execution state and status labels stay unchanged.
+**Verification**: Added component coverage proving the shortcut toggles the active pane and the status mute tooltip advertises the key.
