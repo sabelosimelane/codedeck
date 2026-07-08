@@ -172,6 +172,42 @@ describe('Sidebar', () => {
     expect(dot.className).not.toContain('terminal-dot-busy');
   });
 
+  it('renders unreachable remote project rows as suspended, not dead', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ terminalFinishCooldownSeconds: 45 }),
+    });
+
+    const view = renderSidebar({
+      activeProjects: [{
+        name: 'RemoteApp',
+        path: '/srv/remote-app',
+        host: 'devbox',
+        reachability: 'unreachable',
+        lastError: 'connect timeout',
+      }],
+      sessionStatus: [{
+        sessionId: 'RemoteApp-1',
+        cwd: '/srv/remote-app',
+        host: 'devbox',
+        reachability: 'unreachable',
+        alive: false,
+        executionStatus: 'dead',
+      }],
+    });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith('/api/config');
+    });
+
+    const row = view.getByTitle('RemoteApp — devbox unreachable').closest('.project-row');
+    expect(row.style.opacity).toBe('0.62');
+    expect(view.getByTitle('Status: unknown')).toBeTruthy();
+    expect(view.getByTitle('Host devbox unreachable: connect timeout')).toBeTruthy();
+    expect(view.getByText('unreachable')).toBeTruthy();
+    expect(view.queryByText('dead')).toBeNull();
+  });
+
   it('renders waiting projects as compact muted rows below active projects', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,

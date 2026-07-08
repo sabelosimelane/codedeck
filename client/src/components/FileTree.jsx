@@ -117,7 +117,7 @@ function TreeNode({ node, expandedPaths, onOpenFile, onPreviewFile, onToggleDir,
   );
 }
 
-export default function FileTree({ root, onOpenFile, onPreviewFile, width = 260 }) {
+export default function FileTree({ root, host, onOpenFile, onPreviewFile, width = 260 }) {
   const [tree, setTree] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -135,7 +135,7 @@ export default function FileTree({ root, onOpenFile, onPreviewFile, width = 260 
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetch(`/api/files?root=${encodeURIComponent(currentRoot)}`)
+    fetch(`/api/files?root=${encodeURIComponent(currentRoot)}&host=${encodeURIComponent(host || 'local')}`)
       .then(async r => {
         const data = await r.json().catch(() => null);
         if (cancelled) return;

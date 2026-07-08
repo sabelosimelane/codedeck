@@ -262,12 +262,12 @@ function AppContent() {
     });
   }, []);
 
-  const addProject = async (name, path) => {
+  const addProject = async (name, path, host = 'local') => {
     try {
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path }),
+        body: JSON.stringify({ name, path, host }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -405,12 +405,13 @@ function AppContent() {
     }
   };
 
-  const openFile = async (filePath) => {
+  const openFile = async (filePath, explicitHost) => {
     try {
+      const host = explicitHost || activeProject?.host || 'local';
       const res = await fetch('/api/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath }),
+        body: JSON.stringify({ filePath, host }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -429,8 +430,11 @@ function AppContent() {
     .filter(p => p.shelved)
     .sort((a, b) => new Date(b.shelvedAt) - new Date(a.shelvedAt));
 
-  if (previewPath) {
-    return <PreviewPage filePath={previewPath} onOpenFile={openFile} />;
+  const searchParams = new URLSearchParams(window.location.search);
+  const currentPreviewPath = searchParams.get('preview');
+  const previewHost = searchParams.get('host') || 'local';
+  if (currentPreviewPath) {
+    return <PreviewPage filePath={currentPreviewPath} host={previewHost} onOpenFile={(p) => openFile(p, previewHost)} />;
   }
 
   return (
@@ -466,8 +470,9 @@ function AppContent() {
         <>
           <FileTree
             root={activeProject.path}
+            host={activeProject.host}
             onOpenFile={openFile}
-            onPreviewFile={openFilePreviewTab}
+            onPreviewFile={(path) => openFilePreviewTab(path, activeProject.host)}
             width={fileTreeWidth}
           />
           <PaneDivider
@@ -504,7 +509,7 @@ function AppContent() {
       {fileBrowserProject && (
         <FileBrowserPanel
           project={fileBrowserProject}
-          onPreviewFile={openFilePreviewTab}
+          onPreviewFile={(path) => openFilePreviewTab(path, fileBrowserProject.host)}
           onClose={() => setFileBrowserProject(null)}
         />
       )}

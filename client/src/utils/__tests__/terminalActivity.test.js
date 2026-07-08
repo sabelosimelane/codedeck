@@ -70,6 +70,15 @@ describe('terminalActivity', () => {
     expect(getTerminalStatus({ alive: false }, now)).toBe('dead');
   });
 
+  it('marks sessions on unreachable hosts as unknown instead of dead', () => {
+    expect(getTerminalStatus({
+      alive: false,
+      host: 'devbox',
+      reachability: 'unreachable',
+      executionStatus: 'dead',
+    }, now)).toBe('unknown');
+  });
+
   it('aggregates busy over idle and dead', () => {
     const sessions = [
       { alive: true, lastOutputAt: new Date(now - 2000).toISOString() },
@@ -82,6 +91,13 @@ describe('terminalActivity', () => {
 
   it('aggregates all-dead tabs as dead', () => {
     expect(getAggregateTerminalStatus([{ alive: false }, { alive: false }], now)).toBe('dead');
+  });
+
+  it('aggregates host-unreachable sessions as unknown instead of all-dead', () => {
+    expect(getAggregateTerminalStatus([
+      { alive: false, reachability: 'unreachable' },
+      { alive: false },
+    ], now)).toBe('unknown');
   });
 
   it('aggregates unknown execution state distinctly from idle', () => {

@@ -4,7 +4,13 @@ export const TERMINAL_ACTIVITY_WINDOW_MS = 45000;
 export const TERMINAL_COMPLETION_NOTIFICATION_MS = 30000;
 export const DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS = TERMINAL_COMPLETION_NOTIFICATION_MS;
 
+function isHostUnreachableSession(session) {
+  return session?.reachability === 'unreachable'
+    || session?.executionReason === 'host_unreachable';
+}
+
 export function getTerminalStatus(session, now = Date.now()) {
+  if (isHostUnreachableSession(session)) return 'unknown';
   if (!session?.alive) return 'dead';
 
   if (session.executionStatus === 'running') return 'busy';

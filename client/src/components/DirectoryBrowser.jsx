@@ -9,6 +9,7 @@ import {
   ArrowUp,
   HardDrive,
   FolderOpen,
+  Server,
 } from 'lucide-react';
 
 export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
@@ -19,23 +20,42 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
   const [error, setError] = useState(null);
   const [pathInput, setPathInput] = useState('');
   const [hoveredEntry, setHoveredEntry] = useState(null);
+  
+  const [hosts, setHosts] = useState([]);
+  const [selectedHost, setSelectedHost] = useState('local');
+  const [isChangingHost, setIsChangingHost] = useState(false);
+
   const debounceRef = useRef(null);
 
+  useEffect(() => {
+    fetch('/api/hosts')
+      .then(r => r.json())
+      .then(data => setHosts(data || []))
+      .catch(err => console.error('Failed to load hosts:', err));
+  }, []);
+
   // Fetch entries from backend — never touches pathInput
-  const fetchEntries = useCallback(async (dir, filter) => {
+  const fetchEntries = useCallback(async (dir, filter, host = selectedHost) => {
     setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams();
       if (dir) params.set('path', dir);
       if (filter) params.set('filter', filter);
+      if (host !== 'local') params.set('host', host);
+      
       const qs = params.toString();
       const url = qs ? `/api/browse?${qs}` : '/api/browse';
       const res = await fetch(url);
       const text = await res.text();
       if (!text) return;
       const data = JSON.parse(text);
-      if (!res.ok) throw new Error(data.error || 'Failed to browse');
+      if (!res.ok) {
+        if (res.status === 503) {
+           throw new Error(`Host unreachable: ${data.detail || data.error}`);
+        }
+        throw new Error(data.error || 'Failed to browse');
+      }
       setCurrent(data.current);
       setParent(data.parent);
       setEntries(data.entries);
@@ -45,17 +65,19 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedHost]);
 
   // Full navigation — updates pathInput (used by buttons, Enter, init)
-  const browse = useCallback(async (dir) => {
-    const data = await fetchEntries(dir);
+  const browse = useCallback(async (dir, host = selectedHost) => {
+    const data = await fetchEntries(dir, undefined, host);
     if (data) setPathInput(data.current);
-  }, [fetchEntries]);
+  }, [fetchEntries, selectedHost]);
 
   useEffect(() => {
-    browse(initialPath || undefined);
-  }, [browse, initialPath]);
+    if (!isChangingHost) {
+      browse(initialPath || undefined);
+    }
+  }, [browse, initialPath, isChangingHost]);
 
   // Debounced handler — reacts to typing, never overwrites the input
   const handlePathInputChange = (value) => {
@@ -74,6 +96,16 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
     e.preventDefault();
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (pathInput.trim()) browse(pathInput.trim());
+  };
+
+  const handleHostChange = (e) => {
+    const newHost = e.target.value;
+    setSelectedHost(newHost);
+    setIsChangingHost(true);
+    setPathInput('');
+    setCurrent('');
+    setEntries([]);
+    browse('', newHost).finally(() => setIsChangingHost(false));
   };
 
   const dirs = entries.filter(e => e.type === 'dir');
@@ -102,6 +134,18 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
 
         {/* Path bar */}
         <div style={pathBarStyle}>
+          <select 
+            value={selectedHost} 
+            onChange={handleHostChange}
+            style={hostSelectStyle}
+            title="Select Host"
+          >
+            <option value="local">local</option>
+            {hosts.map(h => (
+              <option key={h.name} value={h.name}>{h.name}</option>
+            ))}
+          </select>
+          <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 4px' }} />
           <button
             onClick={() => parent && browse(parent)}
             disabled={!parent}
@@ -115,7 +159,7 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
             <ArrowUp size={14} />
           </button>
           <button
-            onClick={() => browse()}
+            onClick={() => browse('')}
             style={iconBtnStyle}
             title="Go home"
           >
@@ -127,6 +171,7 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
               onChange={e => handlePathInputChange(e.target.value)}
               style={pathInputStyle}
               spellCheck={false}
+              placeholder="Path..."
             />
           </form>
         </div>
@@ -263,7 +308,7 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
               Cancel
             </button>
             <button
-              onClick={() => onSelect(current)}
+              onClick={() => onSelect(current, selectedHost)}
               style={selectBtnStyle}
               title="Select folder"
             >
@@ -436,4 +481,17 @@ const spinnerStyle = {
   borderTopColor: 'var(--accent)',
   borderRadius: '50%',
   animation: 'spin 0.6s linear infinite',
+};
+
+const hostSelectStyle = {
+  background: 'var(--bg-surface)',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  padding: '4px 8px',
+  color: 'var(--text-primary)',
+  fontSize: '12px',
+  fontFamily: 'var(--font-mono)',
+  outline: 'none',
+  cursor: 'pointer',
+  minWidth: 80,
 };

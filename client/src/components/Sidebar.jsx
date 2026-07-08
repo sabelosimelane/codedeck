@@ -47,6 +47,66 @@ function getProjectStatus(sessions, finishedIds, mutedStatusSessionIds) {
   };
 }
 
+function getProjectHost(project) {
+  return project?.host && project.host !== 'local' ? project.host : null;
+}
+
+function getProjectReachability(project, sessions = []) {
+  if (project?.reachability) return project.reachability;
+  const host = getProjectHost(project);
+  if (!host) return 'reachable';
+  return sessions.find(session => session.host === host && session.reachability)?.reachability || 'unknown';
+}
+
+function getProjectLastError(project, sessions = []) {
+  if (project?.lastError) return project.lastError;
+  const host = getProjectHost(project);
+  return sessions.find(session => session.host === host && session.lastError)?.lastError || null;
+}
+
+function getTruthfulProjectStatus(project, sessions, finishedIds, mutedStatusSessionIds) {
+  if (getProjectReachability(project, sessions) === 'unreachable') {
+    return { status: 'unknown' };
+  }
+  return getProjectStatus(sessions, finishedIds, mutedStatusSessionIds);
+}
+
+function renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError }) {
+  if (!hostName) return null;
+  return (
+    <>
+      <span
+        title={isHostUnreachable
+          ? `Host ${hostName} unreachable${lastError ? `: ${lastError}` : ''}`
+          : `Host ${hostName}`}
+        style={{
+          flexShrink: 0,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10,
+          lineHeight: 1,
+          padding: '3px 5px',
+          borderRadius: 999,
+          color: isHostUnreachable ? '#fbbf24' : 'var(--text-muted)',
+          background: isHostUnreachable ? 'rgba(251, 191, 36, 0.12)' : 'rgba(154, 165, 184, 0.12)',
+          border: isHostUnreachable ? '1px solid rgba(251, 191, 36, 0.32)' : '1px solid rgba(154, 165, 184, 0.18)',
+        }}
+      >
+        {hostName}
+      </span>
+      {isHostUnreachable && (
+        <span style={{
+          flexShrink: 0,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10,
+          color: '#fbbf24',
+        }}>
+          unreachable
+        </span>
+      )}
+    </>
+  );
+}
+
 const STATUS_COLORS = {
   active: 'var(--accent)',
   finished: 'var(--warning)',
@@ -270,10 +330,10 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
     setShowBrowser(true);
   };
 
-  const handleBrowseSelect = (selectedPath) => {
+  const handleBrowseSelect = (selectedPath, selectedHost) => {
     const segments = selectedPath.replace(/\/+$/, '').split('/');
     const projectName = segments[segments.length - 1] || 'project';
-    onAdd(projectName, selectedPath);
+    onAdd(projectName, selectedPath, selectedHost);
     setShowBrowser(false);
   };
 
@@ -487,19 +547,28 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
             const isActive = activeProject?.name === project.name;
             const isRenaming = renamingProject === project.name;
             const projSessions = getProjectSessions(project);
-            const { status } = getProjectStatus(projSessions, finishedSessionIds, mutedStatusSessionIds);
+            const hostName = getProjectHost(project);
+            const reachability = getProjectReachability(project, projSessions);
+            const lastError = getProjectLastError(project, projSessions);
+            const isHostUnreachable = reachability === 'unreachable';
+            const { status } = getTruthfulProjectStatus(project, projSessions, finishedSessionIds, mutedStatusSessionIds);
+            const rowTitle = isHostUnreachable && hostName
+              ? `${project.name} — ${hostName} unreachable`
+              : project.name;
             return (
               <div
                 key={project.name}
                 onClick={() => { if (!isRenaming) onSelect(project); }}
                 className={`project-row ${openProjectMenu === `active:${project.name}` ? 'project-menu-open' : ''}`}
-                title={project.name}
+                title={rowTitle}
                 style={{
                   padding: isCompact ? '10px 12px' : '8px 16px',
                   cursor: isRenaming ? 'default' : 'pointer',
                   background: isActive ? 'var(--bg-active)' : 'transparent',
                   borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                   transition: 'background 0.1s',
+                  opacity: isHostUnreachable ? 0.62 : undefined,
+                  filter: isHostUnreachable ? 'grayscale(0.45)' : undefined,
                 }}
                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)'; }}
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
@@ -557,6 +626,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                       {project.name}
                     </span>
                   )}
+                  {!isCompact && renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                 </div>
 
                 {!isCompact && !isRenaming && (
@@ -715,8 +785,14 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                   {waitingProjects.map(project => {
                     const isRenaming = renamingProject === project.name;
                     const projSessions = getProjectSessions(project);
-                    const { status } = getProjectStatus(projSessions, finishedSessionIds, mutedStatusSessionIds);
+                    const hostName = getProjectHost(project);
+                    const reachability = getProjectReachability(project, projSessions);
+                    const lastError = getProjectLastError(project, projSessions);
+                    const isHostUnreachable = reachability === 'unreachable';
+                    const { status } = getTruthfulProjectStatus(project, projSessions, finishedSessionIds, mutedStatusSessionIds);
                     const dotColor = status === 'none' ? 'var(--text-muted)' : STATUS_COLORS[status];
+                    const waitingOpacity = isHostUnreachable ? 0.62 : 0.68;
+                    const waitingHoverOpacity = isHostUnreachable ? '0.72' : '0.86';
 
                     return (
                       <div
@@ -725,16 +801,19 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                         tabIndex={0}
                         onClick={() => { if (!isRenaming) onActivateWaiting(project.name); }}
                         onKeyDown={e => { if (!isRenaming && e.key === 'Enter') onActivateWaiting(project.name); }}
-                        title={`${project.name} — Waiting`}
+                        title={isHostUnreachable && hostName
+                          ? `${project.name} — Waiting — ${hostName} unreachable`
+                          : `${project.name} — Waiting`}
                         style={{
                           padding: '6px 16px',
                           cursor: 'pointer',
                           borderLeft: '2px solid transparent',
                           transition: 'background 0.1s',
-                          opacity: 0.68,
+                          opacity: waitingOpacity,
+                          filter: isHostUnreachable ? 'grayscale(0.45)' : undefined,
                         }}
-                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.opacity = '0.86'; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '0.68'; }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.opacity = waitingHoverOpacity; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = String(waitingOpacity); }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <span style={{
@@ -782,6 +861,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                               {project.name}
                             </span>
                           )}
+                          {renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                         </div>
                         {!isRenaming && (
                           <div className="project-inline-actions">
@@ -948,6 +1028,11 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
 
                   {displayedProjects.map(project => {
                     const isRenaming = renamingProject === project.name;
+                    const projSessions = getProjectSessions(project);
+                    const hostName = getProjectHost(project);
+                    const reachability = getProjectReachability(project, projSessions);
+                    const lastError = getProjectLastError(project, projSessions);
+                    const isHostUnreachable = reachability === 'unreachable';
 
                     return (
                       <div
@@ -956,11 +1041,16 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                         tabIndex={0}
                         onClick={() => { if (!isRenaming) onUnshelve(project.name); }}
                         onKeyDown={e => { if (!isRenaming && e.key === 'Enter') onUnshelve(project.name); }}
+                        title={isHostUnreachable && hostName
+                          ? `${project.name} — Shelved — ${hostName} unreachable`
+                          : project.name}
                         style={{
                           padding: '6px 16px',
                           cursor: isRenaming ? 'default' : 'pointer',
                           borderLeft: '2px solid transparent',
                           transition: 'background 0.1s',
+                          opacity: isHostUnreachable ? 0.62 : undefined,
+                          filter: isHostUnreachable ? 'grayscale(0.45)' : undefined,
                         }}
                         onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
                         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
@@ -1003,6 +1093,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                               {project.name}
                             </span>
                           )}
+                          {renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                         </div>
                         {!isRenaming && (
                           <div className="project-inline-actions">

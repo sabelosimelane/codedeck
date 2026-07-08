@@ -28,7 +28,7 @@ describe('readTree', () => {
     await fs.writeFile(path.join(root, 'README.md'), '# test\n');
     await fs.writeFile(path.join(root, 'src', '.env.example'), 'KEY=value\n');
 
-    const tree = await readTree(root);
+    const tree = await readTree({ kind: 'local' }, root);
 
     expect(tree.map(entry => entry.name)).toEqual([
       'src',
@@ -59,7 +59,7 @@ describe('readTree', () => {
     const deepFile = path.join(currentDir, 'file.txt');
     await fs.writeFile(deepFile, 'content');
 
-    const tree = await readTree(root);
+    const tree = await readTree({ kind: 'local' }, root);
 
     // level 0: [1]
     // level 1: [2]
@@ -76,5 +76,38 @@ describe('readTree', () => {
     }
     expect(node.name).toBe('file.txt');
     expect(node.type).toBe('file');
+  });
+
+  it('reads directory entries using remote ls command via remote runner', async () => {
+    const root = '/var/www';
+    const fakeRunner = {
+      kind: 'remote',
+      run: async (cmd, args) => {
+        const fullCmd = `${cmd} ${args.join(' ')}`;
+        if (fullCmd === 'ls -1pA /var/www') {
+          return { stdout: 'src/\n.gitignore\nREADME.md\n.git/\n' };
+        } else if (fullCmd === 'ls -1pA /var/www/src') {
+          return { stdout: '.env.example\n' };
+        }
+        return { stdout: '' };
+      }
+    };
+
+    const tree = await readTree(fakeRunner, root);
+
+    expect(tree.map(entry => entry.name)).toEqual([
+      'src',
+      '.gitignore',
+      'README.md',
+    ]);
+
+    const srcNode = tree.find(entry => entry.name === 'src');
+    expect(srcNode?.children).toEqual([
+      {
+        name: '.env.example',
+        path: '/var/www/src/.env.example',
+        type: 'file',
+      },
+    ]);
   });
 });

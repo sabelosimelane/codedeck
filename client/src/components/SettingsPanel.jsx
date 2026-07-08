@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Settings, FolderOpen, RotateCcw, Save } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
+import HostsSection from './HostsSection';
 import { useToast } from './ToastContext';
 
 const DEFAULT_NOTIFICATION_COOLDOWN_SECONDS = 30;
@@ -211,6 +212,9 @@ export default function SettingsPanel({ onClose, onSaved }) {
                 </div>
               </div>
             </div>
+
+            {/* Section: Hosts */}
+            <HostsSection />
           </div>
 
           {/* Footer */}

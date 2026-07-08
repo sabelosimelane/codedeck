@@ -24,7 +24,7 @@ function getMermaidSvgMetrics(svg) {
   return { width, height };
 }
 
-export default function PreviewPage({ filePath, onOpenFile }) {
+export default function PreviewPage({ filePath, host = 'local', onOpenFile }) {
   const [preview, setPreview] = useState({ state: 'loading' });
   const [lightboxZoom, setLightboxZoom] = useState(1);
   const [activeMermaid, setActiveMermaid] = useState(null);
@@ -70,7 +70,7 @@ export default function PreviewPage({ filePath, onOpenFile }) {
 
     const loadPreview = async () => {
       try {
-        const res = await fetch(`/api/file-preview?filePath=${encodeURIComponent(filePath)}`);
+        const res = await fetch(`/api/file-preview?filePath=${encodeURIComponent(filePath)}&host=${encodeURIComponent(host)}`);
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {

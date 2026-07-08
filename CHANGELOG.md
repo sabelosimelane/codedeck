@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-07-08] - Remote Host Connectors via SSH
+
+### Executive Summary
+* CodeDeck now fully supports interacting with remote project environments over SSH. You can define remote hosts and their SSH targets through the UI Settings, and create projects bound to those hosts. Remote terminals run transparently via SSH, complete with reliable `tmux` session persistence, durable recovery for network drops, remote file browsing, dragging-and-dropping remote file uploads, and native VS Code remote editor launching.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/components/SettingsPanel.jsx` & `client/src/components/HostsSection.jsx` — Added UI for adding, modifying, testing, and deleting remote hosts alongside the default `local` host.
+  * `server/routes/hosts-routes.js` — Introduced CRUD endpoints for managing host configurations in SQLite, including `POST /api/hosts/:name/test` to validate SSH reachability and `tmux` availability.
+  * `server/command-runner.js` — Built a robust async command runner for `execFile` and SSH with POSIX-compliant argument quoting, `BatchMode=yes`, and `ControlMaster` connection multiplexing.
+  * `server/host-reachability.js` — Implements continuous reachability polling to intelligently suppress network traffic during remote disconnects and restore detached terminal sessions upon recovery.
+  * `server/terminal-runtime.js` & `server/host-terminal-runtime.js` — Centralizes terminal runtime functionality for both local `pty` and remote SSH targets, enabling polymorphic backend `tmux` management.
+* **🛠️ Codebase:**
+  * `server/file-tree.js` & `server/file-preview.js` — Refactored to execute remote host commands (`ls -1pA`, `wc -c`, `head -c`) instead of local Node `fs` methods when exploring directories.
+  * `server/index.js` — Rebuilt `/api/open` and `/api/upload` to automatically spawn `code --remote ssh-remote+<target>` locally and `scp` dropped files to `/tmp/codedeck-drops/` remotely.
+  * `client/src/components/Sidebar.jsx`, `Terminal.jsx`, & `App.jsx` — Updated core components to propagate host contexts, track unreachable states, and display compact host badges.
+* **🧪 Tests:**
+  * `server/__tests__/command-runner.test.js`, `server/__tests__/ws-handler-remote.test.js`, `server/__tests__/host-reachability.test.js`, `server/__tests__/hosts-routes.test.js`, and more — Added comprehensive test suites running against shimbed executables to verify end-to-end POSIX quoting, timeout boundaries, and multi-host websocket hydration logic.
+
 ## [2026-06-29] - Keyboard shortcut for pane status mute
 
 ### Executive Summary

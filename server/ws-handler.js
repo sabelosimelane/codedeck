@@ -17,6 +17,7 @@ import {
   TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE,
   TERMINAL_SNAPSHOT_WINDOW_LINES,
 } from './terminal-runtime.js';
+import { isTransportFailure } from './command-runner.js';
 
 const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -293,16 +294,8 @@ function releaseBootstrapAttachOutput(entry, attachState) {
   }, 0);
 }
 
-function resolveSnapshotHydration(runtime, sessionId, snapshotSeq = 0) {
-  const snapshot = typeof runtime.captureSessionSnapshot === 'function'
-    ? runtime.captureSessionSnapshot(sessionId, TERMINAL_SNAPSHOT_WINDOW_LINES)
-    : {
-        data: '',
-        lineCount: 0,
-        windowLines: TERMINAL_SNAPSHOT_WINDOW_LINES,
-      };
-
-  const historyGuaranteed = snapshot.historyGuaranteed ?? (runtime.type === 'tmux');
+function buildSnapshotHydration(snapshot, runtimeType, sessionId, snapshotSeq = 0) {
+  const historyGuaranteed = snapshot.historyGuaranteed ?? (runtimeType === 'tmux');
   const historyWarningReason = historyGuaranteed
     ? null
     : (snapshot.historyWarningReason ?? TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE);
@@ -338,6 +331,18 @@ function resolveSnapshotHydration(runtime, sessionId, snapshotSeq = 0) {
   };
 }
 
+function resolveSnapshotHydration(runtime, sessionId, snapshotSeq = 0) {
+  const snapshot = typeof runtime.captureSessionSnapshot === 'function'
+    ? runtime.captureSessionSnapshot(sessionId, TERMINAL_SNAPSHOT_WINDOW_LINES)
+    : {
+        data: '',
+        lineCount: 0,
+        windowLines: TERMINAL_SNAPSHOT_WINDOW_LINES,
+      };
+
+  return buildSnapshotHydration(snapshot, runtime.type, sessionId, snapshotSeq);
+}
+
 function applySnapshotHistoryState(entry, historyState) {
   if (!entry || !historyState) return;
   entry.historyGuaranteed = historyState.historyGuaranteed;
@@ -355,6 +360,70 @@ function buildSessionHandshake(entry, sessionId, existing) {
     snapshotWindowLines: runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
     historyGuaranteed: entry?.historyGuaranteed ?? (runtimeType === 'tmux'),
   };
+}
+
+/**
+ * Build a fresh session entry. Shared by the local and remote attach flows;
+ * `extra` carries the remote-only fields (host, hostRuntime).
+ */
+function createSessionEntry({ pty, ws, cwd, runtimeType, extra = {} }) {
+  const now = new Date().toISOString();
+  return {
+    pty,
+    ws,
+    cwd,
+    startedAt: now,
+    lastOutputAt: now,
+    lastSubstantialOutputAt: now,
+    lastOutputLine: '',
+    alive: true,
+    // Runtime type (Phase 5 — durable sessions)
+    runtimeType,
+    snapshotWindowLines: runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
+    historyGuaranteed: runtimeType === 'tmux',
+    historyWarningReason: null,
+    historyWarningMessage: null,
+    attachState: null,
+    // Diagnostic metadata (Phase 1)
+    wsAttached: true,
+    lastAttachAt: now,
+    lastDetachAt: null,
+    lastClientAckAt: null,
+    lastReplayAt: null,
+    lastSeq: 0,
+    stallReason: null,
+    events: [],
+    // Replay buffer (Phase 3 — loss-aware recovery)
+    replayBuffer: [],
+    // Client-reported diagnostics (Phase 2 — visibility-aware recovery)
+    documentVisibility: 'visible',
+    clientLastMessageAt: null,
+    clientLastPaintAt: null,
+    clientLastResizeAt: null,
+    clientLastSeenSeq: 0,
+    clientReconnectCount: 0,
+    ...extra,
+  };
+}
+
+/** Send the handshake (+snapshot/warning) and release any buffered attach output. */
+function completeAttach(ws, entry, sessionId, isExisting, { snapshotMessage, historyWarningEvent, attachState }) {
+  const sessionHandshake = buildSessionHandshake(entry, sessionId, isExisting);
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify(sessionHandshake));
+    if (snapshotMessage) {
+      ws.send(JSON.stringify(snapshotMessage));
+    }
+    if (historyWarningEvent) {
+      ws.send(JSON.stringify(historyWarningEvent));
+    }
+  }
+
+  if (attachState?.mode === 'buffer_live_output') {
+    flushBufferedAttachOutput(entry);
+  } else if (attachState?.mode === 'drop_bootstrap_output') {
+    releaseBootstrapAttachOutput(entry, attachState);
+  }
 }
 
 /**
@@ -392,7 +461,9 @@ function registerPtyDataHandler(ptyProcess, sessionId, sessions) {
  * ('reconnecting' and 'replaying' are client-side transient states added in later phases)
  */
 export function computeSessionHealth(entry) {
-  if (!entry.alive) return 'dead';
+  // An SSH-dropped remote session is suspended — its tmux session is presumed
+  // alive on the host, so reporting 'dead' would be a lie (Spec §8.2).
+  if (!entry.alive) return entry.remoteDetached ? 'detached' : 'dead';
   if (!entry.wsAttached) return 'detached';
 
   // Stall detection: PTY has recent output but client hasn't acknowledged
@@ -478,7 +549,7 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
   });
 }
 
-export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds = new Set(), reservedSessionIds = new Set()) {
+export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds = new Set(), reservedSessionIds = new Set(), options = {}) {
   const params = new URL(req.url, 'http://localhost').searchParams;
   const cwd = params.get('cwd') || process.env.HOME;
   const sessionId = params.get('sessionId') || `s-${Date.now()}`;
@@ -496,6 +567,49 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
   }
 
   reservedSessionIds.delete(sessionId);
+
+  // Remote sessions route every tmux operation through their host runtime
+  // (Spec §6.2/§8.4). This branch comes before the local tmux gate: a missing
+  // LOCAL tmux must not block terminals on a host that has its own (§8.3).
+  const hostResolution = typeof options.resolveHostRuntime === 'function'
+    ? options.resolveHostRuntime(sessionId)
+    : null;
+  if (hostResolution && hostResolution.host && hostResolution.host !== 'local') {
+    const liveReachability = typeof options.getReachability === 'function'
+      ? options.getReachability(hostResolution.host)
+      : null;
+    if (liveReachability?.reachability === 'unreachable') {
+      sendSpawnError(ws, {
+        reason: 'host_unreachable',
+        message: `Host "${hostResolution.host}" is unreachable. ${liveReachability.lastError || ''}`.trim(),
+        host: hostResolution.host,
+      });
+      safeCloseSocket(ws, { sessionId, context: 'remote_host_unreachable_fast_fail' });
+      return;
+    }
+    // The remote flow awaits SSH round-trips, so unlike the synchronous local
+    // path it can interleave. Serialize attaches per session id: a second
+    // connection waits for the first to finish, then follows the normal
+    // reconnect/takeover path against the entry the first created.
+    return enqueueRemoteAttach(sessions, sessionId, () =>
+      handleRemoteWsConnection(ws, {
+        sessionId,
+        cwd,
+        cols,
+        rows,
+        host: hostResolution.host,
+        hostRuntime: hostResolution.hostRuntime,
+      }, sessions, deletedSessionIds).catch((err) => {
+        console.warn(`[terminal] remote_attach_failed session=${sessionId} host=${hostResolution.host} error=${err.message}`);
+        sendSpawnError(ws, {
+          reason: 'spawn_failed',
+          message: `Failed to attach terminal on "${hostResolution.host}": ${err.message}`,
+          host: hostResolution.host,
+        });
+        safeCloseSocket(ws, { sessionId, context: 'remote_attach_failed' });
+      })
+    );
+  }
 
   if (runtime.type === 'tmux') {
     const runtimeStatus = getTerminalRuntimeStatus(runtime);
@@ -553,42 +667,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
       return;
     }
 
-    const now = new Date().toISOString();
-    entry = {
-      pty: ptyProcess,
-      ws,
-      cwd,
-      startedAt: now,
-      lastOutputAt: now,
-      lastSubstantialOutputAt: now,
-      lastOutputLine: '',
-      alive: true,
-      // Runtime type (Phase 5 — durable sessions)
-      runtimeType: runtime.type,
-      snapshotWindowLines: runtime.type === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
-      historyGuaranteed: runtime.type === 'tmux',
-      historyWarningReason: null,
-      historyWarningMessage: null,
-      attachState: null,
-      // Diagnostic metadata (Phase 1)
-      wsAttached: true,
-      lastAttachAt: now,
-      lastDetachAt: null,
-      lastClientAckAt: null,
-      lastReplayAt: null,
-      lastSeq: 0,
-      stallReason: null,
-      events: [],
-      // Replay buffer (Phase 3 — loss-aware recovery)
-      replayBuffer: [],
-      // Client-reported diagnostics (Phase 2 — visibility-aware recovery)
-      documentVisibility: 'visible',
-      clientLastMessageAt: null,
-      clientLastPaintAt: null,
-      clientLastResizeAt: null,
-      clientLastSeenSeq: 0,
-      clientReconnectCount: 0,
-    };
+    entry = createSessionEntry({ pty: ptyProcess, ws, cwd, runtimeType: runtime.type });
 
     if (snapshotHistoryState) {
       applySnapshotHistoryState(entry, snapshotHistoryState);
@@ -675,6 +754,29 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     safeResizePty(entry, cols, rows, sessionId);
   }
 
+  registerSessionSocketHandlers(ws, entry, sessionId, {
+    resizeRuntime: (cols, rows) => {
+      if (entry.runtimeType === 'tmux') {
+        safeResizeRuntimeSession(runtime, sessionId, cols, rows);
+      }
+    },
+    resolveHydration: typeof runtime.captureSessionSnapshot === 'function'
+      ? (id, seq) => resolveSnapshotHydration(runtime, id, seq)
+      : null,
+  });
+
+  completeAttach(ws, entry, sessionId, isExisting, { snapshotMessage, historyWarningEvent, attachState });
+}
+
+/**
+ * Register the browser->PTY message and close handlers for an attached socket.
+ * `ops` abstracts the runtime-touching pieces so local sessions keep their
+ * synchronous flow while remote sessions route through their host runtime:
+ * - resizeRuntime(cols, rows): align the durable tmux window (no-op for pty)
+ * - resolveHydration(sessionId, seq): snapshot hydration — may return a
+ *   Promise (remote); when it does, the rehydrate reply is sent on resolve.
+ */
+function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
   // Browser -> PTY
   ws.on('message', (msg) => {
     if (entry.ws !== ws) return;
@@ -684,9 +786,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
       if (parsed.type === 'input') {
         entry.pty.write(parsed.data);
       } else if (parsed.type === 'resize') {
-        if (entry.runtimeType === 'tmux') {
-          safeResizeRuntimeSession(runtime, sessionId, parsed.cols, parsed.rows);
-        }
+        ops.resizeRuntime(parsed.cols, parsed.rows);
         entry.pty.resize(parsed.cols, parsed.rows);
       } else if (parsed.type === 'heartbeat') {
         entry.lastClientAckAt = new Date().toISOString();
@@ -727,30 +827,41 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
         pushTimelineEvent(entry, 'replay_served', `${chunks.length} chunks, overflow=${overflow}`);
         console.log(`[terminal] replay session=${sessionId} chunks=${chunks.length} overflow=${overflow} missedCount=${missedCount}`);
       } else if (parsed.type === 'rehydrate') {
-        if (entry.runtimeType !== 'tmux' || typeof runtime.captureSessionSnapshot !== 'function') {
+        if (entry.runtimeType !== 'tmux' || !ops.resolveHydration) {
           pushTimelineEvent(entry, 'rehydrate_skipped', 'snapshot hydration unavailable');
           return;
         }
 
         const snapshotSeq = entry.lastSeq ?? 0;
         const attachState = beginBufferedAttach(entry, snapshotSeq);
-        const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(
-          resolveSnapshotHydration(runtime, sessionId, snapshotSeq),
-          attachState,
-        );
-        applySnapshotHistoryState(entry, snapshotHydration.historyState);
+        const finishRehydrate = (hydration) => {
+          const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(hydration, attachState);
+          applySnapshotHistoryState(entry, snapshotHydration.historyState);
 
-        if (ws.readyState === 1) {
-          ws.send(JSON.stringify(snapshotHydration.snapshotMessage));
-          if (snapshotHydration.historyWarningEvent) {
-            ws.send(JSON.stringify(snapshotHydration.historyWarningEvent));
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify(snapshotHydration.snapshotMessage));
+            if (snapshotHydration.historyWarningEvent) {
+              ws.send(JSON.stringify(snapshotHydration.historyWarningEvent));
+            }
           }
-        }
 
-        flushBufferedAttachOutput(entry);
-        entry.lastClientAckAt = new Date().toISOString();
-        pushTimelineEvent(entry, 'rehydrate_served', `snapshot seq ${snapshotSeq}`);
-        console.log(`[terminal] rehydrate session=${sessionId} snapshotSeq=${snapshotSeq}`);
+          flushBufferedAttachOutput(entry);
+          entry.lastClientAckAt = new Date().toISOString();
+          pushTimelineEvent(entry, 'rehydrate_served', `snapshot seq ${snapshotSeq}`);
+          console.log(`[terminal] rehydrate session=${sessionId} snapshotSeq=${snapshotSeq}`);
+        };
+
+        // Local hydration resolves synchronously (send ordering preserved);
+        // remote hydration arrives from the host runner asynchronously.
+        const hydration = ops.resolveHydration(sessionId, snapshotSeq);
+        if (hydration && typeof hydration.then === 'function') {
+          hydration.then(finishRehydrate).catch((err) => {
+            pushTimelineEvent(entry, 'rehydrate_failed', err.message);
+            console.warn(`[terminal] rehydrate_failed session=${sessionId} error=${err.message}`);
+          });
+        } else {
+          finishRehydrate(hydration);
+        }
       } else if (parsed.type === 'recovery_action') {
         const action = parsed.action || 'unknown';
         pushTimelineEvent(entry, `recovery_${action}`, `user-initiated ${action}`);
@@ -782,21 +893,360 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     pushTimelineEvent(entry, 'detach');
     console.log(`[terminal] detach session=${sessionId}`);
   });
+}
 
-  const sessionHandshake = buildSessionHandshake(entry, sessionId, isExisting);
-  if (ws.readyState === 1) {
-    ws.send(JSON.stringify(sessionHandshake));
-    if (snapshotMessage) {
-      ws.send(JSON.stringify(snapshotMessage));
-    }
-    if (historyWarningEvent) {
-      ws.send(JSON.stringify(historyWarningEvent));
+// ---------------------------------------------------------------------------
+// Remote-host sessions (Spec §6.3, §8.4)
+// ---------------------------------------------------------------------------
+
+// Per-sessions-map attach queues: Map<sessionId, tailPromise>. Serializes the
+// async remote attach flow per session id (the sync local flow needs none).
+const remoteAttachQueues = new WeakMap();
+
+function enqueueRemoteAttach(sessions, sessionId, attach) {
+  let queues = remoteAttachQueues.get(sessions);
+  if (!queues) {
+    queues = new Map();
+    remoteAttachQueues.set(sessions, queues);
+  }
+
+  const previous = queues.get(sessionId) || Promise.resolve();
+  // `attach` contains its own error handling; the chain never rejects.
+  const next = previous.then(attach);
+  queues.set(sessionId, next);
+  next.finally(() => {
+    if (queues.get(sessionId) === next) queues.delete(sessionId);
+  });
+  return next;
+}
+
+function sendSpawnError(ws, { reason, message, host }) {
+  if (ws.readyState !== 1) return;
+  ws.send(JSON.stringify({
+    type: 'spawn_error',
+    reason,
+    message,
+    ...(host ? { host } : {}),
+    data: `\r\n${message}\r\n`,
+  }));
+}
+
+/**
+ * PTY exit handler for remote sessions. The classification is the truthfulness
+ * core (Spec §8.2/§8.4): a definitive tmux answer may re-attach or mark the
+ * session dead, but a transport failure — the SSH connection dropped — means
+ * the remote tmux session is PRESUMED ALIVE, so the exit is recorded as a
+ * recoverable detach and the browser socket stays open.
+ */
+function registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRuntime, cols, rows, reattachCount = 0) {
+  ptyProcess.onExit(() => {
+    const s = sessions.get(sessionId);
+    if (!s) return;
+
+    const markRemoteDetached = (err) => {
+      s.alive = false;
+      s.wsAttached = s.wsAttached ?? false;
+      s.remoteDetached = true;
+      pushTimelineEvent(s, 'remote_ssh_drop', err?.message || 'ssh connection dropped');
+      console.log(`[terminal] remote_ssh_drop session=${sessionId} host=${s.host} error=${err?.message}`);
+      // Do NOT close the browser socket — the session is suspended, not dead.
+    };
+
+    const markDead = () => {
+      s.alive = false;
+      s.wsAttached = false;
+      pushTimelineEvent(s, 'pty_exited');
+      console.log(`[terminal] pty_exited session=${sessionId} host=${s.host}`);
+      if (s.ws) s.ws.close();
+    };
+
+    hostRuntime.isSessionRecoverableAsync(sessionId)
+      .then(async (recoverable) => {
+        if (recoverable && reattachCount < MAX_TMUX_REATTACH) {
+          pushTimelineEvent(s, 'tmux_client_exited', `remote tmux session still alive — re-attaching (attempt ${reattachCount + 1}/${MAX_TMUX_REATTACH})`);
+          try {
+            const newPty = await hostRuntime.spawnAsync({ cwd: s.cwd, cols, rows, sessionId });
+            s.pty = newPty;
+            s.alive = true;
+            registerPtyDataHandler(newPty, sessionId, sessions);
+            registerRemotePtyExitHandler(newPty, sessionId, sessions, hostRuntime, cols, rows, reattachCount + 1);
+            pushTimelineEvent(s, 'tmux_reattach', 'new remote pty wrapper attached');
+            console.log(`[terminal] tmux_reattach session=${sessionId} host=${s.host}`);
+            return;
+          } catch (err) {
+            if (isTransportFailure(err)) {
+              markRemoteDetached(err);
+              return;
+            }
+            pushTimelineEvent(s, 'tmux_reattach_failed', err.message);
+            // Fall through to mark dead
+          }
+        }
+
+        if (recoverable && reattachCount >= MAX_TMUX_REATTACH) {
+          pushTimelineEvent(s, 'tmux_reattach_exhausted', `max re-attach attempts (${MAX_TMUX_REATTACH}) reached`);
+        }
+
+        markDead();
+      })
+      .catch(markRemoteDetached);
+  });
+}
+
+/**
+ * When the reachability probe proves a host recovered, any browser socket that
+ * was left waiting on a transport-detached remote session receives the normal
+ * truthful reconnect treatment immediately: re-attach the tmux client and send
+ * a fresh snapshot reseed over the still-open socket.
+ */
+export async function reseedRemoteDetachedSessions({
+  sessions,
+  host,
+  hostRuntime,
+  cols = 120,
+  rows = 30,
+} = {}) {
+  const reseeded = [];
+
+  for (const [sessionId, entry] of sessions) {
+    if (entry?.host !== host) continue;
+    if (!entry.remoteDetached || entry.alive) continue;
+    if (!entry.ws || entry.ws.readyState !== 1) continue;
+
+    const recoverable = await hostRuntime.isSessionRecoverableAsync(sessionId);
+    if (!recoverable) continue;
+
+    const ptyProcess = await hostRuntime.spawnAsync({
+      cwd: entry.cwd,
+      cols,
+      rows,
+      sessionId,
+    });
+
+    entry.pty = ptyProcess;
+    entry.hostRuntime = hostRuntime;
+    entry.alive = true;
+    entry.remoteDetached = false;
+    entry.wsAttached = true;
+    entry.lastAttachAt = new Date().toISOString();
+    registerPtyDataHandler(ptyProcess, sessionId, sessions);
+    registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRuntime, cols, rows);
+
+    const snapshot = await hostRuntime.captureSessionSnapshotAsync(sessionId, TERMINAL_SNAPSHOT_WINDOW_LINES);
+    const snapshotHydration = buildSnapshotHydration(snapshot, 'tmux', sessionId, entry.lastSeq ?? 0);
+    applySnapshotHistoryState(entry, snapshotHydration.historyState);
+    completeAttach(entry.ws, entry, sessionId, true, {
+      snapshotMessage: snapshotHydration.snapshotMessage,
+      historyWarningEvent: snapshotHydration.historyWarningEvent,
+      attachState: null,
+    });
+    pushTimelineEvent(entry, 'host_recovered_reseed', `fresh snapshot sent for host ${host}`);
+    reseeded.push(sessionId);
+  }
+
+  return reseeded;
+}
+
+/**
+ * Async attach flow for sessions whose project lives on a remote host. Mirrors
+ * the local flow above but routes every tmux operation through the session's
+ * host runtime. Kept separate so the local path stays fully synchronous — the
+ * local suite's send-ordering guarantees depend on that.
+ */
+async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, hostRuntime }, sessions, deletedSessionIds = new Set()) {
+  // Per-host tmux requirement (§8.3) — the message names the host, and an
+  // unreachable host is reported distinctly from a missing tmux.
+  const tmuxCheck = await hostRuntime.checkTmuxAsync();
+  if (!tmuxCheck.available) {
+    const message = tmuxCheck.transport
+      ? `Host "${host}" is unreachable. ${tmuxCheck.error || ''}`.trim()
+      : `Install tmux on "${host}" to enable durable CodeDeck terminals.`;
+    sendSpawnError(ws, {
+      reason: tmuxCheck.transport ? 'host_unreachable' : 'missing_tmux',
+      message,
+      host,
+    });
+    safeCloseSocket(ws, { sessionId, context: 'remote_runtime_blocked' });
+    return;
+  }
+
+  let entry = sessions.get(sessionId);
+
+  let recoverable = false;
+  if (!entry || (!entry.alive && entry.runtimeType === 'tmux')) {
+    try {
+      recoverable = await hostRuntime.isSessionRecoverableAsync(sessionId);
+    } catch (err) {
+      sendSpawnError(ws, {
+        reason: 'host_unreachable',
+        message: `Host "${host}" is unreachable. ${err.message}`,
+        host,
+      });
+      safeCloseSocket(ws, { sessionId, context: 'remote_host_unreachable' });
+      return;
     }
   }
 
-  if (attachState?.mode === 'buffer_live_output') {
-    flushBufferedAttachOutput(entry);
-  } else if (attachState?.mode === 'drop_bootstrap_output') {
-    releaseBootstrapAttachOutput(entry, attachState);
+  const recoverableWithoutEntry = !entry && recoverable;
+  const recoverableDeadEntry = !!entry && !entry.alive && recoverable;
+  const isExisting = !!entry || recoverableWithoutEntry;
+  let snapshotMessage = null;
+  let historyWarningEvent = null;
+  let snapshotHistoryState = null;
+  let attachState = null;
+
+  async function resolveRemoteHydration(snapshotSeq) {
+    const snapshot = await hostRuntime.captureSessionSnapshotAsync(sessionId, TERMINAL_SNAPSHOT_WINDOW_LINES);
+    return buildSnapshotHydration(snapshot, 'tmux', sessionId, snapshotSeq);
+  }
+
+  if (!entry) {
+    if (recoverableWithoutEntry) {
+      await hostRuntime.resizeSessionAsync(sessionId, cols, rows);
+      const snapshotHydration = await resolveRemoteHydration(0);
+      snapshotMessage = snapshotHydration.snapshotMessage;
+      historyWarningEvent = snapshotHydration.historyWarningEvent;
+      snapshotHistoryState = snapshotHydration.historyState;
+    }
+
+    let ptyProcess;
+    try {
+      ptyProcess = await hostRuntime.spawnAsync({ cwd, cols, rows, sessionId });
+    } catch (err) {
+      const transport = isTransportFailure(err);
+      const message = transport
+        ? `Host "${host}" is unreachable. ${err.message}`
+        : `Failed to start terminal on "${host}": ${err.message}`;
+      sendSpawnError(ws, {
+        reason: transport ? 'host_unreachable' : 'spawn_failed',
+        message,
+        host,
+      });
+      ws.close();
+      return;
+    }
+
+    // A DELETE may have landed while the spawn was in flight — never
+    // resurrect a tombstoned session; clean up the PTY we just attached.
+    if (deletedSessionIds.has(sessionId)) {
+      try {
+        ptyProcess.kill();
+      } catch {
+        // PTY may already be gone
+      }
+      safeCloseSocket(ws, {
+        sessionId,
+        context: 'deleted_during_attach',
+        code: SESSION_DELETED_CLOSE_CODE,
+        reason: SESSION_DELETED_CLOSE_REASON,
+      });
+      return;
+    }
+
+    entry = createSessionEntry({
+      pty: ptyProcess,
+      ws,
+      cwd,
+      runtimeType: 'tmux',
+      extra: { host, hostRuntime },
+    });
+
+    if (snapshotHistoryState) {
+      applySnapshotHistoryState(entry, snapshotHistoryState);
+    }
+
+    if (recoverableWithoutEntry) {
+      attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
+    }
+
+    sessions.set(sessionId, entry);
+
+    const attachType = recoverableWithoutEntry ? 'durable_recovery' : 'initial';
+    pushTimelineEvent(entry, 'attach', `${attachType} (host ${host})`);
+    console.log(`[terminal] attach session=${sessionId} host=${host} cwd=${cwd} type=${attachType}`);
+
+    registerPtyDataHandler(ptyProcess, sessionId, sessions);
+    registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRuntime, cols, rows);
+  } else {
+    if (entry.runtimeType === 'tmux' && entry.alive) {
+      const snapshotSeq = entry.lastSeq ?? 0;
+      attachState = beginBufferedAttach(entry, snapshotSeq);
+      await hostRuntime.resizeSessionAsync(sessionId, cols, rows);
+      const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(
+        await resolveRemoteHydration(snapshotSeq),
+        attachState,
+      );
+      snapshotMessage = snapshotHydration.snapshotMessage;
+      historyWarningEvent = snapshotHydration.historyWarningEvent;
+      snapshotHistoryState = snapshotHydration.historyState;
+    } else if (recoverableDeadEntry) {
+      attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
+    }
+
+    const previousWs = entry.ws;
+    if (previousWs && previousWs !== ws) {
+      safeCloseSocket(previousWs, {
+        sessionId,
+        context: 'session_takeover',
+        code: SESSION_TAKEOVER_CLOSE_CODE,
+        reason: SESSION_TAKEOVER_CLOSE_REASON,
+      });
+    }
+    entry.ws = ws;
+    entry.wsAttached = true;
+    entry.lastAttachAt = new Date().toISOString();
+    // Refresh the routing pin: the host's sshTarget may have changed since the
+    // entry was created, and stale runtimes would keep SSHing the old target.
+    entry.host = host;
+    entry.hostRuntime = hostRuntime;
+    pushTimelineEvent(entry, 'attach', recoverableDeadEntry ? 'reconnect_recovery' : 'reconnect');
+    console.log(`[terminal] attach session=${sessionId} host=${host} type=${recoverableDeadEntry ? 'reconnect_recovery' : 'reconnect'}`);
+
+    if (recoverableDeadEntry) {
+      try {
+        const newPty = await hostRuntime.spawnAsync({ cwd: entry.cwd, cols, rows, sessionId });
+        entry.pty = newPty;
+        registerPtyDataHandler(newPty, sessionId, sessions);
+        registerRemotePtyExitHandler(newPty, sessionId, sessions, hostRuntime, cols, rows);
+        entry.alive = true;
+        entry.remoteDetached = false;
+        pushTimelineEvent(entry, 'tmux_reattach', 'recovered on reconnect');
+        console.log(`[terminal] tmux_reattach session=${sessionId} host=${host} type=reconnect_recovery`);
+      } catch (err) {
+        pushTimelineEvent(entry, 'tmux_reattach_failed', err.message);
+        console.log(`[terminal] tmux_reattach_failed session=${sessionId} host=${host} error=${err.message}`);
+      }
+
+      await hostRuntime.resizeSessionAsync(sessionId, cols, rows);
+      const snapshotHydration = await resolveRemoteHydration(entry.lastSeq ?? 0);
+      snapshotMessage = snapshotHydration.snapshotMessage;
+      historyWarningEvent = snapshotHydration.historyWarningEvent;
+      snapshotHistoryState = snapshotHydration.historyState;
+    }
+
+    if (snapshotHistoryState) {
+      applySnapshotHistoryState(entry, snapshotHistoryState);
+    }
+
+    safeResizePty(entry, cols, rows, sessionId);
+  }
+
+  registerSessionSocketHandlers(ws, entry, sessionId, {
+    resizeRuntime: (resizeCols, resizeRows) => {
+      // Best-effort remote resize; errors are swallowed inside the runtime.
+      hostRuntime.resizeSessionAsync(sessionId, resizeCols, resizeRows);
+    },
+    resolveHydration: (id, seq) => resolveRemoteHydration(seq),
+  });
+
+  completeAttach(ws, entry, sessionId, isExisting, { snapshotMessage, historyWarningEvent, attachState });
+
+  // The socket may have closed while we awaited SSH round-trips — its 'close'
+  // event fired before our handler was registered, so record the detach here
+  // or the entry would look attached forever and never be GC'd.
+  if (ws.readyState !== 1 && entry.ws === ws) {
+    entry.wsAttached = false;
+    entry.lastDetachAt = new Date().toISOString();
+    pushTimelineEvent(entry, 'detach', 'socket closed during attach');
   }
 }

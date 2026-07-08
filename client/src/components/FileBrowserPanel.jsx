@@ -115,7 +115,7 @@ export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`/api/files?root=${encodeURIComponent(project.path)}`)
+    fetch(`/api/files?root=${encodeURIComponent(project.path)}&host=${encodeURIComponent(project.host || 'local')}`)
       .then(r => {
         if (!r.ok) throw new Error('Failed to load files');
         return r.json();
@@ -152,7 +152,7 @@ export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
       const res = await fetch('/api/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath }),
+        body: JSON.stringify({ filePath, host: project.host || 'local' }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

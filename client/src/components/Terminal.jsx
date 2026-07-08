@@ -41,6 +41,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
   const mountedRef = useRef(true);
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connected' | 'connecting' | 'disconnected' | 'failed'
   const [failureMessage, setFailureMessage] = useState(DEFAULT_FAILURE_MESSAGE);
+  const [hostUnreachableInfo, setHostUnreachableInfo] = useState(null);
   const [historyWarning, setHistoryWarning] = useState(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const userScrolledUpRef = useRef(false);
@@ -65,14 +66,16 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
   const inputBufferRef = useRef([]);
   const delayedViewportSyncTimerRef = useRef(null);
   const snapshotGeometryRef = useRef(null);
+  const retryConnectionRef = useRef(() => {});
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
   const { showToast } = useToast();
 
   // Upload a file to the backend and return the saved path
-  async function uploadFile(file) {
+  async function uploadFile(file, host) {
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('host', host || 'local');
     const res = await fetch('/api/upload', { method: 'POST', body: formData });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -96,7 +99,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
     const paths = [];
     for (const file of files) {
       try {
-        const path = await uploadFile(file);
+        const path = await uploadFile(file, project.host);
         paths.push(`"${path}"`);
       } catch (err) {
         showToast({ type: 'error', message: err.message });
@@ -352,6 +355,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
 
   useEffect(() => {
     setHistoryWarning(null);
+    setHostUnreachableInfo(null);
   }, [sessionId]);
 
   useImperativeHandle(ref, () => ({
@@ -616,6 +620,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
         retryRef.current = 0;
         setConnectionStatus('connected');
         setFailureMessage(DEFAULT_FAILURE_MESSAGE);
+        setHostUnreachableInfo(null);
         if (wasReconnect) {
           reconnectCountRef.current += 1;
           showToast({ type: 'success', message: 'Reconnected' });
@@ -714,6 +719,15 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
           } else if (msg.type === 'spawn_error') {
             spawnFailed = true;
             term.write(msg.data);
+            if (msg.reason === 'host_unreachable') {
+              setHostUnreachableInfo({
+                host: msg.host || 'remote host',
+                message: msg.message || 'Host is unreachable',
+              });
+              setConnectionStatus('host_unreachable');
+              showToast({ type: 'warning', message: msg.message || 'Host is unreachable' });
+              return;
+            }
             setFailureMessage(msg.message || DEFAULT_FAILURE_MESSAGE);
             setConnectionStatus('failed');
             showToast({ type: 'error', message: msg.message || 'Failed to start terminal' });
@@ -759,6 +773,21 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
         retryTimerRef.current = setTimeout(connect, delay);
       };
     }
+
+    retryConnectionRef.current = () => {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+      retryRef.current = 0;
+      resumeInFlightRef.current = false;
+      setHostUnreachableInfo(null);
+      setFailureMessage(DEFAULT_FAILURE_MESSAGE);
+      setConnectionStatus('connecting');
+      const currentWs = wsRef.current;
+      if (currentWs && currentWs.readyState < WebSocket.CLOSING) {
+        currentWs.close();
+      }
+      connect();
+    };
 
     // Defer connection so StrictMode's immediate unmount cancels it
     // before a WebSocket is ever created
@@ -820,6 +849,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
       pendingSnapshotRef.current = null;
       inputBufferRef.current = [];
       fontSyncCancelled = true;
+      retryConnectionRef.current = () => {};
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('pageshow', handlePageShow);
@@ -870,6 +900,25 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
         <div style={failedOverlayStyle}>
           <div style={{ ...reconnectCardStyle, borderColor: 'rgba(248, 113, 113, 0.3)' }}>
             <span>{failureMessage}</span>
+          </div>
+        </div>
+      )}
+      {connectionStatus === 'host_unreachable' && hostUnreachableInfo && (
+        <div style={hostUnreachableOverlayStyle}>
+          <div style={hostUnreachableCardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fbbf24' }}>
+              <AlertTriangle size={15} />
+              <strong>Host unreachable</strong>
+            </div>
+            <span style={hostUnreachableMessageStyle}>{hostUnreachableInfo.message}</span>
+            <button
+              type="button"
+              onClick={() => retryConnectionRef.current()}
+              aria-label={`Retry ${hostUnreachableInfo.host} terminal connection`}
+              style={hostUnreachableRetryButtonStyle}
+            >
+              Retry
+            </button>
           </div>
         </div>
       )}
@@ -959,6 +1008,12 @@ const failedOverlayStyle = {
   background: 'rgba(11, 13, 18, 0.85)',
 };
 
+const hostUnreachableOverlayStyle = {
+  ...reconnectOverlayStyle,
+  background: 'rgba(11, 13, 18, 0.82)',
+  pointerEvents: 'auto',
+};
+
 const reconnectCardStyle = {
   display: 'flex',
   alignItems: 'center',
@@ -971,6 +1026,33 @@ const reconnectCardStyle = {
   fontSize: '12px',
   color: 'var(--text-secondary)',
   boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
+};
+
+const hostUnreachableCardStyle = {
+  ...reconnectCardStyle,
+  flexDirection: 'column',
+  alignItems: 'flex-start',
+  maxWidth: 420,
+  borderColor: 'rgba(251, 191, 36, 0.35)',
+};
+
+const hostUnreachableMessageStyle = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: '12px',
+  lineHeight: 1.45,
+  color: 'var(--text-secondary)',
+};
+
+const hostUnreachableRetryButtonStyle = {
+  marginTop: 2,
+  padding: '6px 12px',
+  borderRadius: 6,
+  border: '1px solid rgba(251, 191, 36, 0.45)',
+  background: 'rgba(251, 191, 36, 0.12)',
+  color: '#fbbf24',
+  fontFamily: 'var(--font-mono)',
+  fontSize: '12px',
+  cursor: 'pointer',
 };
 
 const historyWarningBannerStyle = {

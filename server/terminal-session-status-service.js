@@ -27,34 +27,53 @@ export function listTerminalSessions({
   computeStallReason,
   sanitizePreviewLine,
   statusCache = null,
+  resolveHostRuntime = null,
+  getReachability = null,
 } = {}) {
   const result = [];
   const seenSessionIds = new Set();
   const runtimeStatus = getTerminalRuntimeStatus(runtime);
 
   for (const [sessionId, entry] of sessions) {
+    // Remote sessions must never be resolved against the LOCAL tmux server.
+    // The status cache routes through entry.hostRuntime; the sync fallback
+    // has no async path, so it reports last-known values instead of lying.
+    const isRemote = typeof entry.host === 'string' && entry.host !== 'local';
     const cwd = statusCache?.getSessionCwd
       ? statusCache.getSessionCwd(entry, sessionId)
-      : runtime.getSessionCwd?.(entry, sessionId) || entry.cwd;
+      : isRemote
+        ? entry.cwd
+        : runtime.getSessionCwd?.(entry, sessionId) || entry.cwd;
     const executionState = entry.alive
       ? statusCache?.getSessionExecutionState
         ? statusCache.getSessionExecutionState(entry, sessionId)
-        : runtime.getSessionExecutionState?.(sessionId) ?? {
+        : (isRemote ? undefined : runtime.getSessionExecutionState?.(sessionId)) ?? {
           executionStatus: TERMINAL_EXECUTION_UNKNOWN,
           foregroundCommand: null,
           executionReason: 'runtime_unavailable',
           executionConfidence: 'low',
         }
-      : {
-        executionStatus: TERMINAL_EXECUTION_DEAD,
-        foregroundCommand: null,
-        executionReason: 'pane_dead',
-        executionConfidence: 'high',
-      };
+      : entry.remoteDetached
+        ? {
+          // SSH drop: the remote tmux session is presumed alive — truthfully
+          // unknown, never confidently dead (Spec §8.2).
+          executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+          foregroundCommand: null,
+          executionReason: 'host_connection_lost',
+          executionConfidence: 'low',
+        }
+        : {
+          executionStatus: TERMINAL_EXECUTION_DEAD,
+          foregroundCommand: null,
+          executionReason: 'pane_dead',
+          executionConfidence: 'high',
+        };
     seenSessionIds.add(sessionId);
 
     result.push({
       sessionId,
+      host: entry.host ?? 'local',
+      ...getReachability?.(entry.host ?? 'local'),
       cwd,
       startedAt: entry.startedAt,
       lastOutputAt: entry.lastOutputAt,
@@ -86,6 +105,9 @@ export function listTerminalSessions({
     if (deletedSessionIds.has(sessionId)) continue;
     if (!doesSessionBelongToConfiguredProject(sessionId, projects)) continue;
 
+    // Detached ids can live on any configured host — attribute them so the
+    // status cache polls the owning host, never the local tmux server.
+    const hostResolution = resolveHostRuntime ? resolveHostRuntime(sessionId) : null;
     const detachedEntry = {
       alive: true,
       wsAttached: false,
@@ -96,13 +118,17 @@ export function listTerminalSessions({
       lastAttachAt: null,
       lastClientAckAt: null,
       lastSeq: 0,
+      ...(hostResolution ? { host: hostResolution.host, hostRuntime: hostResolution.hostRuntime } : {}),
     };
+    const isRemoteDetached = !!hostResolution;
     const cwd = statusCache?.getSessionCwd
       ? statusCache.getSessionCwd(detachedEntry, sessionId)
-      : runtime.getSessionCwd?.({ cwd: null }, sessionId) || null;
+      : isRemoteDetached
+        ? null
+        : runtime.getSessionCwd?.({ cwd: null }, sessionId) || null;
     const executionState = statusCache?.getSessionExecutionState
       ? statusCache.getSessionExecutionState(detachedEntry, sessionId)
-      : runtime.getSessionExecutionState?.(sessionId) ?? {
+      : (isRemoteDetached ? undefined : runtime.getSessionExecutionState?.(sessionId)) ?? {
         executionStatus: TERMINAL_EXECUTION_UNKNOWN,
         foregroundCommand: null,
         executionReason: 'runtime_unavailable',
@@ -111,6 +137,8 @@ export function listTerminalSessions({
 
     result.push({
       sessionId,
+      host: hostResolution?.host ?? 'local',
+      ...getReachability?.(hostResolution?.host ?? 'local'),
       cwd,
       startedAt: null,
       lastOutputAt: null,

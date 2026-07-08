@@ -23,7 +23,7 @@ describe('readFilePreview', () => {
     const filePath = path.join(root, 'notes.md');
     await fs.writeFile(filePath, '# Preview\nhello world\n');
 
-    const preview = await readFilePreview(filePath);
+    const preview = await readFilePreview({ kind: 'local' }, filePath);
 
     expect(preview).toEqual({
       kind: 'text',
@@ -41,7 +41,7 @@ describe('readFilePreview', () => {
     const filePath = path.join(root, 'large.txt');
     await fs.writeFile(filePath, 'abcdefghij');
 
-    const preview = await readFilePreview(filePath, { maxBytes: 5 });
+    const preview = await readFilePreview({ kind: 'local' }, filePath, { maxBytes: 5 });
 
     expect(preview.kind).toBe('text');
     expect(preview.format).toBe('text');
@@ -57,7 +57,7 @@ describe('readFilePreview', () => {
     const filePath = path.join(root, 'image.bin');
     await fs.writeFile(filePath, Buffer.from([0x89, 0x50, 0x00, 0x4e]));
 
-    const preview = await readFilePreview(filePath);
+    const preview = await readFilePreview({ kind: 'local' }, filePath);
 
     expect(preview).toEqual({
       kind: 'binary',
@@ -65,6 +65,33 @@ describe('readFilePreview', () => {
       truncated: false,
       size: 4,
       content: null,
+    });
+  });
+
+  it('reads preview using remote runner', async () => {
+    const fakeRunner = {
+      kind: 'remote',
+      run: async (cmd, args) => {
+        const fullCmd = `${cmd} ${args.join(' ')}`;
+        if (fullCmd === 'test -f /var/www/notes.md') {
+          return { exitCode: 0 };
+        } else if (fullCmd === "wc -c /var/www/notes.md") {
+          return { stdout: '22 /var/www/notes.md\n' };
+        } else if (fullCmd.startsWith('head -c ')) {
+          return { stdout: '# Preview\nhello world\n' };
+        }
+        throw new Error('Unexpected command: ' + fullCmd);
+      }
+    };
+
+    const preview = await readFilePreview(fakeRunner, '/var/www/notes.md');
+
+    expect(preview).toEqual({
+      kind: 'text',
+      format: 'markdown',
+      truncated: false,
+      size: 22,
+      content: '# Preview\nhello world\n',
     });
   });
 });

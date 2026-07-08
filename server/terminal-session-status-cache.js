@@ -35,6 +35,8 @@ function cloneExecutionState(state) {
 
 export function createTerminalStatusCache({
   runtime,
+  listAllSessionIds = null,
+  getReachability = null,
   now = () => Date.now(),
   sessionRefreshTtlMs = DEFAULT_SESSION_REFRESH_TTL_MS,
   sessionListRefreshTtlMs = DEFAULT_SESSION_LIST_REFRESH_TTL_MS,
@@ -101,12 +103,26 @@ export function createTerminalStatusCache({
     if (isFresh(record, sessionRefreshTtlMs, now)) return Promise.resolve(record);
 
     record.refreshPromise = runLimited(async () => {
+      // Remote sessions carry their own host runtime — status lookups must run
+      // on the session's host, never against the local tmux server.
+      const sessionRuntime = entry?.hostRuntime ?? runtime;
+      if (entry?.host && entry.host !== 'local' && getReachability?.(entry.host)?.reachability === 'unreachable') {
+        record.cwd = entry?.cwd ?? null;
+        record.executionState = {
+          executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+          foregroundCommand: null,
+          executionReason: 'host_unreachable',
+          executionConfidence: 'low',
+        };
+        record.updatedAt = now();
+        return record;
+      }
       const [cwd, executionState] = await Promise.all([
-        typeof runtime?.getSessionCwdAsync === 'function'
-          ? runtime.getSessionCwdAsync(entry, sessionId)
+        typeof sessionRuntime?.getSessionCwdAsync === 'function'
+          ? sessionRuntime.getSessionCwdAsync(entry, sessionId)
           : Promise.resolve(entry?.cwd ?? null),
-        entry?.alive && typeof runtime?.getSessionExecutionStateAsync === 'function'
-          ? runtime.getSessionExecutionStateAsync(sessionId)
+        entry?.alive && typeof sessionRuntime?.getSessionExecutionStateAsync === 'function'
+          ? sessionRuntime.getSessionExecutionStateAsync(sessionId)
           : Promise.resolve(STATUS_REFRESH_PENDING_EXECUTION_STATE),
       ]);
 
@@ -133,9 +149,13 @@ export function createTerminalStatusCache({
     if (isFresh(sessionList, sessionListRefreshTtlMs, now)) return Promise.resolve(sessionList.ids);
 
     sessionList.refreshPromise = runLimited(async () => {
-      const ids = typeof runtime?.listSessionIdsAsync === 'function'
-        ? await runtime.listSessionIdsAsync()
-        : [];
+      // The injected enumerator sweeps every configured host (Spec §6.3);
+      // without it, only the local tmux server is listed.
+      const ids = typeof listAllSessionIds === 'function'
+        ? await listAllSessionIds()
+        : typeof runtime?.listSessionIdsAsync === 'function'
+          ? await runtime.listSessionIdsAsync()
+          : [];
       sessionList.ids = Array.isArray(ids) ? ids : [];
       sessionList.updatedAt = now();
       return sessionList.ids;

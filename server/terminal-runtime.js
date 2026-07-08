@@ -10,6 +10,7 @@ import { spawn } from 'node-pty';
 import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { buildShellEnv } from './shell-env.js';
+import { isTransportFailure, STATUS_POLL_TIMEOUT_MS } from './command-runner.js';
 import {
   TERMINAL_EXECUTION_UNKNOWN,
   classifyTerminalExecution,
@@ -468,35 +469,36 @@ function parseTmuxBoolean(value) {
   return value === '1';
 }
 
-function getTmuxPaneSnapshotState(target) {
-  const format = [
-    '#{alternate_on}',
-    '#{pane_in_mode}',
-    '#{pane_mode}',
-    '#{cursor_x}',
-    '#{cursor_y}',
-    '#{cursor_flag}',
-    '#{cursor_shape}',
-    '#{cursor_blinking}',
-    '#{cursor_very_visible}',
-    '#{insert_flag}',
-    '#{origin_flag}',
-    '#{wrap_flag}',
-    '#{keypad_flag}',
-    '#{keypad_cursor_flag}',
-    '#{mouse_standard_flag}',
-    '#{mouse_button_flag}',
-    '#{mouse_all_flag}',
-    '#{mouse_utf8_flag}',
-    '#{mouse_sgr_flag}',
-    '#{bracketed_paste_flag}',
-  ].join('\t');
+const TMUX_PANE_STATE_FORMAT = [
+  '#{alternate_on}',
+  '#{pane_in_mode}',
+  '#{pane_mode}',
+  '#{cursor_x}',
+  '#{cursor_y}',
+  '#{cursor_flag}',
+  '#{cursor_shape}',
+  '#{cursor_blinking}',
+  '#{cursor_very_visible}',
+  '#{insert_flag}',
+  '#{origin_flag}',
+  '#{wrap_flag}',
+  '#{keypad_flag}',
+  '#{keypad_cursor_flag}',
+  '#{mouse_standard_flag}',
+  '#{mouse_button_flag}',
+  '#{mouse_all_flag}',
+  '#{mouse_utf8_flag}',
+  '#{mouse_sgr_flag}',
+  '#{bracketed_paste_flag}',
+].join('\t');
 
-  const raw = execFileSync(
-    'tmux',
-    ['display-message', '-p', '-t', target, format],
-    { stdio: 'pipe', encoding: 'utf8' }
-  ).replace(/\r/g, '').replace(/\n$/, '');
+/**
+ * Parse the raw `display-message` output produced by TMUX_PANE_STATE_FORMAT
+ * into the terminalState shape consumed by snapshot hydration. Pure — shared
+ * by the local (sync) and host (async, runner-routed) snapshot paths.
+ */
+function parseTmuxPaneStateOutput(rawOutput) {
+  const raw = rawOutput.replace(/\r/g, '').replace(/\n$/, '');
   const [
     alternateOnRaw = '0',
     paneInModeRaw = '0',
@@ -555,6 +557,15 @@ function getTmuxPaneSnapshotState(target) {
     mouseEncoding,
     bracketedPaste: parseTmuxBoolean(bracketedPasteRaw),
   };
+}
+
+function getTmuxPaneSnapshotState(target) {
+  const raw = execFileSync(
+    'tmux',
+    ['display-message', '-p', '-t', target, TMUX_PANE_STATE_FORMAT],
+    { stdio: 'pipe', encoding: 'utf8' }
+  );
+  return parseTmuxPaneStateOutput(raw);
 }
 
 function normalizeCapturedSnapshot(output, windowLines = TERMINAL_SNAPSHOT_WINDOW_LINES, metadata = {}) {
@@ -972,6 +983,255 @@ function createTmuxRuntime() {
           .map(line => line.trim())
           .filter(Boolean);
       } catch {
+        return [];
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Host-routed tmux runtime (remote host connectors — Spec §8.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an async-only tmux runtime whose every operation executes through the
+ * given command runner — for remote hosts, that means over the runner's
+ * multiplexed SSH connection. Local sessions keep using the sync runtime above;
+ * this factory exists so remote sessions never touch the local tmux server.
+ *
+ * Transport failures (host unreachable) are surfaced distinctly from
+ * definitive tmux results wherever the difference matters for truthfulness:
+ * `isSessionRecoverableAsync` THROWS on transport failure — the session's
+ * remote state is unknown, and reporting `false` would let callers mark a
+ * presumed-alive session dead (Spec §8.2).
+ */
+export function createHostTerminalRuntime(runner, hostName) {
+  function tmux(args, opts = {}) {
+    return runner.run('tmux', args, opts);
+  }
+
+  async function getPaneNumberValue(target, format) {
+    const { stdout } = await tmux(
+      ['display-message', '-p', '-t', target, format],
+      { timeout: STATUS_POLL_TIMEOUT_MS }
+    );
+    const parsed = parseInt(stdout.trim(), 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  async function ensureSessionOptions(tmuxName) {
+    await tmux(['set-option', '-t', tmuxName, 'status', 'off']);
+    await tmux(['set-window-option', '-t', tmuxName, 'history-limit', String(TMUX_HISTORY_LIMIT)]);
+    await tmux(['set-option', '-t', tmuxName, 'mouse', 'on']);
+  }
+
+  return {
+    type: 'tmux',
+    host: hostName,
+
+    /** Remote tmux presence check (Spec §8.3) — never conflates "missing" with "unreachable". */
+    async checkTmuxAsync() {
+      try {
+        await tmux(['-V'], { timeout: STATUS_POLL_TIMEOUT_MS });
+        return { available: true, transport: false, error: null };
+      } catch (err) {
+        return {
+          available: false,
+          transport: isTransportFailure(err),
+          error: err?.message || 'tmux check failed',
+        };
+      }
+    },
+
+    /**
+     * Spawn (or re-attach to) the host's tmux session. Mirrors the local
+     * runtime's flow: create detached if missing, align session options, then
+     * attach interactively — here via the runner's PTY (`ssh -tt ... tmux
+     * attach-session` for remote runners).
+     */
+    async spawnAsync({ cwd, cols, rows, sessionId }) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+
+      let exists = true;
+      try {
+        await tmux(['has-session', '-t', tmuxName]);
+      } catch (err) {
+        if (isTransportFailure(err)) throw err;
+        exists = false;
+      }
+
+      if (!exists) {
+        // Best-effort global history-limit so the initial pane inherits the
+        // snapshot window; a cold tmux socket may reject it (same tolerance as
+        // the local runtime).
+        try {
+          await tmux(['set-window-option', '-g', 'history-limit', String(TMUX_HISTORY_LIMIT)]);
+        } catch (err) {
+          if (isTransportFailure(err) || !isTmuxMissingServerError(err)) throw err;
+        }
+        await tmux([
+          'new-session', '-d',
+          '-s', tmuxName,
+          '-c', cwd,
+          '-x', String(cols),
+          '-y', String(rows),
+        ]);
+      }
+
+      await ensureSessionOptions(tmuxName);
+
+      return runner.spawnPty('tmux', ['attach-session', '-t', tmuxName], { cols, rows });
+    },
+
+    /** Kill the PTY wrapper and the host's tmux session (best-effort, like local). */
+    async killAsync(entry, sessionId) {
+      if (entry?.pty) {
+        try {
+          entry.pty.kill();
+        } catch {
+          // PTY wrapper may already be gone
+        }
+      }
+      const tmuxName = sanitizeTmuxName(sessionId);
+      try {
+        await tmux(['kill-session', '-t', tmuxName]);
+      } catch {
+        // Session may already be gone (or host unreachable) — best-effort
+      }
+    },
+
+    /**
+     * True/false only on definitive tmux answers; THROWS on transport failure
+     * so callers never treat "can't reach the host" as "session gone".
+     */
+    async isSessionRecoverableAsync(sessionId) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+      try {
+        await tmux(['has-session', '-t', tmuxName], { timeout: STATUS_POLL_TIMEOUT_MS });
+        return true;
+      } catch (err) {
+        if (isTransportFailure(err)) throw err;
+        return false;
+      }
+    },
+
+    /** Runner-routed equivalent of the local snapshot capture — same shape, same clamping. */
+    async captureSessionSnapshotAsync(sessionId, windowLines = TERMINAL_SNAPSHOT_WINDOW_LINES) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+
+      try {
+        const normalizedWindowLines = Math.max(1, parseInt(windowLines, 10) || TERMINAL_SNAPSHOT_WINDOW_LINES);
+        const { stdout: stateRaw } = await tmux(
+          ['display-message', '-p', '-t', tmuxName, TMUX_PANE_STATE_FORMAT],
+          { timeout: STATUS_POLL_TIMEOUT_MS }
+        );
+        const terminalState = parseTmuxPaneStateOutput(stateRaw);
+        const captureArgs = ['capture-pane', '-p'];
+        let primaryPaneWidth = 0;
+
+        if (terminalState.screenMode === 'mode') {
+          captureArgs.push('-M', '-e', '-N');
+        } else if (terminalState.screenMode === 'alternate') {
+          captureArgs.push('-a', '-e', '-N');
+        } else {
+          const paneHeight = await getPaneNumberValue(tmuxName, '#{pane_height}');
+          const visiblePaneLines = Math.max(1, paneHeight || 0);
+          const historyLines = Math.max(normalizedWindowLines - visiblePaneLines, 0);
+          const startLine = historyLines > 0 ? `-${historyLines}` : '0';
+          primaryPaneWidth = await getPaneNumberValue(tmuxName, '#{pane_width}');
+          captureArgs.push('-S', startLine);
+        }
+
+        captureArgs.push('-t', tmuxName);
+
+        const { stdout: rawOutput } = await tmux(captureArgs);
+
+        // Same width clamp as the local runtime: historical rows wider than
+        // the live pane would wrap on replay and stripe the right edge.
+        const output = primaryPaneWidth > 0
+          ? rawOutput.split('\n').map(row => truncateToTerminalCells(row, primaryPaneWidth)).join('\n')
+          : rawOutput;
+
+        return normalizeCapturedSnapshot(output, normalizedWindowLines, {
+          historyGuaranteed: true,
+          terminalState,
+        });
+      } catch {
+        return normalizeCapturedSnapshot('', windowLines, {
+          historyGuaranteed: false,
+          historyWarningReason: TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE,
+        });
+      }
+    },
+
+    /** Best-effort durable window resize before snapshot capture, like local. */
+    async resizeSessionAsync(sessionId, cols, rows) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+      try {
+        await tmux(['resize-window', '-t', `${tmuxName}:0`, '-x', String(cols), '-y', String(rows)]);
+      } catch {
+        // Keep reconnect recovery best-effort if tmux rejects the resize.
+      }
+    },
+
+    async getSessionCwdAsync(entry, sessionId) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+      try {
+        const { stdout } = await tmux(
+          ['display-message', '-p', '-t', tmuxName, '#{pane_current_path}'],
+          { timeout: STATUS_POLL_TIMEOUT_MS }
+        );
+        return stdout.trim() || entry?.cwd || null;
+      } catch {
+        return entry?.cwd || null;
+      }
+    },
+
+    async getSessionExecutionStateAsync(sessionId) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+      try {
+        const [{ stdout: rawOutput }, { stdout: snapshotText }] = await Promise.all([
+          tmux(
+            ['display-message', '-p', '-t', tmuxName, '#{pane_current_command}\t#{pane_dead}'],
+            { timeout: STATUS_POLL_TIMEOUT_MS }
+          ),
+          tmux(
+            ['capture-pane', '-p', '-S', '-40', '-t', tmuxName],
+            { timeout: STATUS_POLL_TIMEOUT_MS }
+          ),
+        ]);
+        const raw = rawOutput.replace(/\r/g, '').replace(/\n$/, '');
+        const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
+
+        return classifyTerminalExecution({ paneCurrentCommand, paneDead, snapshotText });
+      } catch {
+        return {
+          executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+          foregroundCommand: null,
+          executionReason: 'tmux_lookup_failed',
+          executionConfidence: 'low',
+        };
+      }
+    },
+
+    /**
+     * List the host's durable tmux sessions. Definitive answers ("no server
+     * running") are an empty list; a transport failure is [] by default (status
+     * sweeps skip the host) but rethrows in strict mode so allocation-style
+     * callers can fail fast instead of acting on evidence they don't have.
+     */
+    async listSessionIdsAsync({ strict = false } = {}) {
+      try {
+        const { stdout } = await tmux(
+          ['list-sessions', '-F', '#S'],
+          { timeout: STATUS_POLL_TIMEOUT_MS }
+        );
+        return stdout
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean);
+      } catch (err) {
+        if (strict && isTransportFailure(err)) throw err;
         return [];
       }
     },

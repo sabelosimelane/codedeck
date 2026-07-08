@@ -205,4 +205,43 @@ describe('listTerminalSessions', () => {
       }),
     ]));
   });
+
+  it('includes per-session host reachability fields for sidebar truthful host states', () => {
+    const sessions = new Map([
+      ['Remote-1', {
+        host: 'devbox',
+        alive: true,
+        wsAttached: true,
+        cwd: '/srv/app',
+        runtimeType: 'tmux',
+        startedAt: '2026-07-08T10:00:00.000Z',
+        lastOutputAt: '2026-07-08T10:00:01.000Z',
+        lastSeq: 0,
+      }],
+    ]);
+    const runtime = {
+      type: 'tmux',
+      getSessionCwd: vi.fn(),
+      getSessionExecutionState: vi.fn(),
+      listSessionIds: vi.fn(() => []),
+    };
+
+    const result = listTerminalSessions({
+      sessions,
+      runtime,
+      projects: [{ name: 'Remote', path: '/srv/app', host: 'devbox' }],
+      computeHealth: computeSessionHealth,
+      computeStallReason,
+      sanitizePreviewLine,
+      getReachability: () => ({ reachability: 'unreachable', lastError: 'connect timeout', unreachableSince: 1720287000000 }),
+    });
+
+    expect(result[0]).toMatchObject({
+      host: 'devbox',
+      reachability: 'unreachable',
+      lastError: 'connect timeout',
+      unreachableSince: 1720287000000,
+    });
+  });
+
 });
