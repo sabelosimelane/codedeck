@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch-path=./index.js --watch-path=./db.js --watch-path=./ws-handler.js --watch-path=./terminal-runtime.js index.js"
+    "dev": "node --watch index.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.8.0",

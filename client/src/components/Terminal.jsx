@@ -79,7 +79,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     const res = await fetch('/api/upload', { method: 'POST', body: formData });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || 'Failed to upload file');
+      throw new Error(body.detail || body.error || 'Failed to upload file');
     }
     const data = await res.json();
     return data.path;
