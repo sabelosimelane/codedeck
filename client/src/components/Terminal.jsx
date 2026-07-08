@@ -30,7 +30,7 @@ const SESSION_DELETED_CLOSE_REASON = 'session_deleted';
 const DEFAULT_FAILURE_MESSAGE = 'Unable to connect to server. Check that the backend is running.';
 const DEFAULT_HISTORY_WARNING_MESSAGE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
 
-const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isActivePane = true, runtimeType = 'pty' }, ref) {
+const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', isVisible, isActivePane = true, runtimeType = 'pty' }, ref) {
   const containerRef = useRef(null);
   const wsRef = useRef(null);
   const fitRef = useRef(null);
@@ -99,8 +99,10 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, isVisible, isAct
     const paths = [];
     for (const file of files) {
       try {
-        const path = await uploadFile(file, project.host);
-        paths.push(`"${path}"`);
+        const path = await uploadFile(file, host);
+        if (path) {
+          paths.push(`"${path}"`);
+        }
       } catch (err) {
         showToast({ type: 'error', message: err.message });
         return;

@@ -1278,6 +1278,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                         ref={(instance) => registerTerminalRef(pane.id, instance)}
                         sessionId={pane.sessionId}
                         cwd={project.path}
+                        host={project.host}
                         isVisible={isActive}
                         isActivePane={isActive && paneIsActive}
                         runtimeType={sessionLookup.get(pane.sessionId)?.runtimeType ?? 'pty'}
