@@ -51,8 +51,8 @@ const remoteSpec = argv[argv.length - 1];
 const localSource = argv[argv.length - 2];
 const colon = remoteSpec.indexOf(':');
 const quotedPath = remoteSpec.slice(colon + 1);
-// Unquote the (possibly shell-quoted) remote path via the shell.
-const dest = execFileSync('/bin/sh', ['-c', 'printf %s ' + quotedPath]).toString();
+// Modern SFTP scp receives the raw path directly.
+const dest = quotedPath;
 fs.copyFileSync(localSource, dest);
 process.exit(0);
 `;
@@ -272,9 +272,9 @@ describe('ssh runner', () => {
     const dashDash = argv.indexOf('--');
     expect(dashDash).toBeGreaterThanOrEqual(0);
     expect(argv[dashDash + 1]).toBe(src);
-    // The destination is target:quoted-remote-path so the far-side shell can't
-    // re-interpret it and it can't be read as a flag.
-    expect(argv[argv.length - 1]).toBe(`devbox:${shellQuote(dest)}`);
+    // The destination is target:remote-path without quotes to support SFTP
+    // protocol used by OpenSSH 9.0+ scp.
+    expect(argv[argv.length - 1]).toBe(`devbox:${dest}`);
 
     expect(fs.readFileSync(dest, 'utf8')).toBe('scp-payload');
   });
@@ -288,9 +288,9 @@ describe('ssh runner', () => {
 
     const { stderr } = await runner.copyTo(src, dest);
     const argv = parseArgvMarker(stderr, 'SCP_ARGV:');
-    // The quoting contract is pinned on the argv itself, not inferred from a
-    // downstream copy happening to succeed.
-    expect(argv[argv.length - 1]).toBe(`devbox:${shellQuote(dest)}`);
+    // The quoting contract is pinned on the argv itself. Modern scp uses SFTP
+    // which does not pass the path through a remote shell, so it must not be quoted.
+    expect(argv[argv.length - 1]).toBe(`devbox:${dest}`);
     expect(fs.readFileSync(dest, 'utf8')).toBe('spaced-payload');
   });
 

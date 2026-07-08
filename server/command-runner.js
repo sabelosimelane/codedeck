@@ -214,12 +214,10 @@ export function createSshRunner(host, deps = {}) {
 
     copyTo(localPath, remotePath, opts = {}) {
       ensureSocketDir();
-      // The remote path is expanded by a shell on the far side of scp, so it
-      // must be quoted just like a remote argument.
       const argv = [
         ...baseFlags(opts.connectTimeout),
         '--', localPath,
-        `${sshTarget}:${shellQuote(remotePath)}`,
+        `${sshTarget}:${remotePath}`,
       ];
       return runExecFile('scp', argv, {
         timeout: opts.timeout ?? DEFAULT_RUN_TIMEOUT_MS,
