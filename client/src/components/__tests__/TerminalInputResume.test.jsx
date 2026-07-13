@@ -158,23 +158,120 @@ describe('Terminal input resume after refocus', () => {
     );
   });
 
-  it('buffers input when WS is not open and flushes on connect', () => {
+  it('does not leave input blocked when a mount-time resume is lost before remote attach completes', () => {
+    // Remote attach awaits SSH before registering message handlers. The
+    // mount-time isVisible recovery still fires at 50ms. A resume sent in that
+    // window is dropped server-side, and if resumeInFlight stays true, typing
+    // is silently gated until remount — the "can't type until navigate away"
+    // bug on first open of a remote terminal.
+    render(<Terminal sessionId="remote-1" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.send.mockClear();
+
+    // Mount-time visibility recovery fires before the remote handshake.
+    // Resume must not be sent yet — there is no handler on the server.
+    vi.advanceTimersByTime(50);
+    const resumeSends = mocks.ws.send.mock.calls.filter(([arg]) =>
+      typeof arg === 'string' && arg.includes('"type":"resume"')
+    );
+    expect(resumeSends).toHaveLength(0);
+    mocks.ws.send.mockClear();
+
+    // Attach finally completes: brand-new remote session, no snapshot, no replay.
+    mocks.ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'session',
+        sessionId: 'remote-1',
+        existing: false,
+        snapshotWindowLines: 10000,
+      }),
+    });
+
+    const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
+    onDataCb?.('ls\r');
+
+    expect(mocks.ws.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'input', data: 'ls\r' })
+    );
+  });
+
+  it('clears a stale resume gate when the session handshake arrives without a replay', () => {
+    // Defense in depth: if resumeInFlight was set somehow before the handshake
+    // (e.g. older client path), the session message must clear it so a fresh
+    // remote attach without snapshot/replay does not leave typing blocked.
+    render(<Terminal sessionId="remote-2" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+
+    // Force the stuck-gate condition the remote race used to leave behind.
+    const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
+    // Trigger requestResume via the public recovery path after faking readiness
+    // by sending a session, then re-arming the gate as if a later resume was lost.
+    mocks.ws.onmessage?.({
+      data: JSON.stringify({ type: 'session', sessionId: 'remote-2', existing: true }),
+    });
+    // existing:true without snapshotWindowLines requests resume; drop the replay
+    // so the gate stays true — then a second session (or the same late handshake
+    // path) must clear it. Simulate lost-replay by never sending replay, then
+    // deliver a fresh new-session handshake that should unblock input.
+    mocks.ws.send.mockClear();
+    onDataCb?.('blocked');
+    // Still gated by the in-flight resume from the existing handshake.
+    expect(
+      mocks.ws.send.mock.calls.filter(([arg]) => typeof arg === 'string' && arg.includes('"type":"input"'))
+    ).toHaveLength(0);
+
+    mocks.ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'session',
+        sessionId: 'remote-2',
+        existing: false,
+        snapshotWindowLines: 10000,
+      }),
+    });
+    mocks.ws.send.mockClear();
+
+    onDataCb?.('ls\r');
+    expect(mocks.ws.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'input', data: 'ls\r' })
+    );
+  });
+
+  it('buffers input until the session handshake, then flushes in order', () => {
     render(<Terminal sessionId="s2" cwd="/tmp" isVisible={true} />);
     vi.advanceTimersByTime(16);
 
     // WS still connecting (readyState = 0)
     const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
     onDataCb?.('buffered 1');
-    onDataCb?.('buffered 2');
 
     expect(mocks.ws.send).not.toHaveBeenCalled();
 
-    // WS opens -> onopen flushes buffer
+    // Socket open is NOT enough: a remote attach registers its server-side
+    // message handlers only after SSH round-trips, so input flushed at onopen
+    // would be silently dropped. It must stay buffered.
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
+    onDataCb?.('buffered 2');
+    expect(
+      mocks.ws.send.mock.calls.filter(([arg]) => arg.includes('"type":"input"'))
+    ).toHaveLength(0);
 
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'buffered 1' }));
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'buffered 2' }));
+    // The session handshake proves handlers are registered — flush now.
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's2', existing: false }) });
+
+    const inputSends = mocks.ws.send.mock.calls
+      .map(([arg]) => arg)
+      .filter(arg => arg.includes('"type":"input"'));
+    expect(inputSends).toEqual([
+      JSON.stringify({ type: 'input', data: 'buffered 1' }),
+      JSON.stringify({ type: 'input', data: 'buffered 2' }),
+    ]);
   });
 
   it('focuses terminal on visibility change to visible', () => {
@@ -208,6 +305,7 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's-focus', existing: false }) });
     mocks.ws.send.mockClear();
     mocks.term.focus.mockClear();
 
@@ -227,6 +325,7 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's-pageshow', existing: false }) });
     mocks.ws.send.mockClear();
     mocks.term.focus.mockClear();
 

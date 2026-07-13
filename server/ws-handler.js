@@ -377,6 +377,7 @@ function createSessionEntry({ pty, ws, cwd, runtimeType, extra = {} }) {
     lastSubstantialOutputAt: now,
     lastOutputLine: '',
     alive: true,
+    clientDetached: false,
     // Runtime type (Phase 5 — durable sessions)
     runtimeType,
     snapshotWindowLines: runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
@@ -455,6 +456,27 @@ function registerPtyDataHandler(ptyProcess, sessionId, sessions) {
   });
 }
 
+const intentionallyDetachedPtys = new WeakSet();
+
+/** Release a tmux client attachment while leaving its durable session alive. */
+function detachTmuxClient(entry) {
+  if (entry?.runtimeType !== 'tmux' || !entry.alive || !entry.pty) return;
+  const pty = entry.pty;
+  intentionallyDetachedPtys.add(pty);
+  entry.alive = false;
+  entry.clientDetached = true;
+  entry.remoteDetached = false;
+  try {
+    pty.kill();
+  } catch (err) {
+    // The attachment may already have exited; reconnect still re-resolves the
+    // durable tmux session from the runtime. Surface the failure anyway — an
+    // unkilled attachment is a leaked SSH process.
+    pushTimelineEvent(entry, 'detach_kill_failed', err.message);
+    console.warn(`[terminal] detach_kill_failed error=${err.message}`);
+  }
+}
+
 /**
  * Compute a health label for a session based on its diagnostic state.
  * Returns one of: 'healthy', 'detached', 'stalled', 'dead'
@@ -463,7 +485,7 @@ function registerPtyDataHandler(ptyProcess, sessionId, sessions) {
 export function computeSessionHealth(entry) {
   // An SSH-dropped remote session is suspended — its tmux session is presumed
   // alive on the host, so reporting 'dead' would be a lie (Spec §8.2).
-  if (!entry.alive) return entry.remoteDetached ? 'detached' : 'dead';
+  if (!entry.alive) return entry.remoteDetached || entry.clientDetached ? 'detached' : 'dead';
   if (!entry.wsAttached) return 'detached';
 
   // Stall detection: PTY has recent output but client hasn't acknowledged
@@ -517,6 +539,11 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
     const s = sessions.get(sessionId);
     if (!s) return;
 
+    if (intentionallyDetachedPtys.delete(ptyProcess)) {
+      pushTimelineEvent(s, 'pty_detached', 'browser socket closed; durable tmux session preserved');
+      return;
+    }
+
     // In tmux mode, check if the underlying session survived
     if (reattachCount < MAX_TMUX_REATTACH && runtime.isSessionRecoverable(sessionId)) {
       pushTimelineEvent(s, 'tmux_client_exited', `tmux session still alive — re-attaching (attempt ${reattachCount + 1}/${MAX_TMUX_REATTACH})`);
@@ -524,6 +551,8 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
       try {
         const newPty = runtime.spawn({ cwd: s.cwd, cols, rows, sessionId });
         s.pty = newPty;
+        s.alive = true;
+        s.clientDetached = false;
         registerPtyDataHandler(newPty, sessionId, sessions);
         registerPtyExitHandler(newPty, sessionId, sessions, runtime, cols, rows, reattachCount + 1);
         pushTimelineEvent(s, 'tmux_reattach', 'new pty wrapper attached');
@@ -542,6 +571,7 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
     }
 
     s.alive = false;
+    s.clientDetached = false;
     s.wsAttached = false;
     pushTimelineEvent(s, 'pty_exited');
     console.log(`[terminal] pty_exited session=${sessionId}`);
@@ -732,6 +762,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
         registerPtyDataHandler(newPty, sessionId, sessions);
         registerPtyExitHandler(newPty, sessionId, sessions, runtime, cols, rows);
         entry.alive = true;
+        entry.clientDetached = false;
         pushTimelineEvent(entry, 'tmux_reattach', 'recovered on reconnect');
         console.log(`[terminal] tmux_reattach session=${sessionId} type=reconnect_recovery`);
       } catch (err) {
@@ -887,9 +918,9 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
   ws.on('close', () => {
     if (entry.ws !== ws) return;
 
-    // Keep PTY alive for reconnection — only kill on explicit DELETE
     entry.wsAttached = false;
     entry.lastDetachAt = new Date().toISOString();
+    detachTmuxClient(entry);
     pushTimelineEvent(entry, 'detach');
     console.log(`[terminal] detach session=${sessionId}`);
   });
@@ -943,8 +974,14 @@ function registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRunti
     const s = sessions.get(sessionId);
     if (!s) return;
 
+    if (intentionallyDetachedPtys.delete(ptyProcess)) {
+      pushTimelineEvent(s, 'pty_detached', 'browser socket closed; durable remote tmux session preserved');
+      return;
+    }
+
     const markRemoteDetached = (err) => {
       s.alive = false;
+      s.clientDetached = false;
       s.wsAttached = s.wsAttached ?? false;
       s.remoteDetached = true;
       pushTimelineEvent(s, 'remote_ssh_drop', err?.message || 'ssh connection dropped');
@@ -954,20 +991,41 @@ function registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRunti
 
     const markDead = () => {
       s.alive = false;
+      s.clientDetached = false;
       s.wsAttached = false;
       pushTimelineEvent(s, 'pty_exited');
       console.log(`[terminal] pty_exited session=${sessionId} host=${s.host}`);
       if (s.ws) s.ws.close();
     };
 
+    // The recoverability probe and respawn are async: a browser close (or a
+    // reconnect that swapped the PTY) can land mid-flight, and respawning
+    // after it would attach an SSH client nobody is connected to — exactly
+    // the orphan this handler exists to prevent.
+    const detachedDuringRecovery = () => s.clientDetached || s.pty !== ptyProcess;
+
     hostRuntime.isSessionRecoverableAsync(sessionId)
       .then(async (recoverable) => {
+        if (detachedDuringRecovery()) {
+          pushTimelineEvent(s, 'pty_detached', 'browser detached during exit probe; durable remote tmux session preserved');
+          return;
+        }
         if (recoverable && reattachCount < MAX_TMUX_REATTACH) {
           pushTimelineEvent(s, 'tmux_client_exited', `remote tmux session still alive — re-attaching (attempt ${reattachCount + 1}/${MAX_TMUX_REATTACH})`);
           try {
             const newPty = await hostRuntime.spawnAsync({ cwd: s.cwd, cols, rows, sessionId });
+            if (detachedDuringRecovery()) {
+              pushTimelineEvent(s, 'pty_detached', 'browser detached during re-attach; released fresh attachment');
+              try {
+                newPty.kill();
+              } catch (killErr) {
+                console.warn(`[terminal] reattach_release_failed session=${sessionId} error=${killErr.message}`);
+              }
+              return;
+            }
             s.pty = newPty;
             s.alive = true;
+            s.clientDetached = false;
             registerPtyDataHandler(newPty, sessionId, sessions);
             registerRemotePtyExitHandler(newPty, sessionId, sessions, hostRuntime, cols, rows, reattachCount + 1);
             pushTimelineEvent(s, 'tmux_reattach', 'new remote pty wrapper attached');
@@ -1026,6 +1084,7 @@ export async function reseedRemoteDetachedSessions({
     entry.pty = ptyProcess;
     entry.hostRuntime = hostRuntime;
     entry.alive = true;
+    entry.clientDetached = false;
     entry.remoteDetached = false;
     entry.wsAttached = true;
     entry.lastAttachAt = new Date().toISOString();
@@ -1088,7 +1147,7 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
   }
 
   const recoverableWithoutEntry = !entry && recoverable;
-  const recoverableDeadEntry = !!entry && !entry.alive && recoverable;
+  let recoverableDeadEntry = !!entry && !entry.alive && recoverable;
   const isExisting = !!entry || recoverableWithoutEntry;
   let snapshotMessage = null;
   let historyWarningEvent = null;
@@ -1179,6 +1238,27 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
       snapshotMessage = snapshotHydration.snapshotMessage;
       historyWarningEvent = snapshotHydration.historyWarningEvent;
       snapshotHistoryState = snapshotHydration.historyState;
+
+      // The prior browser can close while the SSH snapshot is in flight. Its
+      // close handler deliberately releases the attachment PTY, so re-check
+      // after hydration instead of binding this socket to the now-dead PTY.
+      if (!entry.alive) {
+        recoverableDeadEntry = await hostRuntime.isSessionRecoverableAsync(sessionId);
+        if (recoverableDeadEntry) {
+          attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
+        } else {
+          // The durable session itself is gone. Completing the attach would
+          // hand the browser a normal handshake wired to a dead PTY — a
+          // silently frozen pane. Mark the entry dead and fail the attach so
+          // the caller sends a spawn_error and closes the socket.
+          entry.clientDetached = false;
+          entry.remoteDetached = false;
+          entry.wsAttached = false;
+          entry.attachState = null;
+          pushTimelineEvent(entry, 'pty_exited', 'durable session ended during attach');
+          throw new Error(`session "${sessionId}" ended while attaching`);
+        }
+      }
     } else if (recoverableDeadEntry) {
       attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
     }
@@ -1209,6 +1289,7 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
         registerPtyDataHandler(newPty, sessionId, sessions);
         registerRemotePtyExitHandler(newPty, sessionId, sessions, hostRuntime, cols, rows);
         entry.alive = true;
+        entry.clientDetached = false;
         entry.remoteDetached = false;
         pushTimelineEvent(entry, 'tmux_reattach', 'recovered on reconnect');
         console.log(`[terminal] tmux_reattach session=${sessionId} host=${host} type=reconnect_recovery`);
@@ -1247,6 +1328,7 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
   if (ws.readyState !== 1 && entry.ws === ws) {
     entry.wsAttached = false;
     entry.lastDetachAt = new Date().toISOString();
+    detachTmuxClient(entry);
     pushTimelineEvent(entry, 'detach', 'socket closed during attach');
   }
 }

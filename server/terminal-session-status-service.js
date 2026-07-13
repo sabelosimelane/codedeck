@@ -44,7 +44,12 @@ export function listTerminalSessions({
       : isRemote
         ? entry.cwd
         : runtime.getSessionCwd?.(entry, sessionId) || entry.cwd;
-    const executionState = entry.alive
+    // A client-detached entry released only its tmux attachment — the durable
+    // session is still inspectable by name (exactly like the detached-id sweep
+    // below), so keep polling real execution state instead of freezing the
+    // cockpit on a static 'unknown' while a background command runs.
+    const durableSessionInspectable = entry.alive || entry.clientDetached === true;
+    const executionState = durableSessionInspectable
       ? statusCache?.getSessionExecutionState
         ? statusCache.getSessionExecutionState(entry, sessionId)
         : (isRemote ? undefined : runtime.getSessionExecutionState?.(sessionId)) ?? {
@@ -79,7 +84,10 @@ export function listTerminalSessions({
       lastOutputAt: entry.lastOutputAt,
       lastSubstantialOutputAt: entry.lastSubstantialOutputAt ?? entry.lastOutputAt,
       lastOutputLine: sanitizePreviewLine(entry.lastOutputLine || ''),
-      alive: entry.alive,
+      // Client-detached durable sessions are alive — only the attachment PTY
+      // was released. Reporting alive:false would render them dead in the
+      // cockpit and drop them from cross-browser layout hydration.
+      alive: durableSessionInspectable,
       ...executionState,
       runtimeType: entry.runtimeType ?? runtime.type ?? 'pty',
       snapshotWindowLines: entry.snapshotWindowLines ?? (entry.runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null),

@@ -61,6 +61,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   const lastSeenSeqRef = useRef(0);
   const reconnectCountRef = useRef(0);
   const resumeInFlightRef = useRef(false);
+  // True once the server has sent a session handshake on the current socket.
+  // Remote attach registers message handlers only after SSH awaits, so a
+  // mount-time resume sent before that handshake is silently dropped while
+  // resumeInFlight stays true and blocks all typing until remount.
+  const sessionReadyRef = useRef(false);
   const pendingOutputRef = useRef([]);
   const pendingSnapshotRef = useRef(null);
   const inputBufferRef = useRef([]);
@@ -159,6 +164,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
 
   function requestResume(ws) {
     if (!ws || ws.readyState !== WebSocket.OPEN || resumeInFlightRef.current) return;
+    // Never resume before the session handshake — remote handlers are not
+    // registered yet, and a lost resume leaves input permanently gated.
+    if (!sessionReadyRef.current) return;
     resumeInFlightRef.current = true;
     ws.send(JSON.stringify({
       type: 'resume',
@@ -551,6 +559,19 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       return !shouldBlockXtermWheelViewportFallback(activeBuffer);
     });
 
+    // Input is deliverable only after the server's 'session' handshake: for
+    // remote sessions the message handlers are registered only after SSH
+    // round-trips, so anything sent on a merely-open socket is silently
+    // dropped. Buffer until the handshake and flush there.
+    function sendOrBufferInput(data) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN && sessionReadyRef.current) {
+        ws.send(JSON.stringify({ type: 'input', data }));
+      } else {
+        inputBufferRef.current.push(data);
+      }
+    }
+
     // Prevent browser from stealing terminal shortcuts (Ctrl+R, Ctrl+W, etc.)
     // We intercept these keys, block both browser and xterm default handling,
     // and send the control character directly to the PTY via WebSocket.
@@ -563,12 +584,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
           event.preventDefault();
           // Send the control character directly (Ctrl+A=0x01, ..., Ctrl+Z=0x1A)
           const ctrlChar = String.fromCharCode(key.charCodeAt(0) - 96);
-          const ws = wsRef.current;
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'input', data: ctrlChar }));
-          } else {
-            inputBufferRef.current.push(ctrlChar);
-          }
+          sendOrBufferInput(ctrlChar);
           return false; // prevent xterm from also processing it
         }
       }
@@ -590,18 +606,19 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     term.onData((data) => {
       if (resumeInFlightRef.current) return;
       if (isTerminalProtocolReply(data)) return;
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', data }));
-      } else {
-        inputBufferRef.current.push(data);
-      }
+      sendOrBufferInput(data);
     });
 
     let wasConnectedBefore = false;
 
     function connect() {
       if (!mountedRef.current) return;
+
+      // Each new socket starts unready until the server handshake arrives.
+      // Remote attach registers handlers only after SSH, so a stale ready flag
+      // would let resume fire into a void and gate input again.
+      sessionReadyRef.current = false;
+      resumeInFlightRef.current = false;
 
       const cols = term.cols;
       const rows = term.rows;
@@ -627,13 +644,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
           reconnectCountRef.current += 1;
           showToast({ type: 'success', message: 'Reconnected' });
         }
-        // Flush any input that was typed during reconnection
-        if (inputBufferRef.current.length > 0) {
-          for (const data of inputBufferRef.current) {
-            ws.send(JSON.stringify({ type: 'input', data }));
-          }
-          inputBufferRef.current = [];
-        }
+        // Input typed during reconnection stays buffered until the 'session'
+        // handshake — an open socket does not yet have server handlers for
+        // remote sessions, so flushing here would silently drop keystrokes.
         // Send periodic heartbeats with client diagnostics for visibility-aware recovery
         if (heartbeatRef.current) clearInterval(heartbeatRef.current);
         heartbeatRef.current = setInterval(() => {
@@ -659,6 +672,19 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
           const msg = JSON.parse(event.data);
           lastMessageAtRef.current = new Date().toISOString();
           if (msg.type === 'session') {
+            // Handshake proves the server is accepting messages. Clear any
+            // stale resume gate from a pre-handshake resume that was lost
+            // during remote SSH attach, then request replay only when needed.
+            sessionReadyRef.current = true;
+            resumeInFlightRef.current = false;
+            // Flush input typed while disconnected or during the attach
+            // window — deliverable only now that handlers are registered.
+            if (inputBufferRef.current.length > 0) {
+              for (const data of inputBufferRef.current) {
+                ws.send(JSON.stringify({ type: 'input', data }));
+              }
+              inputBufferRef.current = [];
+            }
             if (msg.historyGuaranteed === true) {
               setHistoryWarning(null);
             }
@@ -781,6 +807,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       retryTimerRef.current = null;
       retryRef.current = 0;
       resumeInFlightRef.current = false;
+      sessionReadyRef.current = false;
       setHostUnreachableInfo(null);
       setFailureMessage(DEFAULT_FAILURE_MESSAGE);
       setConnectionStatus('connecting');

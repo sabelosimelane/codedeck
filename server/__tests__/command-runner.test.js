@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -9,6 +9,7 @@ import {
   createSshRunner,
   createCommandRunner,
   isTransportFailure,
+  isSshCapacityError,
   DEFAULT_RUN_TIMEOUT_MS,
   SSH_TARGET_REGEX,
 } from '../command-runner.js';
@@ -253,6 +254,80 @@ describe('ssh runner', () => {
     expect(output).toContain('pty-remote');
   });
 
+  it('keeps interactive PTYs off the shared ControlMaster connection', async () => {
+    const runner = makeRunner();
+    const pty = runner.spawnPty('true', [], { cols: 80, rows: 24 });
+    const output = await readPtyOutput(pty);
+    const argv = parseArgvMarker(output, 'SSH_ARGV:');
+
+    expect(argv).toContain('ControlMaster=no');
+    expect(argv).toContain('ControlPath=none');
+    expect(argv).not.toContain('ControlMaster=auto');
+    expect(argv).not.toContain(`ControlPath=${path.join(socketDir, '%C')}`);
+    expect(argv).not.toContain('ControlPersist=600');
+  });
+
+  it('bounds one-shot SSH work at the command level', async () => {
+    let active = 0;
+    let peak = 0;
+    const pending = [];
+    const execFile = vi.fn((_file, _argv, _options, callback) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      pending.push(() => {
+        active -= 1;
+        callback(null, '', '');
+      });
+    });
+    const firstRunner = createSshRunner(
+      { name: 'devbox', sshTarget: 'devbox' },
+      { socketDir, execFile, maxConcurrentCommands: 2 },
+    );
+    const secondRunner = createSshRunner(
+      { name: 'devbox', sshTarget: 'devbox' },
+      { socketDir, execFile, maxConcurrentCommands: 2 },
+    );
+
+    const runs = Array.from(
+      { length: 5 },
+      (_, index) => (index % 2 === 0 ? firstRunner : secondRunner).run('true'),
+    );
+    await Promise.resolve();
+    expect(execFile).toHaveBeenCalledTimes(2);
+    expect(peak).toBe(2);
+
+    for (let completed = 0; completed < runs.length; completed += 1) {
+      while (pending.length === 0) await Promise.resolve();
+      pending.shift()();
+      await Promise.resolve();
+    }
+    await Promise.all(runs);
+    expect(execFile).toHaveBeenCalledTimes(5);
+    expect(peak).toBe(2);
+  });
+
+  it('propagates a full shared master error without retrying on a side connection', async () => {
+    const capacityError = Object.assign(new Error('ssh capacity exhausted'), {
+      code: 255,
+      stderr: 'mux_client_request_session: session request failed: Session open refused by peer',
+    });
+    const execFile = vi.fn((_file, _argv, _options, callback) => {
+      callback(capacityError);
+    });
+    const runner = createSshRunner(
+      { name: 'fallbackbox', sshTarget: 'fallbackbox' },
+      { socketDir, execFile },
+    );
+
+    // Capacity pressure must surface to the caller (host-reachability keeps
+    // its prior state for it) — never silently masked by a dedicated retry.
+    await expect(runner.run('true')).rejects.toMatchObject({
+      stderr: expect.stringContaining('Session open refused by peer'),
+    });
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(execFile.mock.calls[0][1]).toContain('ControlMaster=auto');
+  });
+
   it('composes scp argv with batch flags, -- before the source, and a quoted target:path, and lands the bytes', async () => {
     const runner = makeRunner();
     const src = tempFile('scp-payload');
@@ -351,6 +426,17 @@ describe('createCommandRunner', () => {
     expect(isTransportFailure({ code: 0 })).toBe(false);
     expect(isTransportFailure(null)).toBe(false);
     expect(isTransportFailure(undefined)).toBe(false);
+  });
+
+  it('recognizes ControlMaster session refusal as SSH capacity pressure', () => {
+    const capacity = Object.assign(new Error('ssh failed'), {
+      code: 255,
+      stderr: 'mux_client_request_session: session request failed: Session open refused by peer\n',
+    });
+
+    expect(isSshCapacityError(capacity)).toBe(true);
+    expect(isTransportFailure(capacity)).toBe(true);
+    expect(isSshCapacityError({ code: 255, stderr: 'Connection timed out' })).toBe(false);
   });
 
   it('exports the §3 sshTarget validation regex as a single source of truth', () => {

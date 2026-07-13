@@ -13,8 +13,9 @@
  * - Every remote argument is shell-quoted before it crosses the single remote
  *   shell layer, so spaces / quotes / metacharacters can never smuggle flags or
  *   break out of the command.
- * - The SSH surface is async-only. Every ssh/scp call carries BatchMode (fail
- *   fast, never hang on a prompt), ControlMaster multiplexing, and timeouts.
+ * - The SSH surface is async-only. One-shot ssh/scp calls share a bounded
+ *   ControlMaster; interactive PTYs use dedicated transports so they cannot
+ *   exhaust the master's logical-session allowance.
  */
 
 import os from 'os';
@@ -33,6 +34,7 @@ export const DEFAULT_RUN_TIMEOUT_MS = 10000;
 export const STATUS_POLL_TIMEOUT_MS = 5000;
 export const SSH_CONNECT_TIMEOUT_S = 5;
 export const SSH_CONTROL_PERSIST_S = 600;
+export const SSH_MAX_CONCURRENT_COMMANDS = 8;
 
 // Command output can be sizeable (e.g. a captured tmux window). Give run() a
 // generous buffer so large-but-bounded stdout does not error as ENOBUFS.
@@ -44,6 +46,46 @@ const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
 const DEFAULT_SOCKET_DIR = path.join(os.homedir(), '.codedeck', 'ssh');
 
 const LOCAL_HOST_NAME = 'local';
+
+// createSshRunner is intentionally cheap and is used by several services for
+// the same host. Keep concurrency at the transport boundary, not per runner,
+// so those independently-created callers cannot collectively overrun one
+// ControlMaster's logical-session allowance.
+const sshCommandLimiters = new Map();
+
+function getSshCommandLimiter(limiterKey, maxConcurrentCommands) {
+  // Keyed by host identity only — two runners for the same host must share one
+  // limiter regardless of the limit they were created with (first wins), or the
+  // shared ControlMaster's allowance could be collectively overrun.
+  let limiter = sshCommandLimiters.get(limiterKey);
+  if (limiter) return limiter;
+
+  const queue = [];
+  let active = 0;
+  limiter = (task) => new Promise((resolve, reject) => {
+    const run = () => {
+      active += 1;
+      Promise.resolve()
+        .then(task)
+        .then(resolve, reject)
+        .finally(() => {
+          active -= 1;
+          queue.shift()?.();
+          // Deleted/edited hosts must not leak limiters for the process
+          // lifetime — drop the entry once no work holds or awaits a slot.
+          if (active === 0 && queue.length === 0
+            && sshCommandLimiters.get(limiterKey) === limiter) {
+            sshCommandLimiters.delete(limiterKey);
+          }
+        });
+    };
+
+    if (active < maxConcurrentCommands) run();
+    else queue.push(run);
+  });
+  sshCommandLimiters.set(limiterKey, limiter);
+  return limiter;
+}
 
 /**
  * Validation regex for `sshTarget` (Spec §3). Exported as the single source of
@@ -88,6 +130,24 @@ export function isTransportFailure(err) {
   if (err.code === 255) return true;
   if (typeof err.code === 'string') return true;
   return false;
+}
+
+const SSH_CAPACITY_PATTERNS = [
+  /mux_client_request_session: session request failed: Session open refused by peer/i,
+];
+
+/**
+ * A reachable sshd can refuse another logical session when a multiplexed
+ * ControlMaster has exhausted its MaxSessions allowance. The remote state is
+ * still unknown (exit 255), but this is capacity pressure rather than evidence
+ * that the host itself is unreachable.
+ */
+export function isSshCapacityError(err) {
+  if (!err) return false;
+  const detail = [err.message, err.stderr, err.stdout]
+    .filter(value => typeof value === 'string')
+    .join('\n');
+  return SSH_CAPACITY_PATTERNS.some(pattern => pattern.test(detail));
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +215,16 @@ export function createSshRunner(host, deps = {}) {
   const runExecFile = deps.execFile ? promisify(deps.execFile) : execFileAsync;
   const spawnPtyFn = deps.spawn || ptySpawn;
   const mkdirSync = deps.mkdirSync || fs.mkdirSync;
+  const maxConcurrentCommands = Math.max(
+    1,
+    Number.parseInt(deps.maxConcurrentCommands, 10) || SSH_MAX_CONCURRENT_COMMANDS,
+  );
+
+  const controlPath = path.join(socketDir, '%C');
+  // Resolved per call, not captured: the limiter self-evicts when idle, and a
+  // captured reference would let an old runner race a freshly created limiter.
+  const limiterKey = `${controlPath}\0${sshTarget}`;
+  const runLimited = (task) => getSshCommandLimiter(limiterKey, maxConcurrentCommands)(task);
 
   let socketDirReady = false;
   function ensureSocketDir() {
@@ -168,8 +238,18 @@ export function createSshRunner(host, deps = {}) {
     return [
       '-o', 'BatchMode=yes',
       '-o', 'ControlMaster=auto',
-      '-o', `ControlPath=${path.join(socketDir, '%C')}`,
+      '-o', `ControlPath=${controlPath}`,
       '-o', `ControlPersist=${SSH_CONTROL_PERSIST_S}`,
+      '-o', `ConnectTimeout=${connectTimeout}`,
+    ];
+  }
+
+  /** Dedicated connection flags used by interactive PTYs (Spec §5). */
+  function directFlags(connectTimeout = SSH_CONNECT_TIMEOUT_S) {
+    return [
+      '-o', 'BatchMode=yes',
+      '-o', 'ControlMaster=no',
+      '-o', 'ControlPath=none',
       '-o', `ConnectTimeout=${connectTimeout}`,
     ];
   }
@@ -186,11 +266,11 @@ export function createSshRunner(host, deps = {}) {
         '--', sshTarget,
         composeRemoteCommand(cmd, args),
       ];
-      return runExecFile('ssh', argv, {
+      return runLimited(() => runExecFile('ssh', argv, {
         timeout: opts.timeout ?? DEFAULT_RUN_TIMEOUT_MS,
         maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
         encoding: 'utf8',
-      });
+      }));
     },
 
     // `cwd` is intentionally not accepted here: for the remote case the working
@@ -201,7 +281,7 @@ export function createSshRunner(host, deps = {}) {
       ensureSocketDir();
       const argv = [
         '-tt',
-        ...baseFlags(),
+        ...directFlags(),
         '--', sshTarget,
         composeRemoteCommand(cmd, args),
       ];
@@ -219,11 +299,11 @@ export function createSshRunner(host, deps = {}) {
         '--', localPath,
         `${sshTarget}:${remotePath}`,
       ];
-      return runExecFile('scp', argv, {
+      return runLimited(() => runExecFile('scp', argv, {
         timeout: opts.timeout ?? DEFAULT_RUN_TIMEOUT_MS,
         maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
         encoding: 'utf8',
-      });
+      }));
     },
   };
 }

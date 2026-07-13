@@ -45,6 +45,34 @@ describe('createTerminalStatusCache', () => {
     expect(runtime.getSessionExecutionStateAsync).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps polling real execution state for client-detached durable sessions', async () => {
+    const hostRuntime = {
+      getSessionStatusAsync: vi.fn(async () => ({
+        cwd: '/srv/mace',
+        executionState: {
+          executionStatus: 'running',
+          foregroundCommand: 'make',
+          executionReason: 'foreground_command',
+          executionConfidence: 'medium',
+        },
+      })),
+    };
+    // The attachment PTY was released (alive:false) but the durable tmux
+    // session is still inspectable by name — the cache must not freeze the
+    // entry on a static pending state.
+    const entry = { cwd: '/srv/mace', alive: false, clientDetached: true, host: 'devbox', hostRuntime };
+    const cache = createTerminalStatusCache({ runtime: {} });
+
+    cache.getSessionExecutionState(entry, 'Mace-118');
+    await cache.waitForIdle();
+
+    expect(hostRuntime.getSessionStatusAsync).toHaveBeenCalledWith(entry, 'Mace-118');
+    expect(cache.getSessionExecutionState(entry, 'Mace-118')).toMatchObject({
+      executionStatus: 'running',
+      foregroundCommand: 'make',
+    });
+  });
+
   it('dedupes in-flight per-session refreshes', async () => {
     const cwd = createDeferred();
     const execution = createDeferred();
@@ -78,6 +106,33 @@ describe('createTerminalStatusCache', () => {
       executionStatus: 'idle',
       executionReason: 'shell_prompt',
     });
+  });
+
+  it('prefers one aggregate runtime status probe over three independent lookups', async () => {
+    const aggregate = {
+      cwd: '/live/beta',
+      executionState: {
+        executionStatus: 'running',
+        foregroundCommand: 'node',
+        executionReason: 'agent_working',
+        executionConfidence: 'high',
+      },
+    };
+    const runtime = {
+      getSessionStatusAsync: vi.fn(async () => aggregate),
+      getSessionCwdAsync: vi.fn(async () => '/wrong'),
+      getSessionExecutionStateAsync: vi.fn(async () => STATUS_REFRESH_PENDING_EXECUTION_STATE),
+      listSessionIdsAsync: vi.fn(async () => []),
+    };
+    const cache = createTerminalStatusCache({ runtime });
+
+    cache.getSessionCwd({ cwd: '/fallback', alive: true }, 'Beta-39');
+    await cache.waitForIdle();
+
+    expect(runtime.getSessionStatusAsync).toHaveBeenCalledTimes(1);
+    expect(runtime.getSessionCwdAsync).not.toHaveBeenCalled();
+    expect(runtime.getSessionExecutionStateAsync).not.toHaveBeenCalled();
+    expect(cache.getSessionCwd({ cwd: '/fallback', alive: true }, 'Beta-39')).toBe('/live/beta');
   });
 
   it('bounds concurrent refresh work', async () => {

@@ -371,6 +371,8 @@ describe('handleWsConnection', () => {
 
       const entry = sessions.get('test-1');
       expect(entry.alive).toBe(false);
+      expect(entry.clientDetached).toBe(false);
+      expect(computeSessionHealth(entry)).toBe('dead');
     });
   });
 
@@ -666,6 +668,36 @@ describe('handleWsConnection', () => {
       expect(entry.lastDetachAt).toBeDefined();
       const detachEvent = entry.events.find(e => e.type === 'detach');
       expect(detachEvent).toBeDefined();
+    });
+
+    it('releases a tmux client PTY on browser close without auto-reattaching', () => {
+      const spawn = vi.fn(() => mockPty);
+      const runtime = createMockRuntime(spawn, { type: 'tmux', recoverable: true });
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+      ws._emit('close');
+
+      const entry = sessions.get('test-1');
+      expect(entry.alive).toBe(false);
+      expect(entry.clientDetached).toBe(true);
+      expect(computeSessionHealth(entry)).toBe('detached');
+      expect(mockPty.kill).toHaveBeenCalledTimes(1);
+      mockPty.emitExit({ exitCode: 0 });
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(runtime.kill).not.toHaveBeenCalled();
+    });
+
+    it('keeps a plain PTY process alive for the existing reconnect contract', () => {
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, spawnPty);
+      ws._emit('close');
+
+      expect(mockPty.kill).not.toHaveBeenCalled();
+      expect(sessions.get('test-1').alive).toBe(true);
     });
 
     it('ignores close events from a stale WebSocket after reconnect', () => {

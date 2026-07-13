@@ -293,6 +293,50 @@ describe('remote PTY exit classification', () => {
     expect(ws.close).toHaveBeenCalled();
   });
 
+  it('does not respawn an orphan attachment when the browser detaches during the exit probe', async () => {
+    const hostRuntime = createFakeHostRuntime();
+    const { ws, sessions, result } = attachRemote({ hostRuntime });
+    await result;
+
+    let releaseProbe;
+    hostRuntime.isSessionRecoverableAsync.mockImplementation(() => new Promise((resolve) => {
+      releaseProbe = () => resolve(true);
+    }));
+    hostRuntime.ptys[0].emitExit(); // transient SSH drop — recovery probe in flight
+    ws._emit('close');              // browser closes mid-probe
+    releaseProbe();
+    await flushAsync();
+
+    const entry = sessions.get('rp-1');
+    // No fresh ssh/tmux attachment may be spawned for a socketless session.
+    expect(hostRuntime.spawnAsync).toHaveBeenCalledTimes(1);
+    expect(entry.alive).toBe(false);
+    expect(entry.clientDetached).toBe(true);
+  });
+
+  it('releases the fresh attachment when the browser detaches while the re-attach spawn is in flight', async () => {
+    const hostRuntime = createFakeHostRuntime({ recoverable: true });
+    const { ws, sessions, result } = attachRemote({ hostRuntime });
+    await result;
+
+    const replacementPty = createMockPty();
+    let releaseSpawn;
+    hostRuntime.spawnAsync.mockImplementation(() => new Promise((resolve) => {
+      releaseSpawn = () => resolve(replacementPty);
+    }));
+    hostRuntime.ptys[0].emitExit();
+    await flushAsync(); // probe resolved true; replacement spawn now in flight
+    ws._emit('close');  // browser closes mid-spawn
+    releaseSpawn();
+    await flushAsync();
+
+    const entry = sessions.get('rp-1');
+    expect(replacementPty.kill).toHaveBeenCalledTimes(1);
+    expect(entry.pty).not.toBe(replacementPty);
+    expect(entry.alive).toBe(false);
+    expect(entry.clientDetached).toBe(true);
+  });
+
   it('treats a transport failure during re-attach as an SSH drop, not a death', async () => {
     const hostRuntime = createFakeHostRuntime();
     const { ws, sessions, result } = attachRemote({ hostRuntime });
@@ -428,6 +472,89 @@ describe('remote attach lifecycle', () => {
     const entry = sessions.get('rp-1');
     expect(entry.wsAttached).toBe(false);
     expect(entry.lastDetachAt).toBeTruthy();
+    expect(entry.pty.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the SSH attachment on browser close without reattaching or killing tmux', async () => {
+    const hostRuntime = createFakeHostRuntime({ recoverable: true });
+    const { ws, sessions, result } = attachRemote({ hostRuntime });
+    await result;
+    const entry = sessions.get('rp-1');
+    const attachedPty = entry.pty;
+    const recoverabilityCalls = hostRuntime.isSessionRecoverableAsync.mock.calls.length;
+
+    ws._emit('close');
+    expect(entry.wsAttached).toBe(false);
+    expect(entry.alive).toBe(false);
+    expect(entry.clientDetached).toBe(true);
+    expect(computeSessionHealth(entry)).toBe('detached');
+    expect(attachedPty.kill).toHaveBeenCalledTimes(1);
+
+    attachedPty.emitExit({ exitCode: 0 });
+    await flushAsync();
+    expect(hostRuntime.spawnAsync).toHaveBeenCalledTimes(1);
+    expect(hostRuntime.isSessionRecoverableAsync).toHaveBeenCalledTimes(recoverabilityCalls);
+    expect(hostRuntime.killAsync).not.toHaveBeenCalled();
+  });
+
+  it('recovers if the previous browser closes while a replacement is hydrating', async () => {
+    const sessions = new Map();
+    const hostRuntime = createFakeHostRuntime({ recoverable: true });
+    const first = attachRemote({ sessions, hostRuntime });
+    await first.result;
+
+    let releaseSnapshot;
+    hostRuntime.captureSessionSnapshotAsync.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseSnapshot = () => resolve({
+        data: 'fresh snapshot\r\n',
+        lineCount: 1,
+        windowLines: 10000,
+        historyGuaranteed: true,
+      });
+    }));
+    const second = attachRemote({ sessions, hostRuntime, ws: createMockWs() });
+    await flushAsync(2);
+
+    first.ws._emit('close');
+    expect(sessions.get('rp-1').alive).toBe(false);
+    releaseSnapshot();
+    await second.result;
+
+    const entry = sessions.get('rp-1');
+    expect(hostRuntime.spawnAsync).toHaveBeenCalledTimes(2);
+    expect(entry.ws).toBe(second.ws);
+    expect(entry.wsAttached).toBe(true);
+    expect(entry.alive).toBe(true);
+    expect(entry.clientDetached).toBe(false);
+  });
+
+  it('fails the attach with spawn_error when the durable session dies while a replacement is hydrating', async () => {
+    const sessions = new Map();
+    const hostRuntime = createFakeHostRuntime({ recoverable: true });
+    const first = attachRemote({ sessions, hostRuntime });
+    await first.result;
+
+    let releaseSnapshot;
+    hostRuntime.captureSessionSnapshotAsync.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseSnapshot = () => resolve({ data: 'stale\r\n', lineCount: 1, windowLines: 10000, historyGuaranteed: true });
+    }));
+    const second = attachRemote({ sessions, hostRuntime, ws: createMockWs() });
+    await flushAsync(2);
+
+    first.ws._emit('close');
+    // The remote tmux session terminates in the same window — nothing left to recover.
+    hostRuntime.isSessionRecoverableAsync.mockResolvedValue(false);
+    releaseSnapshot();
+    await second.result;
+
+    // Never a normal handshake wired to a dead PTY — the browser must learn the attach failed.
+    const messages = sentMessages(second.ws);
+    expect(messages.find(m => m.type === 'session')).toBeUndefined();
+    expect(messages.find(m => m.type === 'spawn_error')).toMatchObject({ reason: 'spawn_failed' });
+    expect(second.ws.close).toHaveBeenCalled();
+    const entry = sessions.get('rp-1');
+    expect(entry.alive).toBe(false);
+    expect(entry.clientDetached).toBe(false);
   });
 
   it('refreshes the entry host runtime on reconnect so edited hosts take effect', async () => {

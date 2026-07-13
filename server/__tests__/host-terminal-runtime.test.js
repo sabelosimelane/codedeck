@@ -221,7 +221,7 @@ describe('createHostTerminalRuntime.captureSessionSnapshotAsync', () => {
 });
 
 // ---------------------------------------------------------------------------
-// resizeSessionAsync / getSessionCwdAsync / getSessionExecutionStateAsync / listSessionIdsAsync
+// resizeSessionAsync / getSessionCwdAsync / getSessionStatusAsync / listSessionIdsAsync
 // ---------------------------------------------------------------------------
 
 describe('createHostTerminalRuntime auxiliary ops', () => {
@@ -246,20 +246,26 @@ describe('createHostTerminalRuntime auxiliary ops', () => {
     await expect(failing.getSessionCwdAsync({ cwd: '/srv/app' }, 'proj-1')).resolves.toBe('/srv/app');
   });
 
-  it('classifies execution state from runner-fetched tmux metadata', async () => {
+  it('falls back to an unknown execution state when the aggregate status command fails', async () => {
+    const failing = makeRuntime(fakeRunner({ sh: transportError() }));
+    const status = await failing.getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
+    expect(status.cwd).toBe('/srv/app');
+    expect(status.executionState.executionStatus).toBe('unknown');
+    expect(status.executionState.executionReason).toBe('tmux_lookup_failed');
+  });
+
+  it('fetches cwd and execution state through one aggregate remote command', async () => {
     const runner = fakeRunner({
-      'display-message': 'zsh\t0\n',
-      'capture-pane': '$ \n',
+      sh: '/srv/app/sub\tzsh\t0\u0000$ \n',
     });
     const runtime = makeRuntime(runner);
-    const state = await runtime.getSessionExecutionStateAsync('proj-1');
-    expect(state.executionStatus).toBeTruthy();
-    expect(state.executionStatus).not.toBe('unknown');
 
-    const failing = makeRuntime(fakeRunner({ 'display-message': transportError() }));
-    const failedState = await failing.getSessionExecutionStateAsync('proj-1');
-    expect(failedState.executionStatus).toBe('unknown');
-    expect(failedState.executionReason).toBe('tmux_lookup_failed');
+    const status = await runtime.getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
+
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0].cmd).toBe('sh');
+    expect(status.cwd).toBe('/srv/app/sub');
+    expect(status.executionState.executionStatus).not.toBe('unknown');
   });
 
   it('lists remote session ids and returns [] when the host cannot be reached', async () => {

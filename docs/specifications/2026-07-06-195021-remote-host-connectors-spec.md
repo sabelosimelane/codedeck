@@ -71,7 +71,7 @@ One abstraction underlies every capability. A runner is resolved per host and in
 **SSH invocation rules (behavioral requirements, all mandatory):**
 
 - **Non-interactive always:** every `ssh`/`scp` call includes `-o BatchMode=yes` so a broken key setup fails fast with an error instead of hanging on a password prompt.
-- **ControlMaster multiplexing:** every call includes `-o ControlMaster=auto -o ControlPath=<codedeck socket dir>/%C -o ControlPersist=600`. The socket directory is a CodeDeck-owned path under the user's home (mode 0700, created on demand). First command per host pays the handshake; subsequent commands ride the multiplexed connection.
+- **ControlMaster multiplexing:** one-shot SSH/scp calls include `-o ControlMaster=auto -o ControlPath=<codedeck socket dir>/%C -o ControlPersist=600` and are bounded to eight concurrent commands per host. The socket directory is a CodeDeck-owned path under the user's home (mode 0700, created on demand). Interactive PTYs use `ControlMaster=no` and `ControlPath=none`; their long-lived tmux attachments must not consume the shared master's logical-session allowance.
 - **Timeouts on everything:** `run` default timeout 10 000 ms; status-poll calls use 5 000 ms; `-o ConnectTimeout=5` additionally bounds connection establishment. A timed-out command is killed and reported as a failure — never left blocking.
 - **Argument safety:** remote command arguments pass through a single shell layer on the remote side, so each argument must be shell-quoted (single-quote wrapping with embedded-quote escaping) before joining into the remote command string. `sshTarget` is validated per §3 and always preceded by `--` where the ssh CLI supports it.
 - **No synchronous SSH calls:** the SSH runner exposes only async methods. Existing synchronous local call sites that become host-aware must migrate to the async variants (async equivalents already exist for the polled paths).
@@ -246,7 +246,7 @@ All criteria are verifiable inside this repo: unit tests exercise pure logic wit
 - PUT renaming a host rewrites the `host` field on all referencing projects atomically (verified by reading back both configs).
 
 **Command runner**
-- SSH runner composes `ssh` argv containing `BatchMode=yes`, ControlMaster options, and `ConnectTimeout` for every call (asserted against a recorded stub invocation).
+- SSH runner composes one-shot argv containing `BatchMode=yes`, shared ControlMaster options, and `ConnectTimeout`; interactive PTY argv contains `BatchMode=yes`, `ControlMaster=no`, `ControlPath=none`, and `ConnectTimeout` (asserted against recorded stub invocations).
 - Remote arguments containing spaces/quotes arrive intact through the quoting layer (stub echoes argv; test asserts round-trip).
 - A command exceeding its timeout rejects with a timeout error and the child process is killed within the test.
 - Local runner behavior for existing local projects is byte-identical to current behavior (existing ws-handler/runtime test suite passes unmodified).

@@ -169,4 +169,19 @@ describe('host reachability probe manager', () => {
     await expect(runner.run('test', ['-d', '/missing'])).rejects.toMatchObject({ code: 1 });
     expect(manager.getReachability('devbox')).toEqual({ reachability: 'reachable' });
   });
+
+  it('does not poison host reachability when the shared SSH master is at capacity', async () => {
+    const host = { name: 'devbox', sshTarget: 'devbox' };
+    const manager = createHostReachabilityManager({ probeHost: vi.fn(async () => ({})) });
+    const capacityError = Object.assign(new Error('ssh capacity exhausted'), {
+      code: 255,
+      stderr: 'mux_client_request_session: session request failed: Session open refused by peer',
+    });
+    const runner = manager.wrapRunner(host, {
+      run: vi.fn(async () => { throw capacityError; }),
+    });
+
+    await expect(runner.run('tmux', ['display-message'])).rejects.toBe(capacityError);
+    expect(manager.getReachability('devbox')).toEqual({ reachability: 'unknown' });
+  });
 });

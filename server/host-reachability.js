@@ -1,4 +1,4 @@
-import { isTransportFailure, STATUS_POLL_TIMEOUT_MS } from './command-runner.js';
+import { isSshCapacityError, isTransportFailure, STATUS_POLL_TIMEOUT_MS } from './command-runner.js';
 
 export const REACHABILITY_UNKNOWN = 'unknown';
 export const REACHABILITY_REACHABLE = 'reachable';
@@ -232,6 +232,12 @@ export function createHostReachabilityManager({
         return value;
       })
       .catch((err) => {
+        if (isSshCapacityError(err)) {
+          // A full ControlMaster proves neither reachability nor failure. Keep
+          // the previous state intact and let the caller retry after pressure
+          // subsides.
+          throw err;
+        }
         if (isTransportFailure(err)) recordTransportFailure(host, err);
         else recordSuccess(hostName);
         throw err;

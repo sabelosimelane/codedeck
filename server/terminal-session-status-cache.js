@@ -117,14 +117,25 @@ export function createTerminalStatusCache({
         record.updatedAt = now();
         return record;
       }
-      const [cwd, executionState] = await Promise.all([
-        typeof sessionRuntime?.getSessionCwdAsync === 'function'
-          ? sessionRuntime.getSessionCwdAsync(entry, sessionId)
-          : Promise.resolve(entry?.cwd ?? null),
-        entry?.alive && typeof sessionRuntime?.getSessionExecutionStateAsync === 'function'
-          ? sessionRuntime.getSessionExecutionStateAsync(sessionId)
-          : Promise.resolve(STATUS_REFRESH_PENDING_EXECUTION_STATE),
-      ]);
+      let cwd;
+      let executionState;
+      // A client-detached entry has no attachment PTY, but its durable tmux
+      // session is still queryable by name — keep reporting real status.
+      const durableSessionInspectable = entry?.alive || entry?.clientDetached === true;
+      if (durableSessionInspectable && typeof sessionRuntime?.getSessionStatusAsync === 'function') {
+        const status = await sessionRuntime.getSessionStatusAsync(entry, sessionId);
+        cwd = status?.cwd;
+        executionState = status?.executionState;
+      } else {
+        [cwd, executionState] = await Promise.all([
+          typeof sessionRuntime?.getSessionCwdAsync === 'function'
+            ? sessionRuntime.getSessionCwdAsync(entry, sessionId)
+            : Promise.resolve(entry?.cwd ?? null),
+          durableSessionInspectable && typeof sessionRuntime?.getSessionExecutionStateAsync === 'function'
+            ? sessionRuntime.getSessionExecutionStateAsync(sessionId)
+            : Promise.resolve(STATUS_REFRESH_PENDING_EXECUTION_STATE),
+        ]);
+      }
 
       record.cwd = cwd ?? entry?.cwd ?? null;
       record.executionState = executionState ?? STATUS_REFRESH_PENDING_EXECUTION_STATE;

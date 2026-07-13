@@ -3,6 +3,54 @@ import { computeSessionHealth, computeStallReason, sanitizePreviewLine } from '.
 import { listTerminalSessions } from '../terminal-session-status-service.js';
 
 describe('listTerminalSessions', () => {
+  it('reports an intentionally detached tmux attachment as resumable, not dead', () => {
+    const sessions = new Map([
+      ['Mace-118', {
+        cwd: '/srv/mace',
+        startedAt: '2026-07-13T09:00:00.000Z',
+        lastOutputAt: '2026-07-13T09:01:00.000Z',
+        lastOutputLine: 'working',
+        alive: false,
+        clientDetached: true,
+        runtimeType: 'tmux',
+        wsAttached: false,
+      }],
+    ]);
+    const runtime = {
+      type: 'tmux',
+      listSessionIds: vi.fn(() => ['Mace-118']),
+      getSessionExecutionState: vi.fn(() => ({
+        executionStatus: 'running',
+        foregroundCommand: 'npm',
+        executionReason: 'foreground_command',
+        executionConfidence: 'medium',
+      })),
+    };
+
+    const [result] = listTerminalSessions({
+      sessions,
+      runtime,
+      projects: [{ name: 'Mace', path: '/srv/mace' }],
+      deletedSessionIds: new Set(),
+      computeHealth: computeSessionHealth,
+      computeStallReason,
+      sanitizePreviewLine,
+    });
+
+    // The durable tmux session outlives the released attachment PTY: it stays
+    // alive and its execution state keeps polling by session name, so the
+    // cockpit shows real running/idle status for backgrounded projects.
+    expect(result).toMatchObject({
+      sessionId: 'Mace-118',
+      alive: true,
+      wsAttached: false,
+      health: 'detached',
+      executionStatus: 'running',
+      executionReason: 'foreground_command',
+    });
+    expect(runtime.getSessionExecutionState).toHaveBeenCalledWith('Mace-118');
+  });
+
   it('includes detached durable tmux sessions for configured projects', () => {
     const sessions = new Map([
       ['Cadence-1', {

@@ -3,7 +3,7 @@
 **Spec**: `docs/specifications/2026-07-06-195021-remote-host-connectors-spec.md`
 **Status**: In Progress
 **Created**: 2026-07-06
-**Last completed**: Phase 3: Host Reachability State Machine + Truthful UI States
+**Last completed**: Phase 3A: SSH Connection Pressure + Attachment Lifecycle Hardening
 
 ## Phase 0: Command Runner Foundation
 > The primitive everything else rides on: per-host command runner with local and SSH implementations. Highest-risk piece (quoting, timeouts, ControlMaster) — front-loaded.
@@ -58,6 +58,20 @@
 - [x] GET `/api/hosts` + session/status payloads expose reachability, `unreachableSince`, `lastError` (Spec §7, §6.2)
 - [x] Integration tests — 503 fast-fail without stub invocation; recovery reseed through ws-handler harness (Spec §9)
 - [x] Frontend: sidebar grey-out + warning host badge + "unreachable" label (never dead), terminal host-unreachable overlay with retry, distinct from reconnect banner and dead state (Spec §8.2, §8.8)
+
+## Phase 3A: SSH Connection Pressure + Attachment Lifecycle Hardening
+> Keep remote-host status polling below OpenSSH channel limits and ensure closing a browser terminal releases its live SSH/tmux attachment while preserving the durable tmux session.
+> **Inputs:** Phase 2 host-aware runtime and Phase 3 reachability state machine
+> **Outputs:** bounded one-shot SSH concurrency, isolated interactive transports, aggregate status probes, capacity-aware reachability, and orphan-free detach behavior
+> **Closed when:** focused runner/reachability/status/WebSocket lifecycle regressions pass and a restarted local server shows remote attachment count tracking open browser terminals
+
+- [x] Bound one-shot SSH/scp work per host below the shared ControlMaster channel ceiling
+- [x] Run interactive PTYs on dedicated non-multiplexed SSH transports
+- [x] Collapse cwd + execution metadata + snapshot-tail refresh into one remote command
+- [x] Classify multiplexed-session refusal as capacity pressure without marking the host unreachable
+- [x] Kill the local PTY/SSH attachment on browser detach while preserving the durable tmux session and reconnect behavior
+- [x] Unit tests — limiter, PTY argv isolation, aggregate status query, reachability neutrality, and local/remote detach cleanup
+- [x] Live verification — restart CodeDeck, close/reopen a remote terminal, and compare browser sockets to SSH/tmux attachments
 
 ## Phase 4: Remote File Browsing (Directory Browser, Tree, Preview)
 > The navigator goes host-aware: add-project browses the selected host; tree and preview follow the project's host.
@@ -141,7 +155,7 @@
 **Bug fixes** (Phase 5 review, 13 findings all fixed): literal NUL byte in index.js cache key (file read as binary); SSH-drop reported dead on status surfaces; DELETE-without-entry killed local tmux; detached remote ids polled local tmux; double-attach race spawning 2 PTYs; mid-attach disconnect leaving wsAttached forever; stale hostRuntime after sshTarget edit; allocation id-collision on unreachable host; duplicate project names misrouting; unhandled-rejection sinks; per-host GC short-circuit; DRY extractions.
 **Quirks**:
 - Local attach flow MUST stay fully synchronous (tests pin send ordering) — remote is a separate async flow sharing extracted sync helpers; never add an `await` (even on a non-promise) to the local path.
-- The Edit tool once emitted a literal NUL byte for a template-literal separator — if `file server/index.js` says "data", hunt for ` `.
+- The Edit tool once emitted a literal NUL byte for a template-literal separator — if `file server/index.js` says "data", hunt for `\\0`.
 **Next**: Phase 3: Host Reachability State Machine + Truthful UI States — `server/host-reachability.js` pure state machine (unknown/reachable/failing/unreachable, 3-failure threshold, 5→10→20→40→60s backoff), wire command outcomes into it, fast-fail 503s without SSH, recovery snapshot-reseed for waiting attachments, GET /api/hosts live reachability (hook already stubbed: `getReachability` dep in hosts router + `listHostsWithLocal`), frontend grey-out/badge/overlay. The `remoteDetached` entries + `host_connection_lost` reason from this phase are what Phase 3's recovery reseed consumes.
 
 ### Session — 2026-07-08 (Phase 3)
@@ -164,3 +178,39 @@
   - **Found**: all 3 subagent spawns failed with `Model "gpt-5.4" not found` (Sakana endpoint 404) — subagent spawning was broken this session.
   - **Did**: performed the review locally instead; applied one ≥80-confidence fix (retry-timer race in Terminal.jsx) with a regression test. Other candidates (async `spawnPty` transport feedback; Sidebar per-row reachability DRY) were considered and rejected as <80 confidence / risky churn.
   - **Follow-up**: none — behavior is locked by tests; revisit the Sidebar DRY smell only if that file is touched again.
+
+### Session — 2026-07-13 (Phase 3A)
+**Completed**: Phase 3A: SSH Connection Pressure + Attachment Lifecycle Hardening
+**Built**:
+- `server/command-runner.js` — shared per-host/per-ControlPath limiter (8 one-shot calls), one direct-connection retry for ControlMaster capacity refusal, and dedicated non-multiplexed PTY transports.
+- `server/terminal-runtime.js` / `server/terminal-session-status-cache.js` — one remote status command returns cwd, pane state, and tail snapshot instead of opening multiple SSH channels per refresh.
+- `server/host-reachability.js` — ControlMaster capacity refusal is neutral host evidence rather than an unreachable transition.
+- `server/ws-handler.js` / `server/terminal-session-status-service.js` — browser close kills only the attachment PTY, records `clientDetached`, preserves tmux, reports a resumable detached/unknown state, and safely reattaches across close-during-hydration races.
+**Tests**: focused Phase 3A suite 216 pass (7 files); full server suite 425 pass (24 files); full client suite 168 pass (29 files); client production build passes with the existing chunk-size warning.
+**Live verification**: restarted via `./server.sh restart` (backend 43001, frontend 43000; clean readiness log). Opening `Mace-118` created one dedicated `ControlMaster=no` SSH attachment; closing reduced its process count to 0 and `/api/sessions` reported `detached` / `unknown` / `client_detached`. Reopening produced `reconnect_recovery`, then closing again returned the process count to 0.
+**Review fixes**: made the limiter shared across independently-created runners, added direct fallback for full masters, separated browser detach from genuine PTY death, and rechecked liveness after async snapshot hydration.
+**Next**: Phase 4: Remote File Browsing.
+
+### Feature test — 2026-07-13 (Phase 3A)
+**Verdict**: FULLY TESTED
+- Spec coverage: all Phase 3A transport pressure, capacity classification, aggregation, detach, and reconnect-race requirements covered.
+- Integration: no data layer; real process/WebSocket lifecycle verified against the restarted app.
+- Backend boot: clean readiness marker, listeners on 43000/43001, no error/exception signals.
+- Browser: not required for this server-only phase; browser control was unavailable, so the same live WebSocket endpoint was exercised directly.
+
+### Deviations
+- **[Phase 3A / interactive transport isolation] — long-lived PTYs no longer use the shared ControlMaster**
+  - **Planned**: original Spec §5 required ControlMaster options on every SSH call.
+  - **Found**: live evidence showed persistent tmux attachments consuming the master's logical-session allowance and status bursts failing with `Session open refused by peer`.
+  - **Did**: retained bounded multiplexing for one-shot SSH/scp work but moved interactive PTYs to dedicated non-multiplexed transports; updated Spec §5 to match.
+  - **Follow-up**: none.
+
+### Code review — 2026-07-13 (Phase 3A, before commit)
+**Did**: high-effort multi-agent review of the Phase 3A diff (19 verified findings, deduped to 10); fixed 8, kept 2 as by-design. Supersedes two statements in the session notes above: the ControlMaster capacity direct-connection fallback was REMOVED (unrequested fallback logic; capacity errors now reach host-reachability's neutral classification as designed), and detached sessions no longer report `unknown`/`client_detached`.
+- Client-detached durable sessions report `alive: true` plus live tmux-by-name execution status (service + cache) — the cockpit keeps showing real running/idle for backgrounded projects; session GC still prunes if the tmux session actually dies.
+- Remote PTY exit handler re-checks detach state after the async recoverability probe AND after `spawnAsync` — a browser close mid-recovery can no longer respawn an orphaned SSH attachment.
+- Post-hydration liveness re-check gained the unrecoverable branch: the attach fails with `spawn_error` instead of binding the new socket to a dead PTY with a normal handshake.
+- Client input (live typing, Ctrl-key passthrough, reconnect buffer) is gated on the `session` handshake like `resume` — no silent keystroke loss during the remote SSH attach window.
+- Shared SSH limiter keyed by `controlPath\0sshTarget` only (no longer fragmented by max), resolved per call, self-evicts when idle; `detachTmuxClient` logs `pty.kill()` failures; deleted the host runtime's dead `getSessionExecutionStateAsync` (the cache always uses `getSessionStatusAsync` for host entries).
+**Not changed (judged by-design)**: the 8-command one-shot bound stays (Spec §5; the status cache's own 4-refresh cap prevents poll saturation of the limiter); interactive PTYs stay off the ControlMaster (Spec §5 deviation above — MaxStartups pressure when restoring >10 panes at once is the accepted trade-off).
+**Tests**: server 429 pass (24 files), client 168 pass (29 files); new regression tests for the detach races, handshake-gated input flush, detached-status polling, and no-fallback capacity propagation.

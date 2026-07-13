@@ -1025,6 +1025,12 @@ export function createHostTerminalRuntime(runner, hostName) {
     await tmux(['set-option', '-t', tmuxName, 'mouse', 'on']);
   }
 
+  const sessionStatusScript = [
+    `tmux display-message -p -t "$1" '#{pane_current_path}\t#{pane_current_command}\t#{pane_dead}'`,
+    `printf '\\000'`,
+    `tmux capture-pane -p -S -40 -t "$1"`,
+  ].join('\n');
+
   return {
     type: 'tmux',
     host: hostName,
@@ -1187,29 +1193,39 @@ export function createHostTerminalRuntime(runner, hostName) {
       }
     },
 
-    async getSessionExecutionStateAsync(sessionId) {
+    /** One SSH round-trip for the status cache's cwd + execution snapshot. */
+    async getSessionStatusAsync(entry, sessionId) {
       const tmuxName = sanitizeTmuxName(sessionId);
       try {
-        const [{ stdout: rawOutput }, { stdout: snapshotText }] = await Promise.all([
-          tmux(
-            ['display-message', '-p', '-t', tmuxName, '#{pane_current_command}\t#{pane_dead}'],
-            { timeout: STATUS_POLL_TIMEOUT_MS }
-          ),
-          tmux(
-            ['capture-pane', '-p', '-S', '-40', '-t', tmuxName],
-            { timeout: STATUS_POLL_TIMEOUT_MS }
-          ),
-        ]);
-        const raw = rawOutput.replace(/\r/g, '').replace(/\n$/, '');
-        const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
+        const { stdout } = await runner.run(
+          'sh',
+          ['-c', sessionStatusScript, 'codedeck-session-status', tmuxName],
+          { timeout: STATUS_POLL_TIMEOUT_MS },
+        );
+        const separator = stdout.indexOf('\0');
+        if (separator < 0) throw new Error('remote session status separator missing');
 
-        return classifyTerminalExecution({ paneCurrentCommand, paneDead, snapshotText });
+        const metadata = stdout.slice(0, separator).replace(/\r/g, '').replace(/\n$/, '');
+        const snapshotText = stdout.slice(separator + 1);
+        const [cwd = '', paneCurrentCommand = '', paneDead = '0'] = metadata.split('\t');
+
+        return {
+          cwd: cwd || entry?.cwd || null,
+          executionState: classifyTerminalExecution({
+            paneCurrentCommand,
+            paneDead,
+            snapshotText,
+          }),
+        };
       } catch {
         return {
-          executionStatus: TERMINAL_EXECUTION_UNKNOWN,
-          foregroundCommand: null,
-          executionReason: 'tmux_lookup_failed',
-          executionConfidence: 'low',
+          cwd: entry?.cwd || null,
+          executionState: {
+            executionStatus: TERMINAL_EXECUTION_UNKNOWN,
+            foregroundCommand: null,
+            executionReason: 'tmux_lookup_failed',
+            executionConfidence: 'low',
+          },
         };
       }
     },

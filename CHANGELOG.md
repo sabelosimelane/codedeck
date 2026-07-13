@@ -1,6 +1,30 @@
 # Changelog
 
-## [2026-07-08] - Remote Host Connectors via SSH
+## [2026-07-13] - SSH connection pressure hardening and truthful detached terminals
+
+### Executive Summary
+* Remote terminals no longer leak SSH connections and the sidebar stays honest while you work elsewhere. Closing a browser terminal now releases its live SSH/tmux attachment (the durable tmux session survives), yet the sidebar cockpit keeps showing real running/idle status for projects left in the background instead of greying them out. One-shot SSH traffic is bounded below OpenSSH's per-connection limits so bursts of status polls can no longer fail with "Session open refused by peer". A follow-up code review of this work fixed several reconnection races: keystrokes typed during a remote reconnect were silently dropped, a browser close during recovery could spawn an orphaned SSH process, and a session that died mid-reconnect could leave a frozen pane with no error.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/command-runner.js` — One-shot ssh/scp commands share a per-host limiter (8 concurrent, below OpenSSH's MaxSessions) keyed by ControlPath + target so independently created runners share one budget; the limiter registry self-evicts when idle. Interactive PTYs use dedicated `ControlMaster=no` transports so long-lived tmux attachments cannot exhaust the shared master.
+  * `server/terminal-runtime.js` — Remote status refresh collapses cwd + pane state + snapshot tail into one aggregate SSH command (`getSessionStatusAsync`); removed the superseded two-round-trip `getSessionExecutionStateAsync` from the host runtime.
+  * `server/host-reachability.js` — A full ControlMaster ("Session open refused by peer") is classified as capacity pressure, keeping the host's reachability state intact instead of marching it toward unreachable.
+  * `server/ws-handler.js` — Browser close releases only the tmux attachment PTY (`detachTmuxClient`), preserving the durable tmux session for reconnect.
+* **🐛 Bug Fix:**
+  * `server/terminal-session-status-service.js` & `server/terminal-session-status-cache.js` — Problem: detached sessions were frozen on a static `unknown` status and reported `alive: false`, so backgrounded projects rendered dead in the cockpit. Solution: client-detached durable sessions report `alive: true` and keep polling live execution state from tmux by session name (no PTY required).
+  * `server/ws-handler.js` — Problem: a browser close landing during the async exit-recovery probe respawned an SSH attachment nobody was connected to. Solution: the exit handler re-checks detach state after the probe and after spawn, killing any freshly spawned attachment.
+  * `server/ws-handler.js` — Problem: if the durable session died while a replacement browser was hydrating, the new socket was bound to a dead PTY with a normal handshake (silently frozen pane). Solution: the attach fails with a `spawn_error` and the socket is closed.
+  * `client/src/components/Terminal.jsx` — Problem: keystrokes buffered during a reconnect were flushed at socket open, before the remote server had registered its message handlers, and were silently dropped. Solution: all input (live typing, Ctrl-key passthrough, and the reconnect buffer) is gated on the `session` handshake and flushed there in order.
+* **🛠️ Codebase:**
+  * `server/command-runner.js` — Removed the capacity-triggered direct-connection retry (unrequested fallback logic); capacity errors now propagate to the reachability classifier as designed.
+  * `server/ws-handler.js` — `detachTmuxClient` logs `pty.kill()` failures to the session timeline instead of swallowing them.
+  * `docs/specifications/2026-07-06-195021-remote-host-connectors-spec.md` & `docs/todos/2026-07-06-195021-remote-host-connectors.md` — Spec §5 updated for bounded multiplexing + dedicated PTY transports; Phase 3A and code-review session notes recorded.
+* **🧪 Tests:**
+  * `server/__tests__/ws-handler-remote.test.js` — New regression tests for the detach-during-probe, detach-during-spawn, and died-while-hydrating races.
+  * `server/__tests__/command-runner.test.js`, `server/__tests__/host-reachability.test.js` — Limiter sharing across runners, PTY argv isolation, and capacity errors propagating without a side-connection retry while leaving reachability neutral.
+  * `server/__tests__/terminal-session-status-service.test.js`, `server/__tests__/terminal-session-status-cache.test.js`, `server/__tests__/host-terminal-runtime.test.js`, `server/__tests__/ws-handler.test.js` — Detached sessions keep truthful live status; aggregate status probe failure fallback; detach-on-close lifecycle.
+  * `client/src/components/__tests__/TerminalInputResume.test.jsx` — Input buffers past socket open and flushes in order at the session handshake.
 
 ### Executive Summary
 * CodeDeck now fully supports interacting with remote project environments over SSH. You can define remote hosts and their SSH targets through the UI Settings, and create projects bound to those hosts. Remote terminals run transparently via SSH, complete with reliable `tmux` session persistence, durable recovery for network drops, remote file browsing, dragging-and-dropping remote file uploads, and native VS Code remote editor launching.
