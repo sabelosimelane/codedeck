@@ -453,6 +453,18 @@ function ensureTmuxSessionOptions(tmuxName) {
   execFileSync('tmux', [
     'set-option', '-t', tmuxName, 'mouse', 'on',
   ], { stdio: 'pipe' });
+  // Match xterm's green selection (#6ee7b7 at 25% over #0e0e10 ≈ #26443a) so
+  // tmux copy-mode doesn't render its default yellow and read as a different
+  // kind of selection than the browser-side one.
+  execFileSync('tmux', [
+    'set-window-option', '-t', tmuxName, 'mode-style', 'bg=#26443a,fg=#e4e4e8',
+  ], { stdio: 'pipe' });
+  // 'on', not the default 'external': external REJECTS OSC 52 from programs
+  // inside the pane (TUIs copying a selection), so their copies die in a tmux
+  // buffer. 'on' accepts them and forwards to the browser's clipboard addon.
+  execFileSync('tmux', [
+    'set-option', '-s', 'set-clipboard', 'on',
+  ], { stdio: 'pipe' });
 }
 
 function getTmuxPaneNumberValue(target, format) {
@@ -1023,6 +1035,10 @@ export function createHostTerminalRuntime(runner, hostName) {
     await tmux(['set-option', '-t', tmuxName, 'status', 'off']);
     await tmux(['set-window-option', '-t', tmuxName, 'history-limit', String(TMUX_HISTORY_LIMIT)]);
     await tmux(['set-option', '-t', tmuxName, 'mouse', 'on']);
+    // Same green-tinted copy-mode highlight as the local runtime.
+    await tmux(['set-window-option', '-t', tmuxName, 'mode-style', 'bg=#26443a,fg=#e4e4e8']);
+    // Accept OSC 52 from inner programs, not just tmux's own copy-mode.
+    await tmux(['set-option', '-s', 'set-clipboard', 'on']);
   }
 
   const sessionStatusScript = [

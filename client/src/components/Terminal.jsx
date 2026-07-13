@@ -2,6 +2,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState, us
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { ClipboardAddon } from '@xterm/addon-clipboard';
 import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
 import { AlertTriangle, ChevronsDown } from 'lucide-react';
@@ -459,6 +460,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     });
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
+    // OSC 52 support: tmux (set-clipboard external) emits the selected text as
+    // an OSC 52 sequence when a mouse-mode copy completes. Without this addon
+    // xterm.js silently drops it and tmux drag-selections never reach the
+    // system clipboard.
+    term.loadAddon(new ClipboardAddon());
 
     term.open(containerRef.current);
     fitRef.current = fitAddon;
@@ -521,6 +527,33 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       setAutoScrollEnabled(isTerminalViewportAtBottom(buffer));
     });
 
+    // navigator.clipboard.writeText rejects when the document doesn't have
+    // focus — common right after interacting with other panes. Fall back to a
+    // hidden textarea + execCommand, and surface a toast only if both fail.
+    const copyTextToClipboard = (text, { notifyOnFailure = false } = {}) => {
+      navigator.clipboard.writeText(text).catch((err) => {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        let copied = false;
+        try {
+          copied = document.execCommand('copy');
+        } catch {
+          copied = false;
+        }
+        textarea.remove();
+        if (!copied) {
+          console.warn(`[terminal] clipboard copy failed session=${sessionId} error=${err?.message || err}`);
+          if (notifyOnFailure) {
+            showToast('Copy failed — click the terminal and try again', 'error');
+          }
+        }
+      });
+    };
+
     // Copy-on-select: mirror native terminal emulator behaviour so text is
     // always on the clipboard after a drag selection (needed because tmux
     // mouse mode prevents normal browser selection).
@@ -534,7 +567,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
           selectionCopyTimer = null;
           const text = term.getSelection();
           if (text) {
-            navigator.clipboard.writeText(text).catch(() => {});
+            copyTextToClipboard(text);
           }
         }, 150);
       });
@@ -578,6 +611,15 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     const browserStolenKeys = new Set(['r', 'w', 't', 'n']);
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
+      // Cmd+C with an active xterm selection: copy explicitly instead of
+      // relying on the hidden textarea's focus state, which drifts after
+      // clicking dividers/inspector and makes Cmd+C silently do nothing.
+      if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+          && event.key.toLowerCase() === 'c' && term.hasSelection()) {
+        event.preventDefault();
+        copyTextToClipboard(term.getSelection(), { notifyOnFailure: true });
+        return false;
+      }
       if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
         const key = event.key.toLowerCase();
         if (browserStolenKeys.has(key)) {

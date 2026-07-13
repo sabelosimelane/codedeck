@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-07-13] - Terminal copy that actually reaches the clipboard
+
+### Executive Summary
+* Copying text out of a terminal was a lottery with three different selection behaviours — a yellow tmux highlight that never copied, an Option-drag green highlight where Cmd+C only sometimes worked, and TUI apps whose copies died in a tmux buffer with a "paste with prefix + ]" hint. The root causes were that the browser terminal silently ignored the OSC 52 clipboard escape sequence tmux emits, and tmux's default `set-clipboard external` rejects clipboard writes from programs running inside panes. All three paths now land on the system clipboard: plain drag-select in tmux copy-mode, Option-drag browser selections (with a working Cmd+C), and copies initiated by full-screen apps like agent CLIs. The tmux copy-mode highlight also now matches the app's green selection colour instead of rendering yellow. Verified end-to-end against a remote SSH host: an OSC 52 emitted inside a remote pane arrived on the macOS clipboard.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * `client/src/components/Terminal.jsx` — Problem: tmux forwarded copied selections to the browser as OSC 52 sequences, but xterm.js drops OSC 52 without the clipboard addon, so tmux drag-copies never reached the clipboard. Solution: load `@xterm/addon-clipboard` on every terminal.
+  * `server/terminal-runtime.js` — Problem: the default `set-clipboard external` makes tmux reject OSC 52 from programs inside panes (TUIs copying a selection fall back to a tmux paste buffer). Solution: both the local and remote runtimes set the server option `set-clipboard on` during session-option alignment, so inner-app copies are accepted and forwarded to the browser.
+  * `client/src/components/Terminal.jsx` — Problem: Cmd+C on a browser-side selection only worked while xterm's hidden textarea had focus, and the copy-on-select fallback swallowed `navigator.clipboard.writeText` rejections silently. Solution: a custom key handler copies the active selection explicitly on Cmd+C, and clipboard writes fall back to an `execCommand('copy')` textarea with a console warning plus an error toast (Cmd+C path) when both fail.
+* **🛠️ Codebase:**
+  * `server/terminal-runtime.js` — tmux `mode-style` is set to `bg=#26443a,fg=#e4e4e8` (the green accent blended over the terminal background) in both runtimes so copy-mode selections match the xterm selection colour instead of tmux's default yellow.
+  * `client/package.json` / `package-lock.json` — added `@xterm/addon-clipboard` 0.2.x.
+
 ## [2026-07-13] - SSH connection pressure hardening and truthful detached terminals
 
 ### Executive Summary
