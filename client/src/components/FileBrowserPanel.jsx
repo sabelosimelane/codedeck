@@ -278,7 +278,7 @@ export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
 const overlayStyle = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0, 0, 0, 0.65)',
+  background: 'var(--overlay-scrim-heavy)',
   backdropFilter: 'blur(4px)',
   display: 'flex',
   alignItems: 'center',
@@ -362,7 +362,7 @@ const iconBtnStyle = {
 
 const treeControlBtnStyle = {
   border: '1px solid var(--border)',
-  background: 'rgba(0, 0, 0, 0.12)',
+  background: 'var(--glass-bg)',
   color: 'var(--text-secondary)',
   borderRadius: 6,
   padding: '4px 8px',
@@ -390,6 +390,6 @@ const rowActionBtnStyle = {
   alignItems: 'center',
   justifyContent: 'center',
   color: 'var(--text-muted)',
-  background: 'rgba(255, 255, 255, 0.03)',
-  border: '1px solid rgba(255, 255, 255, 0.04)',
+  background: 'var(--glass-bg)',
+  border: '1px solid var(--glass-border-faint)',
 };

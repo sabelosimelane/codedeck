@@ -908,7 +908,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                   alignItems: 'center',
                   gap: 6,
                   border: `1px solid ${isActive ? statusStyle.borderColor : 'transparent'}`,
-                  boxShadow: isActive && tabVisualStatus === 'busy' ? 'inset 0 1px 0 rgba(255, 255, 255, 0.04)' : 'none',
+                  boxShadow: isActive && tabVisualStatus === 'busy' ? 'inset 0 1px 0 var(--glass-highlight)' : 'none',
                   transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease',
                 }}
                 title={tabStatus === 'none' ? tab.label : `${tab.label} · ${tabStatus}`}
@@ -1082,8 +1082,8 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                 ? paneIsActive ? 'rgba(154, 165, 184, 0.28)' : 'rgba(154, 165, 184, 0.12)'
                 : paneIsActive ? 'rgba(110, 231, 183, 0.45)' : 'rgba(110, 231, 183, 0.12)';
               const paneBackground = isStatusMuted
-                ? 'linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)), #09090b'
-                : 'radial-gradient(circle at top, rgba(110, 231, 183, 0.06), rgba(14, 14, 16, 0) 42%), #09090b';
+                ? 'var(--shell-bg)'
+                : 'var(--shell-bg)';
 
               return (
                 <React.Fragment key={pane.id}>
@@ -1107,7 +1107,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                     minHeight: 0,
                     position: 'relative',
                     padding: '12px 12px 10px',
-                    background: 'linear-gradient(180deg, rgba(26, 26, 30, 0.95), rgba(14, 14, 16, 0.98))',
+                    background: 'var(--shell-bg)',
                   }}
                 >
                   <div
@@ -1120,7 +1120,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                       borderRadius: 16,
                       overflow: 'hidden',
                       background: paneBackground,
-                      boxShadow: '0 20px 45px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.03)',
+                      boxShadow: 'var(--shadow-soft)',
                       transition: 'border-color 0.15s ease',
                     }}
                   >
@@ -1131,8 +1131,8 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                         justifyContent: 'space-between',
                         gap: 12,
                         padding: '10px 14px',
-                        borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-                        background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0))',
+                        borderBottom: '1px solid var(--glass-border)',
+                        background: 'var(--glass-bg)',
                       }}
                     >
                       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>

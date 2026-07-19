@@ -41,9 +41,9 @@ export function ToastProvider({ children }) {
 // ─── Toast Container ────────────────────────────────────────────────
 
 const COLORS = {
-  success: { bg: '#064e3b', border: '#059669', text: '#a7f3d0' },
-  error:   { bg: '#450a0a', border: '#dc2626', text: '#fca5a5' },
-  warning: { bg: '#451a03', border: '#d97706', text: '#fde68a' },
+  success: { bg: 'var(--toast-success-bg)', border: 'var(--toast-success-border)', text: 'var(--toast-success-text)' },
+  error:   { bg: 'var(--toast-error-bg)', border: 'var(--toast-error-border)', text: 'var(--toast-error-text)' },
+  warning: { bg: 'var(--toast-warning-bg)', border: 'var(--toast-warning-border)', text: 'var(--toast-warning-text)' },
 };
 
 function ToastContainer({ toasts, onDismiss }) {

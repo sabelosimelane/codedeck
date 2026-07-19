@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-07-19] - Light mode with a dark / light / system theme toggle
+
+### Executive Summary
+* CodeDeck is no longer dark-only. A new theme button in the sidebar footer cycles between dark, a warm "paper terminal" light theme, and system mode that follows the OS appearance (including live OS switches). Everything re-themes instantly — panels, modals, toasts, and open terminals, which repaint with a matching light ANSI palette without reconnecting. New users default to system mode; the choice persists across sessions.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/theme.js` — new theme module: persists the selected mode (`dark`/`light`/`system`) in localStorage, resolves system mode via `prefers-color-scheme` (re-resolving on OS changes), stamps the resolved theme on `<html data-theme>`, broadcasts a `codedeck-theme-change` event, and exports light/dark xterm ANSI palettes.
+  * `client/src/components/Sidebar.jsx` — footer toggle button cycling dark → light → system with Moon / Sun / Monitor icons.
+  * `client/src/styles/global.css` — full light-theme variable override block under `:root[data-theme="light"]` (warm parchment surfaces, ink text, deepened green accent for contrast) plus `color-scheme` hints.
+  * `client/src/components/Terminal.jsx` — xterm theme now comes from the resolved theme and updates live on theme-change events, so open terminals switch palettes without reconnecting.
+* **🛠️ Codebase:**
+  * `client/src/styles/global.css` — introduced semantic tokens (`--glass-*`, `--overlay-scrim*`, `--tooltip-bg`, `--code-bg`, `--term-bg`, `--shell-bg`, `--toast-*`, `--accent-contrast`, `--glow-*`, `--empty-card-bg`, `--table-header-bg`) and converted the stylesheet's hardcoded dark-glass values to them.
+  * `client/src/components/{DirectoryBrowser,FileBrowserPanel,FileTree,HostsSection,PreviewPage,SettingsPanel,TerminalArea,TerminalInspector,ToastContext}.jsx` — swept ~50 hardcoded dark colors (white-glow glass fills, dark scrims, the `#09090b` terminal frame, toast palettes, warning ambers, black-on-accent button text) to the new tokens so both themes render coherently.
+  * `client/src/main.jsx` — initializes the theme before React renders to avoid a flash of the wrong theme.
+
 ## [2026-07-13] - Terminal copy that actually reaches the clipboard
 
 ### Executive Summary

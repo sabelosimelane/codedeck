@@ -329,6 +329,6 @@ const rowActionBtnStyle = {
   alignItems: 'center',
   justifyContent: 'center',
   color: 'var(--text-muted)',
-  background: 'rgba(255, 255, 255, 0.03)',
-  border: '1px solid rgba(255, 255, 255, 0.04)',
+  background: 'var(--glass-bg)',
+  border: '1px solid var(--glass-border-faint)',
 };

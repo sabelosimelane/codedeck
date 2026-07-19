@@ -5,8 +5,8 @@ import { useToast } from './ToastContext';
 const HEALTH_COLORS = {
   healthy: 'var(--accent)',
   detached: 'var(--text-muted)',
-  reconnecting: '#fbbf24',
-  stalled: '#f87171',
+  reconnecting: 'var(--warning)',
+  stalled: 'var(--danger)',
   replaying: '#60a5fa',
   dead: 'var(--danger)',
 };
@@ -135,7 +135,7 @@ export default function TerminalInspector({ sessionId, onClose, onAction }) {
                 {HEALTH_DESCRIPTIONS[health] || 'Unknown health state'}
               </div>
               {data.stallReason && (
-                <div style={{ marginTop: 6, fontSize: 11, color: '#f87171', fontFamily: 'var(--font-mono)' }}>
+                <div style={{ marginTop: 6, fontSize: 11, color: 'var(--danger)', fontFamily: 'var(--font-mono)' }}>
                   Stall reason: {data.stallReason}
                 </div>
               )}
@@ -270,7 +270,7 @@ const historyWarningStyle = {
   borderRadius: 6,
   background: 'rgba(69, 26, 3, 0.9)',
   border: '1px solid rgba(217, 119, 6, 0.45)',
-  color: '#fde68a',
+  color: 'var(--warning)',
   fontSize: 11,
   lineHeight: 1.5,
   fontFamily: 'var(--font-mono)',
@@ -280,7 +280,7 @@ const overlayStyle = {
   position: 'fixed',
   inset: 0,
   zIndex: 1000,
-  background: 'rgba(0, 0, 0, 0.5)',
+  background: 'var(--overlay-scrim-heavy)',
   backdropFilter: 'blur(4px)',
   display: 'flex',
   justifyContent: 'center',
@@ -311,7 +311,7 @@ const headerStyle = {
 
 const sectionStyle = {
   padding: '12px 16px',
-  borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+  borderBottom: '1px solid var(--glass-border-faint)',
 };
 
 const sectionHeaderStyle = {
@@ -345,7 +345,7 @@ const eventRowStyle = {
   alignItems: 'center',
   gap: 8,
   padding: '3px 0',
-  borderBottom: '1px solid rgba(255, 255, 255, 0.02)',
+  borderBottom: '1px solid var(--glass-border-faint)',
 };
 
 const footerStyle = {
@@ -378,9 +378,9 @@ const recoveryBtnStyle = {
   padding: '5px 10px',
   fontSize: 11,
   fontFamily: 'var(--font-mono)',
-  background: 'rgba(255, 255, 255, 0.04)',
+  background: 'var(--glass-highlight)',
   color: 'var(--text-primary)',
-  border: '1px solid rgba(255, 255, 255, 0.08)',
+  border: '1px solid var(--glass-border-strong)',
   borderRadius: 5,
   cursor: 'pointer',
 };

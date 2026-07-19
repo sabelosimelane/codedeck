@@ -15,8 +15,8 @@ async function readError(res) {
 
 const REACHABILITY_COLORS = {
   reachable: 'var(--accent)',
-  unreachable: '#f87171',
-  failing: '#fbbf24',
+  unreachable: 'var(--danger)',
+  failing: 'var(--warning)',
   unknown: 'var(--text-muted)',
 };
 
@@ -223,7 +223,7 @@ export default function HostsSection() {
                         </button>
                         <button
                           onClick={() => handleDelete(host.name)}
-                          style={{ ...iconBtnStyle, color: '#f87171' }}
+                          style={{ ...iconBtnStyle, color: 'var(--danger)' }}
                           title="Delete host"
                         >
                           <Trash2 size={13} />
@@ -236,11 +236,11 @@ export default function HostsSection() {
                   </div>
                   {result && !result.testing && (
                     <div style={testResultStyle}>
-                      <span style={{ color: result.sshOk ? 'var(--accent)' : '#f87171' }}>
+                      <span style={{ color: result.sshOk ? 'var(--accent)' : 'var(--danger)' }}>
                         ssh {result.sshOk ? 'ok' : 'failed'}
                       </span>
                       {' · '}
-                      <span style={{ color: result.tmuxOk ? 'var(--accent)' : '#f87171' }}>
+                      <span style={{ color: result.tmuxOk ? 'var(--accent)' : 'var(--danger)' }}>
                         tmux {result.tmuxOk ? 'ok' : 'missing'}
                       </span>
                       {typeof result.latencyMs === 'number' && ` · ${result.latencyMs}ms`}
@@ -426,7 +426,7 @@ const primaryBtnStyle = {
   fontSize: '11px',
   fontWeight: 600,
   fontFamily: 'var(--font-mono)',
-  color: '#000',
+  color: 'var(--accent-contrast)',
   background: 'var(--accent)',
   display: 'flex',
   alignItems: 'center',

@@ -10,6 +10,7 @@ import { shouldResumeFromSessionHandshake } from '../utils/terminalResume';
 import { buildTerminalWebSocketUrl } from '../utils/terminalWsUrl';
 import { isTerminalProtocolReply } from '../utils/terminalProtocolReplies';
 import { buildTerminalSnapshotReplay } from '../utils/terminalSnapshotRestore';
+import { XTERM_THEMES, THEME_CHANGE_EVENT, getResolvedTheme } from '../theme';
 import {
   shouldSyncVisibleTerminal,
   shouldWriteTerminalViewport,
@@ -425,30 +426,14 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       fastScrollSensitivity: 5,
       smoothScrollDuration: 0,
       macOptionClickForcesSelection: true,
-      theme: {
-        background: '#0e0e10',
-        foreground: '#e4e4e8',
-        cursor: '#6ee7b7',
-        selectionBackground: '#6ee7b740',
-        black: '#0e0e10',
-        red: '#f87171',
-        green: '#6ee7b7',
-        yellow: '#fbbf24',
-        blue: '#60a5fa',
-        magenta: '#c084fc',
-        cyan: '#22d3ee',
-        white: '#e4e4e8',
-        brightBlack: '#5a5a66',
-        brightRed: '#fca5a5',
-        brightGreen: '#a7f3d0',
-        brightYellow: '#fde68a',
-        brightBlue: '#93c5fd',
-        brightMagenta: '#d8b4fe',
-        brightCyan: '#67e8f9',
-        brightWhite: '#ffffff',
-      },
+      theme: XTERM_THEMES[getResolvedTheme()],
       allowTransparency: true,
     });
+
+    const handleThemeChange = (event) => {
+      term.options.theme = XTERM_THEMES[event.detail === 'light' ? 'light' : 'dark'];
+    };
+    window.addEventListener(THEME_CHANGE_EVENT, handleThemeChange);
 
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon((event, url) => {
@@ -922,6 +907,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       fontSyncCancelled = true;
       retryConnectionRef.current = () => {};
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener(THEME_CHANGE_EVENT, handleThemeChange);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('pageshow', handlePageShow);
       document.fonts?.removeEventListener?.('loadingdone', scheduleFontMeasurementSync);
@@ -977,7 +963,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       {connectionStatus === 'host_unreachable' && hostUnreachableInfo && (
         <div style={hostUnreachableOverlayStyle}>
           <div style={hostUnreachableCardStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fbbf24' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--warning)' }}>
               <AlertTriangle size={15} />
               <strong>Host unreachable</strong>
             </div>
@@ -1069,19 +1055,19 @@ const reconnectOverlayStyle = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  background: 'rgba(11, 13, 18, 0.75)',
+  background: 'var(--overlay-scrim-heavy)',
   backdropFilter: 'blur(2px)',
   pointerEvents: 'none',
 };
 
 const failedOverlayStyle = {
   ...reconnectOverlayStyle,
-  background: 'rgba(11, 13, 18, 0.85)',
+  background: 'var(--overlay-scrim-heavy)',
 };
 
 const hostUnreachableOverlayStyle = {
   ...reconnectOverlayStyle,
-  background: 'rgba(11, 13, 18, 0.82)',
+  background: 'var(--overlay-scrim-heavy)',
   pointerEvents: 'auto',
 };
 
@@ -1091,8 +1077,8 @@ const reconnectCardStyle = {
   gap: 10,
   padding: '10px 18px',
   borderRadius: 8,
-  background: 'rgba(22, 27, 36, 0.95)',
-  border: '1px solid rgba(110, 231, 183, 0.2)',
+  background: 'var(--tooltip-bg)',
+  border: '1px solid var(--accent-dim)',
   fontFamily: 'var(--font-mono)',
   fontSize: '12px',
   color: 'var(--text-secondary)',
@@ -1120,7 +1106,7 @@ const hostUnreachableRetryButtonStyle = {
   borderRadius: 6,
   border: '1px solid rgba(251, 191, 36, 0.45)',
   background: 'rgba(251, 191, 36, 0.12)',
-  color: '#fbbf24',
+  color: 'var(--warning)',
   fontFamily: 'var(--font-mono)',
   fontSize: '12px',
   cursor: 'pointer',
@@ -1137,9 +1123,9 @@ const historyWarningBannerStyle = {
   gap: 8,
   padding: '10px 12px',
   borderRadius: 8,
-  background: 'rgba(69, 26, 3, 0.96)',
-  border: '1px solid rgba(217, 119, 6, 0.5)',
-  color: '#fde68a',
+  background: 'var(--toast-warning-bg)',
+  border: '1px solid var(--toast-warning-border)',
+  color: 'var(--toast-warning-text)',
   boxShadow: '0 4px 16px rgba(0, 0, 0, 0.35)',
   pointerEvents: 'none',
 };
@@ -1157,7 +1143,7 @@ const dropZoneOverlayStyle = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  background: 'rgba(11, 13, 18, 0.75)',
+  background: 'var(--overlay-scrim-heavy)',
   backdropFilter: 'blur(2px)',
   border: '2px dashed var(--accent)',
   borderRadius: 4,
@@ -1170,6 +1156,6 @@ const dropZoneLabelStyle = {
   color: 'var(--accent)',
   padding: '8px 16px',
   borderRadius: 6,
-  background: 'rgba(22, 27, 36, 0.95)',
-  border: '1px solid rgba(110, 231, 183, 0.2)',
+  background: 'var(--tooltip-bg)',
+  border: '1px solid var(--accent-dim)',
 };

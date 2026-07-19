@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard, Hourglass, Play, Copy, MoreVertical } from 'lucide-react';
+import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard, Hourglass, Play, Copy, MoreVertical, Sun, Moon, Monitor } from 'lucide-react';
+import { getThemeMode, cycleThemeMode } from '../theme';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
@@ -86,7 +87,7 @@ function renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError }
           lineHeight: 1,
           padding: '3px 5px',
           borderRadius: 999,
-          color: isHostUnreachable ? '#fbbf24' : 'var(--text-muted)',
+          color: isHostUnreachable ? 'var(--warning)' : 'var(--text-muted)',
           background: isHostUnreachable ? 'rgba(251, 191, 36, 0.12)' : 'rgba(154, 165, 184, 0.12)',
           border: isHostUnreachable ? '1px solid rgba(251, 191, 36, 0.32)' : '1px solid rgba(154, 165, 184, 0.18)',
         }}
@@ -98,7 +99,7 @@ function renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError }
           flexShrink: 0,
           fontFamily: 'var(--font-mono)',
           fontSize: 10,
-          color: '#fbbf24',
+          color: 'var(--warning)',
         }}>
           unreachable
         </span>
@@ -117,6 +118,7 @@ const STATUS_COLORS = {
 
 export default function Sidebar({ activeProjects, waitingProjects = [], shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, onBrowseFiles, onShowShortcuts }) {
   const [showBrowser, setShowBrowser] = useState(false);
+  const [themeMode, setThemeModeState] = useState(getThemeMode);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
@@ -1148,6 +1150,19 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
             <span>{totalProjects} project{totalProjects !== 1 ? 's' : ''}</span>
           )}
           <div style={{ display: 'flex', gap: 4, margin: isCompact ? '0 auto' : undefined }}>
+            <button
+              onClick={() => setThemeModeState(cycleThemeMode())}
+              title={`Theme: ${themeMode} — click to switch`}
+              style={{
+                padding: 4,
+                borderRadius: 4,
+                color: themeMode === 'system' ? 'var(--text-muted)' : 'var(--accent)',
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              {themeMode === 'light' ? <Sun size={14} /> : themeMode === 'dark' ? <Moon size={14} /> : <Monitor size={14} />}
+            </button>
             <button
               onClick={onShowShortcuts}
               title="Keyboard shortcuts"

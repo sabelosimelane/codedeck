@@ -241,7 +241,7 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
                       }}
                     >
                       <Folder size={14} style={{
-                        color: current === entry.path ? 'var(--accent)' : '#fbbf24',
+                        color: current === entry.path ? 'var(--accent)' : 'var(--warning)',
                         flexShrink: 0,
                       }} />
                       <span style={{
@@ -327,7 +327,7 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
 const overlayStyle = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0, 0, 0, 0.65)',
+  background: 'var(--overlay-scrim-heavy)',
   backdropFilter: 'blur(4px)',
   display: 'flex',
   alignItems: 'center',
@@ -467,7 +467,7 @@ const selectBtnStyle = {
   borderRadius: 6,
   fontSize: '12px',
   fontWeight: 600,
-  color: '#000',
+  color: 'var(--accent-contrast)',
   background: 'var(--accent)',
   display: 'flex',
   alignItems: 'center',

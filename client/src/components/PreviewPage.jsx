@@ -481,7 +481,7 @@ const ambientGlowStyle = {
   position: 'fixed',
   inset: 0,
   pointerEvents: 'none',
-  background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 24%)',
+  background: 'linear-gradient(180deg, var(--glass-bg), transparent 24%)',
 };
 
 const stickyRailStyle = {
@@ -571,13 +571,13 @@ const buttonBaseStyle = {
 const secondaryBtnStyle = {
   ...buttonBaseStyle,
   color: 'var(--text-secondary)',
-  background: 'rgba(255, 255, 255, 0.03)',
+  background: 'var(--glass-bg)',
   border: '1px solid var(--border)',
 };
 
 const primaryBtnStyle = {
   ...buttonBaseStyle,
-  color: '#08110f',
+  color: 'var(--accent-contrast)',
   background: 'linear-gradient(135deg, var(--accent), #7ee7d1)',
   border: '1px solid rgba(95, 224, 186, 0.6)',
 };
@@ -601,7 +601,7 @@ const metaPillStyle = {
   padding: '8px 12px',
   borderRadius: 999,
   border: '1px solid var(--border)',
-  background: 'rgba(255, 255, 255, 0.03)',
+  background: 'var(--glass-bg)',
   fontFamily: 'var(--font-mono)',
   fontSize: 11,
   color: 'var(--text-secondary)',
@@ -649,13 +649,13 @@ const codeFrameStyle = {
   minHeight: '60vh',
   paddingTop: 14,
   paddingBottom: 10,
-  background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.08))',
+  background: 'var(--glass-bg)',
 };
 
 const markdownFrameStyle = {
   minHeight: '60vh',
   padding: '36px clamp(20px, 4vw, 52px) 56px',
-  background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(0, 0, 0, 0.08))',
+  background: 'var(--glass-bg-strong)',
 };
 
 const markdownArticleStyle = {
@@ -699,7 +699,7 @@ const lightboxPanelStyle = {
   display: 'flex',
   flexDirection: 'column',
   gap: 16,
-  border: '1px solid rgba(255, 255, 255, 0.08)',
+  border: '1px solid var(--glass-border-strong)',
   borderRadius: 20,
   padding: 18,
   background: 'rgba(16, 19, 26, 0.96)',
@@ -717,8 +717,8 @@ const lightboxViewportStyle = {
   flex: 1,
   overflow: 'auto',
   borderRadius: 16,
-  border: '1px solid rgba(255, 255, 255, 0.06)',
-  background: 'rgba(0, 0, 0, 0.26)',
+  border: '1px solid var(--glass-border)',
+  background: 'var(--glass-bg)',
   padding: 20,
 };
 
@@ -746,7 +746,7 @@ const lineNumberStyle = {
   color: 'var(--text-muted)',
   fontFamily: 'var(--font-mono)',
   fontSize: 12,
-  borderRight: '1px solid rgba(255, 255, 255, 0.04)',
+  borderRight: '1px solid var(--glass-border-faint)',
   userSelect: 'none',
 };
 

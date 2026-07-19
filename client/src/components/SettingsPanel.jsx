@@ -277,7 +277,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
 const overlayStyle = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0, 0, 0, 0.65)',
+  background: 'var(--overlay-scrim-heavy)',
   backdropFilter: 'blur(4px)',
   display: 'flex',
   alignItems: 'center',
@@ -455,7 +455,7 @@ const footerLeftStyle = {
 const unsavedStyle = {
   fontSize: '11px',
   fontFamily: 'var(--font-mono)',
-  color: '#fbbf24',
+  color: 'var(--warning)',
   letterSpacing: '0.2px',
 };
 
@@ -479,7 +479,7 @@ const saveBtnStyle = {
   fontSize: '11px',
   fontWeight: 600,
   fontFamily: 'var(--font-mono)',
-  color: '#000',
+  color: 'var(--accent-contrast)',
   background: 'var(--accent)',
   display: 'flex',
   alignItems: 'center',
