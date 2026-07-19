@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-07-19] - node-pty upgrade with PTY descriptor leak regression test
+
+### Executive Summary
+* The native terminal layer (node-pty) was upgraded from 1.0.0 to 1.2.0-beta.12 to pick up upstream fixes in how PTY file descriptors are managed. Every terminal pane opens a PTY "master" descriptor in the server process; if those aren't released when terminals close, the server slowly accumulates dead descriptors until the OS refuses to open new terminals. A new regression test now proves the descriptor lifecycle is clean: it spawns and shuts down 20 terminals in a row and asserts the process ends with exactly as many open PTY masters as it started with.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `server/package.json` — pinned `node-pty` to `1.2.0-beta.12` (was `^1.0.0`).
+  * `package-lock.json` — lockfile update for the node-pty version bump.
+* **🧪 Tests:**
+  * `server/__tests__/pty-descriptor-lifecycle.test.js` — new macOS-only Vitest suite that counts open `/dev/ptmx` masters via `lsof`, spawns and kills 20 short-lived PTYs, and asserts the open-master count returns to baseline — guarding against PTY master descriptor leaks on terminal shutdown. Verified passing against the upgraded version.
+
 ## [2026-07-19] - Light mode with a dark / light / system theme toggle
 
 ### Executive Summary
