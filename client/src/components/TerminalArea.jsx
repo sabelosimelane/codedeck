@@ -16,6 +16,7 @@ import {
   getVisualTerminalStatus,
 } from '../utils/terminalActivity';
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
+import SessionTitleActions from './SessionTitleActions';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
 
 const IS_MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
@@ -286,7 +287,7 @@ function getPaneStatusTitle(sessionId, status, session) {
     : baseTitle;
 }
 
-export default function TerminalArea({ project, sessionStatus = [], onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {} }) {
+export default function TerminalArea({ project, sessionStatus = [], sessionTitles = {}, onTitlesChanged = () => {}, namingError = null, onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {} }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
@@ -887,6 +888,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         {/* Tab list */}
         <div style={{ display: 'flex', gap: 2, flex: 1, overflow: 'hidden' }}>
           {tabs.map(tab => {
+            const tabLabel = getTerminalTabLabel(tab.panes, tab.label, sessionTitles);
             const isActive = tab.id === activeTabId;
             const tabStatus = getDisplayTabTerminalStatus(tab, sessionLookup, finishedSessionIds);
             const tabVisualStatus = getVisualTabTerminalStatus(tab, sessionLookup, finishedSessionIds, mutedStatusSessionIds);
@@ -911,7 +913,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                   boxShadow: isActive && tabVisualStatus === 'busy' ? 'inset 0 1px 0 var(--glass-highlight)' : 'none',
                   transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease',
                 }}
-                title={tabStatus === 'none' ? tab.label : `${tab.label} · ${tabStatus}`}
+                title={`${tabLabel} · ${tab.panes[0]?.sessionId} · ${tabStatus}`}
               >
                 <span
                   className={tabVisualStatus === 'busy' ? 'terminal-dot-busy' : tabVisualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
@@ -924,7 +926,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                     flexShrink: 0,
                   }}
                 />
-                {tab.label}
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 240 }}>{tabLabel}</span>
                 {tab.panes.length > 1 && (
                   <span style={{ fontSize: '10px', opacity: 0.5 }}>
                     ({tab.panes.length})
@@ -936,7 +938,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                       e.stopPropagation();
                       if (!tabHasPendingClose) closeTab(tab.id);
                     }}
-                    title={tabHasPendingClose ? `Closing ${tab.label}` : `Close ${tab.label}`}
+                    title={tabHasPendingClose ? `Closing ${tabLabel}` : `Close ${tabLabel}`}
                     style={{
                       opacity: tabHasPendingClose ? 0.2 : 0.5,
                       display: 'flex',
@@ -1050,6 +1052,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
         </div>
       )}
 
+      {namingError && <div role="status" className="session-naming-error" style={{ padding: '4px 12px', fontSize: 11 }}>Session titles unavailable: {namingError}</div>}
       {/* Pane groups — render ALL tabs, hide inactive ones to preserve terminal state */}
       {!isTerminalRuntimeBlocked && shouldRenderTerminals && tabs.map(tab => {
         const isActive = tab.id === activeTabId;
@@ -1150,6 +1153,7 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                             }}
                           />
                           <span
+                            title={pane.sessionId}
                             style={{
                               fontFamily: 'var(--font-mono)',
                               fontSize: 12,
@@ -1160,8 +1164,9 @@ export default function TerminalArea({ project, sessionStatus = [], onSessionSta
                               textOverflow: 'ellipsis',
                             }}
                           >
-                            {pane.sessionId}
+                            {sessionTitles[pane.sessionId]?.title || pane.sessionId}
                           </span>
+                          <SessionTitleActions sessionId={pane.sessionId} metadata={sessionTitles[pane.sessionId]} onChanged={onTitlesChanged} />
                         </div>
                         <span
                           style={{

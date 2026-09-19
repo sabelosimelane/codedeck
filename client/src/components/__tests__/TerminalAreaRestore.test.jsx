@@ -20,6 +20,7 @@ vi.mock('lucide-react', () => {
     RotateCcw: Icon,
     Eye: Icon,
     EyeOff: Icon,
+    Pencil: Icon,
   };
 });
 
@@ -52,6 +53,8 @@ vi.mock('../ToastContext', () => ({
 import TerminalArea from '../TerminalArea';
 
 const PROJECT = { name: 'Gamma', path: '/tmp/gamma' };
+
+
 const LAYOUT_KEY = `codedeck-layout-${PROJECT.name}`;
 
 const SAVED_LAYOUT = {
@@ -75,6 +78,15 @@ const SAVED_LAYOUT = {
 };
 
 describe('TerminalArea restore fallback', () => {
+it('renders persisted titles on tabs and panes without changing terminal identities', async () => {
+  const sessions = [{ sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true }];
+  global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : sessions }));
+  const view = render(<TerminalArea project={PROJECT} sessionStatus={sessions} sessionTitles={{ 'Gamma-9': { title: 'Fix login redirects', state: 'named' } }} />);
+  await waitFor(() => expect(view.getAllByText('Fix login redirects')).toHaveLength(2));
+  expect(mocks.terminalApis.has('Gamma-9')).toBe(true);
+  expect(view.getByRole('button', { name: 'Rename session Gamma-9' })).toBeTruthy();
+});
+
   let originalFetch;
   let onSessionStatusRefresh;
 

@@ -73,6 +73,17 @@ function createMockReq({ sessionId, cwd, cols, rows } = {}) {
 // Tests
 // ---------------------------------------------------------------------------
 
+it('forwards terminal input immediately while observing naming separately', async () => {
+  const pty = createMockPty(); const ws = createMockWs(); const sessions = new Map();
+  const onInput = vi.fn(() => { throw new Error('naming failure'); });
+  handleWsConnection(ws, createMockReq({ sessionId: 'Demo-1', cwd: '/tmp' }), sessions, createMockRuntime(() => pty), new Set(), new Set(), { onInput });
+  ws._emit('message', JSON.stringify({ type: 'input', data: 'fix login\r' }));
+  expect(pty.write).toHaveBeenCalledWith('fix login\r');
+  await Promise.resolve();
+  expect(onInput).toHaveBeenCalledWith('Demo-1', 'fix login\r');
+  expect(pty.write).toHaveBeenCalledTimes(1);
+});
+
 /**
  * Creates a mock terminal runtime (pty mode by default).
  * Wraps the spawn function and provides kill/isSessionRecoverable stubs.

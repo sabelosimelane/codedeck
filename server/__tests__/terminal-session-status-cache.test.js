@@ -15,6 +15,19 @@ function createDeferred() {
 }
 
 describe('createTerminalStatusCache', () => {
+  it('offers local and remote snapshots to naming without retaining them in public status', async () => {
+    const executionState = { executionStatus: 'running', foregroundCommand: 'agent', executionReason: 'foreground_command', executionConfidence: 'medium' };
+    const onActivity = vi.fn();
+    const runtime = { getSessionExecutionStateAsync: vi.fn(async (_id, options) => { options.onSnapshot('local task'); return executionState; }) };
+    const hostRuntime = { getSessionStatusAsync: vi.fn(async (_entry, _id, options) => { options.onSnapshot('remote task'); return { cwd: '/srv', executionState }; }) };
+    const cache = createTerminalStatusCache({ runtime, onActivity });
+    cache.getSessionExecutionState({ alive: true }, 'Local-1');
+    cache.getSessionExecutionState({ alive: true, host: 'remote', hostRuntime }, 'Remote-1');
+    await cache.waitForIdle();
+    expect(onActivity).toHaveBeenCalledWith('Local-1', { ...executionState, snapshotText: 'local task' });
+    expect(onActivity).toHaveBeenCalledWith('Remote-1', { ...executionState, snapshotText: 'remote task' });
+    expect(cache.getSessionExecutionState({ alive: true }, 'Local-1')).not.toHaveProperty('snapshotText');
+  });
   it('returns fallback values immediately and then serves refreshed async tmux status', async () => {
     const runtime = {
       getSessionCwdAsync: vi.fn(async () => '/live/beta'),

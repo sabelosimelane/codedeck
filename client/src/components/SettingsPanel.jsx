@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Settings, FolderOpen, RotateCcw, Save } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import HostsSection from './HostsSection';
+import SessionNamingSettings from './SessionNamingSettings';
 import { useToast } from './ToastContext';
 
 const DEFAULT_NOTIFICATION_COOLDOWN_SECONDS = 30;
@@ -16,6 +17,10 @@ export default function SettingsPanel({ onClose, onSaved }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const namingRef = useRef(null);
+  const [namingState, setNamingState] = useState({ dirty: false, busy: true, valid: false });
+  const anyDirty = dirty || namingState.dirty;
+  const cannotSave = saving || namingState.busy || (namingState.dirty && !namingState.valid);
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -69,6 +74,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
 
     setSaving(true);
     try {
+      if (!await namingRef.current.save()) { setSaving(false); return; }
       const requests = [
         defaultPath
           ? fetch('/api/config/defaultPath', {
@@ -214,28 +220,30 @@ export default function SettingsPanel({ onClose, onSaved }) {
             </div>
 
             {/* Section: Hosts */}
+            <SessionNamingSettings ref={namingRef} onStateChange={setNamingState} />
             <HostsSection />
           </div>
 
           {/* Footer */}
           <div style={footerStyle}>
             <div style={footerLeftStyle}>
-              {dirty && (
+              {anyDirty && (
                 <span style={unsavedStyle}>unsaved changes</span>
               )}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   onClick={() => {
+                    namingRef.current.revert();
                     setDefaultPath(savedPath);
                     setEditorCommand(savedEditorCommand);
                     setTerminalFinishCooldownSeconds(savedTerminalFinishCooldownSeconds);
                   }}
-                disabled={!dirty}
+                disabled={!anyDirty || namingState.busy || saving}
                 style={{
                   ...actionBtnStyle,
-                  opacity: dirty ? 1 : 0.3,
-                  cursor: dirty ? 'pointer' : 'default',
+                  opacity: anyDirty ? 1 : 0.3,
+                  cursor: anyDirty ? 'pointer' : 'default',
                 }}
                 title="Revert"
               >
@@ -244,12 +252,12 @@ export default function SettingsPanel({ onClose, onSaved }) {
               </button>
               <button
                 onClick={handleSave}
-                disabled={!dirty || saving}
+                disabled={!anyDirty || cannotSave}
                 title={saving ? 'Saving settings' : 'Save settings'}
                 style={{
                   ...saveBtnStyle,
-                  opacity: dirty && !saving ? 1 : 0.4,
-                  cursor: dirty && !saving ? 'pointer' : 'default',
+                  opacity: anyDirty && !cannotSave ? 1 : 0.4,
+                  cursor: anyDirty && !cannotSave ? 'pointer' : 'default',
                 }}
               >
                 <Save size={12} />

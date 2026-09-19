@@ -39,9 +39,15 @@ import { normalizeProjects } from './project-config.js';
 import { createHostsRouter } from './routes/hosts.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { collectSystemResources } from './system-resources.js';
+import { createNamingStore } from './session-naming-store.js';
+import { createNamingCredentialStore } from './session-naming-credentials.js';
+import { createConduitNamingClient } from './conduit-naming-client.js';
+import { createNamingService } from './session-naming-service.js';
+import { createNamingRouter } from './routes/session-naming.js';
 
 const app = express();
-app.use(express.json());
+// Naming owns its parser so malformed bodies also use its Problem Details handler.
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -668,10 +674,33 @@ const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
   || getConfig('terminalRuntime')
   || 'tmux';
 const terminalRuntime = createTerminalRuntime(runtimeMode);
+const namingStore = createNamingStore(db);
+const namingCredentials = createNamingCredentialStore(path.join(process.env.HOME, '.codedeck', 'session-naming-credential'));
+const namingConduit = createConduitNamingClient({ readCredential: () => namingCredentials.read() });
+const namingService = createNamingService({
+  store: namingStore,
+  generate: (settings, context) => namingConduit.generate(settings, context),
+  capture: async (id) => {
+    if (deletedSessionIds.has(id)) throw new Error('Session deleted');
+    const entry = sessions.get(id);
+    const runtime = entry?.hostRuntime ?? resolveHostRuntime(id)?.hostRuntime ?? terminalRuntime;
+    let context;
+    const options = { onSnapshot: text => { context = text; } };
+    if (runtime.getSessionStatusAsync) await runtime.getSessionStatusAsync(entry, id, options);
+    else await runtime.getSessionExecutionStateAsync(id, options);
+    if (typeof context !== 'string') throw new Error('Terminal snapshot unavailable');
+    return context;
+  },
+});
+app.use(createNamingRouter({
+  store: namingStore, service: namingService, credentials: namingCredentials, conduit: namingConduit,
+  sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id) || namingStore.get(id) !== null),
+}));
 const terminalStatusCache = createTerminalStatusCache({
   runtime: terminalRuntime,
   listAllSessionIds: () => listAllHostSessionIds(terminalRuntime),
   getReachability: hostReachability.getReachability,
+  onActivity: namingService.observe,
 });
 terminalStatusCache.refreshSessionList();
 const sessionPruneTimer = setInterval(() => {
@@ -689,6 +718,7 @@ wss.on('connection', (ws, req) => {
   handleWsConnection(ws, req, sessions, terminalRuntime, deletedSessionIds, reservedSessionIds, {
     resolveHostRuntime,
     getReachability: hostReachability.getReachability,
+    onInput: namingService.input,
   });
 });
 
@@ -701,6 +731,7 @@ app.delete('/api/terminal/:sessionId', async (req, res) => {
   try {
     deletedSessionIds.add(req.params.sessionId);
     reservedSessionIds.delete(req.params.sessionId);
+    namingService.remove(req.params.sessionId);
 
     if (entry?.ws && entry.ws.readyState === 1) {
       try {

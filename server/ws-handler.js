@@ -629,7 +629,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
         rows,
         host: hostResolution.host,
         hostRuntime: hostResolution.hostRuntime,
-      }, sessions, deletedSessionIds).catch((err) => {
+      }, sessions, deletedSessionIds, options).catch((err) => {
         console.warn(`[terminal] remote_attach_failed session=${sessionId} host=${hostResolution.host} error=${err.message}`);
         sendSpawnError(ws, {
           reason: 'spawn_failed',
@@ -786,6 +786,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
   }
 
   registerSessionSocketHandlers(ws, entry, sessionId, {
+    onInput: options.onInput,
     resizeRuntime: (cols, rows) => {
       if (entry.runtimeType === 'tmux') {
         safeResizeRuntimeSession(runtime, sessionId, cols, rows);
@@ -808,6 +809,13 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
  *   Promise (remote); when it does, the rehydrate reply is sent on resolve.
  */
 function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
+  const observeInput = (data) => {
+    if (!ops.onInput) return;
+    queueMicrotask(() => {
+      try { ops.onInput(sessionId, data); }
+      catch { console.warn('[session-naming] input observation failed'); }
+    });
+  };
   // Browser -> PTY
   ws.on('message', (msg) => {
     if (entry.ws !== ws) return;
@@ -816,6 +824,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
       const parsed = JSON.parse(msg.toString());
       if (parsed.type === 'input') {
         entry.pty.write(parsed.data);
+        observeInput(parsed.data);
       } else if (parsed.type === 'resize') {
         ops.resizeRuntime(parsed.cols, parsed.rows);
         entry.pty.resize(parsed.cols, parsed.rows);
@@ -912,6 +921,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
     } catch {
       // Raw string input fallback
       entry.pty.write(msg.toString());
+      observeInput(msg.toString());
     }
   });
 
@@ -1112,7 +1122,7 @@ export async function reseedRemoteDetachedSessions({
  * host runtime. Kept separate so the local path stays fully synchronous — the
  * local suite's send-ordering guarantees depend on that.
  */
-async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, hostRuntime }, sessions, deletedSessionIds = new Set()) {
+async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, hostRuntime }, sessions, deletedSessionIds = new Set(), options = {}) {
   // Per-host tmux requirement (§8.3) — the message names the host, and an
   // unreachable host is reported distinctly from a missing tmux.
   const tmuxCheck = await hostRuntime.checkTmuxAsync();
@@ -1313,6 +1323,7 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
   }
 
   registerSessionSocketHandlers(ws, entry, sessionId, {
+    onInput: options.onInput,
     resizeRuntime: (resizeCols, resizeRows) => {
       // Best-effort remote resize; errors are swallowed inside the runtime.
       hostRuntime.resizeSessionAsync(sessionId, resizeCols, resizeRows);

@@ -10,6 +10,7 @@ import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
 import { openFilePreviewTab } from './utils/fileActions';
 import { getTerminalStatus } from './utils/terminalActivity';
+import { useSessionTitles } from './hooks/useSessionTitles';
 import {
   DEFAULT_APP_TITLE,
   SYSTEM_RESOURCES_URL,
@@ -48,6 +49,7 @@ function AppContent() {
   });
   const [showFileTree, setShowFileTree] = useState(false);
   const [sessionStatus, setSessionStatus] = useState([]);
+  const { titles: sessionTitles, refresh: refreshSessionTitles, error: namingError } = useSessionTitles();
   const [fileBrowserProject, setFileBrowserProject] = useState(null);
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
   const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
@@ -459,7 +461,7 @@ function AppContent() {
         onToggleCompact={() => setIsSidebarCompact(prev => !prev)}
         onToggleFiles={() => setShowFileTree(prev => !prev)}
         showFileTree={showFileTree}
-        sessionStatus={sessionStatus}
+        sessionStatus={sessionStatus.map(session => ({ ...session, title: sessionTitles[session.sessionId]?.title ?? null }))}
         finishedSessionIds={finishedSessionIds}
         mutedStatusSessionIds={mutedStatusSessionIds}
         onResetFinishedSession={resetFinishedSession}
@@ -486,6 +488,9 @@ function AppContent() {
           <TerminalArea
             project={activeProject}
             sessionStatus={sessionStatus}
+            sessionTitles={sessionTitles}
+            onTitlesChanged={refreshSessionTitles}
+            namingError={namingError}
             onSessionStatusRefresh={setSessionStatus}
             finishedSessionIds={finishedSessionIds}
             mutedStatusSessionIds={mutedStatusSessionIds}

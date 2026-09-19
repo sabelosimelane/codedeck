@@ -150,7 +150,7 @@ export function getTerminalCompletionNotification(session, {
   if (!project || mutedProjects.includes(project.name)) return null;
 
   return {
-    title: `CodeDeck — ${session.sessionId} finished`,
+    title: `CodeDeck — ${session.title || session.sessionId} finished`,
     body: session.lastOutputLine || `${session.sessionId} is idle`,
     projectName: project.name,
   };

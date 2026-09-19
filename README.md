@@ -17,6 +17,7 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Truthful terminal scrollback** — VS Code-style scrolling, snapshot-first reconnects, and visible warnings when preserved history cannot be guaranteed
 - **Terminal resilience** — debug inspector, transport replay catch-up, visibility-aware recovery, heartbeat monitoring
 - **Durable sessions** — tmux-backed sessions survive browser detaches and server restarts
+- **Descriptive session titles** — optional background naming through Conduit, with manual rename and retry
 - **Toast notifications** — success/error feedback on every action, no silent failures
 
 ## Setup
@@ -49,6 +50,31 @@ Open `http://localhost:43000` in your browser.
 6. Use the pane **eye icon** — or **Cmd/Ctrl+Shift+M** on the active pane — to mute/show status colors without changing the terminal's real running/idle/finished state.
 7. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
 8. Toast notifications confirm every action and surface errors.
+
+## Session naming
+
+Open **Settings → Session naming**, enter your Conduit base URL and API credential,
+then **Test connection / refresh catalog**. Explicitly choose a provider, model, and
+optional reasoning effort before saving. Availability and choices come from Conduit.
+The credential stays on the backend in a private file and is never returned to the browser.
+
+After a submitted task starts running, CodeDeck sends a bounded terminal excerpt to
+Conduit for a short title. This works through the shared local/remote terminal activity
+interface. Naming runs independently of terminal input, output, and navigation. Empty Enter presses do not arm naming. Startup
+banners alone can return insufficient context and wait for another submission.
+
+Use the pencil beside a pane's name to rename it. Manual titles take precedence over
+pending generation. Failed naming retains the current label, shows the reason, and retries automatically every
+10 seconds for up to one minute after the first failure. Each retry captures fresh terminal
+context. After that window, **Retry naming** or a new task submission starts a fresh attempt.
+Titles persist across reloads; a split tab uses its first pane's title. Hover a label to
+see the original session ID. Existing sessions are eligible on their next submitted task;
+there is no retrospective bulk naming.
+
+CodeDeck holds naming excerpts only in memory (at most 12,000 characters each). Conduit
+and its selected provider have their own retention policies. The `/execute` response must
+report the selected provider and model; substitutions or malformed results fail naming
+instead of updating the title. Configure Conduit project defaults/routing accordingly.
 
 ## Terminal Resilience
 

@@ -1,0 +1,12 @@
+.session-naming-settings { margin: 0 0 24px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); }
+.session-naming-settings h3, .session-title-dialog h3 { margin: 0 0 10px; font-size: 13px; color: var(--text-primary); }
+.session-naming-settings p, .session-title-dialog p { font-size: 11px; line-height: 1.6; color: var(--text-secondary); }
+.session-naming-settings label, .session-title-dialog label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 12px; color: var(--text-primary); }
+.session-naming-settings input, .session-naming-settings select, .session-title-dialog input { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-sidebar); color: var(--text-primary); font: inherit; }
+.session-naming-settings button, .session-title-dialog button { padding: 7px 10px; margin-right: 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--accent); background: var(--bg-sidebar); font-size: 11px; }
+.session-naming-settings button:disabled, .session-title-dialog button:disabled { opacity: .5; cursor: default; }
+.session-naming-error { color: var(--danger) !important; }
+.session-title-actions { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); }
+.session-title-actions > button { display: inline-flex; align-items: center; gap: 4px; padding: 5px; color: var(--text-secondary); }
+.session-title-overlay { position: fixed; inset: 0; z-index: 1100; background: var(--overlay-scrim-heavy); display: flex; align-items: center; justify-content: center; cursor: default; }
+.session-title-dialog { width: 340px; max-width: 90vw; padding: 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-sidebar); text-align: left; }

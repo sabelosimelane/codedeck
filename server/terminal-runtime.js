@@ -838,7 +838,7 @@ function createTmuxRuntime() {
       }
     },
 
-    async getSessionExecutionStateAsync(sessionId) {
+    async getSessionExecutionStateAsync(sessionId, { onSnapshot } = {}) {
       const tmuxName = sanitizeTmuxName(sessionId);
 
       try {
@@ -857,6 +857,7 @@ function createTmuxRuntime() {
         const raw = rawOutput.replace(/\r/g, '').replace(/\n$/, '');
         const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
 
+        onSnapshot?.(snapshotText);
         return classifyTerminalExecution({
           paneCurrentCommand,
           paneDead,
@@ -1210,7 +1211,7 @@ export function createHostTerminalRuntime(runner, hostName) {
     },
 
     /** One SSH round-trip for the status cache's cwd + execution snapshot. */
-    async getSessionStatusAsync(entry, sessionId) {
+    async getSessionStatusAsync(entry, sessionId, { onSnapshot } = {}) {
       const tmuxName = sanitizeTmuxName(sessionId);
       try {
         const { stdout } = await runner.run(
@@ -1225,6 +1226,7 @@ export function createHostTerminalRuntime(runner, hostName) {
         const snapshotText = stdout.slice(separator + 1);
         const [cwd = '', paneCurrentCommand = '', paneDead = '0'] = metadata.split('\t');
 
+        onSnapshot?.(snapshotText);
         return {
           cwd: cwd || entry?.cwd || null,
           executionState: classifyTerminalExecution({

@@ -31,6 +31,9 @@ vi.mock('lucide-react', () => {
     Play: Icon,
     Copy: Icon,
     MoreVertical: Icon,
+    Sun: Icon,
+    Moon: Icon,
+    Monitor: Icon,
   };
 });
 
@@ -45,6 +48,7 @@ vi.mock('../SettingsPanel', () => ({
 vi.mock('../BrandMark', () => ({
   default: () => null,
 }));
+vi.mock('../../theme', () => ({ getThemeMode: () => 'dark', cycleThemeMode: vi.fn(), THEME_MODES: ['dark', 'light', 'system'] }));
 
 vi.mock('../ToastContext', () => ({
   useToast: () => ({ showToast: mocks.showToast }),
@@ -89,6 +93,12 @@ function renderSidebar(overrides = {}) {
 }
 
 describe('Sidebar', () => {
+  it('shows a generated session title with the original ID available in a tooltip', () => {
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    const project = { name: 'Demo', path: '/tmp/demo' };
+    const view = renderSidebar({ activeProjects: [project], activeProject: project, sessionStatus: [{ sessionId: 'Demo-1', cwd: '/tmp/demo', alive: true, title: 'Fix login redirects' }] });
+    expect(view.getByText('Fix login redirects').title).toBe('Demo-1');
+  });
   let originalFetch;
 
   beforeEach(() => {

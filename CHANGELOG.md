@@ -1,5 +1,54 @@
 # Changelog
 
+## [2026-09-19] - Automatic session titles with reliable naming settings
+
+### Executive Summary
+* Sessions can now receive short descriptive titles through a configured Conduit model, making tabs easier to distinguish without interrupting terminal work. Titles persist, manual names take precedence, and failures retry in the background for a bounded period. The main settings Save button now also saves the selected naming effort.
+
+### Technical Details
+* **✨ New Feature:**
+  * Agent-agnostic naming follows submitted input and terminal activity; up to two background requests run concurrently.
+  * Manual rename and automatic retries preserve existing labels on failure and keep session identities unchanged.
+* **🐛 Bug Fix:**
+  * Problem: changing naming effort and using the main Save button left the old naming selection persisted. Solution: integrate naming settings with Save, Revert, and unsaved-change indicators; verify persistence across reloads.
+  * Empty Enter presses no longer arm naming; failures retry every ten seconds for up to one minute after the first failure.
+* **🛠️ Codebase:**
+  * `README.md` — Document configuration, title behavior, bounded retries, and context retention.
+  * `client/src/App.jsx` — Poll title metadata independently and pass titles to the workspace.
+  * `client/src/components/SettingsPanel.jsx` — Include naming fields in the main Save, Revert, and unsaved-state controls.
+  * `client/src/components/SessionNamingSettings.jsx` — Add connection testing and catalog-driven provider, model, and effort selection.
+  * `client/src/components/SessionTitleActions.jsx` — Add manual rename, failure details, and retry actions.
+  * `client/src/components/Sidebar.jsx` — Display descriptive titles while retaining session IDs in tooltips.
+  * `client/src/components/TerminalArea.jsx` — Display pane titles and use the first pane title for split tabs.
+  * `client/src/components/session-naming.css` — Style naming settings, status, and rename dialogs.
+  * `client/src/hooks/useSessionTitles.js` — Poll persisted metadata with cancellation and no overlapping requests.
+  * `client/src/utils/sessionNamingApi.js` — Provide naming requests and paginated metadata retrieval.
+  * `client/src/utils/terminalActivity.js` — Use descriptive titles in completion notifications.
+  * `client/src/utils/terminalTabLabel.js` — Resolve a tab label from its first pane title.
+  * `client/src/components/__tests__/SessionNaming.test.jsx` — Cover settings save/reload/revert/failure, catalog choices, titles, retry, and polling.
+  * `client/src/components/__tests__/Sidebar.test.jsx` — Verify title display and update theme mocks for regression coverage.
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — Verify restored titles preserve terminal identity.
+  * `client/src/test-setup.js` — Supply the media-query browser contract in jsdom.
+  * `client/vitest.config.js` — Register shared browser test setup.
+  * `server/index.js` — Wire naming routes, persistence, terminal snapshots, input observations, and deletion.
+  * `server/conduit-naming-client.js` — Send the exact configured selection through bounded Conduit requests with circuit breakers.
+  * `server/session-naming-service.js` — Coordinate submission eligibility, background generation, revision protection, and bounded retries.
+  * `server/session-naming-store.js` — Persist title metadata and settings; mark interrupted jobs retryable on restart.
+  * `server/session-naming-credentials.js` — Store credentials separately in a private file.
+  * `server/session-naming-validation.js` — Validate settings, catalog fields, persisted metadata, and generated titles.
+  * `server/routes/session-naming.js` — Expose validated settings, catalog, title, retry, and health APIs with pagination and problem details.
+  * `server/terminal-runtime.js` — Expose existing local and remote classification snapshots through callbacks.
+  * `server/terminal-session-status-cache.js` — Observe activity without exposing terminal snapshots in status responses.
+  * `server/ws-handler.js` — Observe submitted input independently of immediate terminal writes.
+  * `server/__tests__/session-naming.test.js` — Cover eligibility, state transitions, persistence, concurrency, revision safety, and retry timing.
+  * `server/__tests__/session-naming-api.test.js` — Cover API validation, private credentials, exact effort transport, failures, and breaker recovery.
+  * `server/__tests__/terminal-session-status-cache.test.js` — Verify local and remote snapshots stay out of public status.
+  * `server/__tests__/ws-handler.test.js` — Verify naming observation cannot block terminal input.
+  * `server/package.json` — Add the opossum circuit-breaker dependency.
+  * `package-lock.json` — Lock the circuit-breaker dependency.
+  * `docs/steering/api-standards.md` — Document naming API contracts, limits, errors, and persistence.
+
+
 ## [2026-07-19] - node-pty upgrade with PTY descriptor leak regression test
 
 ### Executive Summary

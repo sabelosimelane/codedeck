@@ -263,13 +263,13 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
 
                 showToast({
                   type: 'success',
-                  message: `${session.sessionId} finished${session.lastOutputLine ? `: ${session.lastOutputLine}` : ''}`,
+                  message: `${session.title || session.sessionId} finished${session.lastOutputLine ? `: ${session.lastOutputLine}` : ''}`,
                 });
               });
             } else {
               showToast({
                 type: 'success',
-                message: `${session.sessionId} finished${session.lastOutputLine ? `: ${session.lastOutputLine}` : ''}`,
+                message: `${session.title || session.sessionId} finished${session.lastOutputLine ? `: ${session.lastOutputLine}` : ''}`,
               });
             }
           }
@@ -706,8 +706,8 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                           }}
                           title={`Terminal ${session.sessionId}: ${termStatus === 'finished' ? 'finished — needs attention' : termStatus}${isStatusMuted ? ' (status colors muted)' : ''}`}
                         />
-                        <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-                          {session.sessionId}
+                        <span title={session.sessionId} style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                          {session.title || session.sessionId}
                         </span>
                         <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' }}>
                           · {timeSince}
