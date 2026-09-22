@@ -1,5 +1,45 @@
 # Changelog
 
+## [2026-09-22] - Park a tab as waiting while an agent works in it
+
+### Executive Summary
+* Handing a task to a coding agent used to leave its tab shouting for attention for as long as the agent worked. A tab can now be parked as waiting: it shrinks, dims and moves to the left of the tab bar so the tabs still being worked in keep their space, and the sidebar shows how many tabs are parked in each project — the signal that matters most for projects not currently on screen. Parking is deliberately temporary. The moment the work finishes, or its session dies, the mark lifts on its own and the tab returns to full size with its usual finished styling and notification, so nothing is missed by having asked for quiet.
+
+### Technical Details
+* **✨ New Feature:**
+  * Mark a tab waiting from the hourglass beside its close button, or with Cmd/Ctrl+Shift+U on the active tab.
+  * Parked tabs render compact and dimmed, drop their busy animation, and group to the left while keeping their relative order.
+  * The mark clears automatically when any pane in the tab finishes or its session dies; manual clearing is always available on the parked tab.
+  * Each sidebar project row shows a count of its parked tabs.
+* **🔌 API/Interface:**
+  * `GET /api/terminal-waiting` — paginated marks with an exact `sessionId` filter and `sessionId`/`waitingAt` sorting, using `sessionId` as the stable tiebreaker.
+  * `PUT /api/terminal-waiting/:sessionId` — set or clear a mark; marking is idempotent and preserves the original timestamp. Unknown sessions return 404, and errors follow RFC 9457 with a `traceId` matched by `X-Trace-Id`.
+* **🗄️ Database:**
+  * New `terminal_waiting` table holding `session_id` and an ISO-8601 `waiting_at`, validated per field on read as well as write. Deleting a terminal clears its mark, because session ids are reused and a stale mark would silence a brand-new terminal.
+* **🐛 Bug Fix:**
+  * Problem: the first implementation used the tab's status dot as the toggle, turning an indicator into a control and leaving the feature with no visible resting appearance at all. Solution: give the toggle its own hourglass button beside the close X, mirroring the affordance project rows already use, and return the dot to reporting status only.
+  * Problem: a parked tab's tooltip replaced the real terminal status with the waiting note, hiding what the terminal was actually doing. Solution: report both.
+* **🛠️ Codebase:**
+  * `server/terminal-waiting-store.js` — SQLite store for waiting marks with per-field guards on read and write.
+  * `server/routes/terminal-waiting.js` — Paginated collection and mark/clear endpoint with its own JSON parser and Problem Details handler.
+  * `server/index.js` — Wire the store and router, and clear a session's mark when the terminal is deleted.
+  * `client/src/utils/terminalWaiting.js` — Tab waiting identity, left-grouping order, auto-clear rules, and per-project counts.
+  * `client/src/hooks/useWaitingSessions.js` — Mirror marks only after the backend confirms the write; auto-clear stays silent while user actions toast.
+  * `client/src/components/TerminalArea.jsx` — Render the waiting button, compact parked tabs, the left grouping, the shortcut, and the auto-clear effect.
+  * `client/src/components/Sidebar.jsx` — Show a waiting count on each project row.
+  * `client/src/components/ShortcutsOverlay.jsx` — Document Cmd/Ctrl+Shift+U.
+  * `client/src/App.jsx` — Hold waiting state and pass it to the workspace and sidebar.
+  * `README.md`, `docs/steering/product.md`, `docs/steering/structure.md`, `docs/steering/api-standards.md` — Document the feature, its terminology, the new files, and the endpoint contract.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-waiting-store.test.js` — Marking, idempotency, clearing, ordering, reopen, and per-field rejection.
+  * `server/__tests__/terminal-waiting-api.test.js` — Round trip, pagination, filtering, sorting, 404, field errors, and malformed JSON.
+  * `client/src/utils/__tests__/terminalWaiting.test.js` — Identity, ordering, auto-clear conditions, and project counts.
+  * `client/src/hooks/__tests__/useWaitingSessions.test.jsx` — Load, confirmed writes, failure surfacing, and silent auto-clear.
+  * `client/src/components/__tests__/TerminalAreaWaiting.test.jsx` — Grouping, compactness, the visible toggle, the inert status dot, truthful tooltips, the shortcut, and auto-clear.
+  * `client/src/components/__tests__/SidebarWaitingCount.test.jsx` — Per-project counts, singular and plural labels, and compact mode.
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — Extend the icon mock now that the hourglass always renders.
+
+
 ## [2026-09-19] - Automatic session titles with reliable naming settings
 
 ### Executive Summary
