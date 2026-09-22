@@ -962,36 +962,21 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
                   transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease, opacity 0.15s ease',
                 }}
                 title={isWaiting
-                  ? `${tabLabel} · ${waitingKey} · waiting — clears when the work finishes`
+                  ? `${tabLabel} · ${waitingKey} · ${tabStatus} · waiting — clears when the work finishes`
                   : `${tabLabel} · ${waitingKey} · ${tabStatus}`}
               >
                 <span
-                  role="button"
-                  tabIndex={-1}
-                  aria-label={isWaiting ? `Clear waiting for ${waitingKey}` : `Mark ${waitingKey} waiting`}
-                  title={isWaiting ? 'Clear waiting' : 'Mark waiting — dim this tab until the work finishes'}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (waitingKey) onToggleWaiting(waitingKey);
-                  }}
+                  data-testid="terminal-tab-status-dot"
                   className={isWaiting ? undefined : tabVisualStatus === 'busy' ? 'terminal-dot-busy' : tabVisualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
-                  style={isWaiting ? {
-                    display: 'flex',
-                    alignItems: 'center',
-                    flexShrink: 0,
-                    cursor: 'pointer',
-                  } : {
+                  style={{
                     width: 7,
                     height: 7,
                     borderRadius: '50%',
-                    background: statusStyle.dotColor,
-                    boxShadow: statusStyle.dotShadow,
+                    background: isWaiting ? 'var(--text-muted)' : statusStyle.dotColor,
+                    boxShadow: isWaiting ? 'none' : statusStyle.dotShadow,
                     flexShrink: 0,
-                    cursor: 'pointer',
                   }}
-                >
-                  {isWaiting && <Hourglass size={11} />}
-                </span>
+                />
                 <span
                   data-testid="terminal-tab-label"
                   style={{
@@ -1006,6 +991,30 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
                     ({tab.panes.length})
                   </span>
                 )}
+                <span
+                  role="button"
+                  tabIndex={-1}
+                  aria-label={isWaiting ? `Clear waiting for ${waitingKey}` : `Mark ${waitingKey} waiting`}
+                  title={isWaiting
+                    ? `Wake ${tabLabel} — stop waiting`
+                    : `Mark ${tabLabel} waiting — dim this tab until its work finishes`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (waitingKey) onToggleWaiting(waitingKey);
+                  }}
+                  style={{
+                    opacity: isWaiting ? 0.9 : 0.45,
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexShrink: 0,
+                    cursor: 'pointer',
+                    transition: 'opacity 0.15s ease',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.opacity = '1'; }}
+                  onMouseLeave={e => { e.currentTarget.style.opacity = isWaiting ? '0.9' : '0.45'; }}
+                >
+                  <Hourglass size={10} />
+                </span>
                 {tabs.length > 1 && !isWaiting && (
                   <span
                     onClick={(e) => {

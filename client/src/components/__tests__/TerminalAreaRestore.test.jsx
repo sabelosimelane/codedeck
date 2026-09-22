@@ -20,6 +20,7 @@ vi.mock('lucide-react', () => {
     RotateCcw: Icon,
     Eye: Icon,
     EyeOff: Icon,
+    Hourglass: Icon,
     Pencil: Icon,
   };
 });

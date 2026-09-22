@@ -79,22 +79,50 @@ describe('TerminalArea waiting tabs', () => {
     expect(parseInt(waitingLabel.style.maxWidth, 10)).toBeLessThan(parseInt(activeLabel.style.maxWidth, 10));
   });
 
-  it('swaps the status dot for a waiting toggle that clears the mark', async () => {
-    const onToggleWaiting = vi.fn();
-    await renderArea({ waitingSessionIds: new Set(['Gamma-2']), onToggleWaiting });
+  it('offers a visible waiting button on every tab, so the action can be found', async () => {
+    await renderArea({ waitingSessionIds: new Set() });
 
-    const toggle = screen.getByRole('button', { name: 'Clear waiting for Gamma-2' });
-    fireEvent.click(toggle);
-    expect(onToggleWaiting).toHaveBeenCalledWith('Gamma-2');
+    ['Gamma-1', 'Gamma-2', 'Gamma-3'].forEach(sessionId => {
+      const toggle = screen.getByRole('button', { name: `Mark ${sessionId} waiting` });
+      expect(tabByKey(sessionId).contains(toggle)).toBe(true);
+    });
   });
 
-  it('marks a tab waiting from its status dot without switching to it', async () => {
+  it('marks a tab waiting from its own button without switching to it', async () => {
     const onToggleWaiting = vi.fn();
     await renderArea({ waitingSessionIds: new Set(), onToggleWaiting });
 
     fireEvent.click(screen.getByRole('button', { name: 'Mark Gamma-1 waiting' }));
     expect(onToggleWaiting).toHaveBeenCalledWith('Gamma-1');
     expect(tabByKey('Gamma-3').dataset.active).toBe('true');
+  });
+
+  it('keeps the waiting button available on a parked tab, to wake it again', async () => {
+    const onToggleWaiting = vi.fn();
+    await renderArea({ waitingSessionIds: new Set(['Gamma-2']), onToggleWaiting });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear waiting for Gamma-2' }));
+    expect(onToggleWaiting).toHaveBeenCalledWith('Gamma-2');
+  });
+
+  it('leaves the status dot as a pure indicator — reading state, not changing it', async () => {
+    const onToggleWaiting = vi.fn();
+    await renderArea({ waitingSessionIds: new Set(), onToggleWaiting });
+
+    const dot = tabByKey('Gamma-1').querySelector('[data-testid="terminal-tab-status-dot"]');
+    expect(dot).not.toBeNull();
+    expect(dot.getAttribute('role')).toBeNull();
+
+    fireEvent.click(dot);
+    expect(onToggleWaiting).not.toHaveBeenCalled();
+  });
+
+  it('still reports the real terminal status on a parked tab rather than hiding it', async () => {
+    await renderArea({ waitingSessionIds: new Set(['Gamma-2']) });
+
+    const title = tabByKey('Gamma-2').getAttribute('title');
+    expect(title).toMatch(/busy/);
+    expect(title).toMatch(/waiting/);
   });
 
   it('toggles waiting for the active tab with Cmd/Ctrl+Shift+U', async () => {
