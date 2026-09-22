@@ -6,6 +6,7 @@ import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
+import { countWaitingSessionsForProject } from '../utils/terminalWaiting';
 import {
   createNotificationAudioContext,
   playCompletionDing,
@@ -108,6 +109,36 @@ function renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError }
   );
 }
 
+// Most of the attention cost is the projects you are NOT looking at — this is
+// where a delegated agent becomes visible without switching to its tab bar.
+function renderWaitingCount(projectName, waitingSessionIds) {
+  const count = countWaitingSessionsForProject(projectName, waitingSessionIds);
+  if (count === 0) return null;
+  return (
+    <span
+      data-testid={`project-waiting-count-${projectName}`}
+      title={`${count} ${count === 1 ? 'tab' : 'tabs'} waiting on an agent`}
+      style={{
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 3,
+        fontFamily: 'var(--font-mono)',
+        fontSize: 10,
+        lineHeight: 1,
+        padding: '3px 5px',
+        borderRadius: 999,
+        color: 'var(--text-muted)',
+        background: 'rgba(154, 165, 184, 0.12)',
+        border: '1px solid rgba(154, 165, 184, 0.18)',
+      }}
+    >
+      <Hourglass size={9} />
+      {count}
+    </span>
+  );
+}
+
 const STATUS_COLORS = {
   active: 'var(--accent)',
   finished: 'var(--warning)',
@@ -116,7 +147,7 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, waitingProjects = [], shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, onBrowseFiles, onShowShortcuts }) {
+export default function Sidebar({ activeProjects, waitingProjects = [], shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [themeMode, setThemeModeState] = useState(getThemeMode);
   const [defaultPath, setDefaultPath] = useState(null);
@@ -629,6 +660,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                     </span>
                   )}
                   {!isCompact && renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
+                  {!isCompact && renderWaitingCount(project.name, waitingSessionIds)}
                 </div>
 
                 {!isCompact && !isRenaming && (

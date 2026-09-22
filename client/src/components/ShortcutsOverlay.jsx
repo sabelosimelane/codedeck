@@ -12,6 +12,7 @@ const SHORTCUTS = [
     { label: 'Split right', mac: ['⌘', '⇧', 'E'], other: ['Ctrl', '⇧', 'E'] },
     { label: 'Clear terminal', mac: ['⌘', '⇧', 'K'], other: ['Ctrl', '⇧', 'K'] },
     { label: 'Mute status colors', mac: ['⌘', '⇧', 'M'], other: ['Ctrl', '⇧', 'M'] },
+    { label: 'Mark tab waiting', mac: ['⌘', '⇧', 'U'], other: ['Ctrl', '⇧', 'U'] },
     { label: 'Close pane', mac: ['⌘', '⇧', 'X'], other: ['Ctrl', '⇧', 'X'] },
   ]},
   { category: 'Workspace', items: [

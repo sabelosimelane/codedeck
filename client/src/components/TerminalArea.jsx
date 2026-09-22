@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass } from 'lucide-react';
 import TerminalInspector from './TerminalInspector';
 import { useToast } from './ToastContext';
 import {
@@ -18,6 +18,12 @@ import {
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import SessionTitleActions from './SessionTitleActions';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
+import {
+  getTabWaitingKey,
+  isTabWaiting,
+  orderTabsForDisplay,
+  getWaitingKeysToAutoClear,
+} from '../utils/terminalWaiting';
 
 const IS_MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 const DEFAULT_RUNTIME_BLOCKED_MESSAGE = 'Install tmux to enable durable CodeDeck terminals.';
@@ -254,6 +260,11 @@ const TAB_STATUS_STYLES = {
   },
 };
 
+// A waiting tab is parked, not gone: it keeps its place in the bar but gives up
+// most of its width so the tabs still being worked in keep theirs.
+const TAB_LABEL_MAX_WIDTH = 240;
+const WAITING_TAB_LABEL_MAX_WIDTH = 96;
+
 const PANE_STATUS_LABELS = {
   none: 'Live terminal attached',
   busy: 'Running',
@@ -287,7 +298,7 @@ function getPaneStatusTitle(sessionId, status, session) {
     : baseTitle;
 }
 
-export default function TerminalArea({ project, sessionStatus = [], sessionTitles = {}, onTitlesChanged = () => {}, namingError = null, onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {} }) {
+export default function TerminalArea({ project, sessionStatus = [], sessionTitles = {}, onTitlesChanged = () => {}, namingError = null, onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), waitingSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {}, onToggleWaiting = () => {}, onClearWaiting = () => {} }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
@@ -304,6 +315,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
   const pendingSessionIdsRef = useRef(new Set());
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
+  const displayTabs = orderTabsForDisplay(tabs, waitingSessionIds);
   const sessionLookup = new Map(sessionStatus.map(session => [session.sessionId, session]));
   const shouldRenderTerminals = shouldRenderProjectTerminals({
     projectName: project.name,
@@ -766,6 +778,19 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
     }));
   }, []);
 
+  // Waiting is a time-boxed quiet, not a permanent mute: once the delegated work
+  // lands (or its session dies) the mark clears, so the tab returns to full size
+  // and the finished styling can do its job.
+  useEffect(() => {
+    const keys = getWaitingKeysToAutoClear({
+      tabs,
+      waitingSessionIds,
+      finishedSessionIds,
+      sessionLookup,
+    });
+    if (keys.length > 0) onClearWaiting(keys);
+  }, [tabs, waitingSessionIds, finishedSessionIds, sessionStatus, onClearWaiting]);
+
   // Keyboard shortcuts — capture phase fires before xterm's key handler
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -825,6 +850,15 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
         return;
       }
 
+      // Cmd+Shift+U — park the active tab as waiting (or wake it again)
+      if (key === 'u' && activeTab) {
+        e.preventDefault();
+        e.stopPropagation();
+        const waitingKey = getTabWaitingKey(activeTab);
+        if (waitingKey) onToggleWaiting(waitingKey);
+        return;
+      }
+
       // Cmd+Shift+X — close active pane
       if (key === 'x' && activePaneId && activeTab) {
         e.preventDefault();
@@ -838,7 +872,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [splitRight, addTab, activeTabId, activeTab, activePaneId, clearPane, closePane, pendingSessionIds, onToggleMutedStatusSession]);
+  }, [splitRight, addTab, activeTabId, activeTab, activePaneId, clearPane, closePane, pendingSessionIds, onToggleMutedStatusSession, onToggleWaiting]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -887,52 +921,92 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
         }}>
         {/* Tab list */}
         <div style={{ display: 'flex', gap: 2, flex: 1, overflow: 'hidden' }}>
-          {tabs.map(tab => {
+          {displayTabs.map(tab => {
             const tabLabel = getTerminalTabLabel(tab.panes, tab.label, sessionTitles);
             const isActive = tab.id === activeTabId;
+            const waitingKey = getTabWaitingKey(tab);
+            const isWaiting = isTabWaiting(tab, waitingSessionIds);
             const tabStatus = getDisplayTabTerminalStatus(tab, sessionLookup, finishedSessionIds);
             const tabVisualStatus = getVisualTabTerminalStatus(tab, sessionLookup, finishedSessionIds, mutedStatusSessionIds);
             const statusStyle = TAB_STATUS_STYLES[tabVisualStatus] || TAB_STATUS_STYLES.none;
             const tabHasPendingClose = tab.panes.some(pane => pendingSessionIds.includes(pane.sessionId));
+            // A waiting tab opts out of the status animations entirely — the point
+            // is to stop it competing for attention until the work lands.
+            const className = isWaiting
+              ? 'terminal-tab'
+              : tabVisualStatus === 'busy' ? 'terminal-tab terminal-tab-busy'
+              : tabVisualStatus === 'finished' ? 'terminal-tab terminal-tab-finished'
+              : 'terminal-tab';
             return (
               <button
                 key={tab.id}
+                data-testid="terminal-tab"
+                data-session-id={waitingKey ?? ''}
+                data-waiting={String(isWaiting)}
+                data-active={String(isActive)}
                 onClick={() => setActiveTabId(tab.id)}
-                className={tabVisualStatus === 'busy' ? 'terminal-tab terminal-tab-busy' : tabVisualStatus === 'finished' ? 'terminal-tab terminal-tab-finished' : 'terminal-tab'}
+                className={className}
                 style={{
-                  padding: '4px 10px',
+                  padding: isWaiting ? '4px 8px' : '4px 10px',
                   fontSize: '12px',
                   fontFamily: 'var(--font-mono)',
                   borderRadius: 4,
                   background: isActive ? 'var(--bg-active)' : 'transparent',
-                  color: isActive ? 'var(--text-primary)' : statusStyle.textColor,
+                  color: isWaiting ? 'var(--text-muted)' : isActive ? 'var(--text-primary)' : statusStyle.textColor,
+                  opacity: isWaiting && !isActive ? 0.62 : 1,
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 6,
-                  border: `1px solid ${isActive ? statusStyle.borderColor : 'transparent'}`,
-                  boxShadow: isActive && tabVisualStatus === 'busy' ? 'inset 0 1px 0 var(--glass-highlight)' : 'none',
-                  transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease',
+                  gap: isWaiting ? 4 : 6,
+                  border: `1px solid ${isActive && !isWaiting ? statusStyle.borderColor : 'transparent'}`,
+                  boxShadow: isActive && !isWaiting && tabVisualStatus === 'busy' ? 'inset 0 1px 0 var(--glass-highlight)' : 'none',
+                  transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease, opacity 0.15s ease',
                 }}
-                title={`${tabLabel} · ${tab.panes[0]?.sessionId} · ${tabStatus}`}
+                title={isWaiting
+                  ? `${tabLabel} · ${waitingKey} · waiting — clears when the work finishes`
+                  : `${tabLabel} · ${waitingKey} · ${tabStatus}`}
               >
                 <span
-                  className={tabVisualStatus === 'busy' ? 'terminal-dot-busy' : tabVisualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
-                  style={{
+                  role="button"
+                  tabIndex={-1}
+                  aria-label={isWaiting ? `Clear waiting for ${waitingKey}` : `Mark ${waitingKey} waiting`}
+                  title={isWaiting ? 'Clear waiting' : 'Mark waiting — dim this tab until the work finishes'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (waitingKey) onToggleWaiting(waitingKey);
+                  }}
+                  className={isWaiting ? undefined : tabVisualStatus === 'busy' ? 'terminal-dot-busy' : tabVisualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
+                  style={isWaiting ? {
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexShrink: 0,
+                    cursor: 'pointer',
+                  } : {
                     width: 7,
                     height: 7,
                     borderRadius: '50%',
                     background: statusStyle.dotColor,
                     boxShadow: statusStyle.dotShadow,
                     flexShrink: 0,
+                    cursor: 'pointer',
                   }}
-                />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 240 }}>{tabLabel}</span>
+                >
+                  {isWaiting && <Hourglass size={11} />}
+                </span>
+                <span
+                  data-testid="terminal-tab-label"
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    maxWidth: isWaiting ? WAITING_TAB_LABEL_MAX_WIDTH : TAB_LABEL_MAX_WIDTH,
+                  }}
+                >{tabLabel}</span>
                 {tab.panes.length > 1 && (
                   <span style={{ fontSize: '10px', opacity: 0.5 }}>
                     ({tab.panes.length})
                   </span>
                 )}
-                {tabs.length > 1 && (
+                {tabs.length > 1 && !isWaiting && (
                   <span
                     onClick={(e) => {
                       e.stopPropagation();

@@ -11,6 +11,7 @@ import { ToastProvider, useToast } from './components/ToastContext';
 import { openFilePreviewTab } from './utils/fileActions';
 import { getTerminalStatus } from './utils/terminalActivity';
 import { useSessionTitles } from './hooks/useSessionTitles';
+import { useWaitingSessions } from './hooks/useWaitingSessions';
 import {
   DEFAULT_APP_TITLE,
   SYSTEM_RESOURCES_URL,
@@ -68,6 +69,7 @@ function AppContent() {
     }
   });
   const { showToast } = useToast();
+  const { waitingSessionIds, toggleWaiting, clearWaiting } = useWaitingSessions(showToast);
   const sessionStatusRequestInFlightRef = useRef(false);
   const systemResourcesRequestInFlightRef = useRef(false);
   const prevSessionStatusRef = useRef([]);
@@ -465,6 +467,7 @@ function AppContent() {
         finishedSessionIds={finishedSessionIds}
         mutedStatusSessionIds={mutedStatusSessionIds}
         onResetFinishedSession={resetFinishedSession}
+        waitingSessionIds={waitingSessionIds}
         onBrowseFiles={setFileBrowserProject}
         onShowShortcuts={() => setShowShortcutsOverlay(true)}
       />
@@ -496,6 +499,9 @@ function AppContent() {
             mutedStatusSessionIds={mutedStatusSessionIds}
             onResetFinishedSession={resetFinishedSession}
             onToggleMutedStatusSession={toggleMutedStatusSession}
+            waitingSessionIds={waitingSessionIds}
+            onToggleWaiting={toggleWaiting}
+            onClearWaiting={clearWaiting}
           />
         ) : (
           <div style={{

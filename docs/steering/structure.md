@@ -42,6 +42,9 @@ codedeck/
 │   ├── index.js          # REST routes, WebSocket server, PTY spawn factory
 │   ├── ws-handler.js     # WebSocket connection handler, snapshot-first attach, diagnostics, transport replay
 │   ├── terminal-runtime.js # tmux-required terminal runtime + snapshot capture helpers
+│   ├── terminal-waiting-store.js # SQLite store for per-tab waiting marks
+│   ├── routes/
+│   │   └── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
 │   └── __tests__/
@@ -58,11 +61,16 @@ codedeck/
 │       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, snapshot hydration, transport replay, visibility recovery
 │       │   ├── TerminalInspector.jsx # Debug inspector: health, timeline, recovery actions, snapshot copy
 │       │   ├── PaneDivider.jsx       # Draggable vertical divider between terminal panes
+│       │   ├── ShortcutsOverlay.jsx  # Keyboard shortcut reference modal
 │       │   ├── FileTree.jsx          # Directory tree renderer
 │       │   ├── FileBrowserPanel.jsx  # Modal overlay for per-project file browsing
 │       │   ├── DirectoryBrowser.jsx  # Modal filesystem navigator (project picker)
 │       │   ├── ToastContext.jsx      # Toast notification context, hook, and container
 │       │   └── SettingsPanel.jsx     # Settings modal
+│       ├── hooks/
+│       │   └── useWaitingSessions.js # Backend-confirmed waiting marks (no optimistic dimming)
+│       ├── utils/
+│       │   └── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules
 │       └── styles/
 │           └── global.css            # CSS custom properties theme
 ├── docs/

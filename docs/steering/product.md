@@ -20,6 +20,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Settings panel — configurable default path for project picker
 - PTY session persistence — terminals survive WebSocket reconnects, layout restored from localStorage
 - Live sidebar cockpit — per-project status (active/idle/dead), terminal count, elapsed time
+- Waiting tabs — manually park a tab whose work has been delegated to an agent; it renders compact and dimmed at the left of the tab bar, is counted per project in the sidebar, and the mark auto-clears when the work finishes
 - Toast notification system — success/error feedback on all actions
 - Connection awareness — detect backend unreachable, show reconnection banner with exponential backoff
 - Keyboard shortcut passthrough — Ctrl+R/W/T/N forwarded to PTY instead of browser
@@ -41,10 +42,12 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - **Pane**: a visible terminal within a tab (multiple panes = side-by-side split)
 - **Tab**: a group of panes within a project's terminal area
 - **Cockpit**: the sidebar view showing ambient status across all projects
+- **Waiting (tab)**: a user-set mark on a tab, keyed to its first pane's session, meaning "an agent is working here — stay quiet until it lands". Distinct from project waiting (which parks a whole project) and from status muting (which is permanent until undone).
 
 ## Business Rules
 - Projects are directories — they must exist on disk when added
 - Project paths are unique (no duplicates)
 - Terminal durability depends on tmux — when tmux is unavailable, the UI must block terminal creation and ask the user to install it
+- A tab's waiting mark is cleared by the backend when its session is deleted — session ids are reused, and a stale mark would silence a new terminal
 - The backend is the source of truth for all state — frontend never holds authoritative state
 - Every user action that modifies state must round-trip through the backend

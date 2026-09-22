@@ -13,6 +13,7 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Multi-project workspace** — organize terminals by project, switch between them instantly
 - **Unlimited split panes** — side-by-side terminals with draggable dividers per tab
 - **Live sidebar cockpit** — per-project status (active/idle/dead), terminal count, elapsed time
+- **Waiting tabs** — park a tab you have handed to an agent: it shrinks, dims and groups left, then clears itself the moment the work lands
 - **Per-project file browsing** — browse any project's files and open them in your editor
 - **Truthful terminal scrollback** — VS Code-style scrolling, snapshot-first reconnects, and visible warnings when preserved history cannot be guaranteed
 - **Terminal resilience** — debug inspector, transport replay catch-up, visibility-aware recovery, heartbeat monitoring
@@ -48,8 +49,9 @@ Open `http://localhost:43000` in your browser.
 4. Use **+** in the tab bar to open new terminal tabs. Each tab has its own set of panes.
 5. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
 6. Use the pane **eye icon** — or **Cmd/Ctrl+Shift+M** on the active pane — to mute/show status colors without changing the terminal's real running/idle/finished state.
-7. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
-8. Toast notifications confirm every action and surface errors.
+7. Click a tab's **status dot** — or press **Cmd/Ctrl+Shift+U** on the active tab — to mark it waiting when you have handed its work to an agent. Waiting tabs shrink, dim and group to the left of the tab bar, and the sidebar shows a count per project. The mark clears itself as soon as the work finishes or the session dies, so the finished styling and completion notification still reach you.
+8. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
+9. Toast notifications confirm every action and surface errors.
 
 ## Session naming
 

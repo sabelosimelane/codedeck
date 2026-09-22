@@ -44,10 +44,12 @@ import { createNamingCredentialStore } from './session-naming-credentials.js';
 import { createConduitNamingClient } from './conduit-naming-client.js';
 import { createNamingService } from './session-naming-service.js';
 import { createNamingRouter } from './routes/session-naming.js';
+import { createTerminalWaitingStore } from './terminal-waiting-store.js';
+import { createTerminalWaitingRouter } from './routes/terminal-waiting.js';
 
 const app = express();
-// Naming owns its parser so malformed bodies also use its Problem Details handler.
-app.use((req, res, next) => req.path.startsWith('/api/session-naming/') ? next() : express.json()(req, res, next));
+// Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -696,6 +698,11 @@ app.use(createNamingRouter({
   store: namingStore, service: namingService, credentials: namingCredentials, conduit: namingConduit,
   sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id) || namingStore.get(id) !== null),
 }));
+const terminalWaitingStore = createTerminalWaitingStore(db);
+app.use(createTerminalWaitingRouter({
+  store: terminalWaitingStore,
+  sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id)),
+}));
 const terminalStatusCache = createTerminalStatusCache({
   runtime: terminalRuntime,
   listAllSessionIds: () => listAllHostSessionIds(terminalRuntime),
@@ -732,6 +739,9 @@ app.delete('/api/terminal/:sessionId', async (req, res) => {
     deletedSessionIds.add(req.params.sessionId);
     reservedSessionIds.delete(req.params.sessionId);
     namingService.remove(req.params.sessionId);
+    // Session ids are reused (`${project}-N`), so a stale mark would silence a
+    // brand-new terminal that happens to take the same id.
+    terminalWaitingStore.clear(req.params.sessionId);
 
     if (entry?.ws && entry.ws.readyState === 1) {
       try {
