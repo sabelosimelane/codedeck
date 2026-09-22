@@ -71,6 +71,7 @@ describe('createHostTerminalRuntime.spawnAsync', () => {
     expect(runner.spawnPty).toHaveBeenCalledWith(
       'tmux', ['attach-session', '-t', 'proj-1'], { cols: 120, rows: 30 }
     );
+    expect(runner.calls.filter(call => call.cmd === 'systemctl')).toHaveLength(0);
     expect(pty).toBe(runner.ptys[0]);
   });
 
@@ -81,6 +82,7 @@ describe('createHostTerminalRuntime.spawnAsync', () => {
     await runtime.spawnAsync({ cwd: '/srv/app', cols: 80, rows: 24, sessionId: 'proj-1' });
 
     expect(runner.tmuxCalls('new-session')).toHaveLength(0);
+    expect(runner.calls.filter(call => call.cmd === 'systemctl')).toHaveLength(0);
     expect(runner.spawnPty).toHaveBeenCalledTimes(1);
   });
 
