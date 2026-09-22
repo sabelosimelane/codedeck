@@ -1,7 +1,7 @@
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'url';
-import { buildShellEnv } from '../shell-env.js';
+import { buildShellEnv, stripNodeWatchEnvironment } from '../shell-env.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const expectedZdotdir = path.join(testDir, '..', 'shell', 'zsh');
@@ -28,5 +28,27 @@ describe('buildShellEnv', () => {
     expect(env.TERM).toBe('xterm-256color');
     expect(env.ZDOTDIR).toBeUndefined();
     expect(env.USER_ZDOTDIR).toBeUndefined();
+  });
+
+  it('does not expose Node watch internals to terminal sessions', () => {
+    const env = buildShellEnv('/bin/zsh', {
+      HOME: '/Users/tester',
+      PATH: '/usr/local/bin:/usr/bin',
+      WATCH_REPORT_DEPENDENCIES: '1',
+    });
+
+    expect(env).not.toHaveProperty('WATCH_REPORT_DEPENDENCIES');
+    expect(env.PATH).toBe('/usr/local/bin:/usr/bin');
+  });
+
+  it('removes Node watch internals from the backend process environment', () => {
+    const env = {
+      PATH: '/usr/local/bin:/usr/bin',
+      WATCH_REPORT_DEPENDENCIES: '1',
+    };
+
+    expect(stripNodeWatchEnvironment(env)).toBe(env);
+    expect(env).not.toHaveProperty('WATCH_REPORT_DEPENDENCIES');
+    expect(env.PATH).toBe('/usr/local/bin:/usr/bin');
   });
 });

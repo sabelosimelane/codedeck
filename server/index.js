@@ -39,6 +39,7 @@ import { normalizeProjects } from './project-config.js';
 import { createHostsRouter } from './routes/hosts.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { collectSystemResources } from './system-resources.js';
+import { stripNodeWatchEnvironment } from './shell-env.js';
 import { createNamingStore } from './session-naming-store.js';
 import { createNamingCredentialStore } from './session-naming-credentials.js';
 import { createConduitNamingClient } from './conduit-naming-client.js';
@@ -46,6 +47,10 @@ import { createNamingService } from './session-naming-service.js';
 import { createNamingRouter } from './routes/session-naming.js';
 import { createTerminalWaitingStore } from './terminal-waiting-store.js';
 import { createTerminalWaitingRouter } from './routes/terminal-waiting.js';
+
+// Node's watch supervisor injects this internal flag into the backend child.
+// Keep it out of every terminal and tool process spawned by CodeDeck.
+stripNodeWatchEnvironment(process.env);
 
 const app = express();
 // Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
