@@ -58,6 +58,12 @@ vi.mock('../../utils/terminalVisibility', () => ({
   shouldWriteTerminalViewport: () => true,
 }));
 
+vi.mock('../../theme', () => ({
+  XTERM_THEMES: { dark: {}, light: {} },
+  THEME_CHANGE_EVENT: 'codedeck-theme-change',
+  getResolvedTheme: () => 'dark',
+}));
+
 vi.mock('../ToastContext', () => ({
   useToast: () => ({ showToast: mocks.showToast }),
 }));
@@ -159,6 +165,14 @@ describe('Terminal auto-scroll mouse takeover', () => {
       scrollSensitivity: 3,
       fastScrollSensitivity: 5,
       smoothScrollDuration: 0,
+    }));
+  });
+
+  it('keeps dim terminal input text clearly readable over ANSI backgrounds', () => {
+    mountTerminal({ sessionId: 's3-contrast' });
+
+    expect(mocks.termOptions).toEqual(expect.objectContaining({
+      minimumContrastRatio: 14,
     }));
   });
 

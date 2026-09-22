@@ -425,6 +425,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       scrollSensitivity: 3,
       fastScrollSensitivity: 5,
       smoothScrollDuration: 0,
+      // xterm halves this target for ANSI dim text, so 14 keeps dim prompt
+      // hints at a clearly readable 7:1 ratio over true-color backgrounds.
+      minimumContrastRatio: 14,
       macOptionClickForcesSelection: true,
       theme: XTERM_THEMES[getResolvedTheme()],
       allowTransparency: true,
