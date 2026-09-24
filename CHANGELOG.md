@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-09-24] - Parking a tab no longer silently undoes itself
+
+### Executive Summary
+* Clicking the hourglass to park a tab showed the success message but the tab stayed exactly as it was, and parking only worked after reloading the page. Tabs are usually parked right after their previous task finished, and the app mistook that earlier finish for the new work landing, so it cleared each mark the instant it was set. Parking now only lifts when work finishes while the tab is parked, so it sticks when you set it and still clears itself when the agent is done.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * Problem: auto-clear checked whether a tab's session was finished at the moment the mark arrived. A finished flag left over from the previous task, which stays set until the session is busy again and only resets on page reload, cleared every fresh mark immediately and silently.
+  * Solution: auto-clear now fires only on a transition seen while the tab is parked (a pane newly finishing, or its session newly dying), comparing each poll against the previous one.
+* **🛠️ Codebase:**
+  * `client/src/utils/terminalWaiting.js` — Compare previous and current finished state and session status, so only new completions or deaths count as work landing.
+  * `client/src/components/TerminalArea.jsx` — Remember the activity observed on the previous poll, seeded from the first render so mounting never reads as a transition.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalAreaWaiting.test.jsx` — Reproduce the report: a new mark on a tab whose earlier work had finished must not be cleared.
+  * `client/src/utils/__tests__/terminalWaiting.test.js` — Pin transition semantics: new finishes and deaths clear the mark; a finish or death that predates the mark does not.
+
+
 ## [2026-09-22] - Park a tab as waiting while an agent works in it
 
 ### Executive Summary

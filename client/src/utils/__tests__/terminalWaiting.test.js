@@ -57,48 +57,78 @@ describe('tab display order', () => {
 });
 
 describe('auto-clearing waiting when the work lands', () => {
-  const sessionLookup = entries => new Map(entries.map(e => [e.sessionId, e]));
+  const lookup = entries => new Map(entries.map(e => [e.sessionId, e]));
+  const running = sessionId => ({ sessionId, alive: true, executionStatus: 'running' });
+  const idle = sessionId => ({ sessionId, alive: true, executionStatus: 'idle' });
+  const dead = sessionId => ({ sessionId, alive: false, executionStatus: 'dead' });
 
-  it('clears a waiting tab once any of its panes finishes', () => {
-    const tabs = [tab('t1', 'Demo-1', 'Demo-2'), tab('t2', 'Demo-3')];
+  it('clears a waiting tab when one of its panes finishes while it is parked', () => {
     const cleared = getWaitingKeysToAutoClear({
-      tabs,
+      tabs: [tab('t1', 'Demo-1', 'Demo-2'), tab('t2', 'Demo-3')],
       waitingSessionIds: new Set(['Demo-1', 'Demo-3']),
+      previousFinishedSessionIds: new Set(),
       finishedSessionIds: new Set(['Demo-2']),
-      sessionLookup: sessionLookup([
-        { sessionId: 'Demo-1', alive: true, executionStatus: 'running' },
-        { sessionId: 'Demo-2', alive: true, executionStatus: 'idle' },
-        { sessionId: 'Demo-3', alive: true, executionStatus: 'running' },
-      ]),
+      previousSessionLookup: lookup([running('Demo-1'), running('Demo-2'), running('Demo-3')]),
+      sessionLookup: lookup([running('Demo-1'), idle('Demo-2'), running('Demo-3')]),
     });
     expect(cleared).toEqual(['Demo-1']);
+  });
+
+  it('keeps a mark whose finish predates it — only new completions count', () => {
+    const cleared = getWaitingKeysToAutoClear({
+      tabs: [tab('t1', 'Demo-1')],
+      waitingSessionIds: new Set(['Demo-1']),
+      previousFinishedSessionIds: new Set(['Demo-1']),
+      finishedSessionIds: new Set(['Demo-1']),
+      previousSessionLookup: lookup([idle('Demo-1')]),
+      sessionLookup: lookup([idle('Demo-1')]),
+    });
+    expect(cleared).toEqual([]);
   });
 
   it('keeps a waiting tab quiet while its work is still running', () => {
     const cleared = getWaitingKeysToAutoClear({
       tabs: [tab('t1', 'Demo-1')],
       waitingSessionIds: new Set(['Demo-1']),
+      previousFinishedSessionIds: new Set(),
       finishedSessionIds: new Set(),
-      sessionLookup: sessionLookup([{ sessionId: 'Demo-1', alive: true, executionStatus: 'running' }]),
+      previousSessionLookup: lookup([running('Demo-1')]),
+      sessionLookup: lookup([running('Demo-1')]),
     });
     expect(cleared).toEqual([]);
   });
 
-  it('clears a waiting tab whose session died without finishing', () => {
+  it('clears a waiting tab whose session dies while it is parked', () => {
     const cleared = getWaitingKeysToAutoClear({
       tabs: [tab('t1', 'Demo-1')],
       waitingSessionIds: new Set(['Demo-1']),
+      previousFinishedSessionIds: new Set(),
       finishedSessionIds: new Set(),
-      sessionLookup: sessionLookup([{ sessionId: 'Demo-1', alive: false, executionStatus: 'dead' }]),
+      previousSessionLookup: lookup([running('Demo-1')]),
+      sessionLookup: lookup([dead('Demo-1')]),
     });
     expect(cleared).toEqual(['Demo-1']);
+  });
+
+  it('keeps a mark on a session that was already dead when it was parked', () => {
+    const cleared = getWaitingKeysToAutoClear({
+      tabs: [tab('t1', 'Demo-1')],
+      waitingSessionIds: new Set(['Demo-1']),
+      previousFinishedSessionIds: new Set(),
+      finishedSessionIds: new Set(),
+      previousSessionLookup: lookup([dead('Demo-1')]),
+      sessionLookup: lookup([dead('Demo-1')]),
+    });
+    expect(cleared).toEqual([]);
   });
 
   it('leaves a waiting mark alone while its session is not yet known', () => {
     const cleared = getWaitingKeysToAutoClear({
       tabs: [tab('t1', 'Demo-1')],
       waitingSessionIds: new Set(['Demo-1']),
+      previousFinishedSessionIds: new Set(),
       finishedSessionIds: new Set(),
+      previousSessionLookup: new Map(),
       sessionLookup: new Map(),
     });
     expect(cleared).toEqual([]);
@@ -108,8 +138,10 @@ describe('auto-clearing waiting when the work lands', () => {
     const cleared = getWaitingKeysToAutoClear({
       tabs: [tab('t1', 'Demo-1')],
       waitingSessionIds: new Set(),
+      previousFinishedSessionIds: new Set(),
       finishedSessionIds: new Set(['Demo-1']),
-      sessionLookup: sessionLookup([{ sessionId: 'Demo-1', alive: true, executionStatus: 'idle' }]),
+      previousSessionLookup: lookup([running('Demo-1')]),
+      sessionLookup: lookup([idle('Demo-1')]),
     });
     expect(cleared).toEqual([]);
   });

@@ -781,11 +781,17 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
   // Waiting is a time-boxed quiet, not a permanent mute: once the delegated work
   // lands (or its session dies) the mark clears, so the tab returns to full size
   // and the finished styling can do its job.
+  // Seeded with the first render's activity so mounting never reads as a transition.
+  const lastObservedActivityRef = useRef({ finishedSessionIds, sessionLookup });
   useEffect(() => {
+    const previous = lastObservedActivityRef.current;
+    lastObservedActivityRef.current = { finishedSessionIds, sessionLookup };
     const keys = getWaitingKeysToAutoClear({
       tabs,
       waitingSessionIds,
+      previousFinishedSessionIds: previous.finishedSessionIds,
       finishedSessionIds,
+      previousSessionLookup: previous.sessionLookup,
       sessionLookup,
     });
     if (keys.length > 0) onClearWaiting(keys);

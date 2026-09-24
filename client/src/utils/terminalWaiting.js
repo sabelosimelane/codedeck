@@ -28,19 +28,40 @@ export function orderTabsForDisplay(tabs, waitingSessionIds) {
 // Waiting is a time-boxed quiet, not a permanent mute: the moment the delegated
 // work lands (or the session dies) the mark clears so the tab returns to full
 // size and the finished styling can do its job.
-export function getWaitingKeysToAutoClear({ tabs, waitingSessionIds, finishedSessionIds, sessionLookup }) {
+//
+// "Lands" means a transition observed while parked — not a state that was
+// already true. A tab is usually parked right after its previous task finished,
+// so its finished flag is still set when the mark arrives; treating that flag as
+// a completion cleared every fresh mark the instant it landed.
+function hasPaneLanded(sessionId, { previousFinishedSessionIds, finishedSessionIds, previousSessionLookup, sessionLookup }) {
+  const session = sessionLookup?.get(sessionId);
+  if (!session) return false;
+
+  const newlyFinished = Boolean(finishedSessionIds?.has(sessionId))
+    && !previousFinishedSessionIds?.has(sessionId);
+  if (newlyFinished) return true;
+
+  const previous = previousSessionLookup?.get(sessionId);
+  return getTerminalStatus(session) === 'dead'
+    && Boolean(previous)
+    && getTerminalStatus(previous) !== 'dead';
+}
+
+export function getWaitingKeysToAutoClear({
+  tabs,
+  waitingSessionIds,
+  previousFinishedSessionIds,
+  finishedSessionIds,
+  previousSessionLookup,
+  sessionLookup,
+}) {
   if (!tabs?.length || !waitingSessionIds?.size) return [];
+  const observation = { previousFinishedSessionIds, finishedSessionIds, previousSessionLookup, sessionLookup };
 
   return tabs.reduce((keys, tab) => {
     const key = getTabWaitingKey(tab);
     if (!key || !waitingSessionIds.has(key)) return keys;
-
-    const hasLanded = tab.panes.some(pane => {
-      const session = sessionLookup?.get(pane.sessionId);
-      if (!session) return false;
-      return finishedSessionIds?.has(pane.sessionId) || getTerminalStatus(session) === 'dead';
-    });
-
+    const hasLanded = tab.panes.some(pane => hasPaneLanded(pane.sessionId, observation));
     return hasLanded ? [...keys, key] : keys;
   }, []);
 }

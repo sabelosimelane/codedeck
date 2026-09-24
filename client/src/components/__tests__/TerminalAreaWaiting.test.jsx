@@ -141,6 +141,26 @@ describe('TerminalArea waiting tabs', () => {
     expect(onToggleWaiting).not.toHaveBeenCalled();
   });
 
+  it('keeps a new mark on a tab whose earlier work had already finished', async () => {
+    const onClearWaiting = vi.fn();
+    const earlierFinish = new Set(['Gamma-2']);
+    const { rerender } = await renderArea({ waitingSessionIds: new Set(), finishedSessionIds: earlierFinish, onClearWaiting });
+
+    rerender(
+      <TerminalArea
+        project={{ name: 'Gamma', path: '/tmp/gamma' }}
+        sessionStatus={sessions}
+        onSessionStatusRefresh={() => {}}
+        waitingSessionIds={new Set(['Gamma-2'])}
+        finishedSessionIds={earlierFinish}
+        onClearWaiting={onClearWaiting}
+      />
+    );
+
+    await waitFor(() => expect(tabByKey('Gamma-2').dataset.waiting).toBe('true'));
+    expect(onClearWaiting).not.toHaveBeenCalled();
+  });
+
   it('clears the waiting mark once the delegated work finishes', async () => {
     const onClearWaiting = vi.fn();
     const { rerender } = await renderArea({ waitingSessionIds: new Set(['Gamma-2']), onClearWaiting });
