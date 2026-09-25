@@ -141,30 +141,32 @@ describe('TerminalArea waiting tabs', () => {
     expect(onToggleWaiting).not.toHaveBeenCalled();
   });
 
-  it('keeps a new mark on a tab whose earlier work had already finished', async () => {
-    const onClearWaiting = vi.fn();
-    const earlierFinish = new Set(['Gamma-2']);
-    const { rerender } = await renderArea({ waitingSessionIds: new Set(), finishedSessionIds: earlierFinish, onClearWaiting });
+  const paneDot = sessionId => document.querySelector(`[data-testid="terminal-pane-status-dot"][data-session-id="${sessionId}"]`);
 
-    rerender(
-      <TerminalArea
-        project={{ name: 'Gamma', path: '/tmp/gamma' }}
-        sessionStatus={sessions}
-        onSessionStatusRefresh={() => {}}
-        waitingSessionIds={new Set(['Gamma-2'])}
-        finishedSessionIds={earlierFinish}
-        onClearWaiting={onClearWaiting}
-      />
-    );
+  it('stops the pane status dot pulsing while its tab is parked', async () => {
+    await renderArea({ waitingSessionIds: new Set(['Gamma-2']) });
 
-    await waitFor(() => expect(tabByKey('Gamma-2').dataset.waiting).toBe('true'));
-    expect(onClearWaiting).not.toHaveBeenCalled();
+    expect(paneDot('Gamma-2').className).not.toMatch(/terminal-dot-(busy|finished)/);
+    expect(paneDot('Gamma-1').className).toMatch(/terminal-dot-busy/);
   });
 
-  it('clears the waiting mark once the delegated work finishes', async () => {
+  it('keeps the pane dot tooltip truthful while parked', async () => {
+    await renderArea({ waitingSessionIds: new Set(['Gamma-2']) });
+
+    expect(paneDot('Gamma-2').getAttribute('title')).toMatch(/running/);
+  });
+
+  it('does not report a parked pane as muted, so the eye toggle stays honest', async () => {
+    await renderArea({ waitingSessionIds: new Set(['Gamma-2']) });
+
+    // Gamma-2's tab is not the active one, so its pane controls are hidden from the a11y tree.
+    expect(screen.getByRole('button', { name: 'Mute status colors for Gamma-2', hidden: true })).toBeTruthy();
+    expect(paneDot('Gamma-2').getAttribute('title')).not.toMatch(/muted/);
+  });
+
+  it('no longer clears marks itself — auto-clear belongs to the app-wide waiting state', async () => {
     const onClearWaiting = vi.fn();
     const { rerender } = await renderArea({ waitingSessionIds: new Set(['Gamma-2']), onClearWaiting });
-    expect(onClearWaiting).not.toHaveBeenCalled();
 
     rerender(
       <TerminalArea
@@ -177,6 +179,6 @@ describe('TerminalArea waiting tabs', () => {
       />
     );
 
-    await waitFor(() => expect(onClearWaiting).toHaveBeenCalledWith(['Gamma-2']));
+    expect(onClearWaiting).not.toHaveBeenCalled();
   });
 });

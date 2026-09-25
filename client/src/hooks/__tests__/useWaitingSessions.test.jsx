@@ -134,6 +134,48 @@ describe('useWaitingSessions', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  describe('auto-clearing when parked work lands', () => {
+    const running = sessionId => ({ sessionId, alive: true, executionStatus: 'running' });
+    const idle = sessionId => ({ sessionId, alive: true, executionStatus: 'idle' });
+    const mockMarked = () => {
+      global.fetch = vi.fn(async (url, options) => {
+        if (options?.method === 'PUT') return { ok: true, json: async () => ({ sessionId: 'Beta-4', waiting: false, waitingAt: null }) };
+        return page([{ sessionId: 'Beta-4', waiting: true, waitingAt: '2026-09-25T09:00:00.000Z' }]);
+      });
+    };
+    const clearCalls = () => global.fetch.mock.calls.filter(([, options]) => options?.body === JSON.stringify({ waiting: false }));
+
+    it('clears a mark as soon as its session finishes, in any project, without a toast', async () => {
+      mockMarked();
+      const { result, rerender } = renderHook(
+        ({ sessionStatus, finishedSessionIds }) => useWaitingSessions(showToast, { sessionStatus, finishedSessionIds }),
+        { initialProps: { sessionStatus: [running('Beta-4')], finishedSessionIds: new Set() } },
+      );
+      await waitFor(() => expect(result.current.waitingSessionIds.has('Beta-4')).toBe(true));
+
+      rerender({ sessionStatus: [idle('Beta-4')], finishedSessionIds: new Set(['Beta-4']) });
+
+      await waitFor(() => expect(result.current.waitingSessionIds.has('Beta-4')).toBe(false));
+      expect(clearCalls().map(([url]) => url)).toEqual(['/api/terminal-waiting/Beta-4']);
+      expect(showToast).not.toHaveBeenCalled();
+    });
+
+    it('keeps a mark whose session had already finished before it was parked', async () => {
+      mockMarked();
+      const earlierFinish = new Set(['Beta-4']);
+      const { result, rerender } = renderHook(
+        ({ sessionStatus, finishedSessionIds }) => useWaitingSessions(showToast, { sessionStatus, finishedSessionIds }),
+        { initialProps: { sessionStatus: [idle('Beta-4')], finishedSessionIds: earlierFinish } },
+      );
+      await waitFor(() => expect(result.current.waitingSessionIds.has('Beta-4')).toBe(true));
+
+      rerender({ sessionStatus: [idle('Beta-4')], finishedSessionIds: earlierFinish });
+
+      expect(result.current.waitingSessionIds.has('Beta-4')).toBe(true);
+      expect(clearCalls()).toEqual([]);
+    });
+  });
+
   it('reports a failed initial load with the message the API gave', async () => {
     global.fetch = vi.fn(async () => ({ ok: false, json: async () => ({ message: 'Terminal waiting request failed' }) }));
     renderHook(() => useWaitingSessions(showToast));

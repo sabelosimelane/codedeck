@@ -6,7 +6,7 @@ import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
-import { countWaitingSessionsForProject } from '../utils/terminalWaiting';
+import { countWaitingSessionsForProject, getQuietStatusSessionIds } from '../utils/terminalWaiting';
 import {
   createNotificationAudioContext,
   playCompletionDing,
@@ -148,6 +148,9 @@ const STATUS_COLORS = {
 };
 
 export default function Sidebar({ activeProjects, waitingProjects = [], shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts }) {
+  // Parked sessions stop pulsing and blinking here too — reusing the visual path
+  // the mute drives, without joining the mute set the eye icon reports.
+  const quietStatusSessionIds = getQuietStatusSessionIds(mutedStatusSessionIds, waitingSessionIds);
   const [showBrowser, setShowBrowser] = useState(false);
   const [themeMode, setThemeModeState] = useState(getThemeMode);
   const [defaultPath, setDefaultPath] = useState(null);
@@ -584,7 +587,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
             const reachability = getProjectReachability(project, projSessions);
             const lastError = getProjectLastError(project, projSessions);
             const isHostUnreachable = reachability === 'unreachable';
-            const { status } = getTruthfulProjectStatus(project, projSessions, finishedSessionIds, mutedStatusSessionIds);
+            const { status } = getTruthfulProjectStatus(project, projSessions, finishedSessionIds, quietStatusSessionIds);
             const rowTitle = isHostUnreachable && hostName
               ? `${project.name} — ${hostName} unreachable`
               : project.name;
@@ -610,6 +613,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: isCompact ? 'center' : 'flex-start' }}>
                   {status !== 'none' ? (
                     <span
+                      data-testid={`project-status-dot-${project.name}`}
                       className={status === 'finished' ? 'terminal-dot-finished' : undefined}
                       style={{
                       width: 8,
@@ -713,7 +717,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                 {/* Per-session details */}
                 {!isCompact && projSessions.length > 0 && projSessions.map(session => {
                   const termStatus = getDisplayTerminalStatus(session, finishedSessionIds);
-                  const visualStatus = getVisualTerminalStatus(session, finishedSessionIds, mutedStatusSessionIds);
+                  const visualStatus = getVisualTerminalStatus(session, finishedSessionIds, quietStatusSessionIds);
                   const isStatusMuted = mutedStatusSessionIds.has(session.sessionId);
                   const timeSince = formatTimeSince(session.lastOutputAt);
                   const dotColor = visualStatus === 'busy'
@@ -736,7 +740,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                             flexShrink: 0,
                             display: 'inline-block',
                           }}
-                          title={`Terminal ${session.sessionId}: ${termStatus === 'finished' ? 'finished — needs attention' : termStatus}${isStatusMuted ? ' (status colors muted)' : ''}`}
+                          title={`Terminal ${session.sessionId}: ${termStatus === 'finished' ? 'finished — needs attention' : termStatus}${isStatusMuted ? ' (status colors muted)' : ''}${waitingSessionIds.has(session.sessionId) ? ' (waiting)' : ''}`}
                         />
                         <span title={session.sessionId} style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                           {session.title || session.sessionId}
@@ -823,7 +827,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                     const reachability = getProjectReachability(project, projSessions);
                     const lastError = getProjectLastError(project, projSessions);
                     const isHostUnreachable = reachability === 'unreachable';
-                    const { status } = getTruthfulProjectStatus(project, projSessions, finishedSessionIds, mutedStatusSessionIds);
+                    const { status } = getTruthfulProjectStatus(project, projSessions, finishedSessionIds, quietStatusSessionIds);
                     const dotColor = status === 'none' ? 'var(--text-muted)' : STATUS_COLORS[status];
                     const waitingOpacity = isHostUnreachable ? 0.62 : 0.68;
                     const waitingHoverOpacity = isHostUnreachable ? '0.72' : '0.86';

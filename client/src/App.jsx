@@ -69,7 +69,7 @@ function AppContent() {
     }
   });
   const { showToast } = useToast();
-  const { waitingSessionIds, toggleWaiting, clearWaiting } = useWaitingSessions(showToast);
+  const { waitingSessionIds, toggleWaiting } = useWaitingSessions(showToast, { sessionStatus, finishedSessionIds });
   const sessionStatusRequestInFlightRef = useRef(false);
   const systemResourcesRequestInFlightRef = useRef(false);
   const prevSessionStatusRef = useRef([]);
@@ -501,7 +501,6 @@ function AppContent() {
             onToggleMutedStatusSession={toggleMutedStatusSession}
             waitingSessionIds={waitingSessionIds}
             onToggleWaiting={toggleWaiting}
-            onClearWaiting={clearWaiting}
           />
         ) : (
           <div style={{

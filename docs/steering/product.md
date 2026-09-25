@@ -20,7 +20,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Settings panel — configurable default path for project picker
 - PTY session persistence — terminals survive WebSocket reconnects, layout restored from localStorage
 - Live sidebar cockpit — per-project status (active/idle/dead), terminal count, elapsed time
-- Waiting tabs — manually park a tab whose work has been delegated to an agent; it renders compact and dimmed at the left of the tab bar, is counted per project in the sidebar, and the mark auto-clears when the work finishes
+- Waiting tabs — manually park a tab whose work has been delegated to an agent; it renders compact and dimmed at the left of the tab bar, its status indicators stop pulsing everywhere, it is counted per project in the sidebar, and the mark auto-clears when the work finishes — whichever project is on screen
 - Toast notification system — success/error feedback on all actions
 - Connection awareness — detect backend unreachable, show reconnection banner with exponential backoff
 - Keyboard shortcut passthrough — Ctrl+R/W/T/N forwarded to PTY instead of browser

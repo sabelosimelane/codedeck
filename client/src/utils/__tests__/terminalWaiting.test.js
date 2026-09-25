@@ -3,7 +3,9 @@ import {
   getTabWaitingKey,
   isTabWaiting,
   orderTabsForDisplay,
-  getWaitingKeysToAutoClear,
+  getLandedWaitingSessionIds,
+  getQuietStatusSessionIds,
+  getParkedPaneSessionIds,
   countWaitingSessionsForProject,
 } from '../terminalWaiting';
 
@@ -61,89 +63,94 @@ describe('auto-clearing waiting when the work lands', () => {
   const running = sessionId => ({ sessionId, alive: true, executionStatus: 'running' });
   const idle = sessionId => ({ sessionId, alive: true, executionStatus: 'idle' });
   const dead = sessionId => ({ sessionId, alive: false, executionStatus: 'dead' });
+  const observe = overrides => ({
+    waitingSessionIds: new Set(['Demo-1']),
+    previousFinishedSessionIds: new Set(),
+    finishedSessionIds: new Set(),
+    previousSessionLookup: lookup([running('Demo-1')]),
+    sessionLookup: lookup([running('Demo-1')]),
+    ...overrides,
+  });
 
-  it('clears a waiting tab when one of its panes finishes while it is parked', () => {
-    const cleared = getWaitingKeysToAutoClear({
-      tabs: [tab('t1', 'Demo-1', 'Demo-2'), tab('t2', 'Demo-3')],
-      waitingSessionIds: new Set(['Demo-1', 'Demo-3']),
-      previousFinishedSessionIds: new Set(),
-      finishedSessionIds: new Set(['Demo-2']),
-      previousSessionLookup: lookup([running('Demo-1'), running('Demo-2'), running('Demo-3')]),
-      sessionLookup: lookup([running('Demo-1'), idle('Demo-2'), running('Demo-3')]),
-    });
-    expect(cleared).toEqual(['Demo-1']);
+  it('clears a parked session that finishes while it is parked', () => {
+    expect(getLandedWaitingSessionIds(observe({
+      waitingSessionIds: new Set(['Demo-1', 'Other-1']),
+      finishedSessionIds: new Set(['Demo-1']),
+      previousSessionLookup: lookup([running('Demo-1'), running('Other-1')]),
+      sessionLookup: lookup([idle('Demo-1'), running('Other-1')]),
+    }))).toEqual(['Demo-1']);
+  });
+
+  it('watches every parked session, not only those of the project on screen', () => {
+    expect(getLandedWaitingSessionIds(observe({
+      waitingSessionIds: new Set(['Alpha-1', 'Beta-4']),
+      finishedSessionIds: new Set(['Beta-4']),
+      previousSessionLookup: lookup([running('Alpha-1'), running('Beta-4')]),
+      sessionLookup: lookup([running('Alpha-1'), idle('Beta-4')]),
+    }))).toEqual(['Beta-4']);
   });
 
   it('keeps a mark whose finish predates it — only new completions count', () => {
-    const cleared = getWaitingKeysToAutoClear({
-      tabs: [tab('t1', 'Demo-1')],
-      waitingSessionIds: new Set(['Demo-1']),
+    expect(getLandedWaitingSessionIds(observe({
       previousFinishedSessionIds: new Set(['Demo-1']),
       finishedSessionIds: new Set(['Demo-1']),
       previousSessionLookup: lookup([idle('Demo-1')]),
       sessionLookup: lookup([idle('Demo-1')]),
-    });
-    expect(cleared).toEqual([]);
+    }))).toEqual([]);
   });
 
-  it('keeps a waiting tab quiet while its work is still running', () => {
-    const cleared = getWaitingKeysToAutoClear({
-      tabs: [tab('t1', 'Demo-1')],
-      waitingSessionIds: new Set(['Demo-1']),
-      previousFinishedSessionIds: new Set(),
-      finishedSessionIds: new Set(),
-      previousSessionLookup: lookup([running('Demo-1')]),
-      sessionLookup: lookup([running('Demo-1')]),
-    });
-    expect(cleared).toEqual([]);
+  it('keeps a parked session quiet while its work is still running', () => {
+    expect(getLandedWaitingSessionIds(observe({}))).toEqual([]);
   });
 
-  it('clears a waiting tab whose session dies while it is parked', () => {
-    const cleared = getWaitingKeysToAutoClear({
-      tabs: [tab('t1', 'Demo-1')],
-      waitingSessionIds: new Set(['Demo-1']),
-      previousFinishedSessionIds: new Set(),
-      finishedSessionIds: new Set(),
-      previousSessionLookup: lookup([running('Demo-1')]),
+  it('clears a parked session that dies while it is parked', () => {
+    expect(getLandedWaitingSessionIds(observe({
       sessionLookup: lookup([dead('Demo-1')]),
-    });
-    expect(cleared).toEqual(['Demo-1']);
+    }))).toEqual(['Demo-1']);
   });
 
   it('keeps a mark on a session that was already dead when it was parked', () => {
-    const cleared = getWaitingKeysToAutoClear({
-      tabs: [tab('t1', 'Demo-1')],
-      waitingSessionIds: new Set(['Demo-1']),
-      previousFinishedSessionIds: new Set(),
-      finishedSessionIds: new Set(),
+    expect(getLandedWaitingSessionIds(observe({
       previousSessionLookup: lookup([dead('Demo-1')]),
       sessionLookup: lookup([dead('Demo-1')]),
-    });
-    expect(cleared).toEqual([]);
+    }))).toEqual([]);
   });
 
-  it('leaves a waiting mark alone while its session is not yet known', () => {
-    const cleared = getWaitingKeysToAutoClear({
-      tabs: [tab('t1', 'Demo-1')],
-      waitingSessionIds: new Set(['Demo-1']),
-      previousFinishedSessionIds: new Set(),
-      finishedSessionIds: new Set(),
+  it('leaves a mark alone while its session is not yet known', () => {
+    expect(getLandedWaitingSessionIds(observe({
       previousSessionLookup: new Map(),
       sessionLookup: new Map(),
-    });
-    expect(cleared).toEqual([]);
+    }))).toEqual([]);
   });
 
-  it('ignores tabs that were never marked waiting', () => {
-    const cleared = getWaitingKeysToAutoClear({
-      tabs: [tab('t1', 'Demo-1')],
+  it('ignores sessions that were never parked', () => {
+    expect(getLandedWaitingSessionIds(observe({
       waitingSessionIds: new Set(),
-      previousFinishedSessionIds: new Set(),
       finishedSessionIds: new Set(['Demo-1']),
-      previousSessionLookup: lookup([running('Demo-1')]),
       sessionLookup: lookup([idle('Demo-1')]),
-    });
-    expect(cleared).toEqual([]);
+    }))).toEqual([]);
+  });
+});
+
+describe('quieting status indicators for parked work', () => {
+  it('quiets both muted and parked sessions without altering either set', () => {
+    const muted = new Set(['Demo-1']);
+    const parked = new Set(['Demo-2']);
+    const quiet = getQuietStatusSessionIds(muted, parked);
+    expect([...quiet].sort()).toEqual(['Demo-1', 'Demo-2']);
+    expect([...muted]).toEqual(['Demo-1']);
+    expect([...parked]).toEqual(['Demo-2']);
+  });
+
+  it('treats missing sets as empty', () => {
+    expect([...getQuietStatusSessionIds(undefined, new Set(['Demo-2']))]).toEqual(['Demo-2']);
+    expect([...getQuietStatusSessionIds(new Set(['Demo-1']), undefined)]).toEqual(['Demo-1']);
+  });
+
+  it('parks every pane of a parked split tab, and nothing of an unparked one', () => {
+    const tabs = [tab('t1', 'Demo-1', 'Demo-2'), tab('t2', 'Demo-3')];
+    expect([...getParkedPaneSessionIds(tabs, new Set(['Demo-1']))].sort()).toEqual(['Demo-1', 'Demo-2']);
+    expect([...getParkedPaneSessionIds(tabs, new Set())]).toEqual([]);
   });
 });
 

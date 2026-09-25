@@ -22,7 +22,8 @@ import {
   getTabWaitingKey,
   isTabWaiting,
   orderTabsForDisplay,
-  getWaitingKeysToAutoClear,
+  getQuietStatusSessionIds,
+  getParkedPaneSessionIds,
 } from '../utils/terminalWaiting';
 
 const IS_MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
@@ -298,7 +299,7 @@ function getPaneStatusTitle(sessionId, status, session) {
     : baseTitle;
 }
 
-export default function TerminalArea({ project, sessionStatus = [], sessionTitles = {}, onTitlesChanged = () => {}, namingError = null, onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), waitingSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {}, onToggleWaiting = () => {}, onClearWaiting = () => {} }) {
+export default function TerminalArea({ project, sessionStatus = [], sessionTitles = {}, onTitlesChanged = () => {}, namingError = null, onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), waitingSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {}, onToggleWaiting = () => {} }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
@@ -316,6 +317,12 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
   const displayTabs = orderTabsForDisplay(tabs, waitingSessionIds);
+  // Parked panes drop their pulse and blink everywhere in this view, through the
+  // same visual path the eye-icon mute drives — without joining the mute set.
+  const quietStatusSessionIds = getQuietStatusSessionIds(
+    mutedStatusSessionIds,
+    getParkedPaneSessionIds(tabs, waitingSessionIds),
+  );
   const sessionLookup = new Map(sessionStatus.map(session => [session.sessionId, session]));
   const shouldRenderTerminals = shouldRenderProjectTerminals({
     projectName: project.name,
@@ -778,25 +785,6 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
     }));
   }, []);
 
-  // Waiting is a time-boxed quiet, not a permanent mute: once the delegated work
-  // lands (or its session dies) the mark clears, so the tab returns to full size
-  // and the finished styling can do its job.
-  // Seeded with the first render's activity so mounting never reads as a transition.
-  const lastObservedActivityRef = useRef({ finishedSessionIds, sessionLookup });
-  useEffect(() => {
-    const previous = lastObservedActivityRef.current;
-    lastObservedActivityRef.current = { finishedSessionIds, sessionLookup };
-    const keys = getWaitingKeysToAutoClear({
-      tabs,
-      waitingSessionIds,
-      previousFinishedSessionIds: previous.finishedSessionIds,
-      finishedSessionIds,
-      previousSessionLookup: previous.sessionLookup,
-      sessionLookup,
-    });
-    if (keys.length > 0) onClearWaiting(keys);
-  }, [tabs, waitingSessionIds, finishedSessionIds, sessionStatus, onClearWaiting]);
-
   // Keyboard shortcuts — capture phase fires before xterm's key handler
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -933,7 +921,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
             const waitingKey = getTabWaitingKey(tab);
             const isWaiting = isTabWaiting(tab, waitingSessionIds);
             const tabStatus = getDisplayTabTerminalStatus(tab, sessionLookup, finishedSessionIds);
-            const tabVisualStatus = getVisualTabTerminalStatus(tab, sessionLookup, finishedSessionIds, mutedStatusSessionIds);
+            const tabVisualStatus = getVisualTabTerminalStatus(tab, sessionLookup, finishedSessionIds, quietStatusSessionIds);
             const statusStyle = TAB_STATUS_STYLES[tabVisualStatus] || TAB_STATUS_STYLES.none;
             const tabHasPendingClose = tab.panes.some(pane => pendingSessionIds.includes(pane.sessionId));
             // A waiting tab opts out of the status animations entirely — the point
@@ -1163,7 +1151,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
               });
               const paneSession = sessionLookup.get(pane.sessionId);
               const paneStatus = getPaneTerminalStatus(paneSession, finishedSessionIds);
-              const paneVisualStatus = getPaneVisualStatus(paneSession, finishedSessionIds, mutedStatusSessionIds);
+              const paneVisualStatus = getPaneVisualStatus(paneSession, finishedSessionIds, quietStatusSessionIds);
               const paneStatusStyle = TAB_STATUS_STYLES[paneVisualStatus] || TAB_STATUS_STYLES.unknown;
               const paneStatusLabel = PANE_STATUS_LABELS[paneStatus] || PANE_STATUS_LABELS.unknown;
               const isStatusMuted = mutedStatusSessionIds.has(pane.sessionId);
@@ -1230,6 +1218,8 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
                       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <span
+                            data-testid="terminal-pane-status-dot"
+                            data-session-id={pane.sessionId}
                             className={paneVisualStatus === 'busy' ? 'terminal-dot-busy' : paneVisualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
                             title={paneStatusTitle}
                             style={{

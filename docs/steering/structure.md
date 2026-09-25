@@ -68,9 +68,9 @@ codedeck/
 │       │   ├── ToastContext.jsx      # Toast notification context, hook, and container
 │       │   └── SettingsPanel.jsx     # Settings modal
 │       ├── hooks/
-│       │   └── useWaitingSessions.js # Backend-confirmed waiting marks (no optimistic dimming)
+│       │   └── useWaitingSessions.js # Backend-confirmed waiting marks (no optimistic dimming) + app-wide auto-clear
 │       ├── utils/
-│       │   └── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules
+│       │   └── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules, quiet indicator sets
 │       └── styles/
 │           └── global.css            # CSS custom properties theme
 ├── docs/

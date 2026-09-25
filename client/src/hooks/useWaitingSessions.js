@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getLandedWaitingSessionIds } from '../utils/terminalWaiting';
 
 const BASE = '/api/terminal-waiting';
 
@@ -28,7 +29,7 @@ async function loadWaitingPages(signal) {
 // SQLite owns which tabs are waiting. Local state is a mirror that is only
 // updated after the backend confirms the write — an optimistic dim that the
 // server rejected would quietly hide a tab the user still needs.
-export function useWaitingSessions(showToast) {
+export function useWaitingSessions(showToast, { sessionStatus = [], finishedSessionIds = new Set() } = {}) {
   const [waitingSessionIds, setWaitingSessionIds] = useState(() => new Set());
   const mounted = useRef(false);
 
@@ -91,6 +92,27 @@ export function useWaitingSessions(showToast) {
       }
     }
   }, [write]);
+
+  // Auto-clear lives here, over every session the app polls, rather than in
+  // the terminal area — that only sees the project on screen, so a tab parked
+  // elsewhere never cleared, and with its indicators quieted its completion
+  // would never have surfaced at all. Seeded on first run so loading never
+  // reads as a transition.
+  const lastObservedActivityRef = useRef(null);
+  useEffect(() => {
+    const sessionLookup = new Map(sessionStatus.map(session => [session.sessionId, session]));
+    const previous = lastObservedActivityRef.current ?? { finishedSessionIds, sessionLookup };
+    lastObservedActivityRef.current = { finishedSessionIds, sessionLookup };
+
+    const landed = getLandedWaitingSessionIds({
+      waitingSessionIds,
+      previousFinishedSessionIds: previous.finishedSessionIds,
+      finishedSessionIds,
+      previousSessionLookup: previous.sessionLookup,
+      sessionLookup,
+    });
+    if (landed.length > 0) clearWaiting(landed);
+  }, [sessionStatus, finishedSessionIds, waitingSessionIds, clearWaiting]);
 
   return { waitingSessionIds, toggleWaiting, clearWaiting };
 }

@@ -122,4 +122,40 @@ describe('Sidebar waiting tab count', () => {
     const view = renderSidebar();
     expect(view.queryByTestId('project-waiting-count-Alpha')).toBeNull();
   });
+
+  describe('quieting parked sessions', () => {
+    const busy = sessionId => ({ sessionId, cwd: '/tmp/x', alive: true, executionStatus: 'running', lastOutputAt: new Date().toISOString() });
+    const idle = sessionId => ({ sessionId, cwd: '/tmp/x', alive: true, executionStatus: 'idle', lastOutputAt: new Date().toISOString() });
+    const sessionDot = (view, sessionId) => view.getByTitle(new RegExp(`^Terminal ${sessionId}:`));
+
+    it('stops a parked session pulsing in the sidebar while others keep theirs', () => {
+      const view = renderSidebar({
+        sessionStatus: [busy('Alpha-1'), busy('Alpha-2')],
+        waitingSessionIds: new Set(['Alpha-1']),
+      });
+      expect(sessionDot(view, 'Alpha-1').className).not.toMatch(/terminal-dot-(busy|finished)/);
+      expect(sessionDot(view, 'Alpha-2').className).toMatch(/terminal-dot-busy/);
+    });
+
+    it('keeps the parked session tooltip truthful and says it is waiting, not muted', () => {
+      const view = renderSidebar({
+        sessionStatus: [busy('Alpha-1')],
+        waitingSessionIds: new Set(['Alpha-1']),
+      });
+      const title = sessionDot(view, 'Alpha-1').getAttribute('title');
+      expect(title).toMatch(/busy/);
+      expect(title).toMatch(/waiting/);
+      expect(title).not.toMatch(/muted/);
+    });
+
+    it('does not blink the project dot for a parked session', () => {
+      const view = renderSidebar({
+        sessionStatus: [idle('Alpha-1'), idle('Beta-1')],
+        finishedSessionIds: new Set(['Alpha-1', 'Beta-1']),
+        waitingSessionIds: new Set(['Alpha-1']),
+      });
+      expect(view.getByTestId('project-status-dot-Alpha').className).not.toMatch(/terminal-dot-finished/);
+      expect(view.getByTestId('project-status-dot-Beta').className).toMatch(/terminal-dot-finished/);
+    });
+  });
 });

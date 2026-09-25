@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-09-25] - Parked tabs stop flashing everywhere, and clear from any project
+
+### Executive Summary
+* Parking a tab quieted the tab itself, but the same session kept pulsing in the sidebar, in the pane header, and on its project's dot, so parked work still competed for attention. Parked sessions now go still in every one of those places, while their tooltips keep reporting the real status. Making that safe needed a second fix: parked tabs only cleared when their project was the one on screen, so work that finished elsewhere never lifted the mark, and with the indicators silenced it would never have surfaced at all. Parked work is now watched across every project, so the mark clears and the finished blink returns wherever the work lands.
+
+### Technical Details
+* **✨ New Feature:**
+  * Parked sessions drop their pulse and blink on the sidebar session dot, the sidebar project dot, and the pane header dot, as well as the tab.
+  * Tooltips keep the real status and add "(waiting)". Parked sessions are never reported as muted, so the eye-icon toggle stays honest.
+* **🐛 Bug Fix:**
+  * Problem: auto-clear ran only over the tabs of the project on screen, so a tab parked in another project never cleared when its work finished. Solution: auto-clear moved into the app-wide waiting state and watches every parked session, keyed on the session each mark belongs to.
+* **🛠️ Codebase:**
+  * `client/src/utils/terminalWaiting.js` — Replace the tab-scoped auto-clear with `getLandedWaitingSessionIds` over every parked session; add `getQuietStatusSessionIds` and `getParkedPaneSessionIds`.
+  * `client/src/hooks/useWaitingSessions.js` — Own auto-clear, observing all polled sessions and finished flags; seeded on first run so loading never reads as a transition.
+  * `client/src/App.jsx` — Pass session status and finished flags to the waiting hook; stop handing auto-clear to the terminal area.
+  * `client/src/components/TerminalArea.jsx` — Drop its auto-clear effect; quiet the tab and pane dots of every pane in a parked tab.
+  * `client/src/components/Sidebar.jsx` — Quiet parked sessions' dots and their project's aggregate, and note "(waiting)" in the session tooltip.
+  * `README.md`, `docs/steering/product.md`, `docs/steering/structure.md` — Describe the quieted indicators and app-wide auto-clear.
+* **🧪 Tests:**
+  * `client/src/utils/__tests__/terminalWaiting.test.js` — Auto-clear watches every parked session, not only the project on screen; quiet-set union leaves the mute set untouched; parked split tabs quiet all panes.
+  * `client/src/hooks/__tests__/useWaitingSessions.test.jsx` — A parked session in another project clears silently when it finishes; a finish that predates the mark does not.
+  * `client/src/components/__tests__/TerminalAreaWaiting.test.jsx` — Parked pane dots stop pulsing, keep truthful tooltips, and are not reported as muted; the terminal area no longer clears marks itself.
+  * `client/src/components/__tests__/SidebarWaitingCount.test.jsx` — Parked sidebar dots stop pulsing, tooltips say "waiting", and the project dot does not blink for a parked session.
+
+
 ## [2026-09-24] - Parking a tab no longer silently undoes itself
 
 ### Executive Summary

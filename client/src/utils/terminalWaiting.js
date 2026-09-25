@@ -26,44 +26,56 @@ export function orderTabsForDisplay(tabs, waitingSessionIds) {
 }
 
 // Waiting is a time-boxed quiet, not a permanent mute: the moment the delegated
-// work lands (or the session dies) the mark clears so the tab returns to full
+// work lands (or the session dies) the mark clears, so the tab returns to full
 // size and the finished styling can do its job.
 //
 // "Lands" means a transition observed while parked — not a state that was
 // already true. A tab is usually parked right after its previous task finished,
 // so its finished flag is still set when the mark arrives; treating that flag as
 // a completion cleared every fresh mark the instant it landed.
-function hasPaneLanded(sessionId, { previousFinishedSessionIds, finishedSessionIds, previousSessionLookup, sessionLookup }) {
-  const session = sessionLookup?.get(sessionId);
-  if (!session) return false;
-
-  const newlyFinished = Boolean(finishedSessionIds?.has(sessionId))
-    && !previousFinishedSessionIds?.has(sessionId);
-  if (newlyFinished) return true;
-
-  const previous = previousSessionLookup?.get(sessionId);
-  return getTerminalStatus(session) === 'dead'
-    && Boolean(previous)
-    && getTerminalStatus(previous) !== 'dead';
-}
-
-export function getWaitingKeysToAutoClear({
-  tabs,
+//
+// This watches every parked session, whichever project is on screen. Parked
+// sessions have their indicators quieted, so a mark that never cleared would
+// swallow the completion entirely.
+export function getLandedWaitingSessionIds({
   waitingSessionIds,
   previousFinishedSessionIds,
   finishedSessionIds,
   previousSessionLookup,
   sessionLookup,
 }) {
-  if (!tabs?.length || !waitingSessionIds?.size) return [];
-  const observation = { previousFinishedSessionIds, finishedSessionIds, previousSessionLookup, sessionLookup };
+  if (!waitingSessionIds?.size) return [];
 
-  return tabs.reduce((keys, tab) => {
-    const key = getTabWaitingKey(tab);
-    if (!key || !waitingSessionIds.has(key)) return keys;
-    const hasLanded = tab.panes.some(pane => hasPaneLanded(pane.sessionId, observation));
-    return hasLanded ? [...keys, key] : keys;
-  }, []);
+  return Array.from(waitingSessionIds).filter(sessionId => {
+    const session = sessionLookup?.get(sessionId);
+    if (!session) return false;
+
+    const newlyFinished = Boolean(finishedSessionIds?.has(sessionId))
+      && !previousFinishedSessionIds?.has(sessionId);
+    if (newlyFinished) return true;
+
+    const previous = previousSessionLookup?.get(sessionId);
+    return getTerminalStatus(session) === 'dead'
+      && Boolean(previous)
+      && getTerminalStatus(previous) !== 'dead';
+  });
+}
+
+// Parked work should stop competing for attention everywhere it is shown, not
+// just on its tab. Quieting reuses the path the eye-icon mute already drives,
+// but as a separate union: folding parked sessions into the mute set itself
+// would make the eye icon claim they are muted.
+export function getQuietStatusSessionIds(mutedStatusSessionIds, parkedSessionIds) {
+  return new Set([...(mutedStatusSessionIds ?? []), ...(parkedSessionIds ?? [])]);
+}
+
+// A parked tab quiets all of its panes, not only the one its mark is keyed on.
+export function getParkedPaneSessionIds(tabs, waitingSessionIds) {
+  const parked = new Set();
+  (tabs ?? [])
+    .filter(tab => isTabWaiting(tab, waitingSessionIds))
+    .forEach(tab => tab.panes.forEach(pane => parked.add(pane.sessionId)));
+  return parked;
 }
 
 export function countWaitingSessionsForProject(projectName, waitingSessionIds) {
