@@ -18,6 +18,7 @@ import {
   TERMINAL_SNAPSHOT_WINDOW_LINES,
 } from './terminal-runtime.js';
 import { isTransportFailure } from './command-runner.js';
+import { createTerminalWorkflow } from './terminal-workflow.js';
 
 const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -411,6 +412,12 @@ function createSessionEntry({ pty, ws, cwd, runtimeType, extra = {} }) {
 function completeAttach(ws, entry, sessionId, isExisting, { snapshotMessage, historyWarningEvent, attachState }) {
   const sessionHandshake = buildSessionHandshake(entry, sessionId, isExisting);
   if (ws.readyState === 1) {
+    // Restore the input lock before the browser can flush queued input at
+    // the session handshake. The loop belongs to the session, not this socket.
+    const workflowState = entry.workflow?.snapshot();
+    if (workflowState) {
+      ws.send(JSON.stringify({ type: 'workflow_state', requestId: null, state: workflowState }));
+    }
     ws.send(JSON.stringify(sessionHandshake));
     if (snapshotMessage) {
       ws.send(JSON.stringify(snapshotMessage));
@@ -443,6 +450,9 @@ function registerPtyDataHandler(ptyProcess, sessionId, sessions) {
       return;
     }
 
+    // Live output still drives automation while browser hydration buffers it.
+    if (s.pty === ptyProcess) s.workflow?.output(data);
+
     const chunk = trackOutputChunk(s, data);
 
     if (attachState?.mode === 'buffer_live_output') {
@@ -460,6 +470,7 @@ const intentionallyDetachedPtys = new WeakSet();
 
 /** Release a tmux client attachment while leaving its durable session alive. */
 function detachTmuxClient(entry) {
+  if (entry?.workflow?.snapshot().active) return;
   if (entry?.runtimeType !== 'tmux' || !entry.alive || !entry.pty) return;
   const pty = entry.pty;
   intentionallyDetachedPtys.add(pty);
@@ -543,6 +554,7 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
       pushTimelineEvent(s, 'pty_detached', 'browser socket closed; durable tmux session preserved');
       return;
     }
+    if (s.pty === ptyProcess) s.workflow?.stop();
 
     // In tmux mode, check if the underlying session survived
     if (reattachCount < MAX_TMUX_REATTACH && runtime.isSessionRecoverable(sessionId)) {
@@ -787,6 +799,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
 
   registerSessionSocketHandlers(ws, entry, sessionId, {
     onInput: options.onInput,
+    sessionExists: () => sessions.get(sessionId) === entry && !deletedSessionIds.has(sessionId),
     resizeRuntime: (cols, rows) => {
       if (entry.runtimeType === 'tmux') {
         safeResizeRuntimeSession(runtime, sessionId, cols, rows);
@@ -816,13 +829,48 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
       catch { console.warn('[session-naming] input observation failed'); }
     });
   };
+  const sendWorkflowState = (state, requestId = null) => {
+    if (ws.readyState === 1 && entry.ws === ws) ws.send(JSON.stringify({ type: 'workflow_state', requestId, state }));
+  };
+  const workflow = entry.workflow ?? createTerminalWorkflow({
+    write: data => {
+      if (!entry.alive || !ops.sessionExists()) throw new Error('Workflow terminal attachment is unavailable.');
+      entry.pty.write(data);
+      observeInput(data);
+    },
+    notify: state => {
+      if (entry.wsAttached && entry.ws?.readyState === 1) {
+        entry.ws.send(JSON.stringify({ type: 'workflow_state', requestId: null, state }));
+      }
+      // Release our background attachment when the loop ends. Defer until
+      // any PTY exit handler has finished updating the session lifecycle.
+      if (!state.active) Promise.resolve().then(() => {
+        if (!entry.wsAttached) detachTmuxClient(entry);
+      });
+    },
+  });
+  entry.workflow = workflow;
   // Browser -> PTY
   ws.on('message', (msg) => {
     if (entry.ws !== ws) return;
 
     try {
       const parsed = JSON.parse(msg.toString());
-      if (parsed.type === 'input') {
+      if (typeof parsed?.type === 'string' && parsed.type.startsWith('workflow_')) {
+        try {
+          if (typeof parsed.requestId !== 'string' || !/^[\w-]{1,128}$/.test(parsed.requestId)) throw new Error('Workflow requestId must contain 1–128 letters, digits, underscores or hyphens.');
+          const { type, ...request } = parsed;
+          if (type === 'workflow_start') workflow.start(request);
+          else if (type === 'workflow_stop') {
+            if (Object.keys(request).some(key => key !== 'requestId')) throw new Error('Workflow stop contains an unknown field.');
+            workflow.stop();
+          } else throw new Error('Unknown workflow control type.');
+          sendWorkflowState(workflow.snapshot(), parsed.requestId);
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'workflow_error', requestId: typeof parsed.requestId === 'string' && /^[\w-]{1,128}$/.test(parsed.requestId) ? parsed.requestId : null, message: err.message }));
+        }
+      } else if (parsed.type === 'input') {
+        if (workflow.snapshot().active) return;
         entry.pty.write(parsed.data);
         observeInput(parsed.data);
       } else if (parsed.type === 'resize') {
@@ -920,6 +968,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
       }
     } catch {
       // Raw string input fallback
+      if (workflow.snapshot().active) return;
       entry.pty.write(msg.toString());
       observeInput(msg.toString());
     }
@@ -988,6 +1037,7 @@ function registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRunti
       pushTimelineEvent(s, 'pty_detached', 'browser socket closed; durable remote tmux session preserved');
       return;
     }
+    if (s.pty === ptyProcess) s.workflow?.stop();
 
     const markRemoteDetached = (err) => {
       s.alive = false;
@@ -1324,6 +1374,7 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
 
   registerSessionSocketHandlers(ws, entry, sessionId, {
     onInput: options.onInput,
+    sessionExists: () => sessions.get(sessionId) === entry && !deletedSessionIds.has(sessionId),
     resizeRuntime: (resizeCols, resizeRows) => {
       // Best-effort remote resize; errors are swallowed inside the runtime.
       hostRuntime.resizeSessionAsync(sessionId, resizeCols, resizeRows);

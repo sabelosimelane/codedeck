@@ -158,6 +158,34 @@ describe('Terminal input resume after refocus', () => {
     );
   });
 
+  it('blocks typing while a workflow owns the terminal and restores it after Stop', () => {
+    render(<Terminal sessionId="workflow-input" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 'workflow-input', existing: false }) });
+    mocks.ws.send.mockClear();
+    const onData = mocks.term.onData.mock.calls[0][0];
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'running', active: true, error: null, requestId: 'run-1' } }) });
+    onData('must not reach the agent');
+    expect(mocks.ws.send).not.toHaveBeenCalled();
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: 'run-1' } }) });
+    onData('manual input');
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'manual input' }));
+  });
+
+  it('discards pre-handshake typing when reconnect restores a running workflow', () => {
+    render(<Terminal sessionId="workflow-reconnect" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+    const onData = mocks.term.onData.mock.calls[0][0];
+    onData('stale typing');
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'running', active: true, error: null, requestId: 'run-1' } }) });
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 'workflow-reconnect', existing: false }) });
+    expect(mocks.ws.send.mock.calls.map(([raw]) => JSON.parse(raw)).filter(msg => msg.type === 'input')).toEqual([]);
+  });
+
   it('does not leave input blocked when a mount-time resume is lost before remote attach completes', () => {
     // Remote attach awaits SSH before registering message handlers. The
     // mount-time isVisible recovery still fires at 50ms. A resume sent in that

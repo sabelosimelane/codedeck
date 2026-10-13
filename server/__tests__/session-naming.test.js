@@ -33,6 +33,56 @@ describe('session naming', () => {
     await service.waitForIdle();
     expect(generate).toHaveBeenCalledTimes(1);
   });
+  it.each(['generated', 'manual'])('clears a %s title and names only after the next prompt', async source => {
+    const { service, store, generate } = setup();
+    if (source === 'manual') service.rename('Demo-1', 'Custom title');
+    else {
+      service.input('Demo-1', 'old task\r'); service.observe('Demo-1', activity);
+      await service.waitForIdle();
+    }
+    generate.mockClear(); generate.mockResolvedValue('Build a dashboard');
+    service.input('Demo-1', '/cl'); service.input('Demo-1', 'ear\r');
+    expect(store.get('Demo-1')).toMatchObject({ title: null, state: 'waiting', source: null, error: null });
+    service.observe('Demo-1', activity); await service.waitForIdle();
+    expect(generate).not.toHaveBeenCalled();
+    const freshActivity = { executionStatus: 'running', snapshotText: '› Build a dashboard\nWorking…' };
+    service.input('Demo-1', 'build a dashboard\r'); service.observe('Demo-1', freshActivity);
+    await service.waitForIdle();
+    expect(store.get('Demo-1')).toMatchObject({ title: 'Build a dashboard', state: 'named' });
+    expect(generate).toHaveBeenCalledExactlyOnceWith(settings, freshActivity.snapshotText);
+  });
+  it.each(['resolve', 'reject'])('ignores an old naming result that %ss after clearing context', async outcome => {
+    let resolve, reject;
+    const pending = new Promise((res, rej) => { resolve = res; reject = rej; });
+    const { service, store, generate } = setup(vi.fn().mockReturnValueOnce(pending).mockResolvedValue('New context'));
+    service.input('Demo-1', 'old task\r'); service.observe('Demo-1', activity);
+    await vi.waitFor(() => expect(store.get('Demo-1').state).toBe('generating'));
+    service.input('Demo-1', '/clear\r');
+    if (outcome === 'resolve') resolve('Old context'); else reject(new Error('offline'));
+    await service.waitForIdle();
+    expect(store.get('Demo-1')).toMatchObject({ title: null, state: 'waiting', error: null });
+    service.input('Demo-1', 'new task\r'); service.observe('Demo-1', activity);
+    await service.waitForIdle(); expect(store.get('Demo-1').title).toBe('New context');
+  });
+  it('cancels scheduled naming retries when context is cleared', async () => {
+    vi.useFakeTimers();
+    const { service, store, generate } = setup(vi.fn().mockRejectedValue(new Error('offline')));
+    service.input('Demo-1', 'task\r'); service.observe('Demo-1', activity); await service.waitForIdle();
+    service.input('Demo-1', '/clear\r');
+    await vi.advanceTimersByTimeAsync(60000); await service.waitForIdle();
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(store.get('Demo-1')).toMatchObject({ title: null, state: 'waiting' });
+  });
+  it.each(['/clearance\r', 'discuss /clear\r', '/ clear\r', '/clear\x03\r', '\x1b[200~/clear\nmore\x1b[201~\r'])('does not clear for unrelated or cancelled input: %j', data => {
+    const { service, store } = setup(); service.rename('Demo-1', 'Keep this title');
+    service.input('Demo-1', data);
+    expect(store.get('Demo-1')).toMatchObject({ title: 'Keep this title', state: 'manual' });
+  });
+  it.each(['/clear\x1b[13u', '/clearx\x7f\r', '/clear\rnext task\r'])('recognizes clear with terminal editing or another submission: %j', data => {
+    const { service, store } = setup(); service.rename('Demo-1', 'Old title');
+    service.input('Demo-1', data);
+    expect(store.get('Demo-1')).toMatchObject({ title: null, state: 'waiting' });
+  });
   it('does nothing until configured', async () => {
     const { service, store, generate } = setup(); store.saveSettings(null);
     service.input('Demo-1', 'task\r'); service.observe('Demo-1', activity);

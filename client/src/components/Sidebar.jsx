@@ -76,13 +76,18 @@ function getTruthfulProjectStatus(project, sessions, finishedIds, mutedStatusSes
 function renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError }) {
   if (!hostName) return null;
   return (
-    <>
+    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 4, minWidth: 0 }}>
       <span
         title={isHostUnreachable
           ? `Host ${hostName} unreachable${lastError ? `: ${lastError}` : ''}`
           : `Host ${hostName}`}
         style={{
-          flexShrink: 0,
+          flexShrink: 1,
+          minWidth: 0,
+          maxWidth: '100%',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
           fontFamily: 'var(--font-mono)',
           fontSize: 10,
           lineHeight: 1,
@@ -105,7 +110,7 @@ function renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError }
           unreachable
         </span>
       )}
-    </>
+    </div>
   );
 }
 
@@ -663,9 +668,9 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                       {project.name}
                     </span>
                   )}
-                  {!isCompact && renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                   {!isCompact && renderWaitingCount(project.name, waitingSessionIds)}
                 </div>
+                {!isCompact && renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
 
                 {!isCompact && !isRenaming && (
                   <div className="project-inline-actions">
@@ -899,8 +904,8 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                               {project.name}
                             </span>
                           )}
-                          {renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                         </div>
+                        {renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                         {!isRenaming && (
                           <div className="project-inline-actions">
                           <button
@@ -1131,8 +1136,8 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                               {project.name}
                             </span>
                           )}
-                          {renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                         </div>
+                        {renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                         {!isRenaming && (
                           <div className="project-inline-actions">
                           <button

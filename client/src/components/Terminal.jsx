@@ -3,6 +3,8 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
+import TerminalWorkflow from './TerminalWorkflow';
+import { useTerminalWorkflow } from '../hooks/useTerminalWorkflow';
 import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
 import { AlertTriangle, ChevronsDown } from 'lucide-react';
@@ -68,6 +70,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   // mount-time resume sent before that handshake is silently dropped while
   // resumeInFlight stays true and blocks all typing until remount.
   const sessionReadyRef = useRef(false);
+  const workflow = useTerminalWorkflow({ wsRef, sessionReadyRef });
   const pendingOutputRef = useRef([]);
   const pendingSnapshotRef = useRef(null);
   const inputBufferRef = useRef([]);
@@ -94,6 +97,10 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
 
   // Upload files and inject quoted paths into the focused PTY
   async function handleFilesDrop(files) {
+    if (workflow.lockedRef.current) {
+      showToast({ type: 'warning', message: 'Stop the workflow before pasting files.' });
+      return;
+    }
     // Directory detection — File API: directories have no type and size 0,
     // or we can try reading them (which fails for directories)
     for (const file of files) {
@@ -116,7 +123,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       }
     }
 
-    if (paths.length > 0) {
+    if (paths.length > 0 && !workflow.lockedRef.current) {
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data: paths.join(' ') }));
@@ -585,6 +592,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     // round-trips, so anything sent on a merely-open socket is silently
     // dropped. Buffer until the handshake and flush there.
     function sendOrBufferInput(data) {
+      if (workflow.lockedRef.current) return;
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN && sessionReadyRef.current) {
         ws.send(JSON.stringify({ type: 'input', data }));
@@ -710,8 +718,10 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
             // Flush input typed while disconnected or during the attach
             // window — deliverable only now that handlers are registered.
             if (inputBufferRef.current.length > 0) {
-              for (const data of inputBufferRef.current) {
-                ws.send(JSON.stringify({ type: 'input', data }));
+              if (!workflow.lockedRef.current) {
+                for (const data of inputBufferRef.current) {
+                  ws.send(JSON.stringify({ type: 'input', data }));
+                }
               }
               inputBufferRef.current = [];
             }
@@ -721,6 +731,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
             if (shouldResumeFromSessionHandshake(msg, resumeInFlightRef.current)) {
               requestResume(ws);
             }
+          } else if (msg.type === 'workflow_state' || msg.type === 'workflow_error') {
+            workflow.handleMessage(msg);
           } else if (msg.type === 'snapshot') {
             if (msg.historyGuaranteed !== false) {
               setHistoryWarning(null);
@@ -801,6 +813,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
 
       ws.onclose = (event) => {
         if (!mountedRef.current) return;
+        workflow.disconnected();
 
         // Don't retry if the server reported a permanent spawn failure
         if (spawnFailed) return;
@@ -941,12 +954,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
 
   return (
     <div
-      style={{ width: '100%', height: '100%', position: 'relative' }}
+      style={{ width: '100%', height: '100%', position: 'relative', display: 'flex', flexDirection: 'column' }}
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      <TerminalWorkflow state={workflow.state} pending={workflow.pending} connected={connectionStatus === 'connected'} onStart={workflow.start} onStop={workflow.stop} />
       {/* Reconnecting overlay — dims terminal and shows spinner so user knows input is paused */}
       {connectionStatus === 'disconnected' && (
         <div style={reconnectOverlayStyle}>
@@ -1005,7 +1019,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
         }}
         style={{
           width: '100%',
-          height: '100%',
+          flex: 1,
+          minHeight: 0,
           background: 'var(--bg-base)',
           padding: '4px 0 0 8px',
         }}

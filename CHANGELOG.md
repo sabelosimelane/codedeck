@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-10-13] - Repeat agent commands with terminal workflows
+
+### Executive Summary
+* A terminal can now repeat an agent command, clear its context between passes, and stop when the agent reports completion or needs input. Workflows keep running when you switch projects or disconnect, so navigating CodeDeck no longer strands an unfinished feature. This release also resets generated session names after `/clear`, keeps remote project names readable, and prevents temporary status refreshes from clearing parked tabs.
+
+### Technical Details
+* **✨ New Feature:**
+  * Start an agent normally, open Workflow, and supply the command and reset command. Each pass uses its own completion signal; Start and Stop report their acknowledged state, and manual typing is locked while automation owns the terminal.
+  * Workflow state belongs to the terminal session and is restored on reconnect. Closing the terminal or restarting CodeDeck stops automation; stopping a workflow does not interrupt the agent's current work.
+* **🐛 Bug Fix:**
+  * Problem: switching projects closed the browser socket and stopped automation. Solution: keep the terminal attachment alive while the workflow runs and release it when automation ends.
+  * Problem: `/clear` retained names and pending naming work from the old context. Solution: reset naming state, cancel retries, and ignore stale results.
+  * Problem: host metadata squeezed remote project names out of sidebar rows. Solution: place host metadata below the project identity.
+  * Problem: a temporary unknown status could clear a parked tab. Solution: require an observed completion at idle or a dead session.
+* **🛠️ Codebase:**
+  * `server/terminal-workflow.js` — Validate commands, submit bracketed pastes with a separate Enter, match iteration signals, and manage reset timing and idempotent requests.
+  * `server/ws-handler.js` — Own workflows per terminal session, preserve them across disconnects, restore state before accepting input, and handle local and remote terminal output.
+  * `client/src/hooks/useTerminalWorkflow.js` — Validate server state, track control acknowledgements, lock input, and reconcile state after reconnecting.
+  * `client/src/components/TerminalWorkflow.jsx`, `client/src/components/terminal-workflow.css` — Add the Workflow command form, status, Start and Stop controls, and usage guidance.
+  * `client/src/components/Terminal.jsx` — Integrate workflow controls and prevent typing or uploads from interfering with automation.
+  * `server/session-naming-service.js` — Recognize submitted `/clear` commands without retaining keystroke content and reset naming work.
+  * `client/src/components/Sidebar.jsx` — Keep host labels below project names in active, waiting, and shelved sections.
+  * `client/src/utils/terminalWaiting.js` — Preserve waiting marks during temporary unknown status refreshes.
+  * `README.md` — Document terminal workflow usage, signals, and lifecycle limits.
+  * `CHANGELOG.md` — Record the workflow feature and accompanying fixes.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-workflow.test.js` — Cover command validation, signal parsing, submission timing, reset timeouts, stopping, and idempotency.
+  * `server/__tests__/terminal-workflow-ws.test.js` — Cover controls, manual-input exclusion, disconnect continuity, reconnect state, and completion while detached.
+  * `server/__tests__/ws-handler.test.js`, `server/__tests__/ws-handler-remote.test.js` — Account for workflow state in local and remote attachment handshakes.
+  * `client/src/components/__tests__/TerminalWorkflow.test.jsx` — Cover controls, validation, acknowledgement errors, and disconnect behavior.
+  * `client/src/components/__tests__/TerminalInputResume.test.jsx` — Cover input locking and queued-input handling when a workflow resumes.
+  * `server/__tests__/session-naming.test.js` — Cover clear detection, generated and manual names, stale results, and retry cancellation.
+  * `client/src/components/__tests__/Sidebar.test.jsx` — Verify remote host-label layout in every project section.
+  * `client/src/hooks/__tests__/useWaitingSessions.test.jsx`, `client/src/utils/__tests__/terminalWaiting.test.js` — Reproduce temporary status refreshes and verify that parked tabs remain parked.
+
 ## [2026-09-25] - Parked tabs stop flashing everywhere, and clear from any project
 
 ### Executive Summary

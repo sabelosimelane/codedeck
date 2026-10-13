@@ -131,6 +131,22 @@ function attachRemote({
 // ---------------------------------------------------------------------------
 // Remote attach
 // ---------------------------------------------------------------------------
+it('keeps a remote workflow attached after browser disconnect and releases it when complete', async () => {
+  const f = attachRemote();
+  await f.result;
+  const pty = f.hostRuntime.ptys[0];
+  f.ws._emit('message', JSON.stringify({ type: 'workflow_start', requestId: 'remote-run', command: 'one pass', resetCommand: '/clear' }));
+  const identifier = pty.write.mock.calls[0][0].match(/Iteration identifier: ([\w-]+)/)[1];
+  f.ws.readyState = 3;
+  f.ws._emit('close');
+  expect(pty.kill).not.toHaveBeenCalled();
+  expect(f.sessions.get('rp-1').workflow.snapshot().active).toBe(true);
+  pty.emitData(`[[CDW:${identifier}:COMPLETE]]`);
+  await Promise.resolve();
+  expect(pty.kill).toHaveBeenCalledOnce();
+  pty.emitExit({ exitCode: 0 });
+  expect(f.sessions.get('rp-1').workflow.snapshot().status).toBe('complete');
+});
 
 describe('remote session attach', () => {
   it('spawns through the host runtime, never the local runtime', async () => {

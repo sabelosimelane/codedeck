@@ -1668,6 +1668,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
       expect(messages).toEqual([
+        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
         {
           type: 'session',
           sessionId: 'test-1',
@@ -1785,6 +1786,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
       expect(messages).toEqual([
+        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
         {
           type: 'session',
           sessionId: 'test-1',
@@ -1840,6 +1842,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
       expect(messages).toEqual([
+        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
         {
           type: 'session',
           sessionId: 'test-1',
@@ -1926,6 +1929,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
       expect(messages).toEqual([
+        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
         {
           type: 'session',
           sessionId: 'test-1',

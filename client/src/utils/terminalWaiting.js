@@ -29,17 +29,18 @@ export function orderTabsForDisplay(tabs, waitingSessionIds) {
 // work lands (or the session dies) the mark clears, so the tab returns to full
 // size and the finished styling can do its job.
 //
-// "Lands" means a transition observed while parked — not a state that was
-// already true. A tab is usually parked right after its previous task finished,
-// so its finished flag is still set when the mark arrives; treating that flag as
-// a completion cleared every fresh mark the instant it landed.
+// "Lands" means a transition into idle (or death) observed while parked — not a
+// state that was already true. A tab is usually parked right after its previous
+// task finished, so its finished flag is still set when the mark arrives;
+// treating that flag alone as a completion cleared every fresh mark the instant
+// it landed. Unknown status flickers (status_refresh_pending) must not count
+// either — App may mark them finished, but that is not work landing.
 //
 // This watches every parked session, whichever project is on screen. Parked
 // sessions have their indicators quieted, so a mark that never cleared would
 // swallow the completion entirely.
 export function getLandedWaitingSessionIds({
   waitingSessionIds,
-  previousFinishedSessionIds,
   finishedSessionIds,
   previousSessionLookup,
   sessionLookup,
@@ -50,14 +51,26 @@ export function getLandedWaitingSessionIds({
     const session = sessionLookup?.get(sessionId);
     if (!session) return false;
 
-    const newlyFinished = Boolean(finishedSessionIds?.has(sessionId))
-      && !previousFinishedSessionIds?.has(sessionId);
-    if (newlyFinished) return true;
-
+    const status = getTerminalStatus(session);
     const previous = previousSessionLookup?.get(sessionId);
-    return getTerminalStatus(session) === 'dead'
+    const prevStatus = previous ? getTerminalStatus(previous) : null;
+
+    // Work lands only on a real transition into idle while finished. App may
+    // treat busy→unknown (status_refresh_pending) as finished during a project
+    // switch refresh; that flicker must not lift the park — otherwise leaving
+    // and returning silently undoes waiting. A finish that predates the mark
+    // leaves the session already idle across polls, so parking still sticks.
+    if (
+      status === 'idle'
+      && Boolean(finishedSessionIds?.has(sessionId))
+      && prevStatus !== 'idle'
+    ) {
+      return true;
+    }
+
+    return status === 'dead'
       && Boolean(previous)
-      && getTerminalStatus(previous) !== 'dead';
+      && prevStatus !== 'dead';
   });
 }
 

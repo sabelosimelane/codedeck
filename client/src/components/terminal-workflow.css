@@ -1,0 +1,12 @@
+.terminal-workflow { flex-shrink: 0; background: var(--glass-bg); border-bottom: 1px solid var(--glass-border); color: var(--text-muted); font-size: 12px; }
+.terminal-workflow-bar { display: flex; align-items: center; gap: 10px; padding: 4px 10px; }
+.terminal-workflow-bar .terminal-action-btn, .terminal-workflow-form .terminal-action-btn { width: auto; padding: 4px 10px; }
+.terminal-workflow-bar span { flex: 1; }
+.terminal-workflow-form { display: flex; flex-direction: column; gap: 6px; padding: 4px 12px 12px; }
+.terminal-workflow-form textarea, .terminal-workflow-form input { min-width: 0; background: var(--bg-base); color: var(--text-primary); border: 1px solid var(--glass-border); border-radius: 5px; padding: 7px; font: inherit; }
+.terminal-workflow-form textarea { resize: vertical; font-family: var(--font-mono); }
+.terminal-workflow-reset { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.terminal-workflow-reset input { flex: 1; }
+.terminal-workflow-error { color: var(--warning); padding: 4px 12px; }
+.terminal-workflow-form small { line-height: 1.5; }
+.terminal-workflow button:disabled, .terminal-workflow input:disabled, .terminal-workflow textarea:disabled { opacity: .5; }

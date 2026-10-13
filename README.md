@@ -18,6 +18,7 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Truthful terminal scrollback** — VS Code-style scrolling, snapshot-first reconnects, and visible warnings when preserved history cannot be guaranteed
 - **Terminal resilience** — debug inspector, transport replay catch-up, visibility-aware recovery, heartbeat monitoring
 - **Durable sessions** — tmux-backed sessions survive browser detaches and server restarts
+- **Terminal workflows** — repeat a command in your running agent, clearing context between passes until the agent reports completion
 - **Descriptive session titles** — optional background naming through Conduit, with manual rename and retry
 - **Toast notifications** — success/error feedback on every action, no silent failures
 
@@ -52,6 +53,29 @@ Open `http://localhost:43000` in your browser.
 7. Click the **hourglass** on a tab — beside its close button — or press **Cmd/Ctrl+Shift+U** on the active tab, to mark it waiting when you have handed its work to an agent. Waiting tabs shrink, dim and group to the left of the tab bar, their status indicators stop pulsing everywhere (tab, pane header, and sidebar), and the sidebar shows a count per project. The mark clears itself as soon as the work finishes or the session dies, so the finished styling and completion notification still reach you.
 8. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
 9. Toast notifications confirm every action and surface errors.
+
+## Terminal workflows
+
+Start your agent in a terminal and finish any setup or permission dialogs. At an empty
+prompt, open **Workflow**, enter your command (for example, `/feature-dev docs/todos/my-feature.md`),
+check the reset command (defaults to `/clear`), and click **Start**.
+
+CodeDeck submits the command with instructions for the agent to report **CONTINUE**,
+**COMPLETE**, or **NEEDS_INPUT** using a unique signal. CONTINUE clears context and
+submits another pass; COMPLETE or NEEDS_INPUT ends the loop. Keep progress in a file
+that the command reads each pass. Commands and reset behavior must suit your agent.
+
+Typing and file uploads are locked during the loop. **Stop** releases the terminal
+without interrupting the agent's current work. If the agent opens a dialog or omits
+the signal, stop the workflow, handle it manually, and start again at an empty prompt.
+Silence is never treated as completion. Reset submission waits for terminal output
+to settle; this does not prove that an agent accepted the reset.
+
+Workflows keep running when you switch projects, refresh, or disconnect the browser.
+Reconnecting restores the current workflow status without submitting another command.
+The backend keeps a terminal attachment open until the loop ends. **Stop**, closing
+the terminal, or losing the terminal connection ends repetition. Restarting the CodeDeck
+server also stops workflows: their state is held in backend memory, not on disk.
 
 ## Session naming
 

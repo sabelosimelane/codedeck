@@ -1,0 +1,120 @@
+import React from 'react';
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import TerminalWorkflow from '../TerminalWorkflow';
+import { useTerminalWorkflow } from '../../hooks/useTerminalWorkflow';
+
+const stopped = { status: 'stopped', active: false, error: null, requestId: null };
+const running = { status: 'running', active: true, error: null, requestId: 'run-1' };
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
+afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+describe('terminal workflow controls', () => {
+  it('opens a command box, defaults reset to /clear and submits the supplied command', () => {
+    const onStart = vi.fn();
+    render(<TerminalWorkflow state={stopped} pending={false} connected onStart={onStart} onStop={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }));
+    expect(screen.getByText(/Workflows continue when you switch projects or disconnect/)).toBeTruthy();
+    expect(screen.getByLabelText('Reset command').value).toBe('/clear');
+    expect(screen.getByRole('button', { name: 'Start' }).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Command'), { target: { value: '/feature-dev feature.md' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    expect(onStart).toHaveBeenCalledWith('/feature-dev feature.md', '/clear');
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }));
+    expect(screen.getByLabelText('Command').value).toBe('/feature-dev feature.md');
+  });
+  it('disables editing while running, exposes Stop and renders backend errors', () => {
+    const onStop = vi.fn();
+    const props = { pending: false, connected: true, onStart: vi.fn(), onStop };
+    const { rerender } = render(<TerminalWorkflow {...props} state={running} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }));
+    expect(screen.getByLabelText('Command').disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(onStop).toHaveBeenCalledOnce();
+    rerender(<TerminalWorkflow {...props} state={{ ...stopped, status: 'error', error: 'Reset did not settle.' }} />);
+    expect(screen.getByRole('alert').textContent).toBe('Reset did not settle.');
+    expect(screen.getByLabelText('Command').disabled).toBe(false);
+  });
+});
+
+describe('workflow transport', () => {
+  function setup() {
+    const wsRef = { current: { readyState: 1, send: vi.fn(), close: vi.fn() } };
+    const sessionReadyRef = { current: true };
+    const hook = renderHook(() => useTerminalWorkflow({ wsRef, sessionReadyRef }));
+    return { ...hook, wsRef, sessionReadyRef };
+  }
+  it('waits for acknowledgement, applies statuses and releases input on completion', () => {
+    const { result, wsRef } = setup();
+    act(() => result.current.start('command', '/clear'));
+    const request = JSON.parse(wsRef.current.send.mock.calls[0][0]);
+    expect(request).toMatchObject({ type: 'workflow_start', command: 'command', resetCommand: '/clear' });
+    expect(result.current.lockedRef.current).toBe(true);
+    act(() => result.current.start('command', '/clear'));
+    expect(wsRef.current.send).toHaveBeenCalledOnce();
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: request.requestId, state: { ...running, requestId: request.requestId } }));
+    expect(result.current.pending).toBe(false);
+    expect(result.current.state.status).toBe('running');
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: null, state: { ...stopped, status: 'complete', requestId: request.requestId } }));
+    expect(result.current.lockedRef.current).toBe(false);
+  });
+  it('retains the last running state on disconnect and accepts the server state on reconnect without resubmitting', () => {
+    const { result, wsRef } = setup();
+    act(() => result.current.start('command', '/clear'));
+    const request = JSON.parse(wsRef.current.send.mock.calls[0][0]);
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: request.requestId, state: running }));
+    act(() => result.current.disconnected());
+    expect(result.current.state.status).toBe('running');
+    expect(result.current.pending).toBe(false);
+    expect(result.current.lockedRef.current).toBe(true);
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: null, state: { ...stopped, status: 'complete' } }));
+    expect(result.current.state.status).toBe('complete');
+    expect(result.current.lockedRef.current).toBe(false);
+    expect(wsRef.current.send).toHaveBeenCalledOnce();
+  });
+  it('surfaces request errors and unavailable terminals without sending text input', () => {
+    const { result, wsRef, sessionReadyRef } = setup();
+    sessionReadyRef.current = false;
+    act(() => result.current.start('command', '/clear'));
+    expect(wsRef.current.send).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    sessionReadyRef.current = true;
+    act(() => result.current.start('command', '/clear'));
+    const request = JSON.parse(wsRef.current.send.mock.calls[0][0]);
+    act(() => result.current.handleMessage({ type: 'workflow_error', requestId: request.requestId, message: 'Invalid command.' }));
+    expect(result.current.pending).toBe(false);
+    expect(result.current.lockedRef.current).toBe(false);
+    expect(toast).toHaveBeenLastCalledWith({ type: 'error', message: 'Invalid command.' });
+  });
+  it('never reports success when Start is acknowledged with a submission error', () => {
+    const { result, wsRef } = setup();
+    act(() => result.current.start('command', '/clear'));
+    const request = JSON.parse(wsRef.current.send.mock.calls[0][0]);
+    const state = { ...stopped, status: 'error', error: 'Terminal submission failed.', requestId: request.requestId };
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: null, state }));
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: request.requestId, state }));
+    expect(toast).toHaveBeenLastCalledWith({ type: 'error', message: 'Terminal submission failed.' });
+    expect(result.current.pending).toBe(false);
+  });
+  it('reconnects to resolve a missing acknowledgement without claiming automation has stopped', () => {
+    vi.useFakeTimers();
+    const { result, wsRef } = setup();
+    act(() => result.current.start('command', '/clear'));
+    act(() => vi.advanceTimersByTime(10000));
+    expect(wsRef.current.close).toHaveBeenCalledOnce();
+    expect(result.current.state.status).toBe('error');
+    expect(result.current.state.error).toContain('may still be running');
+  });
+  it.each([
+    { ...stopped, status: null }, { ...stopped, active: null },
+    { ...stopped, error: 42 }, { ...stopped, requestId: 42 },
+    { ...stopped, active: true },
+  ])('rejects malformed server state %#', state => {
+    const { result } = setup();
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: null, state }));
+    expect(result.current.state.status).toBe('error');
+    expect(toast).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+});

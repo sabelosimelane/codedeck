@@ -62,6 +62,7 @@ describe('auto-clearing waiting when the work lands', () => {
   const lookup = entries => new Map(entries.map(e => [e.sessionId, e]));
   const running = sessionId => ({ sessionId, alive: true, executionStatus: 'running' });
   const idle = sessionId => ({ sessionId, alive: true, executionStatus: 'idle' });
+  const unknown = sessionId => ({ sessionId, alive: true, executionStatus: 'unknown', executionReason: 'status_refresh_pending' });
   const dead = sessionId => ({ sessionId, alive: false, executionStatus: 'dead' });
   const observe = overrides => ({
     waitingSessionIds: new Set(['Demo-1']),
@@ -70,6 +71,15 @@ describe('auto-clearing waiting when the work lands', () => {
     previousSessionLookup: lookup([running('Demo-1')]),
     sessionLookup: lookup([running('Demo-1')]),
     ...overrides,
+  });
+
+  it('keeps a parked mark when status flickers to unknown after busy', () => {
+    // App may treat busy→unknown as finished (status_refresh_pending), but that
+    // is not work landing — clearing here undoes parking on project switch.
+    expect(getLandedWaitingSessionIds(observe({
+      finishedSessionIds: new Set(['Demo-1']),
+      sessionLookup: lookup([unknown('Demo-1')]),
+    }))).toEqual([]);
   });
 
   it('clears a parked session that finishes while it is parked', () => {

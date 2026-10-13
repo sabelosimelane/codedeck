@@ -1,12 +1,20 @@
 import { NamingError, requireField, validateTitle } from './session-naming-validation.js';
 
-// Observe submission boundaries only. Keystroke content is never retained.
+// Observe submission boundaries and /clear. Only match bits and counts are retained, never keystroke content.
 export function observesSubmission(state, data) {
   requireField(typeof data === 'string', 'input', 'Terminal input must be text');
   const text = (state.tail || '') + data;
   state.tail = '';
   let submitted = false;
-  const submit = () => { if (state.characters > 0) submitted = true; state.characters = 0; };
+  state.contextCleared = false;
+  const reset = () => { state.characters = 0; state.commandLength = 0; state.clearMatches = 0; };
+  const submit = () => {
+    if (state.commandLength === 6 && state.clearMatches === 63) {
+      state.contextCleared = true;
+      submitted = false;
+    } else if (state.characters > 0) submitted = true;
+    reset();
+  };
   for (let i = 0; i < text.length; i++) {
     if (text[i] === '\x1b') {
       const rest = text.slice(i);
@@ -18,9 +26,17 @@ export function observesSubmission(state, data) {
         i += match[0].length - 1;
       } else if (/^\x1b(?:\[[0-9;:]*)?$/.test(rest)) { state.tail = rest.slice(0, 32); break; }
     } else if (!state.pasting && /[\r\n]/.test(text[i])) submit();
-    else if (text[i] === '\x03' || text[i] === '\x15') state.characters = 0;
-    else if (text[i] === '\x7f' || text[i] === '\b') state.characters = Math.max(0, (state.characters || 0) - 1);
-    else if (!/[\x00-\x20\x7f]/.test(text[i])) state.characters = (state.characters || 0) + 1;
+    else if (text[i] === '\x03' || text[i] === '\x15') reset();
+    else if (text[i] === '\x7f' || text[i] === '\b') {
+      state.characters = Math.max(0, (state.characters || 0) - 1);
+      state.commandLength = Math.max(0, (state.commandLength || 0) - 1);
+      if (state.commandLength < 6) state.clearMatches = (state.clearMatches || 0) & ((1 << state.commandLength) - 1);
+    } else if (text[i] >= ' ' || state.pasting || text[i] === '\t') {
+      const position = state.commandLength || 0;
+      if (position < 6 && text[i] === '/clear'[position]) state.clearMatches = (state.clearMatches || 0) | (1 << position);
+      state.commandLength = position + 1;
+      if (!/[\x00-\x20\x7f]/.test(text[i])) state.characters = (state.characters || 0) + 1;
+    }
   }
   return submitted;
 }
@@ -95,11 +111,16 @@ export function createNamingService({ store, generate, capture }) {
   return {
     input(id, data) {
       if (stopped || deleted.has(id) || !store.settings()) return;
-      const record = store.get(id);
-      if (record && !['waiting', 'queued', 'generating', 'failed'].includes(record.state)) return;
       let input = inputs.get(id);
       if (!input) { input = {}; inputs.set(id, input); }
-      if (observesSubmission(input, data)) input.submitted = true;
+      const submitted = observesSubmission(input, data);
+      if (input.contextCleared) {
+        cancelRetry(id);
+        store.ensure(id);
+        store.update(id, { title: null, state: 'waiting', source: null, error: null });
+        input.submitted = false;
+      }
+      if (submitted) input.submitted = true;
     },
     observe(id, { executionStatus, snapshotText }) {
       if (stopped || deleted.has(id) || !inputs.get(id)?.submitted || executionStatus !== 'running' || typeof snapshotText !== 'string' || !snapshotText.trim()) return;

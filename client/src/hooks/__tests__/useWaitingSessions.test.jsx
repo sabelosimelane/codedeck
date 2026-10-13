@@ -137,6 +137,12 @@ describe('useWaitingSessions', () => {
   describe('auto-clearing when parked work lands', () => {
     const running = sessionId => ({ sessionId, alive: true, executionStatus: 'running' });
     const idle = sessionId => ({ sessionId, alive: true, executionStatus: 'idle' });
+    const unknown = sessionId => ({
+      sessionId,
+      alive: true,
+      executionStatus: 'unknown',
+      executionReason: 'status_refresh_pending',
+    });
     const mockMarked = () => {
       global.fetch = vi.fn(async (url, options) => {
         if (options?.method === 'PUT') return { ok: true, json: async () => ({ sessionId: 'Beta-4', waiting: false, waitingAt: null }) };
@@ -152,6 +158,26 @@ describe('useWaitingSessions', () => {
         { initialProps: { sessionStatus: [running('Beta-4')], finishedSessionIds: new Set() } },
       );
       await waitFor(() => expect(result.current.waitingSessionIds.has('Beta-4')).toBe(true));
+
+      rerender({ sessionStatus: [idle('Beta-4')], finishedSessionIds: new Set(['Beta-4']) });
+
+      await waitFor(() => expect(result.current.waitingSessionIds.has('Beta-4')).toBe(false));
+      expect(clearCalls().map(([url]) => url)).toEqual(['/api/terminal-waiting/Beta-4']);
+      expect(showToast).not.toHaveBeenCalled();
+    });
+
+    it('keeps a mark when status flickers to unknown, then clears on a real idle finish', async () => {
+      mockMarked();
+      const { result, rerender } = renderHook(
+        ({ sessionStatus, finishedSessionIds }) => useWaitingSessions(showToast, { sessionStatus, finishedSessionIds }),
+        { initialProps: { sessionStatus: [running('Beta-4')], finishedSessionIds: new Set() } },
+      );
+      await waitFor(() => expect(result.current.waitingSessionIds.has('Beta-4')).toBe(true));
+
+      rerender({ sessionStatus: [unknown('Beta-4')], finishedSessionIds: new Set(['Beta-4']) });
+
+      expect(result.current.waitingSessionIds.has('Beta-4')).toBe(true);
+      expect(clearCalls()).toEqual([]);
 
       rerender({ sessionStatus: [idle('Beta-4')], finishedSessionIds: new Set(['Beta-4']) });
 
