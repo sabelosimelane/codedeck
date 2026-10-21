@@ -870,7 +870,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
           ws.send(JSON.stringify({ type: 'workflow_error', requestId: typeof parsed.requestId === 'string' && /^[\w-]{1,128}$/.test(parsed.requestId) ? parsed.requestId : null, message: err.message }));
         }
       } else if (parsed.type === 'input') {
-        if (workflow.snapshot().active) return;
+        if (workflow.snapshot().status === 'resetting') return;
         entry.pty.write(parsed.data);
         observeInput(parsed.data);
       } else if (parsed.type === 'resize') {
@@ -968,7 +968,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
       }
     } catch {
       // Raw string input fallback
-      if (workflow.snapshot().active) return;
+      if (workflow.snapshot().status === 'resetting') return;
       entry.pty.write(msg.toString());
       observeInput(msg.toString());
     }

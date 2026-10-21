@@ -34,12 +34,23 @@ describe('workflow over terminal WebSocket', () => {
     expect(messages(f.ws)).toContainEqual(expect.objectContaining({ type: 'workflow_state', requestId: 'start-1', state: expect.objectContaining({ active: true }) }));
     await Promise.resolve();
     expect(f.onInput).toHaveBeenCalledWith('demo-1', f.pty.write.mock.calls[0][0]);
-    send(f.ws, { type: 'input', data: 'accidental typing' });
-    expect(f.pty.write).toHaveBeenCalledTimes(1);
+    send(f.ws, { type: 'input', data: 'y' });
+    expect(f.pty.write).toHaveBeenLastCalledWith('y');
     f.output(marker(f.pty, 'COMPLETE'));
     expect(messages(f.ws).at(-2)).toMatchObject({ type: 'workflow_state', state: { status: 'complete' } });
     send(f.ws, { type: 'input', data: 'manual input' });
     expect(f.pty.write).toHaveBeenLastCalledWith('manual input');
+  });
+  it.each(['y', '\r', '\x1b[<0;10;20M', '\x1b[<0;10;20m'])('delivers approval input %j while running but blocks it during reset', data => {
+    const f = fixture();
+    send(f.ws, start);
+    send(f.ws, { type: 'input', data });
+    expect(f.pty.write).toHaveBeenLastCalledWith(data);
+    expect(f.sessions.get('demo-1').workflow.snapshot().status).toBe('running');
+    f.output(marker(f.pty, 'CONTINUE'));
+    f.pty.write.mockClear();
+    send(f.ws, { type: 'input', data });
+    expect(f.pty.write).not.toHaveBeenCalled();
   });
   it('deduplicates Start and acknowledges Stop without sending an interrupt', () => {
     const f = fixture();

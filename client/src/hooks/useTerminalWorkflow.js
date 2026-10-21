@@ -27,6 +27,7 @@ export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
   const stateRef = useRef(STOPPED);
   const pendingRef = useRef(null);
   const lockedRef = useRef(false);
+  const inputLockedRef = useRef(false);
   const timerRef = useRef(null);
   const { showToast } = useToast();
   const toastRef = useRef(showToast);
@@ -35,6 +36,7 @@ export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
   const applyState = useCallback(next => {
     stateRef.current = next;
     lockedRef.current = next.active || pendingRef.current !== null;
+    inputLockedRef.current = next.status === 'resetting' || pendingRef.current !== null;
     setState(next);
   }, []);
   const clearPending = useCallback(() => {
@@ -42,6 +44,7 @@ export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
     pendingRef.current = null;
     setPending(false);
     lockedRef.current = stateRef.current.active;
+    inputLockedRef.current = stateRef.current.status === 'resetting';
   }, []);
   const fail = useCallback(message => {
     clearPending();
@@ -60,6 +63,7 @@ export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
     pendingRef.current = requestId;
     setPending(true);
     lockedRef.current = true;
+    inputLockedRef.current = true;
     try {
       ws.send(JSON.stringify({ type, requestId, ...fields }));
       timerRef.current = setTimeout(() => {
@@ -104,5 +108,5 @@ export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
     }
   }, [applyState, clearPending, fail, wsRef]);
   useEffect(() => () => clearTimeout(timerRef.current), []);
-  return { state, pending, lockedRef, start, stop, disconnected, handleMessage };
+  return { state, pending, lockedRef, inputLockedRef, start, stop, disconnected, handleMessage };
 }

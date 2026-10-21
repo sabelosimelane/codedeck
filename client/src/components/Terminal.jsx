@@ -2,7 +2,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState, us
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { ClipboardAddon } from '@xterm/addon-clipboard';
+import { createTerminalSelection } from '../utils/terminalSelection';
 import TerminalWorkflow from './TerminalWorkflow';
 import { useTerminalWorkflow } from '../hooks/useTerminalWorkflow';
 import '@xterm/xterm/css/xterm.css';
@@ -39,6 +39,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   const wsRef = useRef(null);
   const fitRef = useRef(null);
   const termRef = useRef(null);
+  const selectionRef = useRef(null);
+  const [selectionState, setSelectionState] = useState('idle');
   const retryRef = useRef(0);
   const retryTimerRef = useRef(null);
   const heartbeatRef = useRef(null);
@@ -193,6 +195,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   }
 
   function canPaintCurrentViewport() {
+    if (selectionRef.current?.isHolding()) return false;
     return shouldWriteTerminalViewport({
       isVisible: isVisibleRef.current,
       documentVisibility: documentVisibilityRef.current,
@@ -267,6 +270,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   }
 
   function bufferOrHydrateSnapshot(term, snapshot) {
+    selectionRef.current?.noteOutput(snapshot.data);
     resumeInFlightRef.current = false;
     pendingOutputRef.current = [];
 
@@ -295,6 +299,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   }
 
   function bufferOrWriteChunk(term, chunk) {
+    selectionRef.current?.noteOutput(chunk.data);
     if (typeof chunk.seq === 'number') {
       lastSeenSeqRef.current = chunk.seq;
     }
@@ -331,6 +336,10 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   }
 
   function syncTerminalViewport({ focus = false, requestResumeAfterSync = false } = {}) {
+    if (selectionRef.current?.isHolding()) {
+      if (focus) termRef.current?.focus();
+      return;
+    }
     if (!mountedRef.current) return;
     if (!canSyncCurrentTerminal()) return;
 
@@ -385,6 +394,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     },
     clear() {
       if (termRef.current) {
+        selectionRef.current?.release();
         termRef.current.clear();
         termRef.current.scrollToBottom();
       }
@@ -436,6 +446,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       // hints at a clearly readable 7:1 ratio over true-color backgrounds.
       minimumContrastRatio: 14,
       macOptionClickForcesSelection: true,
+      altClickMovesCursor: false,
       theme: XTERM_THEMES[getResolvedTheme()],
       allowTransparency: true,
     });
@@ -455,11 +466,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     });
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
-    // OSC 52 support: tmux (set-clipboard external) emits the selected text as
-    // an OSC 52 sequence when a mouse-mode copy completes. Without this addon
-    // xterm.js silently drops it and tmux drag-selections never reach the
-    // system clipboard.
-    term.loadAddon(new ClipboardAddon());
+    // Clipboard writes belong exclusively to an explicit browser copy action.
+    // Consume both OSC 52 writes and reads without granting the PTY access.
+    const clipboardGuard = term.parser?.registerOscHandler(52, () => true);
 
     term.open(containerRef.current);
     fitRef.current = fitAddon;
@@ -493,6 +502,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     fontSet?.addEventListener?.('loadingdone', scheduleFontMeasurementSync);
 
     const handleNativePaste = (event) => {
+      selectionRef.current?.release();
       const files = event.clipboardData?.files;
       if (files && files.length > 0) {
         event.preventDefault();
@@ -522,51 +532,15 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       setAutoScrollEnabled(isTerminalViewportAtBottom(buffer));
     });
 
-    // navigator.clipboard.writeText rejects when the document doesn't have
-    // focus — common right after interacting with other panes. Fall back to a
-    // hidden textarea + execCommand, and surface a toast only if both fail.
-    const copyTextToClipboard = (text, { notifyOnFailure = false } = {}) => {
-      navigator.clipboard.writeText(text).catch((err) => {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        let copied = false;
-        try {
-          copied = document.execCommand('copy');
-        } catch {
-          copied = false;
-        }
-        textarea.remove();
-        if (!copied) {
-          console.warn(`[terminal] clipboard copy failed session=${sessionId} error=${err?.message || err}`);
-          if (notifyOnFailure) {
-            showToast('Copy failed — click the terminal and try again', 'error');
-          }
-        }
-      });
-    };
-
-    // Copy-on-select: mirror native terminal emulator behaviour so text is
-    // always on the clipboard after a drag selection (needed because tmux
-    // mouse mode prevents normal browser selection).
-    let selectionCopyTimer = null;
-    if (typeof term.onSelectionChange === 'function') {
-      term.onSelectionChange(() => {
-        if (selectionCopyTimer) {
-          clearTimeout(selectionCopyTimer);
-        }
-        selectionCopyTimer = setTimeout(() => {
-          selectionCopyTimer = null;
-          const text = term.getSelection();
-          if (text) {
-            copyTextToClipboard(text);
-          }
-        }, 150);
-      });
-    }
+    const selection = createTerminalSelection({
+      term,
+      element: containerRef.current,
+      isActive: () => isActivePaneRef.current && isVisibleRef.current,
+      onChange: setSelectionState,
+      onResume: () => syncTerminalViewport(),
+      showToast,
+    });
+    selectionRef.current = selection;
 
     const handleWheel = (event) => {
       if (shouldPauseAutoScrollOnWheel({
@@ -592,7 +566,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     // round-trips, so anything sent on a merely-open socket is silently
     // dropped. Buffer until the handshake and flush there.
     function sendOrBufferInput(data) {
-      if (workflow.lockedRef.current) return;
+      selectionRef.current?.release();
+      if (workflow.inputLockedRef.current) return;
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN && sessionReadyRef.current) {
         ws.send(JSON.stringify({ type: 'input', data }));
@@ -607,15 +582,6 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     const browserStolenKeys = new Set(['r', 'w', 't', 'n']);
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
-      // Cmd+C with an active xterm selection: copy explicitly instead of
-      // relying on the hidden textarea's focus state, which drifts after
-      // clicking dividers/inspector and makes Cmd+C silently do nothing.
-      if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
-          && event.key.toLowerCase() === 'c' && term.hasSelection()) {
-        event.preventDefault();
-        copyTextToClipboard(term.getSelection(), { notifyOnFailure: true });
-        return false;
-      }
       if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
         const key = event.key.toLowerCase();
         if (browserStolenKeys.has(key)) {
@@ -775,7 +741,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
             // Rapid replay writes can trip xterm scroll events. Only restore
             // bottom-follow when the user has not intentionally detached the
             // viewport to read older output.
-            if (!userScrolledUpRef.current) {
+            if (!selectionRef.current?.isHolding() && !userScrolledUpRef.current) {
               setAutoScrollEnabled(true);
               term.scrollToBottom();
             }
@@ -788,7 +754,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
             }
           } else if (msg.type === 'spawn_error') {
             spawnFailed = true;
-            term.write(msg.data);
+            bufferOrWriteChunk(term, { data: msg.data });
             if (msg.reason === 'host_unreachable') {
               setHostUnreachableInfo({
                 host: msg.host || 'remote host',
@@ -803,7 +769,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
             showToast({ type: 'error', message: msg.message || 'Failed to start terminal' });
           }
         } catch {
-          term.write(event.data);
+          bufferOrWriteChunk(term, { data: event.data });
         }
       };
 
@@ -813,6 +779,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
 
       ws.onclose = (event) => {
         if (!mountedRef.current) return;
+        selection.release('Selection ended because the terminal connection changed.');
         workflow.disconnected();
 
         // Don't retry if the server reported a permanent spawn failure
@@ -903,7 +870,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     window.addEventListener('pageshow', handlePageShow);
 
     // Handle resize
+    let selectionGeometry = { width: containerRef.current.clientWidth, height: containerRef.current.clientHeight };
     const resizeObserver = new ResizeObserver(() => {
+      const next = { width: containerRef.current.clientWidth, height: containerRef.current.clientHeight };
+      if (next.width !== selectionGeometry.width || next.height !== selectionGeometry.height) {
+        selection.release('Selection ended because the terminal size changed.');
+      }
+      selectionGeometry = next;
       syncTerminalViewport();
     });
     resizeObserver.observe(containerRef.current);
@@ -914,7 +887,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       clearTimeout(retryTimerRef.current);
       clearInterval(heartbeatRef.current);
       clearTimeout(delayedViewportSyncTimerRef.current);
-      clearTimeout(selectionCopyTimer);
+      selection.dispose();
+      selectionRef.current = null;
+      clipboardGuard?.dispose();
       delayedViewportSyncTimerRef.current = null;
       snapshotGeometryRef.current = null;
       pendingOutputRef.current = [];
@@ -960,7 +935,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <TerminalWorkflow state={workflow.state} pending={workflow.pending} connected={connectionStatus === 'connected'} onStart={workflow.start} onStop={workflow.stop} />
+      <TerminalWorkflow key={sessionId} sessionId={sessionId} state={workflow.state} pending={workflow.pending} connected={connectionStatus === 'connected'} onStart={workflow.start} onStop={workflow.stop} />
+      {selectionState !== 'idle' && (
+        <div role="status" style={{ position: 'absolute', bottom: 8, right: 12, zIndex: 5, pointerEvents: 'none', background: 'var(--bg-base)', color: 'var(--text-primary)', padding: '4px 8px', fontSize: 12 }}>
+          Display paused for selection · Cmd+C to copy · Esc to resume
+        </div>
+      )}
       {/* Reconnecting overlay — dims terminal and shows spinner so user knows input is paused */}
       {connectionStatus === 'disconnected' && (
         <div style={reconnectOverlayStyle}>
@@ -1012,8 +992,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       )}
       <div
         ref={containerRef}
+        title="Hold Option/Alt and drag to select; Cmd+C copies; Esc resumes live output"
         onMouseDown={() => {
-          syncTerminalViewport({ focus: true });
+          if (!selectionRef.current?.isHolding()) syncTerminalViewport({ focus: true });
           // Direct fallback: ensure focus even if syncTerminalViewport gates bail early
           if (termRef.current) termRef.current.focus();
         }}
@@ -1030,6 +1011,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
         <button
           onClick={() => {
             if (termRef.current) {
+              selectionRef.current?.release();
               termRef.current.scrollToBottom();
               setAutoScrollEnabled(true);
             }

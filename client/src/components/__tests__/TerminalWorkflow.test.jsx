@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TerminalWorkflow from '../TerminalWorkflow';
 import { useTerminalWorkflow } from '../../hooks/useTerminalWorkflow';
 
@@ -8,12 +8,13 @@ const stopped = { status: 'stopped', active: false, error: null, requestId: null
 const running = { status: 'running', active: true, error: null, requestId: 'run-1' };
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
+beforeEach(() => localStorage.clear());
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('terminal workflow controls', () => {
   it('opens a command box, defaults reset to /clear and submits the supplied command', () => {
     const onStart = vi.fn();
-    render(<TerminalWorkflow state={stopped} pending={false} connected onStart={onStart} onStop={vi.fn()} />);
+    render(<TerminalWorkflow sessionId="terminal-1" state={stopped} pending={false} connected onStart={onStart} onStop={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Workflow' }));
     expect(screen.getByText(/Workflows continue when you switch projects or disconnect/)).toBeTruthy();
     expect(screen.getByLabelText('Reset command').value).toBe('/clear');
@@ -25,15 +26,49 @@ describe('terminal workflow controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Workflow' }));
     expect(screen.getByLabelText('Command').value).toBe('/feature-dev feature.md');
   });
+  it('restores the last edited command after remounting, independently for each terminal', () => {
+    const onStart = vi.fn();
+    const props = { state: stopped, pending: false, connected: true, onStart, onStop: vi.fn() };
+    const open = sessionId => {
+      const view = render(<TerminalWorkflow {...props} sessionId={sessionId} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Workflow' }));
+      return view;
+    };
+    let view = open('terminal-1');
+    fireEvent.change(screen.getByLabelText('Command'), { target: { value: '/feature-dev first.md' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    view.unmount();
+    view = open('terminal-2');
+    expect(screen.getByLabelText('Command').value).toBe('');
+    fireEvent.change(screen.getByLabelText('Command'), { target: { value: '/feature-dev second.md' } });
+    view.unmount();
+    view = open('terminal-1');
+    expect(screen.getByLabelText('Command').value).toBe('/feature-dev first.md');
+    expect(onStart).toHaveBeenCalledOnce();
+    fireEvent.change(screen.getByLabelText('Command'), { target: { value: '' } });
+    view.unmount();
+    view = open('terminal-1');
+    expect(screen.getByLabelText('Command').value).toBe('');
+    view.unmount();
+    open('terminal-2');
+    expect(screen.getByLabelText('Command').value).toBe('/feature-dev second.md');
+  });
+  it.each([undefined, null, '', 42])('rejects invalid terminal identity %s', sessionId => {
+    expect(() => render(<TerminalWorkflow sessionId={sessionId} state={stopped} />)).toThrow('Workflow sessionId');
+  });
+  it.each(['x'.repeat(16385), 'bad\x1bcommand'])('rejects invalid persisted commands %#', command => {
+    localStorage.setItem('codedeck.workflow.command:terminal-1', command);
+    expect(() => render(<TerminalWorkflow sessionId="terminal-1" state={stopped} />)).toThrow('Workflow saved command');
+  });
   it('disables editing while running, exposes Stop and renders backend errors', () => {
     const onStop = vi.fn();
     const props = { pending: false, connected: true, onStart: vi.fn(), onStop };
-    const { rerender } = render(<TerminalWorkflow {...props} state={running} />);
+    const { rerender } = render(<TerminalWorkflow sessionId="terminal-1" {...props} state={running} />);
     fireEvent.click(screen.getByRole('button', { name: 'Workflow' }));
     expect(screen.getByLabelText('Command').disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(onStop).toHaveBeenCalledOnce();
-    rerender(<TerminalWorkflow {...props} state={{ ...stopped, status: 'error', error: 'Reset did not settle.' }} />);
+    rerender(<TerminalWorkflow sessionId="terminal-1" {...props} state={{ ...stopped, status: 'error', error: 'Reset did not settle.' }} />);
     expect(screen.getByRole('alert').textContent).toBe('Reset did not settle.');
     expect(screen.getByLabelText('Command').disabled).toBe(false);
   });

@@ -158,7 +158,7 @@ describe('Terminal input resume after refocus', () => {
     );
   });
 
-  it('blocks typing while a workflow owns the terminal and restores it after Stop', () => {
+  it('blocks typing while a workflow resets the terminal and restores it after Stop', () => {
     render(<Terminal sessionId="workflow-input" cwd="/tmp" isVisible={true} />);
     vi.advanceTimersByTime(16);
     mocks.ws.readyState = 1;
@@ -166,7 +166,7 @@ describe('Terminal input resume after refocus', () => {
     mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 'workflow-input', existing: false }) });
     mocks.ws.send.mockClear();
     const onData = mocks.term.onData.mock.calls[0][0];
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'running', active: true, error: null, requestId: 'run-1' } }) });
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'resetting', active: true, error: null, requestId: 'run-1' } }) });
     onData('must not reach the agent');
     expect(mocks.ws.send).not.toHaveBeenCalled();
     mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: 'run-1' } }) });
@@ -268,6 +268,27 @@ describe('Terminal input resume after refocus', () => {
     expect(mocks.ws.send).toHaveBeenCalledWith(
       JSON.stringify({ type: 'input', data: 'ls\r' })
     );
+  });
+
+  it.each(['y', '\r', '\x1b[<0;10;20M', '\x1b[<0;10;20m'])('forwards approval input %j during a running workflow, but not reset', data => {
+    render(<Terminal sessionId="approval" cwd="/tmp" isVisible={true} />);
+    vi.advanceTimersByTime(16);
+    mocks.ws.readyState = 1;
+    mocks.ws.onopen?.();
+    mocks.ws.onmessage({ data: JSON.stringify({ type: 'session', sessionId: 'approval', existing: false }) });
+    const changeState = status => mocks.ws.onmessage({ data: JSON.stringify({
+      type: 'workflow_state', requestId: null,
+      state: { status, active: true, error: null, requestId: 'run-1' },
+    }) });
+    changeState('running');
+    mocks.ws.send.mockClear();
+    const onData = mocks.term.onData.mock.calls[0][0];
+    onData(data);
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data }));
+    changeState('resetting');
+    mocks.ws.send.mockClear();
+    onData(data);
+    expect(mocks.ws.send).not.toHaveBeenCalled();
   });
 
   it('buffers input until the session handshake, then flushes in order', () => {

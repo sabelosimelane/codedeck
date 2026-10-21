@@ -54,6 +54,16 @@ Open `http://localhost:43000` in your browser.
 8. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
 9. Toast notifications confirm every action and surface errors.
 
+## Copying terminal text
+
+On macOS, hold **Option/Alt** and drag over the text, then press **Cmd+C**.
+The display pauses while you select; the agent keeps running and output is held
+until you press **Esc**, type, or click once to resume. That first click only
+resumes the display; subsequent clicks reach the terminal application normally.
+The highlight stays after copying. Selection alone does not copy, and terminal
+OSC 52 sequences cannot read or overwrite the clipboard. Clipboard failures
+appear as a toast. Resizing or reconnecting ends selection with a notice.
+
 ## Terminal workflows
 
 Start your agent in a terminal and finish any setup or permission dialogs. At an empty

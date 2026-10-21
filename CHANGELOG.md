@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-10-21] - Stabilize terminal copying and workflow interaction
+
+### Executive Summary
+* Terminal text stays still while you select and copy it, workflow commands survive reloads, and running agents can receive approval clicks and keyboard input. Resetting a workflow still protects the terminal from conflicting input.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * Problem: live redraws interrupted text selection and copying. Solution: hold output during Option-drag selection, copy explicitly with Cmd+C, and resume on Escape, typing, or a click.
+  * Problem: running workflows blocked agent approval input and lost edited commands after remounting. Solution: allow input outside reset and control acknowledgement windows, and persist commands per terminal.
+* **🛠️ Codebase:**
+  * `client/src/utils/terminalSelection.js` — Manage selection gestures, explicit clipboard writes, listener cleanup, and the 4 MiB output limit.
+  * `client/src/components/Terminal.jsx` — Integrate selection buffering, block terminal clipboard access through OSC 52, and connect session-specific workflow controls.
+  * `client/src/components/TerminalWorkflow.jsx` — Validate and persist edited commands independently for each terminal.
+  * `client/src/hooks/useTerminalWorkflow.js` — Separate terminal input locking from workflow form locking.
+  * `server/ws-handler.js` — Accept approval input while running and reject it during reset.
+  * `README.md` — Explain terminal selection, copying, and display resumption.
+  * `CHANGELOG.md` — Record terminal selection and workflow fixes.
+* **🧪 Tests:**
+  * `client/src/utils/terminalSelection.test.js` — Cover gesture races, clipboard failures, validation, output limits, and cleanup.
+  * `client/src/components/__tests__/TerminalSelection.test.jsx` — Cover output buffering, snapshot ordering, resize cancellation, and OSC 52 blocking.
+  * `client/src/components/__tests__/TerminalWorkflow.test.jsx` — Cover command persistence, terminal isolation, deliberate clearing, and invalid stored data.
+  * `client/src/components/__tests__/TerminalInputResume.test.jsx` — Cover approval input during running workflows and exclusion during resets.
+  * `server/__tests__/terminal-workflow-ws.test.js` — Verify keyboard and mouse approval input reaches the terminal only outside reset.
+  * `client/e2e/terminal-selection.js` — Exercise exact, reversed, wrapped, and scrollback copying in the browser; acknowledge resume requests in the fake socket so approval checks reflect a ready connection.
+
 ## [2026-10-13] - Repeat agent commands with terminal workflows
 
 ### Executive Summary
