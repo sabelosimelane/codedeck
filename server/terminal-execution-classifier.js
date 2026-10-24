@@ -64,7 +64,9 @@ function hasAgentIdlePrompt(line) {
 
 function hasAgentInterruptIndicator(line) {
   if (/\besc to interrupt\b/i.test(line)) return true;
-  if (!/^[^\w\s⏺❯›…]\s/u.test(line)) return false;
+  // Only spinner frames signal streaming. Transcript bullets, tree branches,
+  // and recaps can also contain ellipses while the agent is idle.
+  if (!/^[·✢✳✶✻✽✼✱*]\s/u.test(line)) return false;
   return /\w…/.test(line);
 }
 

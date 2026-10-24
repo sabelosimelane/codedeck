@@ -270,6 +270,44 @@ describe('terminal execution classifier', () => {
     });
   });
 
+  it.each([
+    '- Portfolio table: names were cut off ("Securi…") and the "Open now" column was clipped.',
+    '• Portfolio table: names were cut off ("Securi…") and the "Open now" column was clipped.',
+    '│ Portfolio table: names were cut off ("Securi…") and the "Open now" column was clipped.',
+    '※ recap: Names were cut off ("Securi…"). All tests pass.',
+  ])('keeps a completed turn idle with an ellipsis in transcript content: %s', line => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.304',
+      paneDead: '0',
+      snapshotText: [
+        '⏺ Phones can now switch workspaces.',
+        line,
+        '✻ Crunched for 6m 10s · done 8:59',
+        '──────────────────────────────────────────────────────────',
+        '❯',
+        '──────────────────────────────────────────────────────────',
+        '  dev ~/git/alpha/backend Opus 5.5 | ctx: 14% used',
+        '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      executionReason: 'agent_prompt_idle',
+      executionConfidence: 'high',
+    });
+  });
+
+  it.each(['·', '✢', '✳', '✶', '✻', '✽', '✼', '✱', '*'])('keeps a real %s spinner running beside an input prompt', spinner => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: '2.1.304',
+      paneDead: '0',
+      snapshotText: `${spinner} Thinking… (3m 30s · ↑ 1.5k tokens)\n❯`,
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      executionReason: 'agent_streaming',
+      executionConfidence: 'high',
+    });
+  });
+
   it('matches Claude Code spinners that put multi-token text between the verb and the ellipsis', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.114',

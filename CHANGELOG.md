@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-10-24] - Correct idle status after completed agent turns
+
+### Executive Summary
+* Finished agent sessions now show as idle when their final answer contains an ellipsis in a bullet, tree branch, or recap. Active spinner indicators continue to show the session as running.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * Problem: punctuation-prefixed transcript lines containing an ellipsis were mistaken for active spinners. Solution: restrict spinner detection to recognized spinner symbols.
+* **🛠️ Codebase:**
+  * `server/terminal-execution-classifier.js` — Distinguish spinner frames from transcript punctuation.
+  * `CHANGELOG.md` — Record the idle-status correction.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-execution-classifier.test.js` — Add four completed-turn regressions and nine active-spinner cases. All 583 server tests pass; the affected live session reports idle in the API and browser.
+
 ## [2026-10-21] - Stabilize terminal copying and workflow interaction
 
 ### Executive Summary
