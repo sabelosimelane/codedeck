@@ -19,7 +19,7 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Terminal resilience** — debug inspector, transport replay catch-up, visibility-aware recovery, heartbeat monitoring
 - **Durable sessions** — tmux-backed sessions survive browser detaches and server restarts
 - **Terminal workflows** — repeat a command in your running agent, clearing context between passes until the agent reports completion
-- **Descriptive session titles** — optional background naming through Conduit, with manual rename and retry
+- **Descriptive session titles** — optional background naming through configurable local CLIs, with manual rename and retry
 - **Toast notifications** — success/error feedback on every action, no silent failures
 
 ## Setup
@@ -91,13 +91,48 @@ server also stops workflows: their state is held in backend memory, not on disk.
 
 ## Session naming
 
-Open **Settings → Session naming**, enter your Conduit base URL and API credential,
-then **Test connection / refresh catalog**. Explicitly choose a provider, model, and
-optional reasoning effort before saving. Availability and choices come from Conduit.
-The credential stays on the backend in a private file and is never returned to the browser.
+Open **Settings → Session naming** and select a provider, an exact case-sensitive
+model ID, and optional reasoning effort. Claude Code and Codex are initial editable
+profiles, not a fixed provider list. **Add provider** lets you capture another CLI;
+**Remove provider** removes its profile. Changes take effect only after saving.
+Existing Claude/Codex selections remain valid. Legacy Conduit settings are retained
+but require a CLI selection; existing titles are preserved.
+
+Each profile has an executable name or absolute path, a JSON array of arguments,
+optional effort arguments, a prompt input method, and a response format. Use
+`{model}` in the arguments; use `{prompt}` exactly once for argument input, or
+choose standard input and omit `{prompt}`. Effort arguments use `{effort}` and are
+omitted when effort is blank. Use `[]` when the CLI does not support effort.
+Arguments are passed directly without a shell. Configure the CLI for non-interactive
+use and disable tools; authenticate through the CLI, not secrets in the saved arguments.
+
+For example, a **Cursor** profile can use executable `agent`, argument input, no
+effort arguments, the **JSON result envelope** response format, and:
+
+```json
+["--print", "--trust", "--mode", "ask", "--output-format", "json", "--model", "{model}", "{prompt}"]
+```
+
+A **Kiro** profile can use executable `kiro-cli`, argument input,
+`["--effort", "{effort}"]` for effort arguments, **Title JSON on stdout**, and:
+
+```json
+["chat", "--no-interactive", "--model", "{model}", "{prompt}"]
+```
+
+See [Kiro's CLI reference](https://kiro.dev/docs/cli/reference/cli-commands/)
+for flags supported by your installed version. Kiro was not installed for live
+verification of this example. The command must emit the requested title JSON without
+banners; CLIs with another output shape need a wrapper that emits title JSON.
+
+Response formats are explicit: **Title JSON on stdout** expects
+`{"title":"Short title"}` (or `{"title":null}`); **JSON result envelope** expects
+a successful `type: "result"`, `is_error: false` envelope whose `result` is that JSON
+string; **Codex JSON event stream** reads a single completed agent message. Invalid
+responses fail naming without substituting another provider or changing the title.
 
 After a submitted task starts running, CodeDeck sends a bounded terminal excerpt to
-Conduit for a short title. This works through the shared local/remote terminal activity
+the selected local CLI for a short title. This works through the shared local/remote terminal activity
 interface. Naming runs independently of terminal input, output, and navigation. Empty Enter presses do not arm naming. Startup
 banners alone can return insufficient context and wait for another submission.
 
@@ -109,10 +144,10 @@ Titles persist across reloads; a split tab uses its first pane's title. Hover a 
 see the original session ID. Existing sessions are eligible on their next submitted task;
 there is no retrospective bulk naming.
 
-CodeDeck holds naming excerpts only in memory (at most 12,000 characters each). Conduit
-and its selected provider have their own retention policies. The `/execute` response must
-report the selected provider and model; substitutions or malformed results fail naming
-instead of updating the title. Configure Conduit project defaults/routing accordingly.
+CodeDeck bounds naming excerpts to 12,000 characters and does not persist them.
+The configured CLI and its provider have their own retention policies. Naming runs
+from a temporary directory, with a 65-second process timeout and a 1 MiB output limit.
+The CLI runs on the CodeDeck server, including when the terminal itself is remote.
 
 ## Terminal Resilience
 

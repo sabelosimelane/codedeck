@@ -1,5 +1,26 @@
 # Changelog
 
+## [2026-11-03] - Configure custom CLI providers for session naming
+
+### Executive Summary
+* Session naming now supports user-defined CLI providers, including custom executables, arguments, models, effort values and response formats. Editable Claude and Codex profiles preserve existing settings, while Settings can add providers such as Cursor or Kiro.
+
+### Technical Details
+* **✨ New Feature:**
+  * Save and select custom naming profiles, interpolate explicit argument placeholders without a shell, and validate each profile before execution.
+* **🛠️ Codebase:**
+  * `shared/naming-providers.mjs` — Define editable defaults and shared per-field provider validation.
+  * `server/cli-naming-client.js` — Execute the selected profile and parse its configured response format independently of its name.
+  * `client/src/components/SessionNamingSettings.jsx` — Add profile creation, editing, removal and validation to naming settings.
+  * `client/src/components/session-naming.css` — Style profile argument editors consistently with existing settings.
+  * `server/__tests__/cli-naming.test.js` — Cover custom commands, argument interpolation, output formats and invalid profiles.
+  * `server/__tests__/session-naming-api.test.js` — Cover custom profile persistence and rejected settings updates.
+  * `client/src/components/__tests__/SessionNaming.test.jsx` — Cover adding, saving, reloading and removing profiles and invalid argument JSON.
+  * `README.md` — Document provider configuration, output contracts and Cursor and Kiro examples.
+  * `CHANGELOG.md` — Record the custom naming provider release.
+* **🧪 Tests:**
+  * Validation: 643 server tests and 292 client tests passed; frontend production build passed. Browser settings checks and a live custom Cursor naming call succeeded. Kiro is not installed locally, so its documented configuration has not been verified live.
+
 ## [2026-11-03] - Name sessions through local CLIs and improve terminal workflows
 
 ### Executive Summary

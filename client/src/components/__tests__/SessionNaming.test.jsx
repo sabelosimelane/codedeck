@@ -37,8 +37,40 @@ describe('session naming settings', () => {
     fireEvent.change(screen.getByLabelText('Naming model'), { target: { value: 'chosen-model' } });
     fireEvent.change(screen.getByLabelText('Naming effort'), { target: { value: 'low' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save', exact: true }));
-    await waitFor(() => expect(saved).toEqual({ provider: 'codex', model: 'chosen-model', effort: 'low' }));
+    await waitFor(() => expect(saved).toMatchObject({ provider: 'codex', model: 'chosen-model', effort: 'low' }));
     expect(fetch.mock.calls.some(([url]) => /catalog|connection-test/.test(url))).toBe(false);
+  });
+  it('adds, edits, persists and reloads an arbitrary provider without losing existing profiles', async () => {
+    let saved = { provider: 'claude', model: 'sonnet', effort: null };
+    vi.stubGlobal('fetch', vi.fn((_url, options) => {
+      if (options?.method === 'PUT') saved = JSON.parse(options.body);
+      return ok(saved);
+    }));
+    const view = render(<SessionNamingSettings />);
+    await waitFor(() => expect(screen.getByLabelText('Naming model').value).toBe('sonnet'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
+    fireEvent.change(screen.getByLabelText('Provider name'), { target: { value: 'kiro' } });
+    fireEvent.change(screen.getByLabelText('CLI executable'), { target: { value: 'kiro-cli' } });
+    fireEvent.change(screen.getByLabelText('CLI arguments (JSON)'), { target: { value: '["chat","--no-interactive","--model","{model}","{prompt}"]' } });
+    fireEvent.change(screen.getByLabelText('Prompt input'), { target: { value: 'argument' } });
+    fireEvent.change(screen.getByLabelText('Naming model'), { target: { value: 'my-model' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save naming settings' }));
+    await waitFor(() => expect(saved.provider).toBe('kiro'));
+    expect(saved.providers.map(p => p.id)).toEqual(['claude', 'codex', 'kiro']);
+    expect(saved.providers[2]).toEqual({ id: 'kiro', command: 'kiro-cli', args: ['chat','--no-interactive','--model','{model}','{prompt}'], effortArgs: [], input: 'argument', output: 'json' });
+    view.unmount(); render(<SessionNamingSettings />);
+    await waitFor(() => expect(screen.getByLabelText('CLI executable').value).toBe('kiro-cli'));
+    fireEvent.change(screen.getByLabelText('CLI arguments (JSON)'), { target: { value: 'not json' } });
+    expect(screen.getByRole('button', { name: 'Save naming settings' }).disabled).toBe(true);
+  });
+  it('removes a provider and requires an explicit new selection', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => ok({ provider: 'claude', model: 'sonnet', effort: null })));
+    render(<SessionNamingSettings />);
+    await waitFor(() => expect(screen.getByLabelText('Naming model').value).toBe('sonnet'));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove provider' }));
+    expect(screen.getByLabelText('Naming provider').value).toBe('');
+    expect(screen.queryByRole('option', { name: 'claude' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save naming settings' }).disabled).toBe(true);
   });
   it('reverts changes and displays save failures', async () => {
     vi.stubGlobal('fetch', vi.fn((_url, options) => options?.method === 'PUT' ? Promise.resolve({ ok: false, json: async () => ({ message: 'Selection rejected' }) }) : ok({ provider: 'claude', model: 'sonnet', effort: 'low' })));

@@ -38,6 +38,20 @@ describe('naming APIs', () => {
     expect((await request(app).get('/api/session-naming/settings')).body).toEqual(selection);
     expect(conduit.catalog).not.toHaveBeenCalled(); expect(credentials.read()).toBeNull();
   });
+  it('round-trips custom providers and returns field errors without running a CLI on save', async () => {
+    const { app } = setup();
+    const profile = { id: 'cursor', command: 'agent', args: ['--print', '--model', '{model}', '{prompt}'], effortArgs: [], input: 'argument', output: 'json' };
+    const selection = { provider: 'cursor', model: 'custom', effort: null, providers: [profile] };
+    const results = await Promise.all([1, 2].map(() => request(app).put('/api/session-naming/settings').send(selection)));
+    for (const result of results) { expect(result.status).toBe(200); expect(result.body).toEqual(selection); }
+    expect((await request(app).get('/api/session-naming/settings')).body).toEqual(selection);
+    for (const patch of [{ providers: [] }, { providers: null }, { provider: 'missing' }, { providers: [{ ...profile, command: 'agent; touch bad' }] }, { providers: [{ ...profile, args: null }] }]) {
+      const result = await request(app).put('/api/session-naming/settings').send({ ...selection, ...patch });
+      expect(result.status).toBe(400);
+      expect(result.body).toMatchObject({ traceId: expect.any(String), errors: expect.any(Array) });
+    }
+    expect((await request(app).get('/api/session-naming/settings')).body).toEqual(selection);
+  });
   it('validates each CLI setting with problem details', async () => {
     const { app } = setup();
     for (const body of [{}, { provider: null, model: null, effort: null }, { provider: 'shell', model: 'x', effort: null }, { provider: 'claude', model: '', effort: null }, { provider: 'claude', model: 'x'.repeat(257), effort: null }, { provider: 'claude', model: '$(id)', effort: null }, { provider: 'codex', model: 'x', effort: 'bad' }]) {

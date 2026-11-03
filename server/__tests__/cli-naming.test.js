@@ -61,3 +61,55 @@ it.each(['error', 'turn.failed'])('explains a rejected model from a Codex %s eve
   expect(execute).toHaveBeenCalledTimes(1);
   expect(execute.mock.calls[0][1]).toContain('GPT-6-Luna');
 });
+
+const customProvider = {
+  id: 'kiro', command: 'kiro-cli', args: ['chat', '--no-interactive', '--model', '{model}', '{prompt}'],
+  effortArgs: ['--effort', '{effort}'], input: 'argument', output: 'json',
+};
+it('runs a user-defined provider with its configured command and argument template', async () => {
+  const { client, execute, input } = setup();
+  const settings = { provider: 'kiro', model: 'chosen-model', effort: 'custom-effort', providers: [customProvider] };
+  expect(validateCliSettings(settings)).toEqual(settings);
+  expect(await client.generate(settings, 'task $(touch /tmp/no)')).toBe('Fix uploads');
+  const [command, args, options] = execute.mock.calls[0];
+  expect(command).toBe('kiro-cli');
+  expect(args.slice(0, 4)).toEqual(['chat', '--no-interactive', '--model', 'chosen-model']);
+  expect(args[4]).toContain('task $(touch /tmp/no)');
+  expect(args.slice(-2)).toEqual(['--effort', 'custom-effort']);
+  expect(options.shell).toBe(false); expect(input()).toBe('');
+});
+it('uses the configured response format independently of the provider name', async () => {
+  const { client, execute } = setup(JSON.stringify({ type: 'result', is_error: false, result: '{"title":"Fix uploads"}' }));
+  expect(await client.generate({ provider: 'cursor', model: 'custom', effort: null, providers: [{ ...customProvider, id: 'cursor', command: 'agent', output: 'json-result' }] }, 'task')).toBe('Fix uploads');
+  expect(execute.mock.calls[0][1]).not.toContain('--effort');
+});
+it('supports renamed Codex profiles and interpolates values only once', async () => {
+  const { client, execute } = setup('{"type":"item.completed","item":{"type":"agent_message","text":"{\\"title\\":\\"Fix uploads\\"}"}}');
+  expect(await client.generate({ provider: 'my-codex', model: 'custom', effort: null, providers: [{ ...customProvider, id: 'my-codex', command: '/opt/tools/codex', output: 'codex-jsonl' }] }, 'literal {model}')).toBe('Fix uploads');
+  expect(execute.mock.calls[0][1][4]).toContain('literal {model}');
+});
+it.each(['id','command','args','effortArgs','input','output'])('requires custom provider field %s', field => {
+  const profile = { ...customProvider }; delete profile[field];
+  expect(() => validateCliSettings({ provider: 'kiro', model: 'm', effort: null, providers: [profile] })).toThrow();
+});
+it.each([
+  [], null, [null], [{ ...customProvider, command: '' }], [{ ...customProvider, command: 'kiro; echo bad' }],
+  [{ ...customProvider, args: ['{unknown}'] }], [{ ...customProvider, args: ['--model', '{model}'] }],
+  [{ ...customProvider, input: 'stdin' }], [{ ...customProvider, output: 'anything' }],
+  [{ ...customProvider, effortArgs: ['--effort'] }], [{ ...customProvider, args: ['\u0000'] }],
+  [customProvider, customProvider], [{ ...customProvider, id: 'other' }],
+])('rejects invalid custom provider configuration %j', providers => {
+  expect(() => validateCliSettings({ provider: 'kiro', model: 'm', effort: null, providers })).toThrow();
+});
+it('does not discard custom profiles when they are persisted and reloaded', async () => {
+  const { default: Database } = await import('better-sqlite3');
+  const { createNamingStore } = await import('../session-naming-store.js');
+  const db = new Database(':memory:');
+  try {
+    const settings = { provider: 'kiro', model: 'm', effort: null, providers: [customProvider] };
+    createNamingStore(db).saveSettings(settings);
+    expect(createNamingStore(db).settings()).toEqual(settings);
+    db.prepare('UPDATE session_naming_settings SET value=?').run(JSON.stringify({ ...settings, providers: [{ ...customProvider, command: null }] }));
+    expect(() => createNamingStore(db).settings()).toThrow();
+  } finally { db.close(); }
+});
