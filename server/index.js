@@ -41,8 +41,7 @@ import { createProjectsRouter } from './routes/projects.js';
 import { collectSystemResources } from './system-resources.js';
 import { stripNodeWatchEnvironment } from './shell-env.js';
 import { createNamingStore } from './session-naming-store.js';
-import { createNamingCredentialStore } from './session-naming-credentials.js';
-import { createConduitNamingClient } from './conduit-naming-client.js';
+import { createCliNamingClient } from './cli-naming-client.js';
 import { createNamingService } from './session-naming-service.js';
 import { createNamingRouter } from './routes/session-naming.js';
 import { createTerminalWaitingStore } from './terminal-waiting-store.js';
@@ -682,11 +681,11 @@ const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
   || 'tmux';
 const terminalRuntime = createTerminalRuntime(runtimeMode);
 const namingStore = createNamingStore(db);
-const namingCredentials = createNamingCredentialStore(path.join(process.env.HOME, '.codedeck', 'session-naming-credential'));
-const namingConduit = createConduitNamingClient({ readCredential: () => namingCredentials.read() });
+const namingCli = createCliNamingClient();
+process.once('exit', () => namingCli.close());
 const namingService = createNamingService({
   store: namingStore,
-  generate: (settings, context) => namingConduit.generate(settings, context),
+  generate: (settings, context) => namingCli.generate(settings, context),
   capture: async (id) => {
     if (deletedSessionIds.has(id)) throw new Error('Session deleted');
     const entry = sessions.get(id);
@@ -700,7 +699,7 @@ const namingService = createNamingService({
   },
 });
 app.use(createNamingRouter({
-  store: namingStore, service: namingService, credentials: namingCredentials, conduit: namingConduit,
+  store: namingStore, service: namingService,
   sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id) || namingStore.get(id) !== null),
 }));
 const terminalWaitingStore = createTerminalWaitingStore(db);

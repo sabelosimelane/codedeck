@@ -72,7 +72,9 @@ check the reset command (defaults to `/clear`), and click **Start**.
 
 CodeDeck submits the command with instructions for the agent to report **CONTINUE**,
 **COMPLETE**, or **NEEDS_INPUT** using a unique signal. CONTINUE clears context and
-submits another pass; COMPLETE or NEEDS_INPUT ends the loop. Keep progress in a file
+submits another pass; COMPLETE ends the loop.
+NEEDS_INPUT pauses it: answer the agent in the terminal and the workflow returns to
+**Running**, then carries on when the agent signals CONTINUE or COMPLETE. Keep progress in a file
 that the command reads each pass. Commands and reset behavior must suit your agent.
 
 Typing and file uploads are locked during the loop. **Stop** releases the terminal

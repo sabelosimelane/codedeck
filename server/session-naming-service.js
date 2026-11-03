@@ -69,7 +69,7 @@ export function createNamingService({ store, generate, capture }) {
       if (title !== null) validateTitle(title);
       store.update(job.id, { state: title === null ? 'waiting' : 'named', title, source: title === null ? null : 'generated', error: null }, record.revision);
     } catch (error) {
-      const reason = error instanceof NamingError ? error.message : 'Could not generate a title. Check the Conduit connection and selection.';
+      const reason = error instanceof NamingError ? error.message : 'Could not generate a title. Check the naming CLI login and selection.';
       const deadline = job.deadline ?? Date.now() + 60000;
       const canRetry = !stopped && Date.now() + 10000 <= deadline && JSON.stringify(store.settings()) === JSON.stringify(job.settings);
       const updated = store.update(job.id, { state: canRetry ? 'queued' : 'failed', error: reason }, record.revision);

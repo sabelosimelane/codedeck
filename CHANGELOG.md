@@ -1,5 +1,42 @@
 # Changelog
 
+## [2026-11-03] - Name sessions through local CLIs and improve terminal workflows
+
+### Executive Summary
+* Session titles now use the locally authenticated Claude Code or Codex CLI, removing the Conduit connection dependency. Provider, model and effort remain configurable, and rejected model IDs produce an actionable error. Paused workflows resume after an answer, iteration signals are easier to copy, and terminal hyperlinks open directly in a new tab.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/cli-naming-client.js` — Run bounded naming requests through Claude Code or Codex with explicit selection, isolated temporary directories, process limits and validated title output; explain rejected case-sensitive model IDs without exposing raw output.
+  * `client/src/components/SessionNamingSettings.jsx` — Replace Conduit connection fields with local CLI provider, model and effort settings.
+* **🐛 Bug Fix:**
+  * Problem: workflows stopped at NEEDS_INPUT or waited indefinitely after a mistyped signal. Solution: keep paused iterations active, resume on an answer, use short identifiers and report unknown identifiers explicitly.
+  * `server/terminal-workflow.js` — Implement paused-iteration resumption and shorter, unique iteration identifiers with stale-signal protection.
+  * `server/ws-handler.js` — Notify the workflow when terminal input arrives.
+  * `client/src/hooks/useTerminalWorkflow.js` — Accept active paused workflows and explain how to resume them.
+  * `client/src/components/Terminal.jsx` — Open OSC 8 hyperlinks and plain URLs consistently in a new tab.
+  * `server/terminal-runtime.js` — Advertise hyperlink support when attaching local and remote tmux clients.
+* **🔌 API/Interface:**
+  * `server/routes/session-naming.js` — Save CLI selections and remove the retired Conduit catalog, connection-test and circuit-health endpoints.
+* **🛠️ Codebase:**
+  * `server/index.js` — Wire the CLI naming client into the background naming service and terminate child processes on exit.
+  * `server/session-naming-service.js` — Direct generic naming failures to CLI login and selection checks.
+  * `server/session-naming-store.js` — Validate CLI settings and retire legacy connection settings without deleting existing titles or stored connection data.
+  * `README.md` — Document resuming a workflow after answering the agent.
+  * `CHANGELOG.md` — Record the naming, workflow and hyperlink release.
+* **🧪 Tests:**
+  * `server/__tests__/cli-naming.test.js` — Cover exact CLI arguments, bounded context, validation, malformed output and safe model rejection errors.
+  * `server/__tests__/session-naming-api.test.js` — Cover CLI settings persistence and field validation without Conduit access.
+  * `server/__tests__/session-naming.test.js` — Cover model changes during queued work and preservation of titles with legacy settings.
+  * `client/src/components/__tests__/SessionNaming.test.jsx` — Cover saving and reverting CLI settings and reporting save failures.
+  * `server/__tests__/terminal-workflow.test.js` — Cover pause/resume, short identifiers, mistyped signals and stale output.
+  * `server/__tests__/terminal-workflow-ws.test.js` — Cover workflow resumption and mismatch errors over WebSocket.
+  * `client/src/components/__tests__/TerminalWorkflow.test.jsx` — Cover paused-workflow controls and transitions back to running.
+  * `server/__tests__/terminal-runtime.test.js` — Verify hyperlink capability on local tmux attachment.
+  * `server/__tests__/host-terminal-runtime.test.js` — Verify hyperlink capability on remote tmux attachment.
+  * `client/src/components/__tests__/TerminalLinks.test.jsx` — Verify direct hyperlink activation without a confirmation dialog.
+  * Validation: 619 server tests and 290 client tests passed; frontend build passed. Real Claude and Codex naming calls succeeded, and a failed session was successfully renamed through the running application. Workflow and hyperlink changes have automated coverage; no new live agent workflow or remote hyperlink acceptance check was performed in this release.
+
 ## [2026-10-24] - Correct idle status after completed agent turns
 
 ### Executive Summary

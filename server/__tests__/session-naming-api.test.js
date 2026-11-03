@@ -28,39 +28,25 @@ function setup() {
 }
 
 describe('naming APIs', () => {
-  it('tests an unsaved connection, saves settings and keeps credentials out of responses and generic config', async () => {
-    const { app, credentials, db } = setup();
-    const test = await request(app).post('/api/session-naming/connection-test').send({ baseUrl: settings.baseUrl, credential: 'secret-value' });
-    expect(test.status).toBe(200); expect(credentials.read()).toBeNull();
-    const saved = await request(app).put('/api/session-naming/settings').send({ ...settings, credential: 'secret-value' });
-    expect(saved.status).toBe(200); expect(saved.body).toMatchObject({ ...settings, hasCredential: true });
-    expect(JSON.stringify(saved.body)).not.toContain('secret-value');
-    expect(credentials.read()).toBe('secret-value');
-    expect(db.prepare('SELECT value FROM session_naming_settings').get().value).not.toContain('secret-value');
-    expect((await request(app).get('/api/session-naming/settings')).body).toEqual(saved.body);
+  it('saves local CLI selection without a Conduit connection or credential', async () => {
+    const { app, conduit, credentials } = setup();
+    const selection = { provider: 'claude', model: 'sonnet', effort: 'low' };
+    for (let i = 0; i < 2; i++) {
+      const saved = await request(app).put('/api/session-naming/settings').send(selection);
+      expect(saved.status).toBe(200); expect(saved.body).toEqual(selection);
+    }
+    expect((await request(app).get('/api/session-naming/settings')).body).toEqual(selection);
+    expect(conduit.catalog).not.toHaveBeenCalled(); expect(credentials.read()).toBeNull();
   });
-  it('returns field errors for bad settings, invalid selection and malformed JSON', async () => {
+  it('validates each CLI setting with problem details', async () => {
     const { app } = setup();
-    const invalid = await request(app).put('/api/session-naming/settings').send({ baseUrl: 'file:///tmp' });
-    expect(invalid.status).toBe(400); expect(invalid.body.errors.length).toBeGreaterThanOrEqual(4);
-    expect(invalid.body).toMatchObject({ status: 400, traceId: expect.any(String), path: '/api/session-naming/settings', type: expect.any(String) });
-    const badModel = await request(app).put('/api/session-naming/settings').send({ ...settings, model: 'absent', credential: 'key' });
-    expect(badModel.status).toBe(400);
-    const malformed = await request(app).put('/api/session-naming/settings').set('Content-Type', 'application/json').send('{');
-    expect(malformed.status).toBe(400); expect(malformed.body.errors).toBeInstanceOf(Array);
-  });
-  it('paginates and filters a stable catalog and clears model selections only explicitly', async () => {
-    const { app, conduit } = setup();
-    await request(app).put('/api/session-naming/settings').send({ ...settings, credential: 'key' });
-    conduit.catalog.mockResolvedValue([...providers, { ...providers[0], id: 'alpha' }]);
-    const first = await request(app).get('/api/session-naming/catalog?size=1&sort=id,asc');
-    const second = await request(app).get('/api/session-naming/catalog?size=1&page=1&sort=id,asc');
-    expect(first.body.data.map(p => p.id)).toEqual(['alpha']);
-    expect(first.body.page).toEqual({ currentPage: 0, size: 1, totalElements: 2, totalPages: 2, hasNextPage: true });
-    expect(second.body.data.map(p => p.id)).toEqual(['test']);
-    expect((await request(app).get('/api/session-naming/catalog?id=test')).body.data).toHaveLength(1);
-    expect((await request(app).get('/api/session-naming/catalog?size=101')).status).toBe(400);
-    expect((await request(app).get('/api/session-naming/catalog?sort=secret,asc')).status).toBe(400);
+    for (const body of [{}, { provider: null, model: null, effort: null }, { provider: 'shell', model: 'x', effort: null }, { provider: 'claude', model: '', effort: null }, { provider: 'claude', model: 'x'.repeat(257), effort: null }, { provider: 'claude', model: '$(id)', effort: null }, { provider: 'codex', model: 'x', effort: 'bad' }]) {
+      const result = await request(app).put('/api/session-naming/settings').send(body);
+      expect(result.status).toBe(400);
+      expect(result.body).toMatchObject({ traceId: expect.any(String), errors: expect.any(Array) });
+    }
+    expect((await request(app).put('/api/session-naming/settings').set('Content-Type', 'application/json').send('{')).status).toBe(400);
+    for (const model of ['x', 'x'.repeat(256)]) expect((await request(app).put('/api/session-naming/settings').send({ provider: 'codex', model, effort: null })).status).toBe(200);
   });
   it('persists manual titles, validates boundaries, and returns a paginated list', async () => {
     const { app } = setup();
@@ -77,7 +63,7 @@ describe('naming APIs', () => {
     expect((await request(app).put('/api/session-naming/titles/missing').send({ title: 'test' })).status).toBe(404);
   });
   it('returns 202 for retry without waiting for a result', async () => {
-    const { app, store, service } = setup(); store.saveSettings(settings);
+    const { app, store, service } = setup(); store.saveSettings({ provider: 'claude', model: 'sonnet', effort: null });
     store.ensure('Demo-1'); store.update('Demo-1', { state: 'failed', error: 'failed' });
     expect((await request(app).post('/api/session-naming/titles/Demo-1/retry').send({})).status).toBe(202);
     await service.waitForIdle(); expect(store.get('Demo-1').state).toBe('named');

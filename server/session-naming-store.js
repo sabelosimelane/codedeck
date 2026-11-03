@@ -1,4 +1,5 @@
-import { validateSettings, validateRecord, requireField, isText } from './session-naming-validation.js';
+import { validateRecord, requireField, isText } from './session-naming-validation.js';
+import { validateCliSettings } from './cli-naming-client.js';
 
 export function createNamingStore(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS session_naming_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
@@ -19,11 +20,15 @@ export function createNamingStore(db) {
     get,
     settings() {
       const row = db.prepare('SELECT value FROM session_naming_settings WHERE id=1').get();
-      return row ? validateSettings(JSON.parse(row.value)) : null;
+      if (!row) return null;
+      const value = JSON.parse(row.value);
+      // Legacy connection settings remain stored until the user selects a local CLI.
+      if (value && Object.hasOwn(value, 'baseUrl')) return null;
+      return validateCliSettings(value);
     },
     saveSettings(value) {
       if (value === null) { db.prepare('DELETE FROM session_naming_settings').run(); return; }
-      const valid = validateSettings(value);
+      const valid = validateCliSettings(value);
       db.prepare('INSERT INTO session_naming_settings VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(JSON.stringify(valid));
     },
     ensure(id) {

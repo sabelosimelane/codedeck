@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { stripVTControlCharacters } from 'node:util';
 
-const ACTIVE = new Set(['running', 'resetting']);
+// needs_input is a paused iteration: it keeps listening for the agent's next signal.
+const ACTIVE = new Set(['running', 'resetting', 'needs_input']);
 const QUIET_MS = 1000;
 const SUBMIT_DELAY_MS = 100;
 const RESET_TIMEOUT_MS = 15000;
@@ -18,9 +19,14 @@ function validateStart(request) {
   if (typeof resetCommand !== 'string' || !resetCommand.trim() || resetCommand.length > 256 || /[\x00-\x1f\x7f]/.test(resetCommand)) throw new Error('Workflow resetCommand must contain 1–256 characters on one line without terminal control codes.');
 }
 
+// Focus reports, mouse events and cursor keys are not an answer; Enter or text is.
+function isAnswer(data) {
+  return /[^\x00-\x1f\x7f]|\r/.test(data.replace(/\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O.|.)/gs, ''));
+}
+
 function buildPrompt(command, identifier) {
   // Never include an assembled marker: terminal echo must not match a result.
-  return `${command}\n\nCodeDeck workflow instruction: perform one pass of the command above. As your final output, emit exactly one signal, only after all work and tools for this pass have finished. Use CONTINUE if this pass finished and the overall requested task still has work remaining. Use COMPLETE only if the entire requested task is finished. Use NEEDS_INPUT if you need an answer, permission, or encounter a problem that prevents continuation. Do not reset context yourself. Do not print a signal as an example or while explaining this instruction.\nIteration identifier: ${identifier}\nConstruct the signal by joining these parts without spaces: opening [[CDW: ; the iteration identifier ; a colon ; the chosen uppercase status ; closing ]] .`;
+  return `${command}\n\nCodeDeck workflow instruction: perform one pass of the command above. As your final output, emit exactly one signal, only after all work and tools for this pass have finished. Use CONTINUE if this pass finished and the overall requested task still has work remaining. Use COMPLETE only if the entire requested task is finished. Use NEEDS_INPUT if you need an answer, permission, or encounter a problem that prevents continuation. Do not reset context yourself. Do not print a signal as an example or while explaining this instruction.\nIteration identifier: ${identifier}\nCopy the iteration identifier verbatim; do not reconstruct or invent it. Construct the signal by joining these parts without spaces: opening [[CDW: ; the iteration identifier ; a colon ; the chosen uppercase status ; closing ]] .`;
 }
 
 /** A terminal session owns a loop in backend memory, independently of its browser socket. */
@@ -37,6 +43,7 @@ export function createTerminalWorkflow({ write, notify }) {
   let resetTimer;
   let enterTimer;
   const requests = new Map();
+  const issuedIdentifiers = new Set();
 
   const snapshot = () => ({ status, active: ACTIVE.has(status), error, requestId: request?.requestId ?? null });
   const publish = () => notify(snapshot());
@@ -72,7 +79,9 @@ export function createTerminalWorkflow({ write, notify }) {
     cancelTimers();
     status = 'running';
     phase = 'waiting';
-    identifier = randomUUID();
+    // Short enough to copy; the counter prevents reuse within this session.
+    identifier = `${randomUUID().slice(0, 8)}-${(issuedIdentifiers.size + 1).toString(36)}`;
+    issuedIdentifiers.add(identifier);
     rawOutput = '';
     publish();
     pasteAndSubmit(buildPrompt(request.command, identifier));
@@ -109,6 +118,13 @@ export function createTerminalWorkflow({ write, notify }) {
       iteration();
     },
     stop() { finish('stopped'); },
+    input(data) {
+      if (typeof data !== 'string') throw new Error('Workflow input must be a string.');
+      if (status !== 'needs_input' || !isAnswer(data)) return;
+      status = 'running';
+      rawOutput = '';
+      publish();
+    },
     output(data) {
       if (typeof data !== 'string') throw new Error('Workflow output must be a string.');
       if (!ACTIVE.has(status) || !data) return;
@@ -123,14 +139,25 @@ export function createTerminalWorkflow({ write, notify }) {
       // Retain raw chunks until stripping so split escape sequences are handled.
       rawOutput = (rawOutput + data).slice(-MAX_OUTPUT);
       const text = stripVTControlCharacters(rawOutput).replace(/\s/g, '');
-      const match = text.match(new RegExp(`\\[\\[CDW:${identifier}:(CONTINUE|COMPLETE|NEEDS_INPUT)\\]\\]`));
+      // Known older signals can be redrawn by the terminal. An unknown ID is
+      // an invalid result, not a reason to wait forever or accept a near match.
+      const match = [...text.matchAll(/\[\[CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]/g)]
+        .filter(candidate => !(status === 'needs_input' && candidate[1] === identifier && candidate[2] === 'NEEDS_INPUT'))
+        .find(candidate => candidate[1] === identifier || !issuedIdentifiers.has(candidate[1]));
       if (!match) return;
+      if (match[1] !== identifier) {
+        finish('error', 'Workflow signal identifier does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.');
+        return;
+      }
       clearTimeout(enterTimer);
-      identifier = null;
       rawOutput = '';
-      if (match[1] === 'COMPLETE') finish('complete');
-      else if (match[1] === 'NEEDS_INPUT') finish('needs_input');
-      else {
+      if (match[2] === 'COMPLETE') finish('complete');
+      else if (match[2] === 'NEEDS_INPUT') {
+        // Keep the identifier: after the user answers, the agent finishes this pass.
+        status = 'needs_input';
+        publish();
+      } else {
+        identifier = null;
         status = 'resetting';
         phase = 'before_reset';
         publish();

@@ -34,6 +34,14 @@ const SESSION_DELETED_CLOSE_REASON = 'session_deleted';
 const DEFAULT_FAILURE_MESSAGE = 'Unable to connect to server. Check that the backend is running.';
 const DEFAULT_HISTORY_WARNING_MESSAGE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
 
+function openLinkInNewTab(url) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.click();
+}
+
 const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', isVisible, isActivePane = true, runtimeType = 'pty' }, ref) {
   const containerRef = useRef(null);
   const wsRef = useRef(null);
@@ -449,6 +457,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       altClickMovesCursor: false,
       theme: XTERM_THEMES[getResolvedTheme()],
       allowTransparency: true,
+      // OSC 8 hyperlinks (agents label links, e.g. "MR !232"). xterm's default
+      // handler interposes a confirm() dialog; open them like plain URLs.
+      linkHandler: { activate: (event, uri) => openLinkInNewTab(uri) },
     });
 
     const handleThemeChange = (event) => {
@@ -457,13 +468,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     window.addEventListener(THEME_CHANGE_EVENT, handleThemeChange);
 
     const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon((event, url) => {
-      const a = document.createElement('a');
-      a.href = url;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      a.click();
-    });
+    const webLinksAddon = new WebLinksAddon((event, url) => openLinkInNewTab(url));
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
     // Clipboard writes belong exclusively to an explicit browser copy action.

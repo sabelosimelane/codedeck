@@ -60,6 +60,32 @@ describe('workflow over terminal WebSocket', () => {
     expect(messages(f.ws).at(-1)).toMatchObject({ type: 'workflow_state', requestId: 'stop-1', state: { status: 'stopped', active: false } });
     expect(f.pty.write).toHaveBeenCalledTimes(1);
   });
+  it('publishes an identifier mismatch error and releases manual input without resetting', () => {
+    const f = fixture();
+    send(f.ws, start);
+    vi.advanceTimersByTime(100);
+    f.output('[[CDW:21b30afa-19ab-4ee4-963a-38c1694ee034:CONTINUE]]');
+    expect(messages(f.ws)).toContainEqual(expect.objectContaining({
+      type: 'workflow_state', state: expect.objectContaining({
+        status: 'error', active: false, error: expect.stringContaining('identifier does not match'),
+      }),
+    }));
+    vi.advanceTimersByTime(60000);
+    expect(f.pty.write).toHaveBeenCalledTimes(2);
+    send(f.ws, { type: 'input', data: 'manual input' });
+    expect(f.pty.write).toHaveBeenLastCalledWith('manual input');
+  });
+  it('keeps a paused workflow attached, delivers the answer and reports it running again', async () => {
+    const f = fixture();
+    send(f.ws, start);
+    f.output(marker(f.pty, 'NEEDS_INPUT'));
+    expect(messages(f.ws)).toContainEqual(expect.objectContaining({ type: 'workflow_state', state: expect.objectContaining({ status: 'needs_input', active: true }) }));
+    await Promise.resolve();
+    expect(f.sessions.get('demo-1').alive).toBe(true);
+    send(f.ws, { type: 'input', data: 'y' });
+    expect(f.pty.write).toHaveBeenLastCalledWith('y');
+    expect(messages(f.ws).at(-1)).toMatchObject({ type: 'workflow_state', state: { status: 'running', active: true } });
+  });
   it.each(['exit', 'delete'])('cancels a queued reset on %s', reason => {
     const f = fixture(); send(f.ws, start);
     f.output(marker(f.pty, 'CONTINUE'));

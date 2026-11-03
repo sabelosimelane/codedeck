@@ -69,7 +69,7 @@ describe('createHostTerminalRuntime.spawnAsync', () => {
     const setOptionCalls = runner.calls.filter(c => c.cmd === 'tmux' && c.args[0].startsWith('set-'));
     expect(setOptionCalls.length).toBeGreaterThanOrEqual(3);
     expect(runner.spawnPty).toHaveBeenCalledWith(
-      'tmux', ['attach-session', '-t', 'proj-1'], { cols: 120, rows: 30 }
+      'tmux', ['-T', 'hyperlinks', 'attach-session', '-t', 'proj-1'], { cols: 120, rows: 30 }
     );
     expect(runner.calls.filter(call => call.cmd === 'systemctl')).toHaveLength(0);
     expect(pty).toBe(runner.ptys[0]);
@@ -93,7 +93,7 @@ describe('createHostTerminalRuntime.spawnAsync', () => {
     await runtime.spawnAsync({ cwd: '/x', cols: 80, rows: 24, sessionId: 'my.proj-1' });
 
     expect(runner.tmuxCalls('new-session')[0].args).toContain('my_proj-1');
-    expect(runner.spawnPty.mock.calls[0][1]).toEqual(['attach-session', '-t', 'my_proj-1']);
+    expect(runner.spawnPty.mock.calls[0][1]).toEqual(['-T', 'hyperlinks', 'attach-session', '-t', 'my_proj-1']);
   });
 
   it('propagates a transport failure from the has-session probe', async () => {

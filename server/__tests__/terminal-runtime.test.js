@@ -362,7 +362,7 @@ describe('createTerminalRuntime', () => {
       ],
       { stdio: 'pipe' }
     );
-    expect(ptySpawn).toHaveBeenCalledWith('tmux', ['attach-session', '-t', 'demo-1'], {
+    expect(ptySpawn).toHaveBeenCalledWith('tmux', ['-T', 'hyperlinks', 'attach-session', '-t', 'demo-1'], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,

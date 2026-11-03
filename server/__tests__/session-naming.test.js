@@ -4,7 +4,7 @@ import { createNamingStore } from '../session-naming-store.js';
 import { createNamingService, observesSubmission } from '../session-naming-service.js';
 import { validateSettings, validateCatalog, parseTitle } from '../session-naming-validation.js';
 
-const settings = { baseUrl: 'http://localhost:3100', provider: 'test', model: 'small', effort: null };
+const settings = { provider: 'claude', model: 'sonnet', effort: null };
 const databases = [];
 const services = [];
 function setup(generate = vi.fn(async () => 'Fix login redirects')) {
@@ -98,12 +98,12 @@ describe('session naming', () => {
     service.observe('Demo-1', activity); await service.waitForIdle();
     expect(store.get('Demo-1').title).toBe('Fix login redirects');
   });
-  it('does not send queued work to an obsolete endpoint with a changed credential', async () => {
+  it('does not send queued work with an obsolete model selection', async () => {
     const pending = deferred(); const generate = vi.fn(() => pending.promise);
     const { service, store } = setup(generate);
     for (const id of ['Demo-1', 'Demo-2', 'Demo-3']) { service.input(id, 'task\r'); service.observe(id, activity); }
     await vi.waitFor(() => expect(store.get('Demo-2').state).toBe('generating'));
-    store.saveSettings({ ...settings, baseUrl: 'https://changed.example' });
+    store.saveSettings({ ...settings, model: 'changed-model' });
     pending.resolve('Task title'); await service.waitForIdle();
     expect(generate).toHaveBeenCalledTimes(2); expect(store.get('Demo-3').state).toBe('failed');
   });
@@ -230,4 +230,13 @@ describe('naming boundaries', () => {
       expect(() => parseTitle(value)).toThrow();
     }
   });
+});
+
+it('retires legacy Conduit settings while preserving saved titles', () => {
+  const { db, store } = setup(); store.ensure('Demo-1');
+  store.update('Demo-1', { title: 'Keep title', state: 'manual', source: 'manual' });
+  db.prepare('UPDATE session_naming_settings SET value=?').run(JSON.stringify({ baseUrl: 'https://old.test', provider: 'old', model: 'old', effort: null }));
+  const reopened = createNamingStore(db);
+  expect(reopened.settings()).toBeNull();
+  expect(reopened.get('Demo-1').title).toBe('Keep title');
 });

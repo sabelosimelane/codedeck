@@ -873,6 +873,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
         if (workflow.snapshot().status === 'resetting') return;
         entry.pty.write(parsed.data);
         observeInput(parsed.data);
+        workflow.input(parsed.data);
       } else if (parsed.type === 'resize') {
         ops.resizeRuntime(parsed.cols, parsed.rows);
         entry.pty.resize(parsed.cols, parsed.rows);
@@ -971,6 +972,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
       if (workflow.snapshot().status === 'resetting') return;
       entry.pty.write(msg.toString());
       observeInput(msg.toString());
+      workflow.input(msg.toString());
     }
   });
 

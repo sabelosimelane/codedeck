@@ -716,8 +716,9 @@ function createTmuxRuntime() {
       // history-limit matters for durable session restore after reload/server restart.
       ensureTmuxSessionOptions(tmuxName);
 
-      // Attach via node-pty so we get the same onData/onExit/write/resize API
-      return spawn('tmux', ['attach-session', '-t', tmuxName], {
+      // Attach via node-pty so we get the same onData/onExit/write/resize API.
+      // -T hyperlinks: tmux only forwards OSC 8 links to clients declaring it.
+      return spawn('tmux', ['-T', 'hyperlinks', 'attach-session', '-t', tmuxName], {
         name: 'xterm-256color',
         cols,
         rows,
@@ -1103,7 +1104,7 @@ export function createHostTerminalRuntime(runner, hostName) {
 
       await ensureSessionOptions(tmuxName);
 
-      return runner.spawnPty('tmux', ['attach-session', '-t', tmuxName], { cols, rows });
+      return runner.spawnPty('tmux', ['-T', 'hyperlinks', 'attach-session', '-t', tmuxName], { cols, rows });
     },
 
     /** Kill the PTY wrapper and the host's tmux session (best-effort, like local). */

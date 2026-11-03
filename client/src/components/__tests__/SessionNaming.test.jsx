@@ -20,90 +20,37 @@ const providers = [
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe('session naming settings', () => {
-  it('saves the selected effort through the main Settings Save button and restores it on reload', async () => {
-    let saved = { ...settings, effort: 'minimal' };
+  it('saves a CLI provider and model through the main Settings Save button', async () => {
+    let saved = { provider: 'claude', model: 'sonnet', effort: 'low' };
     const fetch = vi.fn((url, options) => {
-      if (url.includes('/catalog')) return ok({ data: [{ ...providers[0], effort: ['minimal', 'low', 'high'] }], page: { hasNextPage: false } });
       if (url === '/api/session-naming/settings') {
-        if (options?.method === 'PUT') saved = { ...JSON.parse(options.body), hasCredential: true };
+        if (options?.method === 'PUT') saved = JSON.parse(options.body);
         return ok(saved);
       }
       return ok({});
-    });
-    vi.stubGlobal('fetch', fetch);
-    const view = render(<SettingsPanel />);
-    await screen.findByRole('option', { name: 'minimal' });
+    }); vi.stubGlobal('fetch', fetch);
+    render(<SettingsPanel />);
+    await waitFor(() => expect(screen.getByLabelText('Naming model').value).toBe('sonnet'));
+    expect(screen.queryByLabelText('Conduit endpoint')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Naming provider'), { target: { value: 'codex' } });
+    expect(screen.getByLabelText('Naming model').value).toBe('');
+    fireEvent.change(screen.getByLabelText('Naming model'), { target: { value: 'chosen-model' } });
     fireEvent.change(screen.getByLabelText('Naming effort'), { target: { value: 'low' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save', exact: true }));
-    await waitFor(() => expect(saved.effort).toBe('low'));
-    view.unmount();
-    render(<SettingsPanel />);
-    await screen.findByRole('option', { name: 'minimal' });
-    expect(screen.getByLabelText('Naming effort').value).toBe('low');
+    await waitFor(() => expect(saved).toEqual({ provider: 'codex', model: 'chosen-model', effort: 'low' }));
+    expect(fetch.mock.calls.some(([url]) => /catalog|connection-test/.test(url))).toBe(false);
   });
-  it('keeps naming changes unsaved and reports failure when the main Save is rejected', async () => {
-    vi.stubGlobal('fetch', vi.fn((url, options) => {
-      if (url.includes('/catalog')) return ok({ data: providers, page: { hasNextPage: false } });
-      if (options?.method === 'PUT') return Promise.resolve({ ok: false, json: async () => ({ detail: 'Selection rejected' }) });
-      return ok(url.includes('/session-naming/') ? { ...settings, effort: 'low' } : {});
-    }));
+  it('reverts changes and displays save failures', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url, options) => options?.method === 'PUT' ? Promise.resolve({ ok: false, json: async () => ({ message: 'Selection rejected' }) }) : ok({ provider: 'claude', model: 'sonnet', effort: 'low' })));
     render(<SettingsPanel />);
-    await screen.findByRole('option', { name: 'low' });
-    fireEvent.change(screen.getByLabelText('Naming effort'), { target: { value: 'high' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save', exact: true }));
-    await screen.findByRole('alert');
-    expect(screen.getByText(/Unsaved naming settings/)).toBeTruthy();
-    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
-  });
-  it('reverts unsaved naming effort through the main Settings Revert button', async () => {
-    vi.stubGlobal('fetch', vi.fn(url => {
-      if (url.includes('/catalog')) return ok({ data: providers, page: { hasNextPage: false } });
-      return ok(url.includes('/session-naming/') ? { ...settings, effort: 'low' } : {});
-    }));
-    render(<SettingsPanel />);
-    await screen.findByRole('option', { name: 'low' });
-    fireEvent.change(screen.getByLabelText('Naming effort'), { target: { value: 'high' } });
+    await waitFor(() => expect(screen.getByLabelText('Naming model').value).toBe('sonnet'));
+    fireEvent.change(screen.getByLabelText('Naming model'), { target: { value: 'opus' } });
     fireEvent.click(screen.getByRole('button', { name: 'Revert' }));
-    expect(screen.getByLabelText('Naming effort').value).toBe('low');
-  });
-
-  it('loads catalog dropdowns, clears dependent choices, and saves exact selection without returning a credential', async () => {
-    const fetch = vi.fn((url, options) => {
-      if (url.includes('/catalog')) return ok({ data: providers, page: { hasNextPage: false } });
-      if (options?.method === 'PUT') return ok({ ...settings, provider: 'beta', model: 'other' });
-      return ok(settings);
-    }); vi.stubGlobal('fetch', fetch);
-    render(<SessionNamingSettings />);
-    await screen.findByRole('option', { name: 'small' });
-    expect(screen.getByLabelText('Conduit credential').value).toBe('');
-    fireEvent.change(screen.getByLabelText('Naming provider'), { target: { value: 'beta' } });
-    expect(screen.getByLabelText('Naming model').value).toBe('');
-    fireEvent.change(screen.getByLabelText('Naming model'), { target: { value: 'other' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save naming settings' }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/session-naming/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ baseUrl: settings.baseUrl, provider: 'beta', model: 'other', effort: null }) })));
-    expect(screen.queryByText('secret-value')).toBeNull();
-  });
-  it('tests unsaved connection and refreshes catalog without silently choosing a model', async () => {
-    vi.stubGlobal('fetch', vi.fn(url => {
-      if (url.includes('/connection-test')) return ok({ connectionId: 'preview' });
-      if (url.includes('/catalog')) return ok({ data: providers, page: { hasNextPage: false } });
-      return ok({ baseUrl: '', provider: '', model: '', effort: null, hasCredential: false });
-    }));
-    render(<SessionNamingSettings />);
-    const input = await screen.findByLabelText('Conduit endpoint');
-    await waitFor(() => expect(input.disabled).toBe(false));
-    fireEvent.change(input, { target: { value: 'http://conduit.test' } });
-    fireEvent.change(screen.getByLabelText('Conduit credential'), { target: { value: 'secret-value' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Test connection / refresh catalog' }));
-    await screen.findByRole('option', { name: 'alpha' });
-    expect(screen.getByLabelText('Naming provider').value).toBe('');
-    expect(screen.getByLabelText('Naming model').value).toBe('');
-  });
-  it('shows a connection failure without hiding the form', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('Connection failed'))));
-    render(<SessionNamingSettings />);
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Connection failed');
-    expect(screen.getByLabelText('Conduit endpoint')).toBeTruthy();
+    expect(screen.getByLabelText('Naming model').value).toBe('sonnet');
+    fireEvent.change(screen.getByLabelText('Naming model'), { target: { value: 'opus' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save', exact: true }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Selection rejected');
+    expect(screen.getByText(/Unsaved naming settings/)).toBeTruthy();
   });
 });
 

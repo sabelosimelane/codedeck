@@ -1,6 +1,7 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { NamingError, requireField, isText, validateEndpoint, validateSettings, validateSelection } from '../session-naming-validation.js';
+import { NamingError, requireField, isText } from '../session-naming-validation.js';
+import { validateCliSettings } from '../cli-naming-client.js';
 
 function pageQuery(query, fields) {
   const page = query.page === undefined ? 0 : Number(query.page);
@@ -23,62 +24,21 @@ function paginate(items, query, fields) {
   return { data: sorted.slice(page * size, (page + 1) * size), page: { currentPage: page, size, totalElements: items.length, totalPages: Math.ceil(items.length / size), hasNextPage: (page + 1) * size < items.length } };
 }
 
-export function createNamingRouter({ store, service, credentials, conduit, sessionExists }) {
+export function createNamingRouter({ store, service, sessionExists }) {
   const router = express.Router();
   const base = '/api/session-naming';
-  const previews = new Map();
   router.use(base, (req, res, next) => { req.namingTraceId = randomUUID(); res.set('X-Trace-Id', req.namingTraceId); next(); });
   router.use(base, express.json({ limit: '16kb' }));
   const route = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch(next);
-  const publicSettings = () => ({ ...(store.settings() ?? { baseUrl: '', provider: '', model: '', effort: null }), hasCredential: credentials.read() !== null });
-  const connectionCredential = (body, baseUrl) => {
-    if (Object.hasOwn(body, 'credential')) {
-      requireField(body.credential === null || isText(body.credential, 4096), 'credential', 'Use a nonempty credential or null');
-      return body.credential;
-    }
-    const saved = store.settings();
-    if (saved && saved.baseUrl !== baseUrl && credentials.read() !== null) throw new NamingError('Re-enter the credential when changing the Conduit endpoint', 400, [{ field: 'credential', message: 'Re-enter for the new endpoint' }]);
-    return credentials.read();
-  };
+  const publicSettings = () => store.settings() ?? { provider: '', model: '', effort: null };
   const assertSession = id => {
     requireField(isText(id), 'sessionId', 'A valid session ID is required');
     if (!sessionExists(id)) throw new NamingError('Terminal session not found', 404);
   };
   router.get(`${base}/settings`, route((_req, res) => res.json(publicSettings())));
   router.put(`${base}/settings`, route(async (req, res) => {
-    const settings = validateSettings(req.body);
-    const credential = connectionCredential(req.body, settings.baseUrl);
-    validateSelection(settings, await conduit.catalog(settings.baseUrl, credential));
-    credentials.write(credential); store.saveSettings(settings);
+    store.saveSettings(validateCliSettings(req.body));
     res.json(publicSettings());
-  }));
-  router.post(`${base}/connection-test`, route(async (req, res) => {
-    const baseUrl = validateEndpoint(req.body?.baseUrl);
-    const credential = connectionCredential(req.body, baseUrl);
-    const providers = await conduit.catalog(baseUrl, credential);
-    for (const [id, preview] of previews) if (preview.expires <= Date.now()) previews.delete(id);
-    if (previews.size >= 20) previews.delete(previews.keys().next().value);
-    const connectionId = randomUUID(); previews.set(connectionId, { providers, expires: Date.now() + 300000 });
-    res.json({ connectionId });
-  }));
-  router.get(`${base}/catalog`, route(async (req, res) => {
-    pageQuery(req.query, ['id']);
-    let providers;
-    if (req.query.connectionId !== undefined) {
-      requireField(isText(req.query.connectionId), 'connectionId', 'A connection ID is required');
-      const preview = previews.get(req.query.connectionId);
-      if (!preview || preview.expires <= Date.now()) throw new NamingError('Connection test expired. Test the connection again.', 404);
-      providers = preview.providers;
-    } else {
-      const settings = store.settings(); if (!settings) throw new NamingError('Test or save a Conduit connection first', 409);
-      providers = await conduit.catalog(settings.baseUrl);
-    }
-    for (const field of ['enabled', 'available']) if (req.query[field] !== undefined) {
-      requireField(['true', 'false'].includes(req.query[field]), field, 'Use true or false');
-      providers = providers.filter(p => p[field] === (req.query[field] === 'true'));
-    }
-    if (req.query.id !== undefined) { requireField(isText(req.query.id), 'id', 'A provider ID is required'); providers = providers.filter(p => p.id === req.query.id); }
-    res.json(paginate(providers, req.query, ['id']));
   }));
   router.get(`${base}/titles`, route((req, res) => {
     let records = store.list();
@@ -90,7 +50,6 @@ export function createNamingRouter({ store, service, credentials, conduit, sessi
   }));
   router.put(`${base}/titles/:sessionId`, route((req, res) => { assertSession(req.params.sessionId); res.json(service.rename(req.params.sessionId, req.body?.title)); }));
   router.post(`${base}/titles/:sessionId/retry`, route((req, res) => { assertSession(req.params.sessionId); res.status(202).json(service.retry(req.params.sessionId)); }));
-  router.get(`${base}/health`, route((_req, res) => res.json({ circuits: conduit.metrics() })));
   router.use(base, (_req, _res, next) => next(new NamingError('Naming endpoint not found', 404)));
   router.use((error, req, res, next) => {
     if (!req.originalUrl.startsWith(base)) return next(error);

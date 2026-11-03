@@ -13,7 +13,7 @@ function validateMessage(message) {
   }
   const state = message.state;
   if (!state || !STATUSES.has(state.status) || typeof state.active !== 'boolean'
-      || state.active !== ['running', 'resetting'].includes(state.status)
+      || state.active !== ['running', 'resetting', 'needs_input'].includes(state.status)
       || !validId(state.requestId)
       || !(state.error === null || (typeof state.error === 'string' && state.error.trim()))
       || (state.status === 'error' && state.error === null)) {
@@ -104,7 +104,7 @@ export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
       if (previous !== 'error') toastRef.current({ type: 'error', message: message.state.error });
     } else if (acknowledged) toastRef.current({ type: 'success', message: message.state.active ? 'Workflow started' : 'Workflow stopped' });
     else if (previous !== message.state.status && ['complete', 'needs_input'].includes(message.state.status)) {
-      toastRef.current({ type: message.state.status === 'complete' ? 'success' : 'warning', message: message.state.status === 'complete' ? 'Workflow complete' : 'Workflow needs your input. Answer in the terminal, then start again when ready.' });
+      toastRef.current({ type: message.state.status === 'complete' ? 'success' : 'warning', message: message.state.status === 'complete' ? 'Workflow complete' : 'Workflow needs your input. Answer in the terminal; the workflow resumes when the agent continues.' });
     }
   }, [applyState, clearPending, fail, wsRef]);
   useEffect(() => () => clearTimeout(timerRef.current), []);

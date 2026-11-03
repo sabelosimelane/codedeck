@@ -81,6 +81,20 @@ describe('workflow transport', () => {
     const hook = renderHook(() => useTerminalWorkflow({ wsRef, sessionReadyRef }));
     return { ...hook, wsRef, sessionReadyRef };
   }
+  it('keeps a paused workflow stoppable and typeable, then follows it back to running', () => {
+    const { result } = setup();
+    const paused = { ...running, status: 'needs_input' };
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: null, state: running }));
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: null, state: paused }));
+    expect(result.current.state).toEqual(paused);
+    expect(result.current.inputLockedRef.current).toBe(false);
+    expect(toast).toHaveBeenLastCalledWith({ type: 'warning', message: 'Workflow needs your input. Answer in the terminal; the workflow resumes when the agent continues.' });
+    act(() => result.current.handleMessage({ type: 'workflow_state', requestId: null, state: running }));
+    expect(result.current.state).toEqual(running);
+    render(<TerminalWorkflow sessionId="terminal-1" state={paused} pending={false} connected onStart={vi.fn()} onStop={vi.fn()} />);
+    expect(screen.getByRole('status').textContent).toBe('Needs input');
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+  });
   it('waits for acknowledgement, applies statuses and releases input on completion', () => {
     const { result, wsRef } = setup();
     act(() => result.current.start('command', '/clear'));
