@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.321
+▝▜██████▀  Fable 5.2 · Claude Ultra
+ ▝▝   ▝▝   ~/work/demo
+
+
+❯ Run the bash command sleep 20; echo done in the foreground (not background), then reply with one sentence.
+
+  Waiting 20 seconds, then printing done · 14s
+  ⎿  $ sleep 20; echo done (14s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+✽ Hatching… (17s · ↓ 88 tokens)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  dev ~/work/demo…
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent

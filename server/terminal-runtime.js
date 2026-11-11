@@ -9,8 +9,10 @@
 import { spawn } from 'node-pty';
 import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
+import { randomUUID } from 'node:crypto';
 import { buildShellEnv } from './shell-env.js';
 import { isTransportFailure, STATUS_POLL_TIMEOUT_MS } from './command-runner.js';
+import { collectSessionProcessIds, parsePaneProcesses, parseProcessSnapshot } from './session-processes.js';
 import {
   TERMINAL_EXECUTION_UNKNOWN,
   classifyTerminalExecution,
@@ -31,9 +33,64 @@ export const TERMINAL_RUNTIME_BLOCKED_REASON = 'missing_tmux';
 export const TERMINAL_RUNTIME_BLOCKED_MESSAGE = 'Install tmux to enable durable CodeDeck terminals.';
 export const TERMINAL_PTY_SPAWN_BLOCKED_REASON = 'pty_spawn_failed';
 export const TERMINAL_PTY_SPAWN_BLOCKED_MESSAGE = 'Terminal PTY helper cannot start processes.';
+export const SESSION_KILL_GRACE_MS = 2000;
 export const TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE = 'snapshot_unavailable';
 export const TERMINAL_HISTORY_WARNING_MESSAGE_SNAPSHOT_UNAVAILABLE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
 const execFileAsync = promisify(execFile);
+const PANE_FORMAT = '#{pane_index}\t#{pane_current_command}\t#{pane_dead}\t#{window_activity}\t#{pane_current_path}';
+const UNKNOWN_EXECUTION_DETAILS = Object.freeze({ agentCli: null, backgroundAgents: 0, backgroundShells: 0, needsInput: false });
+const processSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function waitForProcessExit(ids, isAlive, now, sleep, timeoutMs) {
+  const deadline = now() + timeoutMs;
+  let survivors = ids;
+  while (survivors.length) {
+    const states = await Promise.all(survivors.map(async id => ({ id, alive: await isAlive(id) })));
+    survivors = states.filter(state => state.alive).map(state => state.id);
+    if (!survivors.length || now() >= deadline) break;
+    await sleep(Math.min(100, deadline - now()));
+  }
+  return survivors;
+}
+
+function localProcessAlive(signalProcess, pid) {
+  try { signalProcess(pid, 0); return true; }
+  catch (error) {
+    if (error.code === 'ESRCH') return false;
+    if (error.code === 'EPERM') throw new Error(`Cannot inspect terminal process ${pid}: permission denied`, { cause: error });
+    throw error;
+  }
+}
+
+export function parseTerminalPaneMetadata(raw) {
+  if (typeof raw !== 'string') throw new Error('tmux pane metadata must be text');
+  const panes = raw.replace(/\r/g, '').trimEnd().split('\n').map(line => {
+    const fields = line.split('\t');
+    if (fields.length !== 5) throw new Error('tmux pane metadata must contain pane_index, pane_current_command, pane_dead, window_activity, pane_current_path');
+    const [index, paneCurrentCommand, paneDead, activity, paneCurrentPath] = fields;
+    if (!/^(0|[1-9]\d*)$/.test(index) || !Number.isSafeInteger(Number(index))) throw new Error('tmux pane_index must be a nonnegative integer');
+    if (!paneCurrentCommand.trim()) throw new Error('tmux pane_current_command must be nonempty');
+    if (paneDead !== '0' && paneDead !== '1') throw new Error('tmux pane_dead must be 0 or 1');
+    if (!/^(0|[1-9]\d*)$/.test(activity) || !Number.isSafeInteger(Number(activity))) throw new Error('tmux window_activity must be a nonnegative epoch second');
+    if (!paneCurrentPath.trim()) throw new Error('tmux pane_current_path must be nonempty');
+    return { paneIndex: Number(index), paneCurrentCommand, paneDead, windowActivity: Number(activity), paneCurrentPath };
+  }).sort((a, b) => a.paneIndex - b.paneIndex);
+  if (new Set(panes.map(pane => pane.paneIndex)).size !== panes.length) throw new Error('tmux pane_index must be unique');
+  return panes;
+}
+
+function classifyPanes(panes, snapshots, clockSeconds) {
+  if (!Number.isSafeInteger(clockSeconds) || clockSeconds < 0) throw new Error('tmux remote_clock must be a nonnegative epoch second');
+  if (panes.length !== snapshots.length) throw new Error('tmux pane snapshots must match pane metadata');
+  const [main, ...subagents] = panes.map((pane, index) => ({ ...pane, snapshotText: snapshots[index] }));
+  if (!main) throw new Error('tmux pane_index main pane required');
+  if (main.windowActivity > clockSeconds) throw new Error('tmux window_activity must not exceed remote_clock');
+  return classifyTerminalExecution({
+    paneCurrentCommand: main.paneCurrentCommand, paneDead: main.paneDead,
+    snapshotText: main.snapshotText, subagentPanes: subagents,
+    quietSeconds: clockSeconds - main.windowActivity,
+  });
+}
 
 export function getTerminalHistoryWarningMessage(reason = TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE) {
   if (reason === TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE) {
@@ -89,11 +146,40 @@ function sanitizeTmuxName(sessionId) {
  */
 function tmuxSessionExists(tmuxName) {
   try {
-    execFileSync('tmux', ['has-session', '-t', tmuxName], { stdio: 'pipe' });
+    // A bare target prefix-matches (`demo-1` finds `demo-15`); `=` is exact.
+    execFileSync('tmux', ['has-session', '-t', `=${tmuxName}`], { stdio: 'pipe' });
     return true;
   } catch {
     return false;
   }
+}
+
+function assertDetachedSessionInput({ cwd, cols, rows, sessionId }) {
+  if (typeof cwd !== 'string' || cwd.length === 0 || cwd.includes('\0')) throw new Error('Detached session requires a cwd');
+  if (!Number.isSafeInteger(cols) || cols < 2 || cols > 1000) throw new Error('Detached session requires integer cols from 2 to 1000');
+  if (!Number.isSafeInteger(rows) || rows < 2 || rows > 1000) throw new Error('Detached session requires integer rows from 2 to 1000');
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256 || /[\x00-\x1f\x7f]/.test(sessionId)) throw new Error('Detached session requires a valid sessionId');
+}
+
+function createLocalTmuxSession(tmuxName, { cwd, cols, rows }) {
+  // history-limit only affects the initial pane if it is in place before
+  // the tmux session/window is created. A cold tmux socket can reject
+  // this global write before any server exists; session options applied
+  // afterwards still keep the new durable window on the snapshot limit.
+  try {
+    ensureTmuxGlobalWindowOptions();
+  } catch (err) {
+    if (!isTmuxMissingServerError(err)) {
+      throw err;
+    }
+  }
+  execFileSync('tmux', [
+    'new-session', '-d',
+    '-s', tmuxName,
+    '-c', cwd,
+    '-x', String(cols),
+    '-y', String(rows),
+  ], { stdio: 'pipe' });
 }
 
 function getCommandErrorText(err) {
@@ -108,6 +194,11 @@ function isTmuxMissingServerError(err) {
   const errorText = getCommandErrorText(err);
   return errorText.includes('no server running')
     || /error connecting to .*tmux.*No such file or directory/.test(errorText);
+}
+
+function isTmuxMissingSessionError(err) {
+  return isTmuxMissingServerError(err)
+    || /can't find session|session not found|no such session/i.test(getCommandErrorText(err));
 }
 
 /**
@@ -437,6 +528,37 @@ function createPtyRuntime() {
 // tmux-backed runtime
 // ---------------------------------------------------------------------------
 
+const INCARNATION_OPTION = '@codedeck_incarnation';
+function incarnationTarget(sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256 || /[\x00-\x1f\x7f]/.test(sessionId)) {
+    throw new Error('Terminal incarnation sessionId must be nonempty text of at most 256 characters without controls.');
+  }
+  // set/show-option resolve a pane target; the colon makes the exact
+  // session component explicit (bare =name is treated as a literal name).
+  return `=${sanitizeTmuxName(sessionId)}:`;
+}
+function tmuxActivityMs(raw, sessionId) {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  const seconds = /^\d+$/.test(text) ? Number(text) : NaN;
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) throw new Error(`Invalid tmux activity time for session ${sessionId}.`);
+  return seconds * 1000;
+}
+function incarnationValue(raw, sessionId, allowMissing = false) {
+  if (typeof raw !== 'string') throw new Error(`Invalid terminal incarnation response for session ${sessionId}.`);
+  const value = raw.replace(/\r?\n$/, '');
+  if (allowMissing && value === '') return null;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+    throw new Error(`Invalid terminal incarnation for session ${sessionId}.`);
+  }
+  return value;
+}
+function incarnationReadArgs(target) { return ['show-options', '-qv', '-t', target, INCARNATION_OPTION]; }
+function incarnationWriteArgs(target) {
+  // tmux -o checks only the session-local value atomically; -q makes a racing
+  // initializer a no-op. Never overwrite a UUID on an existing durable session.
+  return ['set-option', '-oq', '-t', target, INCARNATION_OPTION, randomUUID()];
+}
+
 function ensureTmuxGlobalWindowOptions() {
   execFileSync('tmux', [
     'set-window-option', '-g', 'history-limit', String(TMUX_HISTORY_LIMIT),
@@ -444,6 +566,7 @@ function ensureTmuxGlobalWindowOptions() {
 }
 
 function ensureTmuxSessionOptions(tmuxName) {
+  execFileSync('tmux', incarnationWriteArgs(`=${tmuxName}:`), { stdio: 'pipe', timeout: STATUS_POLL_TIMEOUT_MS });
   execFileSync('tmux', [
     'set-option', '-t', tmuxName, 'status', 'off',
   ], { stdio: 'pipe' });
@@ -632,7 +755,7 @@ function normalizeCapturedSnapshot(output, windowLines = TERMINAL_SNAPSHOT_WINDO
   };
 }
 
-function createTmuxRuntime() {
+function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess = process.kill.bind(process), excludePids = [process.pid, process.ppid] } = {}) {
   let ptySpawnStatus = null;
 
   function checkPtySpawnStatus() {
@@ -673,6 +796,33 @@ function createTmuxRuntime() {
       return checkPtySpawnStatus();
     },
 
+    getSessionIncarnation(sessionId) {
+      const target = incarnationTarget(sessionId);
+      const options = { stdio: 'pipe', encoding: 'utf8', timeout: STATUS_POLL_TIMEOUT_MS };
+      const existing = incarnationValue(execFileSync('tmux', incarnationReadArgs(target), options), sessionId, true);
+      if (existing) return existing;
+      execFileSync('tmux', incarnationWriteArgs(target), options);
+      return incarnationValue(execFileSync('tmux', incarnationReadArgs(target), options), sessionId);
+    },
+
+    /** When this session last did anything, per tmux, in ms. Seeds "last activity" for sessions no client has attached to. */
+    async getSessionActivityAsync(sessionId) {
+      const { stdout } = await execFileAsync('tmux', ['display-message', '-p', '-t', incarnationTarget(sessionId), '#{session_activity}'], { encoding: 'utf8', timeout: STATUS_POLL_TIMEOUT_MS });
+      return tmuxActivityMs(stdout, sessionId);
+    },
+
+    async getSessionIncarnationAsync(sessionId) {
+      const target = incarnationTarget(sessionId);
+      const options = { encoding: 'utf8', timeout: STATUS_POLL_TIMEOUT_MS };
+      const { stdout } = await execFileAsync('tmux', incarnationReadArgs(target), options);
+      const existing = incarnationValue(stdout, sessionId, true);
+      if (existing) return existing;
+      await execFileAsync('tmux', incarnationWriteArgs(target), options);
+      const result = await execFileAsync('tmux', incarnationReadArgs(target), options);
+      return incarnationValue(result.stdout, sessionId);
+    },
+
+
     /**
      * Spawn (or re-attach to) a tmux-backed session.
      *
@@ -691,26 +841,7 @@ function createTmuxRuntime() {
 
       const tmuxName = sanitizeTmuxName(sessionId);
 
-      if (!tmuxSessionExists(tmuxName)) {
-        // history-limit only affects the initial pane if it is in place before
-        // the tmux session/window is created. A cold tmux socket can reject
-        // this global write before any server exists; session options below
-        // still keep the new durable window on the CodeDeck snapshot limit.
-        try {
-          ensureTmuxGlobalWindowOptions();
-        } catch (err) {
-          if (!isTmuxMissingServerError(err)) {
-            throw err;
-          }
-        }
-        execFileSync('tmux', [
-          'new-session', '-d',
-          '-s', tmuxName,
-          '-c', cwd,
-          '-x', String(cols),
-          '-y', String(rows),
-        ], { stdio: 'pipe' });
-      }
+      if (!tmuxSessionExists(tmuxName)) createLocalTmuxSession(tmuxName, { cwd, cols, rows });
 
       // Keep tmux session options aligned with the browser terminal.
       // history-limit matters for durable session restore after reload/server restart.
@@ -727,9 +858,36 @@ function createTmuxRuntime() {
     },
 
     /**
+     * Create a durable tmux session with no client attached, for a terminal
+     * started from the phone. The id must be freshly reserved: an existing
+     * session under it is someone else's terminal and is never adopted.
+     */
+    createDetachedSession({ cwd, cols, rows, sessionId }) {
+      assertDetachedSessionInput({ cwd, cols, rows, sessionId });
+      if (!this.isAvailable()) throw new Error(TERMINAL_RUNTIME_BLOCKED_MESSAGE);
+      const tmuxName = sanitizeTmuxName(sessionId);
+      if (tmuxSessionExists(tmuxName)) throw new Error(`tmux session ${sessionId} already exists`);
+      createLocalTmuxSession(tmuxName, { cwd, cols, rows });
+      ensureTmuxSessionOptions(tmuxName);
+    },
+
+    /**
      * Kill both the node-pty attachment and the underlying tmux session.
      */
     kill(entry, sessionId) {
+      if (this.isAvailable()) {
+        const tmuxName = sanitizeTmuxName(sessionId);
+        let alreadyGone = false;
+        try {
+          execFileSync('tmux', ['kill-session', '-t', `=${tmuxName}`], { stdio: 'pipe' });
+        } catch (error) {
+          if (!isTmuxMissingSessionError(error)) {
+            throw new Error(`Failed to kill tmux session ${sessionId}: ${getCommandErrorText(error)}`, { cause: error });
+          }
+          alreadyGone = true;
+        }
+        if (!alreadyGone && tmuxSessionExists(tmuxName)) throw new Error(`tmux session ${sessionId} still exists after kill-session`);
+      }
       if (entry?.pty) {
         try {
           entry.pty.kill();
@@ -737,12 +895,43 @@ function createTmuxRuntime() {
           // PTY wrapper may already be gone
         }
       }
-      if (!this.isAvailable()) return;
-      const tmuxName = sanitizeTmuxName(sessionId);
-      try {
-        execFileSync('tmux', ['kill-session', '-t', tmuxName], { stdio: 'pipe' });
-      } catch {
-        // Session may already be gone
+    },
+
+    async killAsync(entry, sessionId) {
+      if (this.isAvailable()) {
+        const tmuxName = sanitizeTmuxName(sessionId);
+        let panes = [];
+        try {
+          const { stdout } = await execFileAsync('tmux', ['list-panes', '-s', '-t', `=${tmuxName}:`, '-F', '#{pane_pid}\t#{pane_tty}'], { encoding: 'utf8' });
+          panes = parsePaneProcesses(stdout);
+        } catch (error) {
+          if (!isTmuxMissingSessionError(error)) throw error;
+        }
+        let ids = [];
+        if (panes.length) {
+          const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,tty='], { encoding: 'utf8' });
+          ids = collectSessionProcessIds({ panes, processes: parseProcessSnapshot(stdout), excludePids });
+        }
+        let alreadyGone = false;
+        try {
+          execFileSync('tmux', ['kill-session', '-t', `=${tmuxName}`], { stdio: 'pipe' });
+        } catch (error) {
+          if (!isTmuxMissingSessionError(error)) throw new Error(`Failed to kill tmux session ${sessionId}: ${getCommandErrorText(error)}`, { cause: error });
+          alreadyGone = true;
+        }
+        if (!alreadyGone && tmuxSessionExists(tmuxName)) throw new Error(`tmux session ${sessionId} still exists after kill-session`);
+        const isAlive = pid => localProcessAlive(signalProcess, pid);
+        const survivors = await waitForProcessExit(ids, isAlive, now, sleep, SESSION_KILL_GRACE_MS);
+        for (const pid of survivors) {
+          try { signalProcess(pid, 'SIGKILL'); }
+          catch (error) { if (error.code !== 'ESRCH') throw error; }
+        }
+        const remaining = await waitForProcessExit(survivors, isAlive, now, sleep, 1000);
+        if (remaining.length) throw new Error(`tmux session ${sessionId} still has surviving processes: ${remaining.join(', ')}`);
+        if (survivors.length) console.log(`[terminal] force-killed session=${sessionId} count=${survivors.length}`);
+      }
+      if (entry?.pty) {
+        try { entry.pty.kill(); } catch { /* PTY wrapper may already be gone */ }
       }
     },
 
@@ -805,36 +994,27 @@ function createTmuxRuntime() {
           foregroundCommand: null,
           executionReason: 'tmux_unavailable',
           executionConfidence: 'low',
+          ...UNKNOWN_EXECUTION_DETAILS,
         };
       }
 
       const tmuxName = sanitizeTmuxName(sessionId);
 
       try {
-        const raw = execFileSync(
-          'tmux',
-          ['display-message', '-p', '-t', tmuxName, '#{pane_current_command}\t#{pane_dead}'],
-          { stdio: 'pipe', encoding: 'utf8' }
-        ).replace(/\r/g, '').replace(/\n$/, '');
-        const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
-
-        const snapshotText = execFileSync(
-          'tmux',
-          ['capture-pane', '-p', '-S', '-40', '-t', tmuxName],
-          { stdio: 'pipe', encoding: 'utf8' }
-        );
-
-        return classifyTerminalExecution({
-          paneCurrentCommand,
-          paneDead,
-          snapshotText,
-        });
+        const panes = parseTerminalPaneMetadata(execFileSync('tmux',
+          ['list-panes', '-t', `${tmuxName}:0`, '-F', PANE_FORMAT],
+          { stdio: 'pipe', encoding: 'utf8' }));
+        const snapshots = panes.map(pane => execFileSync('tmux',
+          ['capture-pane', '-p', '-t', `${tmuxName}:0.${pane.paneIndex}`],
+          { stdio: 'pipe', encoding: 'utf8' }));
+        return classifyPanes(panes, snapshots, Math.floor(Date.now() / 1000));
       } catch {
         return {
           executionStatus: TERMINAL_EXECUTION_UNKNOWN,
           foregroundCommand: null,
           executionReason: 'tmux_lookup_failed',
           executionConfidence: 'low',
+          ...UNKNOWN_EXECUTION_DETAILS,
         };
       }
     },
@@ -843,33 +1023,20 @@ function createTmuxRuntime() {
       const tmuxName = sanitizeTmuxName(sessionId);
 
       try {
-        const [{ stdout: rawOutput }, { stdout: snapshotText }] = await Promise.all([
-          execFileAsync(
-            'tmux',
-            ['display-message', '-p', '-t', tmuxName, '#{pane_current_command}\t#{pane_dead}'],
-            { encoding: 'utf8' }
-          ),
-          execFileAsync(
-            'tmux',
-            ['capture-pane', '-p', '-S', '-40', '-t', tmuxName],
-            { encoding: 'utf8' }
-          ),
-        ]);
-        const raw = rawOutput.replace(/\r/g, '').replace(/\n$/, '');
-        const [paneCurrentCommand = '', paneDead = '0'] = raw.split('\t');
-
-        onSnapshot?.(snapshotText);
-        return classifyTerminalExecution({
-          paneCurrentCommand,
-          paneDead,
-          snapshotText,
-        });
+        const { stdout } = await execFileAsync('tmux',
+          ['list-panes', '-t', `${tmuxName}:0`, '-F', PANE_FORMAT], { encoding: 'utf8' });
+        const panes = parseTerminalPaneMetadata(stdout);
+        const snapshots = await Promise.all(panes.map(async pane => (await execFileAsync('tmux',
+          ['capture-pane', '-p', '-t', `${tmuxName}:0.${pane.paneIndex}`], { encoding: 'utf8' })).stdout));
+        onSnapshot?.(snapshots[0]);
+        return classifyPanes(panes, snapshots, Math.floor(Date.now() / 1000));
       } catch {
         return {
           executionStatus: TERMINAL_EXECUTION_UNKNOWN,
           foregroundCommand: null,
           executionReason: 'tmux_lookup_failed',
           executionConfidence: 'low',
+          ...UNKNOWN_EXECUTION_DETAILS,
         };
       }
     },
@@ -985,7 +1152,7 @@ function createTmuxRuntime() {
       }
     },
 
-    async listSessionIdsAsync() {
+    async listSessionIdsAsync({ strict = false } = {}) {
       try {
         const { stdout } = await execFileAsync(
           'tmux',
@@ -996,7 +1163,8 @@ function createTmuxRuntime() {
           .split('\n')
           .map(line => line.trim())
           .filter(Boolean);
-      } catch {
+      } catch (error) {
+        if (strict && !isTmuxMissingServerError(error)) throw error;
         return [];
       }
     },
@@ -1019,7 +1187,7 @@ function createTmuxRuntime() {
  * remote state is unknown, and reporting `false` would let callers mark a
  * presumed-alive session dead (Spec §8.2).
  */
-export function createHostTerminalRuntime(runner, hostName) {
+export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sleep = processSleep, excludePids = [process.pid, process.ppid] } = {}) {
   function tmux(args, opts = {}) {
     return runner.run('tmux', args, opts);
   }
@@ -1034,6 +1202,7 @@ export function createHostTerminalRuntime(runner, hostName) {
   }
 
   async function ensureSessionOptions(tmuxName) {
+    await tmux(incarnationWriteArgs(`=${tmuxName}:`), { timeout: STATUS_POLL_TIMEOUT_MS });
     await tmux(['set-option', '-t', tmuxName, 'status', 'off']);
     await tmux(['set-window-option', '-t', tmuxName, 'history-limit', String(TMUX_HISTORY_LIMIT)]);
     await tmux(['set-option', '-t', tmuxName, 'mouse', 'on']);
@@ -1043,15 +1212,71 @@ export function createHostTerminalRuntime(runner, hostName) {
     await tmux(['set-option', '-s', 'set-clipboard', 'on']);
   }
 
+  /** A transport failure is never read as "no such session". */
+  async function hostSessionExists(tmuxName) {
+    try {
+      await tmux(['has-session', '-t', `=${tmuxName}`]);
+      return true;
+    } catch (err) {
+      if (isTransportFailure(err)) throw err;
+      return false;
+    }
+  }
+
+  async function createHostTmuxSession(tmuxName, { cwd, cols, rows }) {
+    // Best-effort global history-limit so the initial pane inherits the
+    // snapshot window; a cold tmux socket may reject it (same tolerance as
+    // the local runtime).
+    try {
+      await tmux(['set-window-option', '-g', 'history-limit', String(TMUX_HISTORY_LIMIT)]);
+    } catch (err) {
+      if (isTransportFailure(err) || !isTmuxMissingServerError(err)) throw err;
+    }
+    await tmux([
+      'new-session', '-d',
+      '-s', tmuxName,
+      '-c', cwd,
+      '-x', String(cols),
+      '-y', String(rows),
+    ]);
+  }
+
   const sessionStatusScript = [
-    `tmux display-message -p -t "$1" '#{pane_current_path}\t#{pane_current_command}\t#{pane_dead}'`,
+    'set -e',
+    // Read pane activity first: a clock sampled before it could trail an
+    // actively printing pane and fail the activity <= clock guard.
+    `panes=$(tmux list-panes -t "$1:0" -F '${PANE_FORMAT}')`,
+    'date +%s',
     `printf '\\000'`,
-    `tmux capture-pane -p -S -40 -t "$1"`,
+    `printf '%s\\n' "$panes"`,
+    `printf '\\000'`,
+    `for pane in $(tmux list-panes -t "$1:0" -F '#{pane_index}'); do`,
+    `  tmux capture-pane -p -t "$1:0.$pane"`,
+    `  printf '\\000'`,
+    `done`,
   ].join('\n');
 
   return {
     type: 'tmux',
     host: hostName,
+
+    /** Host counterpart of the local getSessionActivityAsync. */
+    async getSessionActivityAsync(sessionId) {
+      const { stdout } = await tmux(['display-message', '-p', '-t', incarnationTarget(sessionId), '#{session_activity}'], { timeout: STATUS_POLL_TIMEOUT_MS });
+      return tmuxActivityMs(stdout, sessionId);
+    },
+
+    async getSessionIncarnationAsync(sessionId) {
+      const target = incarnationTarget(sessionId);
+      const options = { timeout: STATUS_POLL_TIMEOUT_MS };
+      const { stdout } = await tmux(incarnationReadArgs(target), options);
+      const existing = incarnationValue(stdout, sessionId, true);
+      if (existing) return existing;
+      await tmux(incarnationWriteArgs(target), options);
+      const result = await tmux(incarnationReadArgs(target), options);
+      return incarnationValue(result.stdout, sessionId);
+    },
+
 
     /** Remote tmux presence check (Spec §8.3) — never conflates "missing" with "unreachable". */
     async checkTmuxAsync() {
@@ -1076,51 +1301,73 @@ export function createHostTerminalRuntime(runner, hostName) {
     async spawnAsync({ cwd, cols, rows, sessionId }) {
       const tmuxName = sanitizeTmuxName(sessionId);
 
-      let exists = true;
-      try {
-        await tmux(['has-session', '-t', tmuxName]);
-      } catch (err) {
-        if (isTransportFailure(err)) throw err;
-        exists = false;
-      }
-
-      if (!exists) {
-        // Best-effort global history-limit so the initial pane inherits the
-        // snapshot window; a cold tmux socket may reject it (same tolerance as
-        // the local runtime).
-        try {
-          await tmux(['set-window-option', '-g', 'history-limit', String(TMUX_HISTORY_LIMIT)]);
-        } catch (err) {
-          if (isTransportFailure(err) || !isTmuxMissingServerError(err)) throw err;
-        }
-        await tmux([
-          'new-session', '-d',
-          '-s', tmuxName,
-          '-c', cwd,
-          '-x', String(cols),
-          '-y', String(rows),
-        ]);
-      }
+      if (!await hostSessionExists(tmuxName)) await createHostTmuxSession(tmuxName, { cwd, cols, rows });
 
       await ensureSessionOptions(tmuxName);
 
       return runner.spawnPty('tmux', ['-T', 'hyperlinks', 'attach-session', '-t', tmuxName], { cols, rows });
     },
 
-    /** Kill the PTY wrapper and the host's tmux session (best-effort, like local). */
+    /** Host counterpart of the local createDetachedSession: never adopts an existing session. */
+    async createDetachedSessionAsync({ cwd, cols, rows, sessionId }) {
+      assertDetachedSessionInput({ cwd, cols, rows, sessionId });
+      const tmuxName = sanitizeTmuxName(sessionId);
+      if (await hostSessionExists(tmuxName)) throw new Error(`tmux session ${sessionId} already exists on ${hostName}`);
+      await createHostTmuxSession(tmuxName, { cwd, cols, rows });
+      await ensureSessionOptions(tmuxName);
+    },
+
+    /** Kill the host tmux session, confirm its absence, then close the PTY wrapper. */
     async killAsync(entry, sessionId) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+      let panes = [];
+      try {
+        const { stdout } = await tmux(['list-panes', '-s', '-t', `=${tmuxName}:`, '-F', '#{pane_pid}\t#{pane_tty}']);
+        panes = parsePaneProcesses(stdout);
+      } catch (error) {
+        if (isTransportFailure(error) || !isTmuxMissingSessionError(error)) throw error;
+      }
+      let ids = [];
+      if (panes.length) {
+        const { stdout } = await runner.run('ps', ['-axo', 'pid=,ppid=,tty=']);
+        ids = collectSessionProcessIds({ panes, processes: parseProcessSnapshot(stdout), excludePids });
+      }
+      let alreadyGone = false;
+      try {
+        await tmux(['kill-session', '-t', `=${tmuxName}`]);
+      } catch (error) {
+        if (isTransportFailure(error)) throw error;
+        if (!isTmuxMissingSessionError(error)) {
+          throw new Error(`Failed to kill tmux session ${sessionId}: ${getCommandErrorText(error)}`, { cause: error });
+        }
+        alreadyGone = true;
+      }
+      if (!alreadyGone && await hostSessionExists(tmuxName)) throw new Error(`tmux session ${sessionId} still exists after kill-session`);
+      const isAlive = async pid => {
+        try { await runner.run('kill', ['-0', String(pid)]); return true; }
+        catch (error) {
+          if (isTransportFailure(error)) throw error;
+          if (/not permitted|permission denied/i.test(getCommandErrorText(error))) throw new Error(`Cannot inspect terminal process ${pid}: permission denied`, { cause: error });
+          if (/no such process/i.test(getCommandErrorText(error))) return false;
+          throw error;
+        }
+      };
+      const survivors = await waitForProcessExit(ids, isAlive, now, sleep, SESSION_KILL_GRACE_MS);
+      for (const pid of survivors) {
+        try { await runner.run('kill', ['-9', String(pid)]); }
+        catch (error) {
+          if (isTransportFailure(error) || !/no such process/i.test(getCommandErrorText(error))) throw error;
+        }
+      }
+      const remaining = await waitForProcessExit(survivors, isAlive, now, sleep, 1000);
+      if (remaining.length) throw new Error(`tmux session ${sessionId} still has surviving processes: ${remaining.join(', ')}`);
+      if (survivors.length) console.log(`[terminal] force-killed session=${sessionId} count=${survivors.length}`);
       if (entry?.pty) {
         try {
           entry.pty.kill();
         } catch {
           // PTY wrapper may already be gone
         }
-      }
-      const tmuxName = sanitizeTmuxName(sessionId);
-      try {
-        await tmux(['kill-session', '-t', tmuxName]);
-      } catch {
-        // Session may already be gone (or host unreachable) — best-effort
       }
     },
 
@@ -1131,7 +1378,7 @@ export function createHostTerminalRuntime(runner, hostName) {
     async isSessionRecoverableAsync(sessionId) {
       const tmuxName = sanitizeTmuxName(sessionId);
       try {
-        await tmux(['has-session', '-t', tmuxName], { timeout: STATUS_POLL_TIMEOUT_MS });
+        await tmux(['has-session', '-t', `=${tmuxName}`], { timeout: STATUS_POLL_TIMEOUT_MS });
         return true;
       } catch (err) {
         if (isTransportFailure(err)) throw err;
@@ -1220,21 +1467,17 @@ export function createHostTerminalRuntime(runner, hostName) {
           ['-c', sessionStatusScript, 'codedeck-session-status', tmuxName],
           { timeout: STATUS_POLL_TIMEOUT_MS },
         );
-        const separator = stdout.indexOf('\0');
-        if (separator < 0) throw new Error('remote session status separator missing');
-
-        const metadata = stdout.slice(0, separator).replace(/\r/g, '').replace(/\n$/, '');
-        const snapshotText = stdout.slice(separator + 1);
-        const [cwd = '', paneCurrentCommand = '', paneDead = '0'] = metadata.split('\t');
-
-        onSnapshot?.(snapshotText);
+        const parts = stdout.split('\0');
+        if (parts.length < 4 || parts.at(-1) !== '') throw new Error('remote session status separators missing');
+        const clock = parts[0].trim();
+        if (!/^(0|[1-9]\d*)$/.test(clock) || !Number.isSafeInteger(Number(clock))) throw new Error('tmux remote_clock must be a nonnegative epoch second');
+        const panes = parseTerminalPaneMetadata(parts[1]);
+        const snapshots = parts.slice(2, -1);
+        const executionState = classifyPanes(panes, snapshots, Number(clock));
+        onSnapshot?.(snapshots[0]);
         return {
-          cwd: cwd || entry?.cwd || null,
-          executionState: classifyTerminalExecution({
-            paneCurrentCommand,
-            paneDead,
-            snapshotText,
-          }),
+          cwd: panes[0].paneCurrentPath,
+          executionState,
         };
       } catch {
         return {
@@ -1244,6 +1487,7 @@ export function createHostTerminalRuntime(runner, hostName) {
             foregroundCommand: null,
             executionReason: 'tmux_lookup_failed',
             executionConfidence: 'low',
+            ...UNKNOWN_EXECUTION_DETAILS,
           },
         };
       }
@@ -1266,7 +1510,7 @@ export function createHostTerminalRuntime(runner, hostName) {
           .map(line => line.trim())
           .filter(Boolean);
       } catch (err) {
-        if (strict && isTransportFailure(err)) throw err;
+        if (strict && !isTmuxMissingServerError(err)) throw err;
         return [];
       }
     },
@@ -1283,12 +1527,12 @@ export function createHostTerminalRuntime(runner, hostName) {
  * @param {'pty' | 'tmux'} mode
  * @returns {object} runtime with spawn/kill/isSessionRecoverable
  */
-export function createTerminalRuntime(mode = 'tmux') {
+export function createTerminalRuntime(mode = 'tmux', options = {}) {
   if (mode && mode !== 'tmux') {
     console.warn(`[terminal-runtime] ignoring unsupported runtime "${mode}" — tmux is required`);
   }
 
-  const runtime = createTmuxRuntime();
+  const runtime = createTmuxRuntime(options);
 
   if (!runtime.isAvailable()) {
     console.warn('[terminal-runtime] tmux is required but not installed — terminal creation is blocked');

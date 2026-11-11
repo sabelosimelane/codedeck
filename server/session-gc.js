@@ -72,8 +72,8 @@ export function pruneTerminalSessions({
 
     try {
       runtime.kill(entry, sessionId);
-    } catch {
-      // Best-effort cleanup — always drop the stale registry entry
+    } catch (error) {
+      console.warn(`[session-gc] local kill failed session=${sessionId} error=${error.message}`);
     }
 
     sessions.delete(sessionId);
@@ -126,8 +126,8 @@ export async function pruneRemoteTerminalSessions({
 
     try {
       await entry.hostRuntime.killAsync(entry, sessionId);
-    } catch {
-      // Best-effort cleanup — always drop the stale registry entry
+    } catch (error) {
+      console.warn(`[session-gc] remote kill failed session=${sessionId} error=${error.message}`);
     }
 
     sessions.delete(sessionId);

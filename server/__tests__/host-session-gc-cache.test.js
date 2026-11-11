@@ -73,6 +73,16 @@ describe('local session GC with remote entries present', () => {
 // ---------------------------------------------------------------------------
 
 describe('pruneRemoteTerminalSessions', () => {
+  it('warns with the session id when best-effort remote kill fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const hostRuntime = fakeHostRuntime();
+    hostRuntime.killAsync.mockRejectedValue(new Error('permission denied'));
+    const sessions = new Map([['rp-1', remoteEntry(hostRuntime)]]);
+    await pruneRemoteTerminalSessions({ sessions });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('rp-1'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('permission denied'));
+    warn.mockRestore();
+  });
   it('prunes a dead, unrecoverable remote session past the TTL via its host runtime', async () => {
     const hostRuntime = fakeHostRuntime({ recoverable: false });
     const entry = remoteEntry(hostRuntime);

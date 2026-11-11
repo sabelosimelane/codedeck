@@ -15,7 +15,7 @@ vi.mock('@xterm/xterm', () => {
     constructor() {
       this.open = vi.fn();
       this.dispose = vi.fn();
-      this.write = vi.fn();
+      this.write = vi.fn((data, callback) => callback?.());
       this.focus = vi.fn();
       this.resize = vi.fn();
       this.scrollToBottom = vi.fn();
@@ -116,7 +116,7 @@ describe('Terminal durable history restore', () => {
 
     mocks.ws.onmessage?.({
       data: JSON.stringify({
-        type: 'session',
+        type: 'session', attachmentId: 'a', controllerId: 'a', controlRevision: 1, cols: 120, rows: 30,
         sessionId: 's-history',
         existing: true,
         runtimeType: 'tmux',
@@ -124,6 +124,7 @@ describe('Terminal durable history restore', () => {
         historyGuaranteed: true,
       }),
     });
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
 
     mocks.ws.onmessage?.({
       data: JSON.stringify({
@@ -144,7 +145,7 @@ describe('Terminal durable history restore', () => {
 
     expect(mocks.term.reset).toHaveBeenCalledTimes(1);
     expect(mocks.term.clear).toHaveBeenCalledTimes(1);
-    expect(mocks.term.write).toHaveBeenNthCalledWith(1, 'older line 1\nolder line 2\n');
+    expect(mocks.term.write).toHaveBeenNthCalledWith(1, 'older line 1\nolder line 2\n', expect.any(Function));
     expect(mocks.term.write).toHaveBeenNthCalledWith(2, '$ ');
     expect(mocks.term.scrollToBottom).toHaveBeenCalled();
   });
@@ -159,7 +160,7 @@ describe('Terminal durable history restore', () => {
 
     mocks.ws.onmessage?.({
       data: JSON.stringify({
-        type: 'session',
+        type: 'session', attachmentId: 'a', controllerId: 'a', controlRevision: 1, cols: 120, rows: 30,
         sessionId: 's-history',
         existing: true,
         runtimeType: 'tmux',
@@ -167,6 +168,7 @@ describe('Terminal durable history restore', () => {
         historyGuaranteed: true,
       }),
     });
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
 
     const resumeCalls = mocks.ws.send.mock.calls.filter(([payload]) => payload.includes('"type":"resume"'));
     expect(resumeCalls).toHaveLength(0);
@@ -184,7 +186,7 @@ describe('Terminal durable history restore', () => {
 
     mocks.ws.onmessage?.({
       data: JSON.stringify({
-        type: 'session',
+        type: 'session', attachmentId: 'a', controllerId: 'a', controlRevision: 1, cols: 120, rows: 30,
         sessionId: 's-history',
         existing: true,
         runtimeType: 'tmux',
@@ -192,6 +194,7 @@ describe('Terminal durable history restore', () => {
         historyGuaranteed: true,
       }),
     });
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
 
     mocks.ws.onmessage?.({
       data: JSON.stringify({
@@ -249,7 +252,7 @@ describe('Terminal durable history restore', () => {
     act(() => {
       mocks.ws.onmessage?.({
         data: JSON.stringify({
-          type: 'session',
+          type: 'session', attachmentId: 'a', controllerId: 'a', controlRevision: 1, cols: 120, rows: 30,
           sessionId: 's-history',
           existing: true,
           runtimeType: 'tmux',
@@ -257,6 +260,7 @@ describe('Terminal durable history restore', () => {
           historyGuaranteed: false,
         }),
       });
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
 
       mocks.ws.onmessage?.({
         data: JSON.stringify({

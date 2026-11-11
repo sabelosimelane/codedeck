@@ -45,7 +45,7 @@ vi.mock('@xterm/xterm', () => {
         this.textarea = textarea;
       });
       this.dispose = vi.fn();
-      this.write = vi.fn();
+      this.write = vi.fn((data, callback) => callback?.());
       this.focus = vi.fn();
       this.resize = vi.fn();
       this.scrollToBottom = vi.fn();
@@ -111,6 +111,8 @@ function mountAndConnect() {
   vi.advanceTimersByTime(16);
   mocks.ws.readyState = 1;
   mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'session',attachmentId:'a',controllerId:'a',controlRevision:1,cols:120,rows:30,existing:false})});
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
   mocks.ws.send.mockClear();
   mocks.showToast.mockClear();
   return result;
@@ -205,7 +207,7 @@ describe('Terminal file drag-and-drop and paste', () => {
       expect(opts.method).toBe('POST');
 
       expect(mocks.ws.send).toHaveBeenCalledWith(
-        JSON.stringify({ type: 'input', data: '"/tmp/codedeck-drops/123-test.png"' })
+        JSON.stringify({ type: 'input', data: '"/tmp/codedeck-drops/123-test.png"', controlRevision: 1 })
       );
     });
 
@@ -235,7 +237,7 @@ describe('Terminal file drag-and-drop and paste', () => {
 
       expect(global.fetch).toHaveBeenCalledTimes(2);
       expect(mocks.ws.send).toHaveBeenCalledWith(
-        JSON.stringify({ type: 'input', data: '"/tmp/codedeck-drops/1-file1.png" "/tmp/codedeck-drops/2-file2.png"' })
+        JSON.stringify({ type: 'input', data: '"/tmp/codedeck-drops/1-file1.png" "/tmp/codedeck-drops/2-file2.png"', controlRevision: 1 })
       );
     });
 
@@ -283,7 +285,7 @@ describe('Terminal file drag-and-drop and paste', () => {
       expect(global.fetch).toHaveBeenCalledTimes(1);
       expect(pasteEvent.defaultPrevented).toBe(true);
       expect(mocks.ws.send).toHaveBeenCalledWith(
-        JSON.stringify({ type: 'input', data: '"/tmp/codedeck-drops/456-screenshot.png"' })
+        JSON.stringify({ type: 'input', data: '"/tmp/codedeck-drops/456-screenshot.png"', controlRevision: 1 })
       );
     });
 

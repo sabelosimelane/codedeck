@@ -9,7 +9,9 @@ import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
 import { AlertTriangle, ChevronsDown } from 'lucide-react';
 import { shouldResumeFromSessionHandshake } from '../utils/terminalResume';
+import { createTerminalControl } from '../utils/terminalControl';
 import { buildTerminalWebSocketUrl } from '../utils/terminalWsUrl';
+import { reportDesktopActivity } from '../utils/desktopActivity';
 import { isTerminalProtocolReply } from '../utils/terminalProtocolReplies';
 import { buildTerminalSnapshotReplay } from '../utils/terminalSnapshotRestore';
 import { XTERM_THEMES, THEME_CHANGE_EVENT, getResolvedTheme } from '../theme';
@@ -42,9 +44,17 @@ function openLinkInNewTab(url) {
   a.click();
 }
 
-const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', isVisible, isActivePane = true, runtimeType = 'pty' }, ref) {
+const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', isVisible, isActivePane = true, runtimeType = 'pty', instanceUrl = null, incarnationId = null, claimOnOpen = false, mobile = false }, ref) {
   const containerRef = useRef(null);
   const wsRef = useRef(null);
+  useEffect(() => {
+    if (mobile) return undefined;
+    const onActivity = () => reportDesktopActivity(wsRef.current, document.visibilityState);
+    for (const type of ['keydown', 'pointerdown', 'pointermove', 'wheel']) window.addEventListener(type, onActivity);
+    return () => {
+      for (const type of ['keydown', 'pointerdown', 'pointermove', 'wheel']) window.removeEventListener(type, onActivity);
+    };
+  }, [mobile]);
   const fitRef = useRef(null);
   const termRef = useRef(null);
   const selectionRef = useRef(null);
@@ -80,16 +90,35 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   // mount-time resume sent before that handshake is silently dropped while
   // resumeInFlight stays true and blocks all typing until remount.
   const sessionReadyRef = useRef(false);
-  const workflow = useTerminalWorkflow({ wsRef, sessionReadyRef });
+  const controlRef = useRef(null);
+  const workflow = useTerminalWorkflow({ wsRef, sessionReadyRef, controlRef });
   const pendingOutputRef = useRef([]);
   const pendingSnapshotRef = useRef(null);
-  const inputBufferRef = useRef([]);
+  const [controlState, setControlState] = useState(null);
+  const openingClaimRef = useRef(claimOnOpen);
+  const incarnationRef = useRef(incarnationId);
+  const hydrationPendingRef = useRef(false);
+  const attachmentReadyRef = useRef(false);
+  const sendInputRef = useRef(() => false);
+  const composerCaptureRef = useRef(null);
   const delayedViewportSyncTimerRef = useRef(null);
   const snapshotGeometryRef = useRef(null);
   const retryConnectionRef = useRef(() => {});
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
   const { showToast } = useToast();
+  if (!controlRef.current) controlRef.current = createTerminalControl({
+    dimensions: () => {
+      const size = fitRef.current?.proposeDimensions();
+      if (!size) throw new Error('Terminal must be visible before taking control.');
+      return size;
+    },
+    onState: state => {
+      setControlState(state);
+      termRef.current?.resize(state.cols, state.rows);
+    },
+    onError: message => showToast({ type: 'warning', message }),
+  });
 
   // Upload a file to the backend and return the saved path
   async function uploadFile(file, host) {
@@ -136,7 +165,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     if (paths.length > 0 && !workflow.lockedRef.current) {
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', data: paths.join(' ') }));
+        sendInputRef.current(paths.join(' '));
       }
     }
   }
@@ -254,6 +283,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     }
   }
 
+  function finishAttachmentReady() {
+    if (!attachmentReadyRef.current || hydrationPendingRef.current || pendingSnapshotRef.current) return;
+    controlRef.current.ready();
+    if (openingClaimRef.current) { openingClaimRef.current = false; controlRef.current.claim(); }
+  }
+
   function hydrateSnapshot(term, snapshot) {
     resetTerminalForSnapshot(term);
     if (typeof snapshot.lastSeq === 'number') {
@@ -261,7 +296,13 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     }
     const snapshotReplay = buildTerminalSnapshotReplay(snapshot);
     if (snapshotReplay) {
-      term.write(snapshotReplay);
+      hydrationPendingRef.current = true;
+      const socket = wsRef.current;
+      term.write(snapshotReplay, () => {
+        if (wsRef.current !== socket) return;
+        hydrationPendingRef.current = false;
+        finishAttachmentReady();
+      });
       lastPaintAtRef.current = new Date().toISOString();
     }
     // Record the geometry the snapshot was painted at so the delayed
@@ -356,15 +397,11 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     const currentWs = wsRef.current;
 
     try {
-      if (fitAddon) fitAddon.fit();
+      if (fitAddon && (!sessionReadyRef.current || controlRef.current.isController())) fitAddon.fit();
       flushPendingOutput();
       lastResizeAtRef.current = new Date().toISOString();
       if (currentWs && currentWs.readyState === WebSocket.OPEN && term) {
-        currentWs.send(JSON.stringify({
-          type: 'resize',
-          cols: term.cols,
-          rows: term.rows,
-        }));
+        controlRef.current.resize(term.cols, term.rows);
         if (requestResumeAfterSync) {
           requestResume(currentWs);
         }
@@ -395,6 +432,19 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   }, [sessionId]);
 
   useImperativeHandle(ref, () => ({
+    sendInput: (data,onSent) => sendInputRef.current(data,onSent),
+    sendComposer: (text,onSent) => {
+      if (typeof text !== 'string' || !text.length || text.length > 65500) throw new Error('Composer text must contain 1–65500 characters.');
+      const capture = { data: '' };
+      composerCaptureRef.current = capture;
+      try { termRef.current.paste(text); } finally { composerCaptureRef.current = null; }
+      if (!capture.data) throw new Error('Terminal did not produce composer paste input.');
+      return sendInputRef.current(`${capture.data}\r`,onSent);
+    },
+    claimControl: () => {
+      if (!sessionReadyRef.current) openingClaimRef.current = true;
+      else controlRef.current.claim();
+    },
     focus() {
       if (termRef.current) {
         termRef.current.focus();
@@ -556,6 +606,109 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       }
     };
     containerRef.current.addEventListener('wheel', handleWheel, { passive: true });
+    // Normal-buffer history stays local. Alternate-screen agents own their
+    // history and receive wheel events through xterm's mouse protocol and the
+    // same control-fenced onData path as desktop input.
+    const touchElement = containerRef.current;
+    let touchGesture = null;
+    let momentumFrame = null;
+    const stopMomentum = () => {
+      if (momentumFrame !== null) cancelAnimationFrame(momentumFrame);
+      momentumFrame = null;
+    };
+    const scrollTouchLines = (lines, point) => {
+      if (term.buffer.active.type === 'alternate' &&
+          ['vt200', 'drag', 'any'].includes(term.modes.mouseTrackingMode)) {
+        // Only mouse-reporting applications receive wheel events. Never convert
+        // a swipe to arrow keys: that could edit a prompt or shell history.
+        for (let line = 0; line < Math.abs(lines); line++) {
+          term.element.dispatchEvent(new WheelEvent('wheel', {
+            bubbles: true, cancelable: true, deltaMode: 1,
+            deltaY: Math.sign(lines), clientX: point.clientX, clientY: point.clientY,
+          }));
+        }
+      } else {
+        if (lines<0 && term.buffer.active.baseY>0) setAutoScrollEnabled(false);
+        term.scrollLines(lines);
+      }
+    };
+    const touchStart = event => {
+      stopMomentum();
+      const now = Date.now();
+      touchGesture = event.touches.length === 1 ? {
+        x:event.touches[0].clientX, y:event.touches[0].clientY,
+        lastX:event.touches[0].clientX, lastY:event.touches[0].clientY,
+        remainder:0, moved:false, started:now, lastTime:now, velocity:0,
+      } : null;
+      event.stopPropagation();
+    };
+    const touchMove = event => {
+      event.stopPropagation();
+      if (!touchGesture || event.touches.length !== 1) { touchGesture=null; stopMomentum(); return; }
+      const point=event.touches[0];
+      if (Math.abs(point.clientY-touchGesture.y)>8 || Math.abs(point.clientX-touchGesture.x)>8) touchGesture.moved=true;
+      if (!touchGesture.moved) return;
+      event.preventDefault();
+      const cellHeight=touchElement.clientHeight/term.rows;
+      if (!(cellHeight>0)) return;
+      const now=Date.now();
+      const delta=touchGesture.lastY-point.clientY;
+      const elapsed=now-touchGesture.lastTime;
+      if (elapsed>0) touchGesture.velocity=Math.max(-2.5,Math.min(2.5,delta/elapsed));
+      touchGesture.lastTime=now;
+      touchGesture.remainder+=delta/cellHeight;
+      touchGesture.lastX=point.clientX;
+      touchGesture.lastY=point.clientY;
+      const lines=Math.trunc(touchGesture.remainder);
+      if (!lines) return;
+      touchGesture.remainder-=lines;
+      scrollTouchLines(lines,point);
+    };
+    const startMomentum = gesture => {
+      const started=Date.now();
+      if (started-gesture.lastTime>80 || Math.abs(gesture.velocity)<0.15) return;
+      const screenType=term.buffer.active.type;
+      const mouseMode=term.modes?.mouseTrackingMode;
+      const revision=controlRef.current.revision();
+      if (screenType==='alternate' && revision===null) return;
+      let last=started, velocity=gesture.velocity, remainder=gesture.remainder;
+      const tick=()=>{
+        momentumFrame=null;
+        const now=Date.now(), elapsed=now-last;
+        // Never accumulate delayed frames or reclaim control after a handoff.
+        if (!mountedRef.current || !isVisibleRef.current || document.hidden ||
+            wsRef.current?.readyState!==WebSocket.OPEN || now-started>1200 || elapsed>80 ||
+            term.buffer.active.type!==screenType || term.modes?.mouseTrackingMode!==mouseMode ||
+            (screenType==='alternate' && controlRef.current.revision()!==revision)) return;
+        last=now;
+        const cellHeight=touchElement.clientHeight/term.rows;
+        if (!(cellHeight>0)) return;
+        remainder+=velocity*200*(1-Math.exp(-elapsed/200))/cellHeight;
+        velocity*=Math.exp(-elapsed/200);
+        const lines=Math.trunc(remainder);
+        remainder-=lines;
+        if (lines) scrollTouchLines(lines,{clientX:gesture.lastX,clientY:gesture.lastY});
+        if (Math.abs(velocity)>=0.02) momentumFrame=requestAnimationFrame(tick);
+      };
+      momentumFrame=requestAnimationFrame(tick);
+    };
+    const touchEnd = event => {
+      event.stopPropagation();
+      const gesture=touchGesture;touchGesture=null;
+      if (!gesture) return;
+      if (gesture.moved) { startMomentum(gesture); return; }
+      if (Date.now()-gesture.started>350) return;
+      controlRef.current.claim();
+      if (!selectionRef.current?.isHolding()) syncTerminalViewport({focus:true});
+      term.focus();
+    };
+    const touchCancel = () => { touchGesture=null; stopMomentum(); };
+    if (mobile) {
+      touchElement.addEventListener('touchstart',touchStart,{capture:true,passive:true});
+      touchElement.addEventListener('touchmove',touchMove,{capture:true,passive:false});
+      touchElement.addEventListener('touchend',touchEnd,true);
+      touchElement.addEventListener('touchcancel',touchCancel,true);
+    }
     term.attachCustomWheelEventHandler(() => {
       const activeBuffer = term.buffer.active;
 
@@ -570,16 +723,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     // remote sessions the message handlers are registered only after SSH
     // round-trips, so anything sent on a merely-open socket is silently
     // dropped. Buffer until the handshake and flush there.
-    function sendOrBufferInput(data) {
+    function sendOrBufferInput(data,onSent) {
       selectionRef.current?.release();
-      if (workflow.inputLockedRef.current) return;
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN && sessionReadyRef.current) {
-        ws.send(JSON.stringify({ type: 'input', data }));
-      } else {
-        inputBufferRef.current.push(data);
-      }
+      if (workflow.inputLockedRef.current) return false;
+      return controlRef.current.input(data,onSent);
     }
+    sendInputRef.current = sendOrBufferInput;
 
     // Prevent browser from stealing terminal shortcuts (Ctrl+R, Ctrl+W, etc.)
     // We intercept these keys, block both browser and xterm default handling,
@@ -613,6 +762,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
     // emits responses here. Focus tracking replies can also be emitted when the
     // terminal regains focus. Filter these protocol replies unconditionally.
     term.onData((data) => {
+      if (composerCaptureRef.current) { composerCaptureRef.current.data += data; return; }
       if (resumeInFlightRef.current) return;
       if (isTerminalProtocolReply(data)) return;
       sendOrBufferInput(data);
@@ -632,7 +782,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       const cols = term.cols;
       const rows = term.rows;
       const wsUrl = buildTerminalWebSocketUrl({
-        location: window.location,
+        location: instanceUrl ? new URL(instanceUrl) : window.location,
+        incarnationId: incarnationRef.current,
+        companion: mobile,
         cwd,
         sessionId,
         cols,
@@ -640,9 +792,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       });
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
+      controlRef.current.connect(ws);
+      hydrationPendingRef.current = false;
+      attachmentReadyRef.current = false;
 
       ws.onopen = () => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || wsRef.current !== ws) return;
         const wasReconnect = wasConnectedBefore;
         wasConnectedBefore = true;
         retryRef.current = 0;
@@ -677,6 +832,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       let spawnFailed = false;
 
       ws.onmessage = (event) => {
+        if (wsRef.current !== ws || !mountedRef.current) return;
         try {
           const msg = JSON.parse(event.data);
           lastMessageAtRef.current = new Date().toISOString();
@@ -686,22 +842,23 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
             // during remote SSH attach, then request replay only when needed.
             sessionReadyRef.current = true;
             resumeInFlightRef.current = false;
-            // Flush input typed while disconnected or during the attach
-            // window — deliverable only now that handlers are registered.
-            if (inputBufferRef.current.length > 0) {
-              if (!workflow.lockedRef.current) {
-                for (const data of inputBufferRef.current) {
-                  ws.send(JSON.stringify({ type: 'input', data }));
-                }
-              }
-              inputBufferRef.current = [];
-            }
+            if (incarnationRef.current && msg.incarnationId !== incarnationRef.current) throw new Error('The original terminal session has ended.');
+            if (msg.incarnationId) incarnationRef.current = msg.incarnationId;
+            controlRef.current.session(msg);
             if (msg.historyGuaranteed === true) {
               setHistoryWarning(null);
             }
             if (shouldResumeFromSessionHandshake(msg, resumeInFlightRef.current)) {
               requestResume(ws);
             }
+          } else if (msg.type === 'attachment_ready') {
+            attachmentReadyRef.current = true;
+            finishAttachmentReady();
+          } else if (msg.type === 'control_state') {
+            controlRef.current.state(msg);
+          } else if (msg.type === 'control_error' || msg.type === 'protocol_error') {
+            controlRef.current.reject(msg.message);
+            if (msg.type === 'protocol_error') { spawnFailed = true; setFailureMessage(msg.message); setConnectionStatus('failed'); }
           } else if (msg.type === 'workflow_state' || msg.type === 'workflow_error') {
             workflow.handleMessage(msg);
           } else if (msg.type === 'snapshot') {
@@ -773,8 +930,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
             setConnectionStatus('failed');
             showToast({ type: 'error', message: msg.message || 'Failed to start terminal' });
           }
-        } catch {
-          bufferOrWriteChunk(term, { data: event.data });
+        } catch (err) {
+          controlRef.current.reject(err.message || 'Invalid terminal response.');
+          setFailureMessage('Invalid terminal response. Reload or update CodeDeck.');
+          setConnectionStatus('failed');
+          spawnFailed = true;
+          ws.close();
         }
       };
 
@@ -783,9 +944,12 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       };
 
       ws.onclose = (event) => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || wsRef.current !== ws) return;
         selection.release('Selection ended because the terminal connection changed.');
         workflow.disconnected();
+        sessionReadyRef.current = false;
+        openingClaimRef.current = false;
+        controlRef.current.disconnect();
 
         // Don't retry if the server reported a permanent spawn failure
         if (spawnFailed) return;
@@ -888,10 +1052,17 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
 
     return () => {
       mountedRef.current = false;
+      stopMomentum();
       clearTimeout(connectTimer);
       clearTimeout(retryTimerRef.current);
       clearInterval(heartbeatRef.current);
       clearTimeout(delayedViewportSyncTimerRef.current);
+      if (mobile) {
+        touchElement.removeEventListener('touchstart',touchStart,true);
+        touchElement.removeEventListener('touchmove',touchMove,true);
+        touchElement.removeEventListener('touchend',touchEnd,true);
+        touchElement.removeEventListener('touchcancel',touchCancel,true);
+      }
       selection.dispose();
       selectionRef.current = null;
       clipboardGuard?.dispose();
@@ -899,7 +1070,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       snapshotGeometryRef.current = null;
       pendingOutputRef.current = [];
       pendingSnapshotRef.current = null;
-      inputBufferRef.current = [];
+      controlRef.current.disconnect();
       fontSyncCancelled = true;
       retryConnectionRef.current = () => {};
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -913,7 +1084,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       if (wsRef.current) wsRef.current.close();
       term.dispose();
     };
-  }, [sessionId, cwd]);
+  }, [sessionId, cwd, instanceUrl, incarnationId]);
 
   // Re-fit and sync dimensions when tab becomes visible (React-level tab switch)
   useEffect(() => {
@@ -940,7 +1111,8 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <TerminalWorkflow key={sessionId} sessionId={sessionId} state={workflow.state} pending={workflow.pending} connected={connectionStatus === 'connected'} onStart={workflow.start} onStop={workflow.stop} />
+      {!mobile && <TerminalWorkflow key={sessionId} sessionId={sessionId} state={workflow.state} pending={workflow.pending} connected={connectionStatus === 'connected'} onStart={workflow.start} onStop={workflow.stop} />}
+      {controlState && <div role="status" className="terminal-control-status">{controlState.isController ? 'You control this terminal' : 'Viewing · tap or type to take control'}</div>}
       {selectionState !== 'idle' && (
         <div role="status" style={{ position: 'absolute', bottom: 8, right: 12, zIndex: 5, pointerEvents: 'none', background: 'var(--bg-base)', color: 'var(--text-primary)', padding: '4px 8px', fontSize: 12 }}>
           Display paused for selection · Cmd+C to copy · Esc to resume
@@ -998,7 +1170,9 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       <div
         ref={containerRef}
         title="Hold Option/Alt and drag to select; Cmd+C copies; Esc resumes live output"
-        onMouseDown={() => {
+        onPointerDown={event => {
+          if (mobile && event.pointerType === 'touch') return;
+          controlRef.current.claim();
           if (!selectionRef.current?.isHolding()) syncTerminalViewport({ focus: true });
           // Direct fallback: ensure focus even if syncTerminalViewport gates bail early
           if (termRef.current) termRef.current.focus();
@@ -1007,6 +1181,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
           width: '100%',
           flex: 1,
           minHeight: 0,
+          touchAction: mobile ? 'none' : 'auto',
           background: 'var(--bg-base)',
           padding: '4px 0 0 8px',
         }}

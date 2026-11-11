@@ -1,6 +1,6 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import express from 'express';
-import { createServer } from 'http';
+import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import fs from 'fs/promises';
 import path from 'path';
 import request from 'supertest';
@@ -55,8 +55,8 @@ function createApp() {
 describe('POST /api/upload', () => {
   let app;
 
-  beforeAll(() => {
-    app = createApp();
+  beforeEach(async () => {
+    app = await loopbackTestServer(createApp());
   });
 
   afterEach(async () => {

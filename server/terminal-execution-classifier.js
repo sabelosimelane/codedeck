@@ -1,167 +1,45 @@
+import { findAgentProfile } from './agent-profiles/index.js';
+
 export const TERMINAL_EXECUTION_RUNNING = 'running';
 export const TERMINAL_EXECUTION_IDLE = 'idle';
 export const TERMINAL_EXECUTION_DEAD = 'dead';
 export const TERMINAL_EXECUTION_UNKNOWN = 'unknown';
+export const WORKING_SILENCE_SECONDS = 20;
 
-const INTERACTIVE_SHELL_COMMANDS = new Set([
-  'bash',
-  'csh',
-  'dash',
-  'fish',
-  'ksh',
-  'sh',
-  'tcsh',
-  'zsh',
-]);
+const SHELLS = new Set(['bash', 'csh', 'dash', 'fish', 'ksh', 'sh', 'tcsh', 'zsh']);
+const commandName = command => typeof command === 'string' ? command.trim().split('/').pop() : '';
+const result = (executionStatus, foregroundCommand, executionReason, executionConfidence, agentCli = null, backgroundAgents = 0, backgroundShells = 0, needsInput = false) => ({
+  executionStatus, foregroundCommand, executionReason, executionConfidence,
+  agentCli, backgroundAgents, backgroundShells, needsInput,
+});
+const shellPrompt = line => /^[\w.-]+@[\w.-]+\s+.+\s[%$#]$/.test(line) || /^[^ ]+\s+.+\s[%$#]$/.test(line);
 
-function normalizeCommandName(command) {
-  if (!command || typeof command !== 'string') return '';
-  return command.trim().split('/').pop() || '';
-}
-
-function normalizeSnapshotLines(snapshotText) {
-  if (!snapshotText || typeof snapshotText !== 'string') return [];
-
-  return snapshotText
-    .replace(/\r/g, '')
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean);
-}
-
-function buildResult({
-  executionStatus,
-  foregroundCommand,
-  executionReason,
-  executionConfidence,
-}) {
-  return {
-    executionStatus,
-    foregroundCommand,
-    executionReason,
-    executionConfidence,
-  };
-}
-
-function hasShellPrompt(line) {
-  return /^[\w.-]+@[\w.-]+\s+.+\s[%$#]$/.test(line)
-    || /^[^ ]+\s+.+\s[%$#]$/.test(line);
-}
-
-function hasAgentWorkingMarker(line) {
-  return /^[•✳✱*]\s*Working\b/i.test(line);
-}
-
-function hasAgentBackgroundTerminalMarker(line) {
-  return /Waiting for background terminal\b/i.test(line);
-}
-
-function hasAgentIdlePrompt(line) {
-  return line === '❯'
-    || /^❯\s/.test(line)
-    || /^›\s/.test(line);
-}
-
-function hasAgentInterruptIndicator(line) {
-  if (/\besc to interrupt\b/i.test(line)) return true;
-  // Only spinner frames signal streaming. Transcript bullets, tree branches,
-  // and recaps can also contain ellipses while the agent is idle.
-  if (!/^[·✢✳✶✻✽✼✱*]\s/u.test(line)) return false;
-  return /\w…/.test(line);
-}
-
-function classifySnapshotTail(snapshotText) {
-  const tail = normalizeSnapshotLines(snapshotText).slice(-40);
-  const lastLine = tail[tail.length - 1] || '';
-
-  if (tail.some(hasAgentWorkingMarker)) {
-    return {
-      executionStatus: TERMINAL_EXECUTION_RUNNING,
-      executionReason: 'agent_working',
-      executionConfidence: 'high',
-    };
+export function classifyTerminalExecution({ paneCurrentCommand, paneDead, snapshotText, subagentPanes, quietSeconds }) {
+  if (!Array.isArray(subagentPanes)) throw new Error('subagentPanes must be an array');
+  if (!Number.isFinite(quietSeconds) || quietSeconds < 0) throw new Error('quietSeconds must be a finite nonnegative number');
+  if (String(paneDead) === '1') return result('dead', null, 'pane_dead', 'high');
+  const foregroundCommand = commandName(paneCurrentCommand);
+  if (!foregroundCommand) return result('unknown', null, 'missing_foreground_command', 'low');
+  const lines = typeof snapshotText === 'string' ? snapshotText.replace(/\r/g, '').split('\n') : [];
+  const profile = findAgentProfile({ foregroundCommand, lines });
+  if (profile) {
+    const main = profile.read(lines);
+    const agentCli = profile.id;
+    if (main.turn === 'needs_input') return result('running', foregroundCommand, 'agent_needs_input', 'high', agentCli, 0, main.backgroundShells, true);
+    const stale = main.turn === 'working' && quietSeconds >= WORKING_SILENCE_SECONDS;
+    if (main.turn === 'working' && !stale) return result('running', foregroundCommand, 'agent_working', 'high', agentCli, 0, main.backgroundShells);
+    const reads = subagentPanes.filter(pane => String(pane.paneDead) !== '1').map(pane => {
+      const sublines = typeof pane.snapshotText === 'string' ? pane.snapshotText.replace(/\r/g, '').split('\n') : [];
+      return findAgentProfile({ foregroundCommand: commandName(pane.paneCurrentCommand), lines: sublines })?.read(sublines);
+    }).filter(Boolean);
+    if (reads.some(read => read.turn === 'needs_input')) return result('running', foregroundCommand, 'agent_needs_input', 'high', agentCli, 0, main.backgroundShells, true);
+    const backgroundAgents = quietSeconds < WORKING_SILENCE_SECONDS ? reads.filter(read => read.turn === 'working').length : 0;
+    if (backgroundAgents) return result('running', foregroundCommand, 'agent_delegated', 'high', agentCli, backgroundAgents, main.backgroundShells);
+    if (main.backgroundShells) return result('running', foregroundCommand, 'agent_background_shells', 'high', agentCli, 0, main.backgroundShells);
+    return result('idle', foregroundCommand, stale ? 'agent_marker_stale' : 'agent_prompt_idle', 'high', agentCli);
   }
-
-  if (tail.some(hasAgentBackgroundTerminalMarker)) {
-    return {
-      executionStatus: TERMINAL_EXECUTION_RUNNING,
-      executionReason: 'agent_background_terminal',
-      executionConfidence: 'high',
-    };
-  }
-
-  if (tail.some(hasAgentInterruptIndicator)) {
-    return {
-      executionStatus: TERMINAL_EXECUTION_RUNNING,
-      executionReason: 'agent_streaming',
-      executionConfidence: 'high',
-    };
-  }
-
-  if (tail.some(hasAgentIdlePrompt)) {
-    return {
-      executionStatus: TERMINAL_EXECUTION_IDLE,
-      executionReason: 'agent_prompt_idle',
-      executionConfidence: 'high',
-    };
-  }
-
-  if (hasShellPrompt(lastLine)) {
-    return {
-      executionStatus: TERMINAL_EXECUTION_IDLE,
-      executionReason: 'shell_prompt',
-      executionConfidence: 'high',
-    };
-  }
-
-  return null;
-}
-
-export function classifyTerminalExecution({
-  paneCurrentCommand,
-  paneDead,
-  snapshotText,
-} = {}) {
-  if (String(paneDead) === '1') {
-    return buildResult({
-      executionStatus: TERMINAL_EXECUTION_DEAD,
-      foregroundCommand: null,
-      executionReason: 'pane_dead',
-      executionConfidence: 'high',
-    });
-  }
-
-  const foregroundCommand = normalizeCommandName(paneCurrentCommand);
-  if (!foregroundCommand) {
-    return buildResult({
-      executionStatus: TERMINAL_EXECUTION_UNKNOWN,
-      foregroundCommand: null,
-      executionReason: 'missing_foreground_command',
-      executionConfidence: 'low',
-    });
-  }
-
-  const snapshotState = classifySnapshotTail(snapshotText);
-  if (snapshotState) {
-    return buildResult({
-      foregroundCommand,
-      ...snapshotState,
-    });
-  }
-
-  if (INTERACTIVE_SHELL_COMMANDS.has(foregroundCommand)) {
-    return buildResult({
-      executionStatus: TERMINAL_EXECUTION_RUNNING,
-      foregroundCommand,
-      executionReason: 'shell_without_prompt',
-      executionConfidence: 'medium',
-    });
-  }
-
-  return buildResult({
-    executionStatus: TERMINAL_EXECUTION_RUNNING,
-    foregroundCommand,
-    executionReason: 'foreground_command',
-    executionConfidence: 'medium',
-  });
+  const lastLine = lines.map(line => line.trim()).filter(Boolean).at(-1) || '';
+  if (shellPrompt(lastLine)) return result('idle', foregroundCommand, 'shell_prompt', 'high');
+  if (SHELLS.has(foregroundCommand)) return result('running', foregroundCommand, 'shell_without_prompt', 'medium');
+  return result('running', foregroundCommand, 'foreground_command', 'medium');
 }

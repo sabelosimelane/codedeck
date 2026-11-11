@@ -13,9 +13,9 @@ function resolveTerminalHost(location) {
   return location.host;
 }
 
-export function buildTerminalWebSocketUrl({ location, cwd, sessionId, cols, rows }) {
+export function buildTerminalWebSocketUrl({ location, cwd, sessionId, cols, rows, incarnationId = null, companion = false }) {
   const protocol = resolveWebSocketProtocol(location.protocol);
   const host = resolveTerminalHost(location);
 
-  return `${protocol}//${host}/ws/terminal?cwd=${encodeURIComponent(cwd)}&sessionId=${encodeURIComponent(sessionId)}&cols=${cols}&rows=${rows}`;
+  return `${protocol}//${host}/ws/terminal?${cwd === null ? '' : `cwd=${encodeURIComponent(cwd)}&`}sessionId=${encodeURIComponent(sessionId)}&cols=${cols}&rows=${rows}&protocol=2${incarnationId ? `&incarnation=${encodeURIComponent(incarnationId)}` : ''}${companion ? '&companion=1' : ''}`;
 }

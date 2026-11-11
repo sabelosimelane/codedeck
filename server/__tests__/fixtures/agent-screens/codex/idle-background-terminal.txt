@@ -1,0 +1,40 @@
+  >_ OpenAI Codex (v0.167.0)
+     ~/work/demo
+  permissions: YOLO mode
+
+
+› Run the shell command `sleep 20; echo done` in the foreground, then reply with one sentence followed by the bullet "•
+  Working tree clean."
+
+
+• I’ll run the command in the foreground, then report the result.
+
+• Ran sleep 20; echo done
+  └ done
+
+• Ran git status --porcelain
+  └ (no output)
+
+• The foreground command completed and printed done.
+
+  • Working tree clean.
+
+  Worked for 35s • 22:01
+
+
+› Start `sleep 45` as a background terminal and end your turn immediately without waiting for it. Reply only "started".
+
+
+• I’ll start sleep 45 in a background terminal.
+
+• started
+
+  Worked for 13s • 22:02
+
+  1 background terminal running · /ps to view · /stop to close
+
+
+› Ask Codex to do anything
+
+  GPT-6-Astra high · ~/work/demo…
+  ← for agents · ? for shortcuts                                                             ⚠ 11 warnings · f2 to view

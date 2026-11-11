@@ -47,6 +47,10 @@ describe('listTerminalSessions', () => {
       health: 'detached',
       executionStatus: 'running',
       executionReason: 'foreground_command',
+      agentCli: null,
+      backgroundAgents: 0,
+      backgroundShells: 0,
+      needsInput: false,
     });
     expect(runtime.getSessionExecutionState).toHaveBeenCalledWith('Mace-118');
   });

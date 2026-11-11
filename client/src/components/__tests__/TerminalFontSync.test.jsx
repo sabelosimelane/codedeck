@@ -15,7 +15,7 @@ vi.mock('@xterm/xterm', () => {
     constructor() {
       this.open = vi.fn();
       this.dispose = vi.fn();
-      this.write = vi.fn();
+      this.write = vi.fn((data, callback) => callback?.());
       this.focus = vi.fn();
       this.resize = vi.fn();
       this.scrollToBottom = vi.fn();
@@ -149,6 +149,8 @@ describe('Terminal font-measurement recovery', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'session',attachmentId:'a',controllerId:'a',controlRevision:1,cols:120,rows:30,existing:false})});
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
     mocks.fitAddon.fit.mockClear();
 
     act(() => {
@@ -175,6 +177,8 @@ describe('Terminal font-measurement recovery', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'session',attachmentId:'a',controllerId:'a',controlRevision:1,cols:120,rows:30,existing:false})});
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
     mocks.ws.send.mockClear();
 
     act(() => {
@@ -196,7 +200,7 @@ describe('Terminal font-measurement recovery', () => {
     vi.advanceTimersByTime(100);
 
     const sentMessages = mocks.ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
-    expect(sentMessages).toContainEqual({ type: 'resize', cols: 100, rows: 28 });
+    expect(sentMessages).toContainEqual({ type: 'resize', cols: 100, rows: 28, controlRevision: 1 });
     expect(sentMessages).toContainEqual({ type: 'rehydrate' });
     expect(sentMessages.findIndex(message => message.type === 'resize'))
       .toBeLessThan(sentMessages.findIndex(message => message.type === 'rehydrate'));
@@ -214,6 +218,8 @@ describe('Terminal font-measurement recovery', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'session',attachmentId:'a',controllerId:'a',controlRevision:1,cols:120,rows:30,existing:false})});
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
 
     act(() => {
       mocks.ws.onmessage?.({
@@ -251,6 +257,6 @@ describe('Terminal font-measurement recovery', () => {
     const sentMessages = mocks.ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
     expect(sentMessages.some(message => message.type === 'rehydrate')).toBe(false);
     // Resize must still be forwarded so the backend tracks the new geometry.
-    expect(sentMessages).toContainEqual({ type: 'resize', cols: 80, rows: 20 });
+    expect(sentMessages).toContainEqual({ type: 'resize', cols: 80, rows: 20, controlRevision: 1 });
   });
 });

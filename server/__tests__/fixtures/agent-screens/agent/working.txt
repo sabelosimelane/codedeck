@@ -1,0 +1,40 @@
+  │  ⚠ Workspace Trust Required                                                                                      │
+  │                                                                                                                  │
+  │  Cursor Agent can execute code and access files in this directory.                                               │
+  │                                                                                                                  │
+  │  Do you trust the contents of this directory?                                                                    │
+  │                                                                                                                  │
+  │    ~/work/demo  │
+  │    nt                                                                                                            │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │    [a] Trust this workspace                                                                                      │
+  │    [q] Quit                                                                                                      │
+  │                                                                                                                  │
+  │  ⏳ Trusting workspace...                                                                                        │
+  │                                                                                                                  │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+  Cursor Agent
+  v2026.11.05-86047df
+  Tip: Use /debug to instrument and debug complex problems.
+
+
+  Run the shell command `sleep 15; echo done` in the foreground, then reply with one sentence.
+
+
+  $ sleep 15; echo done 11s
+    ctrl+b twice to send to background
+
+ ⠀⠞ Running  40 tokens
+    Tip: Type ? in the prompt bar to show in-app hints.
+
+
+  → Add a follow-up                                                                                     ctrl+c to stop
+
+
+  1 task
+  Composer 2.5 · 6.9%                                                                                   Run Everything
+  ~/work/demo · main
+

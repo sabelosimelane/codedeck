@@ -1,9 +1,10 @@
+import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import { describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createHostsRouter } from '../routes/hosts.js';
 
-function makeApp({ hosts = [], projects = [], createRunner, now, saveHostsAndProjects, getReachability } = {}) {
+async function makeApp({ hosts = [], projects = [], createRunner, now, saveHostsAndProjects, getReachability } = {}) {
   const state = { hosts: [...hosts], projects: [...projects] };
   const app = express();
   app.use(express.json());
@@ -17,7 +18,7 @@ function makeApp({ hosts = [], projects = [], createRunner, now, saveHostsAndPro
     now,
     getReachability,
   }));
-  return { app, state };
+  return { app: await loopbackTestServer(app), routerApp: app, state };
 }
 
 /** Fake runner whose `run` resolves/rejects per command for /test scenarios. */
@@ -41,7 +42,7 @@ function fakeRunner({ sshOk = true, tmuxOk = true } = {}) {
 
 describe('GET /api/hosts', () => {
   it('lists the built-in local host first, then stored hosts', async () => {
-    const { app } = makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }] });
+    const { app } = await makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }] });
     const res = await request(app).get('/api/hosts');
     expect(res.status).toBe(200);
     expect(res.body[0]).toEqual({ name: 'local', sshTarget: null, builtIn: true, reachability: 'reachable' });
@@ -55,7 +56,7 @@ describe('GET /api/hosts', () => {
 
 describe('POST /api/hosts', () => {
   it('creates a host (201) that then appears in GET after local', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await request(app).post('/api/hosts').send({ name: 'devbox', sshTarget: 'devbox' });
     expect(res.status).toBe(201);
     expect(res.body).toEqual({ name: 'devbox', sshTarget: 'devbox' });
@@ -65,7 +66,7 @@ describe('POST /api/hosts', () => {
   });
 
   it.each(['local', 'LOCAL', 'Local'])('rejects the reserved name %j with 400', async (name) => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await request(app).post('/api/hosts').send({ name, sshTarget: 'devbox' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBeTruthy();
@@ -74,20 +75,20 @@ describe('POST /api/hosts', () => {
   it.each(['has space', 'evil;rm', '-leadingdash', 'pipe|x'])(
     'rejects an invalid sshTarget %j with 400',
     async (sshTarget) => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await request(app).post('/api/hosts').send({ name: 'devbox', sshTarget });
       expect(res.status).toBe(400);
     }
   );
 
   it('rejects a missing name or sshTarget with 400', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     expect((await request(app).post('/api/hosts').send({ sshTarget: 'devbox' })).status).toBe(400);
     expect((await request(app).post('/api/hosts').send({ name: 'devbox' })).status).toBe(400);
   });
 
   it('rejects a duplicate name (case-insensitive) with 409', async () => {
-    const { app } = makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }] });
+    const { app } = await makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }] });
     const res = await request(app).post('/api/hosts').send({ name: 'DevBox', sshTarget: 'other' });
     expect(res.status).toBe(409);
   });
@@ -99,19 +100,19 @@ describe('POST /api/hosts', () => {
 
 describe('PUT /api/hosts/:name', () => {
   it('returns 404 for an unknown host', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await request(app).put('/api/hosts/ghost').send({ sshTarget: 'x' });
     expect(res.status).toBe(404);
   });
 
   it('rejects modifying the reserved local host with 400', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await request(app).put('/api/hosts/local').send({ sshTarget: 'x' });
     expect(res.status).toBe(400);
   });
 
   it('changes the sshTarget (200)', async () => {
-    const { app, state } = makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }] });
+    const { app, state } = await makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }] });
     const res = await request(app).put('/api/hosts/devbox').send({ sshTarget: 'devbox.new' });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ name: 'devbox', sshTarget: 'devbox.new' });
@@ -119,13 +120,13 @@ describe('PUT /api/hosts/:name', () => {
   });
 
   it('rejects renaming to a colliding name with 409', async () => {
-    const { app } = makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }, { name: 'prod', sshTarget: 'prod' }] });
+    const { app } = await makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }, { name: 'prod', sshTarget: 'prod' }] });
     const res = await request(app).put('/api/hosts/devbox').send({ name: 'PROD' });
     expect(res.status).toBe(409);
   });
 
   it('renaming rewrites the host field on all referencing projects atomically', async () => {
-    const { app, state } = makeApp({
+    const { app, state } = await makeApp({
       hosts: [{ name: 'devbox', sshTarget: 'devbox' }],
       projects: [
         { name: 'a', path: '/a', host: 'devbox' },
@@ -142,7 +143,7 @@ describe('PUT /api/hosts/:name', () => {
 
   it('persists hosts+projects in a single transactional write when a rename rewrites projects', async () => {
     const saveHostsAndProjects = vi.fn();
-    const { app } = makeApp({
+    const { app } = await makeApp({
       hosts: [{ name: 'devbox', sshTarget: 'devbox' }],
       projects: [{ name: 'a', path: '/a', host: 'devbox' }],
       saveHostsAndProjects,
@@ -158,7 +159,7 @@ describe('PUT /api/hosts/:name', () => {
 
   it('does NOT use the combined persist path when only the sshTarget changes (no rename)', async () => {
     const saveHostsAndProjects = vi.fn();
-    const { app, state } = makeApp({
+    const { app, state } = await makeApp({
       hosts: [{ name: 'devbox', sshTarget: 'devbox' }],
       projects: [{ name: 'a', path: '/a', host: 'devbox' }],
       saveHostsAndProjects,
@@ -175,24 +176,24 @@ describe('PUT /api/hosts/:name', () => {
 
 describe('DELETE /api/hosts/:name', () => {
   it('returns 404 for an unknown host', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     expect((await request(app).delete('/api/hosts/ghost')).status).toBe(404);
   });
 
   it('rejects deleting the reserved local host with 400', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     expect((await request(app).delete('/api/hosts/local')).status).toBe(400);
   });
 
   it('deletes an unreferenced host (200)', async () => {
-    const { app, state } = makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }] });
+    const { app, state } = await makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }] });
     const res = await request(app).delete('/api/hosts/devbox');
     expect(res.status).toBe(200);
     expect(state.hosts).toEqual([]);
   });
 
   it('returns 409 and leaves the host intact while a project references it', async () => {
-    const { app, state } = makeApp({
+    const { app, state } = await makeApp({
       hosts: [{ name: 'devbox', sshTarget: 'devbox' }],
       projects: [{ name: 'a', path: '/a', host: 'devbox' }],
     });
@@ -208,19 +209,19 @@ describe('DELETE /api/hosts/:name', () => {
 
 describe('POST /api/hosts/:name/test', () => {
   it('returns 404 for an unknown host', async () => {
-    const { app } = makeApp({ createRunner: () => fakeRunner() });
+    const { app } = await makeApp({ createRunner: () => fakeRunner() });
     expect((await request(app).post('/api/hosts/ghost/test')).status).toBe(404);
   });
 
   it('rejects testing the reserved local host with 400', async () => {
-    const { app } = makeApp({ createRunner: () => fakeRunner() });
+    const { app } = await makeApp({ createRunner: () => fakeRunner() });
     expect((await request(app).post('/api/hosts/local/test')).status).toBe(400);
   });
 
   it('reports ssh + tmux both healthy (always 200)', async () => {
     let t = 100;
     const runner = fakeRunner({ sshOk: true, tmuxOk: true });
-    const { app } = makeApp({
+    const { app } = await makeApp({
       hosts: [{ name: 'devbox', sshTarget: 'devbox' }],
       createRunner: () => runner,
       now: () => (t += 42),
@@ -233,7 +234,7 @@ describe('POST /api/hosts/:name/test', () => {
 
   it('reports ssh ok but tmux missing, naming the host (always 200)', async () => {
     const runner = fakeRunner({ sshOk: true, tmuxOk: false });
-    const { app } = makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }], createRunner: () => runner });
+    const { app } = await makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }], createRunner: () => runner });
     const res = await request(app).post('/api/hosts/devbox/test');
     expect(res.status).toBe(200);
     expect(res.body.sshOk).toBe(true);
@@ -244,7 +245,7 @@ describe('POST /api/hosts/:name/test', () => {
 
   it('fails fast with 503 and does not probe when live reachability is already unreachable', async () => {
     const runner = fakeRunner({ sshOk: true });
-    const { app } = makeApp({
+    const { app } = await makeApp({
       hosts: [{ name: 'devbox', sshTarget: 'devbox' }],
       createRunner: () => runner,
       getReachability: () => ({ reachability: 'unreachable', lastError: 'connect timeout' }),
@@ -257,7 +258,7 @@ describe('POST /api/hosts/:name/test', () => {
 
   it('reports ssh failure without probing tmux (always 200)', async () => {
     const runner = fakeRunner({ sshOk: false });
-    const { app } = makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }], createRunner: () => runner });
+    const { app } = await makeApp({ hosts: [{ name: 'devbox', sshTarget: 'devbox' }], createRunner: () => runner });
     const res = await request(app).post('/api/hosts/devbox/test');
     expect(res.status).toBe(200);
     expect(res.body.sshOk).toBe(false);

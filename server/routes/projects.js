@@ -9,6 +9,7 @@
  */
 
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'fs';
 import { normalizeProjects } from '../project-config.js';
 import { findHostByName } from '../host-service.js';
@@ -51,6 +52,7 @@ export function createProjectsRouter(deps = {}) {
     localPathExists = existsSync,
     createRunner = createCommandRunner,
     getReachability,
+    deleteProject,
   } = deps;
 
   /**
@@ -171,10 +173,21 @@ export function createProjectsRouter(deps = {}) {
     res.json(projects[idx]);
   });
 
-  router.delete('/api/projects/:name', (req, res) => {
-    const projects = loadProjects();
-    saveProjects(projects.filter(p => p.name !== req.params.name));
-    res.json({ ok: true });
+  router.delete('/api/projects/:name', async (req, res) => {
+    let outcome;
+    try { outcome = await deleteProject(req.params.name); }
+    catch (error) {
+      outcome = { status: isTransportFailure(error) ? 503 : 500, title: 'Project Remove Failed', detail: 'The project could not be removed.' };
+    }
+    if (outcome.ok) return res.json({ ok: true });
+    const { status, title, detail } = outcome;
+    const traceId = randomUUID();
+    console.warn(`[projects] delete failed project=${req.params.name} status=${status} traceId=${traceId}`);
+    res.set('X-Trace-Id', traceId);
+    return res.status(status).type('application/problem+json').json({
+      type: 'about:blank', title, status, detail, error: title, message: detail,
+      timestamp: new Date().toISOString(), path: req.originalUrl.split('?')[0], traceId,
+    });
   });
 
   return router;

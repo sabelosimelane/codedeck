@@ -18,6 +18,15 @@ function doesSessionBelongToConfiguredProject(sessionId, projects = []) {
   return projects.some(project => isProjectSessionId(sessionId, project.name));
 }
 
+function executionDetails(state) {
+  return {
+    agentCli: state.agentCli ?? null,
+    backgroundAgents: state.backgroundAgents ?? 0,
+    backgroundShells: state.backgroundShells ?? 0,
+    needsInput: state.needsInput ?? false,
+  };
+}
+
 export function listTerminalSessions({
   sessions,
   runtime,
@@ -89,6 +98,7 @@ export function listTerminalSessions({
       // cockpit and drop them from cross-browser layout hydration.
       alive: durableSessionInspectable,
       ...executionState,
+      ...executionDetails(executionState),
       runtimeType: entry.runtimeType ?? runtime.type ?? 'pty',
       snapshotWindowLines: entry.snapshotWindowLines ?? (entry.runtimeType === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null),
       historyGuaranteed: entry.historyGuaranteed ?? (entry.runtimeType === 'tmux'),
@@ -154,6 +164,7 @@ export function listTerminalSessions({
       lastOutputLine: '',
       alive: true,
       ...executionState,
+      ...executionDetails(executionState),
       runtimeType: runtime.type ?? 'pty',
       snapshotWindowLines: runtime.type === 'tmux' ? TERMINAL_SNAPSHOT_WINDOW_LINES : null,
       historyGuaranteed: runtime.type === 'tmux',

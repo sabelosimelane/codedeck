@@ -31,6 +31,7 @@ vi.mock('../Terminal', () => ({
       clear: vi.fn(),
       redraw: vi.fn(),
       focus: vi.fn(),
+      claimControl: vi.fn(),
     }), []);
 
     React.useImperativeHandle(ref, () => api, [api]);
@@ -87,6 +88,15 @@ it('renders persisted titles on tabs and panes without changing terminal identit
   expect(mocks.terminalApis.has('Gamma-9')).toBe(true);
   expect(view.getByRole('button', { name: 'Rename session Gamma-9' })).toBeTruthy();
 });
+
+  it('claims on intentional tab opening but not layout restoration', async () => {
+    const sessions = [{ sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true }];
+    global.fetch = vi.fn(async url => ({ok:true,json:async()=>url==='/api/health'?{terminalCreationAllowed:true}:sessions}));
+    const view=render(<TerminalArea project={PROJECT} sessionStatus={sessions}/>);
+    await waitFor(()=>expect(mocks.terminalApis.has('Gamma-9')).toBe(true));
+    const api=mocks.terminalApis.get('Gamma-9'); expect(api.claimControl).not.toHaveBeenCalled();
+    fireEvent.click(view.getByTestId('terminal-tab'));await waitFor(()=>expect(api.claimControl).toHaveBeenCalledTimes(1));
+  });
 
   let originalFetch;
   let onSessionStatusRefresh;
@@ -184,6 +194,7 @@ it('renders persisted titles on tabs and panes without changing terminal identit
         executionStatus: 'running',
         executionReason: 'shell_without_prompt',
         foregroundCommand: 'bash',
+        backgroundAgents: 2,
       },
     ];
 
@@ -215,7 +226,7 @@ it('renders persisted titles on tabs and panes without changing terminal identit
 
     const statusDot = view.getByTitle('Gamma-9: running (shell_without_prompt)');
     expect(statusDot.className).toContain('terminal-dot-busy');
-    expect(view.getByText('Running')).toBeTruthy();
+    expect(view.getByText('Running · 2 agents')).toBeTruthy();
     expect(view.getByLabelText('Split right').getAttribute('title')).toContain('Split right');
     expect(view.getByLabelText('New terminal').getAttribute('title')).toContain('New terminal');
     expect(view.getByLabelText('Inspect terminal Gamma-9').getAttribute('title')).toBe('Inspect terminal Gamma-9');
@@ -490,5 +501,25 @@ it('renders persisted titles on tabs and panes without changing terminal identit
       tabCounter: 4,
       sessionCounter: 9,
     }));
+  });
+
+  it('keeps the pane open and shows the problem detail when terminal close fails', async () => {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(SAVED_LAYOUT));
+    const liveSessions = [{ sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true }];
+    global.fetch = vi.fn(async (url, options = {}) => {
+      if (url === '/api/sessions') return { ok: true, json: async () => liveSessions };
+      if (url === '/api/terminal/Gamma-9' && options.method === 'DELETE') {
+        return { ok: false, status: 500, json: async () => ({ detail: 'The session is still running', error: 'Terminal Close Failed' }) };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const view = render(<TerminalArea project={PROJECT} sessionStatus={liveSessions} onSessionStatusRefresh={onSessionStatusRefresh} />);
+    await waitFor(() => expect(view.getAllByText('Gamma-9').length).toBeGreaterThan(0));
+    fireEvent.click(view.container.querySelector('.pane-close-btn'));
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith({
+      type: 'error', message: 'Failed to close Gamma-9: The session is still running',
+    }));
+    expect(view.getAllByText('Gamma-9').length).toBeGreaterThan(0);
+    expect(view.container.querySelector('.pane-close-btn')).toBeTruthy();
   });
 });

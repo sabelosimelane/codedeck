@@ -10,13 +10,24 @@ function fixture(runtimeType = 'pty') {
   }
   const ws = socket(); const sessions = new Map(); const onInput = vi.fn();
   const runtime = { type: runtimeType, spawn: () => pty, isAvailable: () => true, isSessionRecoverable: () => false };
-  const req = { url: '/ws/terminal?sessionId=demo-1&cwd=/tmp&cols=100&rows=30' };
+  const req = { url: '/ws/terminal?protocol=2&sessionId=demo-1&cwd=/tmp&cols=100&rows=30' };
   const attach = target => handleWsConnection(target, req, sessions, runtime, new Set(), new Set(), { onInput });
   attach(ws);
   return { ws, sessions, pty, socket, attach, onInput, output: text => output.forEach(fn => fn(text)), exit: () => exits.forEach(fn => fn({ exitCode: 0 })) };
 }
 const start = { type: 'workflow_start', requestId: 'start-1', command: '/feature-dev demo.md', resetCommand: '/clear' };
-const send = (ws, value) => ws.emit('message', JSON.stringify(value));
+const send = (ws, value) => {
+  if (['input','workflow_start','workflow_stop'].includes(value.type)) {
+    const session = messages(ws).find(m=>m.type==='session');
+    let control = messages(ws).findLast(m=>m.type==='control_state');
+    if (!control || control.controllerId !== session.attachmentId) {
+      ws.emit('message', JSON.stringify({type:'claim_control',requestId:'test-claim',cols:session.cols,rows:session.rows}));
+      control = messages(ws).findLast(m=>m.type==='control_state');
+    }
+    value = {...value,controlRevision:control.controlRevision};
+  }
+  ws.emit('message', JSON.stringify(value));
+};
 const messages = ws => ws.send.mock.calls.map(([data]) => JSON.parse(data));
 const marker = (pty, status) => `[[CDW:${pty.write.mock.calls[0][0].match(/Iteration identifier: ([\w-]+)/)[1]}:${status}]]`;
 
@@ -147,14 +158,14 @@ describe('workflow over terminal WebSocket', () => {
     { type: 'workflow_other', requestId: 'other' },
   ])('reports invalid controls without injecting them into the terminal %#', input => {
     const f = fixture(); send(f.ws, input);
-    expect(messages(f.ws).at(-1)).toMatchObject({ type: 'workflow_error', message: expect.any(String) });
+    expect(['workflow_error','protocol_error']).toContain(messages(f.ws).at(-1).type);
     expect(f.pty.write).not.toHaveBeenCalled();
   });
   it('does not accept replayed terminal history as a new workflow result', () => {
     const f = fixture(); send(f.ws, start);
     const entry = f.sessions.get('demo-1');
     entry.replayBuffer.push({ seq: 1, data: marker(f.pty, 'COMPLETE') });
-    send(f.ws, { type: 'resume', lastSeq: 0 });
+    send(f.ws, { type: 'resume', lastSeenSeq: 0 });
     expect(entry.workflow.snapshot().active).toBe(true);
   });
 });

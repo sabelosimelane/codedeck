@@ -1,0 +1,8 @@
+{
+  "appId": "com.codedeck.companion",
+  "appName": "CodeDeck",
+  "webDir": "dist-mobile",
+  "server": { "androidScheme": "https", "hostname": "localhost", "cleartext": false },
+  "android": { "allowMixedContent": false },
+  "plugins": { "Keyboard": { "resizeOnFullScreen": true } }
+}

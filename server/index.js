@@ -13,8 +13,6 @@ import {
   computeSessionHealth,
   computeStallReason,
   sanitizePreviewLine,
-  SESSION_DELETED_CLOSE_CODE,
-  SESSION_DELETED_CLOSE_REASON,
 } from './ws-handler.js';
 import {
   createHostTerminalRuntime,
@@ -38,6 +36,7 @@ import { resolveEditorCommand } from './editor-command.js';
 import { normalizeProjects } from './project-config.js';
 import { createHostsRouter } from './routes/hosts.js';
 import { createProjectsRouter } from './routes/projects.js';
+import { createProjectDeletionService } from './project-deletion-service.js';
 import { collectSystemResources } from './system-resources.js';
 import { stripNodeWatchEnvironment } from './shell-env.js';
 import { createNamingStore } from './session-naming-store.js';
@@ -46,14 +45,32 @@ import { createNamingService } from './session-naming-service.js';
 import { createNamingRouter } from './routes/session-naming.js';
 import { createTerminalWaitingStore } from './terminal-waiting-store.js';
 import { createTerminalWaitingRouter } from './routes/terminal-waiting.js';
+import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
+import { createSessionAttention } from './session-attention.js';
+import { createSessionStateService } from './session-state-service.js';
+import { createSessionAttentionRouter } from './routes/session-attention.js';
+import { fileURLToPath } from 'node:url';
+import { createPrivateAccess } from './mobile-access.js';
+import { createMobileStore, MobileError } from './mobile-store.js';
+import { createMobileSessionStarter } from './mobile-session-start.js';
+import { createMobileRouter } from './routes/mobile.js';
+import { createMobileDiscovery } from './mobile-integration.js';
+import { createMobileNotifications, DESKTOP_PRESENCE_MS, initializeFcmProvider } from './mobile-notifications.js';
+import { prepareMobileDatabase } from './mobile-migration.js';
 
 // Node's watch supervisor injects this internal flag into the backend child.
 // Keep it out of every terminal and tool process spawned by CodeDeck.
 stripNodeWatchEnvironment(process.env);
 
 const app = express();
+const privateAccess = createPrivateAccess({
+  owner: process.env.CODEDECK_TAILSCALE_OWNER ?? null,
+  serveOrigin: process.env.CODEDECK_SERVE_ORIGIN ?? null,
+  localOrigins: ['http://localhost:43000', 'http://127.0.0.1:43000', `http://localhost:${process.env.PORT || 43001}`, `http://127.0.0.1:${process.env.PORT || 43001}`],
+});
+app.use(privateAccess.middleware);
 // Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
-app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') ? next() : express.json()(req, res, next));
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -145,12 +162,14 @@ app.use(createHostsRouter({
 // -------------------------------------------------------------------
 // REST API: Projects (host-aware, extracted to routes/projects.js)
 // -------------------------------------------------------------------
+let deleteProject;
 app.use(createProjectsRouter({
   loadProjects,
   saveProjects,
   loadHosts,
   createRunner: createReachabilityAwareRunner,
   getReachability: hostReachability.getReachability,
+  deleteProject: name => deleteProject(name),
 }));
 
 // -------------------------------------------------------------------
@@ -491,9 +510,19 @@ app.post('/api/terminal', async (req, res) => {
     return res.status(400).json({ error: 'projectName required' });
   }
 
+  const outcome = await reserveTerminalSession(projectName);
+  res.status(outcome.status).json(outcome.body);
+});
+
+/**
+ * Reserve the next `${project}-N` id. Shared by the desktop (which then opens
+ * a WebSocket) and the phone (which creates the session detached first), so
+ * both draw from one allocator and can never hand out the same id.
+ */
+async function reserveTerminalSession(projectName) {
   const project = loadProjects().find(candidate => candidate.name === projectName);
   if (!project) {
-    return res.status(404).json({ error: 'project not found' });
+    return { status: 404, body: { error: 'project not found' } };
   }
 
   const projectHost = project.host && project.host !== 'local'
@@ -503,11 +532,11 @@ app.post('/api/terminal', async (req, res) => {
     ? hostReachability.getReachability(projectHost.name)
     : null;
   if (projectHost && projectReachability?.reachability === 'unreachable') {
-    return res.status(503).json({
+    return { status: 503, body: {
       error: 'host unreachable',
       ...(projectReachability.lastError ? { detail: `${projectHost.name}: ${projectReachability.lastError}` } : {}),
       host: projectHost.name,
-    });
+    } };
   }
 
   // The local tmux gate only applies to local projects — a remote project's
@@ -515,10 +544,10 @@ app.post('/api/terminal', async (req, res) => {
   if (!projectHost) {
     const runtimeStatus = getTerminalRuntimeStatus(terminalRuntime);
     if (!runtimeStatus.terminalCreationAllowed) {
-      return res.status(503).json({
+      return { status: 503, body: {
         error: runtimeStatus.terminalRuntimeBlockedMessage,
         ...runtimeStatus,
-      });
+      } };
     }
   }
 
@@ -533,11 +562,11 @@ app.post('/api/terminal', async (req, res) => {
         : terminalRuntime.listSessionIds?.() || [];
     } catch (err) {
       if (isTransportFailure(err)) {
-        return res.status(503).json({
+        return { status: 503, body: {
           error: 'host unreachable',
           detail: `${projectHost.name}: ${err.message}`,
           host: projectHost.name,
-        });
+        } };
       }
       throw err;
     }
@@ -551,15 +580,15 @@ app.post('/api/terminal', async (req, res) => {
     });
 
     if (allocation.error) {
-      return res.status(allocation.status).json({ error: allocation.error });
+      return { status: allocation.status, body: { error: allocation.error } };
     }
 
     reservedSessionIds.add(allocation.data.sessionId);
-    res.status(201).json(allocation.data);
+    return { status: 201, body: allocation.data };
   } catch (error) {
-    res.status(500).json({ error: 'Failed to allocate terminal', detail: error.message });
+    return { status: 500, body: { error: 'Failed to allocate terminal', detail: error.message } };
   }
-});
+}
 
 // -------------------------------------------------------------------
 // REST API: Session status (for sidebar cockpit)
@@ -576,7 +605,9 @@ app.get('/api/sessions', (req, res) => {
     statusCache: terminalStatusCache,
     resolveHostRuntime,
     getReachability: hostReachability.getReachability,
-  }));
+  // Each row feeds the shared attention tracker and carries finished /
+  // statusMuted / waiting, so no client keeps its own copy of those rules.
+  }).map(row => sessionStateService.annotate(row)));
 });
 
 // -------------------------------------------------------------------
@@ -667,7 +698,14 @@ app.get('/api/health', (req, res) => {
 // WebSocket: Terminal (PTY) sessions
 // -------------------------------------------------------------------
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws/terminal' });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+server.on('upgrade', (req, socket, head) => {
+  if (privateAccess.authorizeUpgrade(req)) {
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+});
 
 // Active PTY sessions: Map<string, { pty, ws, cwd, startedAt, lastOutputAt, alive }>
 const sessions = new Map();
@@ -680,6 +718,8 @@ const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
   || getConfig('terminalRuntime')
   || 'tmux';
 const terminalRuntime = createTerminalRuntime(runtimeMode);
+await prepareMobileDatabase(db);
+const mobileStore = createMobileStore(db);
 const namingStore = createNamingStore(db);
 const namingCli = createCliNamingClient();
 process.once('exit', () => namingCli.close());
@@ -703,6 +743,14 @@ app.use(createNamingRouter({
   sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id) || namingStore.get(id) !== null),
 }));
 const terminalWaitingStore = createTerminalWaitingStore(db);
+// Finished, muted and last-activity state shared by the desktop and the phone.
+// Parked work that lands clears its own waiting mark here, with no browser open.
+const sessionAttention = createSessionAttention({ db, now: Date.now, onLanded: sessionId => terminalWaitingStore.clear(sessionId) });
+const sessionStateService = createSessionStateService({
+  attention: sessionAttention, waitingStore: terminalWaitingStore, now: Date.now,
+  sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id) || sessionAttention.knows(id)),
+});
+app.use(createSessionAttentionRouter({ service: sessionStateService }));
 app.use(createTerminalWaitingRouter({
   store: terminalWaitingStore,
   sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id)),
@@ -713,9 +761,70 @@ const terminalStatusCache = createTerminalStatusCache({
   getReachability: hostReachability.getReachability,
   onActivity: namingService.observe,
 });
+const terminalDeleteDeps = {
+  sessions, deletedSessionIds, reservedSessionIds, terminalRuntime,
+  resolveHostRuntime, namingService, waitingStore: terminalWaitingStore,
+  sessionAttention, mobileStore, statusCache: terminalStatusCache,
+};
+const deleteTerminalSession = createTerminalSessionDeleter(terminalDeleteDeps);
+deleteProject = createProjectDeletionService({
+  loadProjects, saveProjects, sessions, deleteTerminalSession,
+  listSessionIds: project => {
+    if (!project.host || project.host === 'local') return terminalRuntime.listSessionIdsAsync({ strict: true });
+    const host = findHostByName(loadHosts(), project.host);
+    if (!host) throw new Error(`Host ${project.host} for project ${project.name} is unavailable`);
+    return getHostRuntime(host).listSessionIdsAsync({ strict: true });
+  },
+});
 terminalStatusCache.refreshSessionList();
+const mobileDiscovery = createMobileDiscovery({
+  store: mobileStore, sessions, deletedSessionIds, statusCache: terminalStatusCache,
+  loadProjects, resolveHostRuntime, getReachability: hostReachability.getReachability, namingStore,
+  getSessionIncarnation: id => (sessions.get(id)?.hostRuntime ?? resolveHostRuntime(id)?.hostRuntime ?? terminalRuntime).getSessionIncarnationAsync(id),
+  attention: sessionAttention, describeState: sessionStateService.describe,
+  getSessionActivity: id => (sessions.get(id)?.hostRuntime ?? resolveHostRuntime(id)?.hostRuntime ?? terminalRuntime).getSessionActivityAsync(id),
+});
+// A missing provider is an explicit unconfigured state. A broken configured
+// provider is reported; terminal operation remains independent of push delivery.
+let notificationProvider = null;
+if (process.env.CODEDECK_FIREBASE_CREDENTIALS) {
+  try { notificationProvider = await initializeFcmProvider({ credentialPath: process.env.CODEDECK_FIREBASE_CREDENTIALS }); }
+  catch { console.warn('[companion] notification_provider_initialization_failed'); }
+}
+let lastDesktopActivityAt = null;
+const mobileNotifications = createMobileNotifications({
+  db, instanceId: mobileStore.instanceId, ...mobileDiscovery,
+  listDevices: mobileStore.listDevices, invalidateToken: mobileStore.invalidateToken,
+  provider: notificationProvider,
+  isDesktopActive: () => lastDesktopActivityAt !== null && Date.now() - lastDesktopActivityAt <= DESKTOP_PRESENCE_MS,
+});
+const mobileSessionStarter = createMobileSessionStarter({
+  loadProjects, saveProjects, resolveHostRuntime, localRuntime: terminalRuntime, store: mobileStore, now: Date.now,
+  reserveSessionId: async projectName => {
+    const outcome = await reserveTerminalSession(projectName);
+    if (outcome.status === 201) return outcome.body;
+    if (outcome.status === 404) throw new MobileError('Project not found', 404);
+    if (outcome.status === 503 && outcome.body.host) throw new MobileError(`Host ${outcome.body.host} is unreachable`, 503);
+    if (outcome.status === 503) throw new MobileError(outcome.body.error, 503);
+    throw new Error(`Session reservation failed with status ${outcome.status}`);
+  },
+  releaseReservation: sessionId => reservedSessionIds.delete(sessionId),
+});
+app.use(createMobileRouter({
+  store: mobileStore, notifications: mobileNotifications,
+  notificationsReady: () => notificationProvider !== null, ...mobileDiscovery,
+  startSession: projectId => mobileSessionStarter.start(projectId),
+  setSessionState: (sessionId, patch) => sessionStateService.apply(sessionId, patch),
+  terminalMetrics: () => ({
+    attachments: [...sessions.values()].reduce((sum, entry) => sum + (entry.attachments?.size ?? 0), 0),
+    controlConflicts: [...sessions.values()].reduce((sum, entry) => sum + (entry.controlConflicts ?? 0), 0),
+  }),
+}));
+mobileNotifications.start();
+process.once('exit', () => mobileNotifications.stop());
 const sessionPruneTimer = setInterval(() => {
   const onPruned = (sessionId, entry) => {
+    mobileStore.retireSession(sessionId);
     console.log(`[terminal] pruned session=${sessionId} host=${entry.host ?? 'local'} alive=${entry.alive} wsAttached=${entry.wsAttached}`);
   };
   pruneTerminalSessions({ sessions, runtime: terminalRuntime, onPruned });
@@ -729,55 +838,26 @@ wss.on('connection', (ws, req) => {
   handleWsConnection(ws, req, sessions, terminalRuntime, deletedSessionIds, reservedSessionIds, {
     resolveHostRuntime,
     getReachability: hostReachability.getReachability,
-    onInput: namingService.input,
+    onInput: (sessionId, data) => { sessionAttention.touch(sessionId); namingService.input(sessionId, data); },
+    onDesktopActivity: () => { lastDesktopActivityAt = Date.now(); },
+    getSessionIncarnation: (id, { create } = {}) => create ? mobileStore.ensureIncarnation(id) : mobileStore.currentIncarnation(id),
+    onSessionEnded: mobileStore.retireSession,
+    adoptSessionIncarnation: mobileStore.adoptIncarnation,
   });
 });
 
 // -------------------------------------------------------------------
 // Kill a terminal session explicitly
 // -------------------------------------------------------------------
-app.delete('/api/terminal/:sessionId', async (req, res) => {
-  const entry = sessions.get(req.params.sessionId);
-
-  try {
-    deletedSessionIds.add(req.params.sessionId);
-    reservedSessionIds.delete(req.params.sessionId);
-    namingService.remove(req.params.sessionId);
-    // Session ids are reused (`${project}-N`), so a stale mark would silence a
-    // brand-new terminal that happens to take the same id.
-    terminalWaitingStore.clear(req.params.sessionId);
-
-    if (entry?.ws && entry.ws.readyState === 1) {
-      try {
-        entry.ws.close(SESSION_DELETED_CLOSE_CODE, SESSION_DELETED_CLOSE_REASON);
-      } catch (error) {
-        console.warn(`[terminal] ws close failed session=${req.params.sessionId} error=${error.message}`);
-      }
-    }
-
-    // Remote sessions are killed on their own host — including detached ones
-    // with no in-memory entry (e.g. after a server restart), which must never
-    // be killed against the local tmux server by name collision.
-    const hostRuntime = entry?.hostRuntime ?? resolveHostRuntime(req.params.sessionId)?.hostRuntime;
-    if (hostRuntime) {
-      await hostRuntime.killAsync(entry, req.params.sessionId);
-    } else {
-      terminalRuntime.kill(entry, req.params.sessionId);
-    }
-  } catch (error) {
-    console.warn(`[terminal] delete failed session=${req.params.sessionId} error=${error.message}`);
-  } finally {
-    terminalStatusCache.invalidateSession(req.params.sessionId);
-    sessions.delete(req.params.sessionId);
-  }
-
-  res.json({ ok: true });
-});
+app.delete('/api/terminal/:sessionId', createTerminalDeleteHandler(terminalDeleteDeps));
 
 // -------------------------------------------------------------------
 // Start
 // -------------------------------------------------------------------
 const PORT = process.env.PORT || 43001;
-server.listen(PORT, () => {
+const clientDist = fileURLToPath(new URL('../client/dist/', import.meta.url));
+app.use(express.static(clientDist));
+app.get('/', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`CodeDeck server running on http://localhost:${PORT}`);
 });

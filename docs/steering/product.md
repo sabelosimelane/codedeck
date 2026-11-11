@@ -47,6 +47,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 ## Business Rules
 - Projects are directories — they must exist on disk when added
 - Project paths are unique (no duplicates)
+- Deleting a project closes all of its terminal sessions before removing it from the saved list
 - Terminal durability depends on tmux — when tmux is unavailable, the UI must block terminal creation and ask the user to install it
 - A tab's waiting mark is cleared by the backend when its session is deleted — session ids are reused, and a stale mark would silence a new terminal
 - The backend is the source of truth for all state — frontend never holds authoritative state

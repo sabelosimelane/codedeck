@@ -27,7 +27,7 @@ vi.mock('@xterm/xterm', () => {
     constructor() {
       this.open = vi.fn();
       this.dispose = vi.fn();
-      this.write = vi.fn();
+      this.write = vi.fn((data, callback) => callback?.());
       this.focus = vi.fn();
       this.resize = vi.fn();
       this.scrollToBottom = vi.fn();

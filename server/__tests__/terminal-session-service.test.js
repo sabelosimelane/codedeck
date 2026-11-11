@@ -49,3 +49,12 @@ describe('allocateTerminalSessionId', () => {
     });
   });
 });
+
+describe('allocateTerminalSessionId with tmux-sanitized names', () => {
+  it('counts hidden tmux sessions of projects whose names tmux had to sanitize', () => {
+    expect(allocateTerminalSessionId({ projectName: 'Equinox Local', recoverableSessionIds: ['Equinox_Local-15', 'Equinox_Local-3'] }).data.sessionId).toBe('Equinox Local-16');
+  });
+  it('still ignores sessions of other projects that merely share a prefix', () => {
+    expect(allocateTerminalSessionId({ projectName: 'Equinox Local', recoverableSessionIds: ['Equinox_Local_Two-9', 'Equinox-4'] }).data.sessionId).toBe('Equinox Local-1');
+  });
+});

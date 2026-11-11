@@ -1,0 +1,15 @@
+✻ Churned for 4m 3s · done 9:14 · 10 shells still running
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  dev ~/work/demo Opus 5.5 | ctx: 15% used
+  ⏵⏵ auto mode on · 10 shells · ← 1 agent
+
+  ⏺ main
+  ◯ codex-implementer  Checking codex-run log header                                                                                                            33m 12s · ↓ 65.1k tokens
+  ◯ codex-implementer  Logging ledger entry for Phase 3A                                                                                                     4h 56m 14s · ↓ 60.5k tokens
+  ◯ codex-implementer  Checking tail of codex-run log                                                                                                         1d 3h 25m · ↓ 76.2k tokens
+  ◯ codex-implementer  Logging Codex run to ledger                                                                                                            1d 0h 26m · ↓ 65.4k tokens
+  ◯ codex-implementer  Polling Codex run log output                                                                                                           4h 10m 5s · ↓ 65.3k tokens
+  ↓ 2 more

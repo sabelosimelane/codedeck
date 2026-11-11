@@ -1,0 +1,40 @@
+› Run the shell command `sleep 20; echo done` in the foreground, then reply with one sentence followed by the bullet "…
+• Ran sleep 20; echo done
+  └ done
+
+• Ran git status --porcelain
+  └ (no output)
+
+• The foreground command completed and printed done.
+
+  • Working tree clean.
+
+  Worked for 35s • 22:01
+
+
+› Start `sleep 45` as a background terminal and end your turn immediately without waiting for it. Reply only "started".
+
+
+• I’ll start sleep 45 in a background terminal.
+
+• started
+
+  Worked for 13s • 22:02
+
+
+› Spawn one sub-agent whose only job is to run `sleep 40` and report done. Wait for it.
+
+
+• I’ll spawn one sub-agent to run sleep 40 and wait for its report.
+
+• Started `/root/sleep_task`
+
+• Waiting for agents
+
+• Working (29s • esc to interrupt)
+
+
+› Ask Codex to do anything
+
+  GPT-6-Astra high · ~/work/demo…
+  ← for agents · ? for shortcuts                                                             ⚠ 11 warnings · f2 to view

@@ -32,6 +32,30 @@ async function loadWaitingPages(signal) {
 export function useWaitingSessions(showToast, { sessionStatus = [], finishedSessionIds = new Set() } = {}) {
   const [waitingSessionIds, setWaitingSessionIds] = useState(() => new Set());
   const mounted = useRef(false);
+  // What this tab last wrote, per session, until a poll reports the same value.
+  const confirmedWrites = useRef(new Map());
+
+  // Marks can change without this tab: the phone parks or releases a session,
+  // and the server clears a mark when parked work lands. Each status row
+  // carries the backend's current answer, so the mirror follows it. A poll
+  // fetched just before this tab's own write is ignored until it catches up.
+  useEffect(() => {
+    setWaitingSessionIds(prev => {
+      let next = null;
+      for (const session of sessionStatus) {
+        if (typeof session.waiting !== 'boolean') continue;
+        const written = confirmedWrites.current.get(session.sessionId);
+        if (written !== undefined) {
+          if (written !== session.waiting) continue;
+          confirmedWrites.current.delete(session.sessionId);
+        }
+        if (session.waiting === prev.has(session.sessionId)) continue;
+        next ??= new Set(prev);
+        if (session.waiting) next.add(session.sessionId); else next.delete(session.sessionId);
+      }
+      return next ?? prev;
+    });
+  }, [sessionStatus]);
 
   useEffect(() => {
     mounted.current = true;
@@ -58,6 +82,7 @@ export function useWaitingSessions(showToast, { sessionStatus = [], finishedSess
     });
     if (!response.ok) throw new Error(await readProblem(response, 'Failed to update waiting tab'));
 
+    confirmedWrites.current.set(sessionId, waiting);
     setWaitingSessionIds(prev => {
       const next = new Set(prev);
       if (waiting) next.add(sessionId); else next.delete(sessionId);

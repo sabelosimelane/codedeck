@@ -61,7 +61,7 @@ describe('createHostTerminalRuntime.spawnAsync', () => {
 
     const pty = await runtime.spawnAsync({ cwd: '/srv/app', cols: 120, rows: 30, sessionId: 'proj-1' });
 
-    expect(runner.tmuxCalls('has-session')[0].args).toEqual(['has-session', '-t', 'proj-1']);
+    expect(runner.tmuxCalls('has-session')[0].args).toEqual(['has-session', '-t', '=proj-1']);
     expect(runner.tmuxCalls('new-session')[0].args).toEqual([
       'new-session', '-d', '-s', 'proj-1', '-c', '/srv/app', '-x', '120', '-y', '30',
     ]);
@@ -112,22 +112,78 @@ describe('createHostTerminalRuntime.spawnAsync', () => {
 // ---------------------------------------------------------------------------
 
 describe('createHostTerminalRuntime.killAsync', () => {
+  it.each([
+    ['already exited', false, false],
+    ['force killed', true, false],
+    ['survived SIGKILL', true, true],
+  ])('%s uses remote kill only for collected survivors', async (_case, survivor, persists) => {
+    let time = 0;
+    let killed = false;
+    const runner = fakeRunner({
+      'list-panes': '200\t/dev/pts/3\n',
+      ps: '200 1 pts/3\n201 200 ??\n999 1 other\n',
+      'has-session': exitError(1, "can't find session"),
+      kill: args => {
+        if (args[0] === '-9') { killed = true; return ''; }
+        if (args[1] === '201' && survivor && (!killed || persists)) return '';
+        return exitError(1, 'No such process');
+      },
+    });
+    const pty = { kill: vi.fn() };
+    const runtime = createHostTerminalRuntime(runner, HOST, {
+      now: () => time, sleep: async ms => { time += ms; }, excludePids: [process.pid, process.ppid],
+    });
+    if (persists) {
+      await expect(runtime.killAsync({ pty }, 'proj-1')).rejects.toThrow(/proj-1.*201/);
+      expect(pty.kill).not.toHaveBeenCalled();
+    } else {
+      await runtime.killAsync({ pty }, 'proj-1');
+      expect(pty.kill).toHaveBeenCalledOnce();
+    }
+    expect(runner.calls.filter(c => c.cmd === 'kill' && c.args[0] === '-9').map(c => c.args)).toEqual(survivor ? [['-9', '201']] : []);
+    expect(runner.calls.some(c => c.cmd === 'kill' && c.args[1] === '999')).toBe(false);
+  });
+
+  it('does not run ps or pid kill for a missing session and propagates host transport errors', async () => {
+    const missing = fakeRunner({ 'list-panes': exitError(1, "can't find session"), 'kill-session': exitError(1, "can't find session") });
+    await makeRuntime(missing).killAsync({ pty: { kill: vi.fn() } }, 'proj-1');
+    expect(missing.calls.some(c => c.cmd === 'ps' || c.cmd === 'kill')).toBe(false);
+    const failed = fakeRunner({ 'list-panes': transportError() });
+    await expect(makeRuntime(failed).killAsync({}, 'proj-1')).rejects.toMatchObject({ code: 255 });
+    expect(failed.tmuxCalls('kill-session')).toHaveLength(0);
+  });
   it('kills the PTY wrapper and the remote tmux session', async () => {
-    const runner = fakeRunner({});
+    const runner = fakeRunner({ 'has-session': exitError(1, "can't find session") });
     const runtime = makeRuntime(runner);
     const entry = { pty: { kill: vi.fn() } };
 
     await runtime.killAsync(entry, 'proj-1');
 
     expect(entry.pty.kill).toHaveBeenCalled();
-    expect(runner.tmuxCalls('kill-session')[0].args).toEqual(['kill-session', '-t', 'proj-1']);
+    expect(runner.tmuxCalls('kill-session')[0].args).toEqual(['kill-session', '-t', '=proj-1']);
+    expect(runner.tmuxCalls('list-panes')[0].args[3]).toBe('=proj-1:');
+    expect(runner.tmuxCalls('has-session')).toHaveLength(1);
+    expect(runner.calls.findIndex(c => c.args?.[0] === 'kill-session')).toBeLessThan(runner.calls.findIndex(c => c.args?.[0] === 'has-session'));
   });
 
-  it('is best-effort: a failed remote kill does not throw', async () => {
-    const runner = fakeRunner({ 'kill-session': exitError(1, 'no such session') });
+  it('accepts an already missing remote session', async () => {
+    const runner = fakeRunner({ 'kill-session': exitError(1, "can't find session") });
     const runtime = makeRuntime(runner);
 
     await expect(runtime.killAsync({ pty: null }, 'proj-1')).resolves.toBeUndefined();
+  });
+
+  it.each([exitError(1, 'permission denied'), transportError()])('preserves the PTY when kill-session fails: %s', async error => {
+    const runtime = makeRuntime(fakeRunner({ 'kill-session': error }));
+    const entry = { pty: { kill: vi.fn() } };
+    await expect(runtime.killAsync(entry, 'proj-1')).rejects.toThrow(error.code === 255 ? 'connect timeout' : /proj-1.*permission denied/);
+    expect(entry.pty.kill).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the tmux session still exists after kill-session', async () => {
+    const entry = { pty: { kill: vi.fn() } };
+    await expect(makeRuntime(fakeRunner({})).killAsync(entry, 'proj-1')).rejects.toThrow(/proj-1.*still exists/);
+    expect(entry.pty.kill).not.toHaveBeenCalled();
   });
 });
 
@@ -254,11 +310,12 @@ describe('createHostTerminalRuntime auxiliary ops', () => {
     expect(status.cwd).toBe('/srv/app');
     expect(status.executionState.executionStatus).toBe('unknown');
     expect(status.executionState.executionReason).toBe('tmux_lookup_failed');
+    expect(status.executionState).toMatchObject({ agentCli: null, backgroundAgents: 0, backgroundShells: 0, needsInput: false });
   });
 
   it('fetches cwd and execution state through one aggregate remote command', async () => {
     const runner = fakeRunner({
-      sh: '/srv/app/sub\tzsh\t0\u0000$ \n',
+      sh: `1794348000\u00000\tzsh\t0\t1794348000\t/srv/app/sub\n\u0000$ \n\u0000`,
     });
     const runtime = makeRuntime(runner);
 
@@ -268,6 +325,26 @@ describe('createHostTerminalRuntime auxiliary ops', () => {
     expect(runner.calls[0].cmd).toBe('sh');
     expect(status.cwd).toBe('/srv/app/sub');
     expect(status.executionState.executionStatus).not.toBe('unknown');
+  });
+
+  it('reads the remote clock after the pane activity time it is compared against', async () => {
+    const runner = fakeRunner({
+      sh: `1794348000\u00000\tzsh\t0\t1794348000\t/srv/app\n\u0000$ \n\u0000`,
+    });
+    await makeRuntime(runner).getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
+
+    const script = runner.calls[0].args[1];
+    const paneRead = script.indexOf('tmux list-panes');
+    const clockRead = script.indexOf('date +%s');
+    expect(paneRead).toBeGreaterThanOrEqual(0);
+    expect(clockRead).toBeGreaterThan(paneRead);
+  });
+
+  it('rejects invalid remote clock through the existing lookup failure state', async () => {
+    const runner = fakeRunner({ sh: 'bad\u00000\tzsh\t0\t1\t/srv/app\n\u0000$ \n\u0000' });
+    const status = await makeRuntime(runner).getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
+    expect(status.executionState.executionReason).toBe('tmux_lookup_failed');
+    expect(runner.calls).toHaveLength(1);
   });
 
   it('lists remote session ids and returns [] when the host cannot be reached', async () => {
@@ -318,5 +395,38 @@ describe('createHostTerminalRuntime.checkTmuxAsync', () => {
     const runtime = makeRuntime(fakeRunner({}));
     expect(runtime.host).toBe(HOST);
     expect(runtime.type).toBe('tmux');
+  });
+});
+
+describe('createHostTerminalRuntime.createDetachedSessionAsync', () => {
+  it('creates a durable session on the host without opening a PTY', async () => {
+    const runner = fakeRunner({ 'has-session': exitError(1, 'no such session') });
+    await makeRuntime(runner).createDetachedSessionAsync({ cwd: '/srv/app', cols: 120, rows: 32, sessionId: 'proj-2' });
+    expect(runner.tmuxCalls('new-session')[0].args).toEqual(['new-session', '-d', '-s', 'proj-2', '-c', '/srv/app', '-x', '120', '-y', '32']);
+    expect(runner.spawnPty).not.toHaveBeenCalled();
+  });
+
+  it('refuses a reserved id that already has a session on the host', async () => {
+    const runner = fakeRunner({});
+    await expect(makeRuntime(runner).createDetachedSessionAsync({ cwd: '/srv/app', cols: 120, rows: 32, sessionId: 'proj-2' })).rejects.toThrow(/already exists/);
+    expect(runner.tmuxCalls('new-session')).toHaveLength(0);
+  });
+
+  it('treats an unreachable host as a transport failure, never as a missing session', async () => {
+    const runner = fakeRunner({ 'has-session': transportError() });
+    await expect(makeRuntime(runner).createDetachedSessionAsync({ cwd: '/srv/app', cols: 120, rows: 32, sessionId: 'proj-2' })).rejects.toThrow(/connect timeout/);
+    expect(runner.tmuxCalls('new-session')).toHaveLength(0);
+  });
+});
+
+describe('createHostTerminalRuntime.getSessionActivityAsync', () => {
+  it('reads the exact session\'s last activity from tmux in milliseconds', async () => {
+    const runner = fakeRunner({ 'display-message': '1794300000\n' });
+    expect(await makeRuntime(runner).getSessionActivityAsync('Equinox Local-15')).toBe(1794300000000);
+    expect(runner.tmuxCalls('display-message')[0].args).toEqual(['display-message', '-p', '-t', '=Equinox_Local-15:', '#{session_activity}']);
+  });
+  it.each(['', 'soon', '-5', '0'])('rejects tmux output %j instead of inventing a time', async output => {
+    const runner = fakeRunner({ 'display-message': output });
+    await expect(makeRuntime(runner).getSessionActivityAsync('proj-1')).rejects.toThrow(/activity/);
   });
 });

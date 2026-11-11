@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, fireEvent, screen } from '@testing-library/react';
+import { act, render, fireEvent, screen, cleanup } from '@testing-library/react';
 import React from 'react';
 
 const mocks = vi.hoisted(() => ({
@@ -7,12 +7,13 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('./components/Sidebar', () => ({
-  default: ({ activeProjects = [], waitingProjects = [], onSelect, onActivateWaiting }) => (
+  default: ({ activeProjects = [], waitingProjects = [], onSelect, onActivateWaiting, onRemove }) => (
     <div>
       {activeProjects.map(project => (
-        <button key={project.name} onClick={() => onSelect(project)}>
-          {project.name}
-        </button>
+        <React.Fragment key={project.name}>
+          <button onClick={() => onSelect(project)}>{project.name}</button>
+          <button onClick={() => onRemove(project.name)}>Remove {project.name}</button>
+        </React.Fragment>
       ))}
       {waitingProjects.map(project => (
         <button key={project.name} onClick={() => onActivateWaiting(project.name)}>
@@ -91,6 +92,7 @@ describe('App polling', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
     global.fetch = originalFetch;
     vi.restoreAllMocks();
@@ -258,5 +260,23 @@ describe('App polling', () => {
     expect(resourcesRequestCount).toBe(2);
     expect(document.title).toBe('🚨 💻 82% · ⚡ 12.5% · 💿 90%');
     expect(document.querySelector("link[rel~='icon']")?.href).toContain('data:image/svg+xml');
+  });
+
+  it('shows the project delete problem detail and keeps the project listed', async () => {
+    global.fetch = vi.fn((url, options = {}) => {
+      if (url === SYSTEM_RESOURCES_URL) return mockSystemResources();
+      if (url === '/api/projects') return okJson([{ name: 'Gamma', path: '/tmp/gamma' }]);
+      if (url === '/api/sessions') return okJson([]);
+      if (url === '/api/projects/Gamma' && options.method === 'DELETE') {
+        return Promise.resolve({ ok: false, json: async () => ({ detail: 'Could not close Gamma-1.' }) });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    render(<App />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Gamma' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.showToast).toHaveBeenCalledWith({ type: 'error', message: 'Could not close Gamma-1.' });
+    expect(screen.getByRole('button', { name: 'Gamma' })).toBeTruthy();
   });
 });

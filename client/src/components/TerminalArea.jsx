@@ -14,6 +14,7 @@ import {
   getDisplayTerminalStatus,
   getVisualTabTerminalStatus,
   getVisualTerminalStatus,
+  getTerminalPaneLabel,
 } from '../utils/terminalActivity';
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import SessionTitleActions from './SessionTitleActions';
@@ -308,6 +309,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
   const stateRef = useRef(state);
   const containerRef = useRef(null);
   const terminalRefs = useRef(new Map());
+  const intentionalOpenIds = useRef(new Set());
   const prevProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
   const restoringRef = useRef(false);
@@ -468,6 +470,8 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
   }, [project.name, project.path, sessionStatus, tabs.length]);
 
   const setActiveTabId = useCallback((id) => {
+    const selected = stateRef.current.tabs.find(tab => tab.id === id);
+    setTimeout(() => terminalRefs.current.get(selected?.panes[0]?.id)?.claimControl?.(), 0);
     updateTerminalState(prev => {
       const tab = prev.tabs.find(t => t.id === id);
       setActivePaneId(tab?.panes[0]?.id ?? null);
@@ -510,7 +514,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
           const res = await fetch(`/api/terminal/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || 'Request failed');
+            throw new Error((typeof err.detail === 'string' && err.detail) || (typeof err.error === 'string' && err.error) || 'Request failed');
           }
           return { sessionId, ok: true };
         } catch (error) {
@@ -578,6 +582,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
     const sessionId = await requestTerminalSessionId('Opened terminal split');
     if (!sessionId) return;
     const pane = createPane(sessionId);
+    intentionalOpenIds.current.add(sessionId);
     setActivePaneId(pane.id);
     updateTerminalState(prev => ({
       ...prev,
@@ -595,6 +600,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
     const sessionId = await requestTerminalSessionId('Opened terminal');
     if (!sessionId) return;
     const tab = createTab(sessionId);
+    intentionalOpenIds.current.add(sessionId);
     setActivePaneId(tab.panes[0].id);
     updateTerminalState(prev => ({
       tabs: [...prev.tabs, tab],
@@ -730,6 +736,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
   const registerTerminalRef = useCallback((paneId, instance) => {
     if (instance) {
       terminalRefs.current.set(paneId, instance);
+      intentionalOpenIds.current.delete(paneId.replace(/^pane-/, ''));
     } else {
       terminalRefs.current.delete(paneId);
     }
@@ -803,6 +810,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
           if (targetPane) {
             setActivePaneId(targetPane.id);
             const terminal = terminalRefs.current.get(targetPane.id);
+            terminal?.claimControl?.();
             terminal?.focus?.();
           }
         }
@@ -1153,7 +1161,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
               const paneStatus = getPaneTerminalStatus(paneSession, finishedSessionIds);
               const paneVisualStatus = getPaneVisualStatus(paneSession, finishedSessionIds, quietStatusSessionIds);
               const paneStatusStyle = TAB_STATUS_STYLES[paneVisualStatus] || TAB_STATUS_STYLES.unknown;
-              const paneStatusLabel = PANE_STATUS_LABELS[paneStatus] || PANE_STATUS_LABELS.unknown;
+              const paneStatusLabel = getTerminalPaneLabel(paneSession, PANE_STATUS_LABELS[paneStatus] || PANE_STATUS_LABELS.unknown);
               const isStatusMuted = mutedStatusSessionIds.has(pane.sessionId);
               const paneStatusTitle = `${getPaneStatusTitle(pane.sessionId, paneStatus, paneSession)}${isStatusMuted ? ' (status colors muted)' : ''}`;
               const isPending = pendingSessionIds.includes(pane.sessionId);
@@ -1361,6 +1369,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
                         key={pane.sessionId}
                         ref={(instance) => registerTerminalRef(pane.id, instance)}
                         sessionId={pane.sessionId}
+                        claimOnOpen={intentionalOpenIds.current.has(pane.sessionId)}
                         cwd={project.path}
                         host={project.host}
                         isVisible={isActive}

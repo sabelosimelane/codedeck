@@ -1,3 +1,4 @@
+import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import express from 'express';
@@ -9,18 +10,18 @@ const base = '/api/terminal-waiting';
 const cleanup = [];
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); });
 
-function setup() {
+async function setup() {
   const db = new Database(':memory:');
   cleanup.push(() => db.close());
   const store = createTerminalWaitingStore(db);
   const app = express();
   app.use(createTerminalWaitingRouter({ store, sessionExists: id => /^Demo-\d+$/.test(id) }));
-  return { app, store };
+  return { app: await loopbackTestServer(app), routerApp: app, store };
 }
 
 describe('terminal waiting API', () => {
   it('marks a session waiting and reads it back through the collection', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     const marked = await request(app).put(`${base}/Demo-1`).send({ waiting: true });
     expect(marked.status).toBe(200);
     expect(marked.body).toMatchObject({ sessionId: 'Demo-1', waiting: true });
@@ -33,7 +34,7 @@ describe('terminal waiting API', () => {
   });
 
   it('clears a waiting session', async () => {
-    const { app, store } = setup();
+    const { app, store } = await setup();
     await request(app).put(`${base}/Demo-1`).send({ waiting: true });
     const cleared = await request(app).put(`${base}/Demo-1`).send({ waiting: false });
     expect(cleared.status).toBe(200);
@@ -43,7 +44,7 @@ describe('terminal waiting API', () => {
   });
 
   it('is idempotent — re-marking keeps the original timestamp, re-clearing stays 200', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     const first = await request(app).put(`${base}/Demo-1`).send({ waiting: true });
     const second = await request(app).put(`${base}/Demo-1`).send({ waiting: true });
     expect(second.body.waitingAt).toBe(first.body.waitingAt);
@@ -51,7 +52,7 @@ describe('terminal waiting API', () => {
   });
 
   it('paginates, filters by sessionId and sorts by waitingAt with a stable tiebreaker', async () => {
-    const { app, store } = setup();
+    const { app, store } = await setup();
     store.mark('Demo-1', '2026-09-22T12:00:00.000Z');
     store.mark('Demo-2', '2026-09-22T10:00:00.000Z');
     store.mark('Demo-3', '2026-09-22T11:00:00.000Z');
@@ -73,7 +74,7 @@ describe('terminal waiting API', () => {
   });
 
   it('returns 404 with problem details for an unknown session', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     const response = await request(app).put(`${base}/Ghost-9`).send({ waiting: true });
     expect(response.status).toBe(404);
     expect(response.type).toBe('application/problem+json');
@@ -87,7 +88,7 @@ describe('terminal waiting API', () => {
     ['a non-boolean waiting field', { waiting: 'yes' }],
     ['a null waiting field', { waiting: null }],
   ])('returns 400 with field errors for %s', async (_label, body) => {
-    const { app } = setup();
+    const { app } = await setup();
     const response = await request(app).put(`${base}/Demo-1`).send(body);
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({ status: 400, error: 'Validation Error' });
@@ -101,21 +102,21 @@ describe('terminal waiting API', () => {
     ['an unknown sort direction', { sort: 'sessionId,sideways' }, 'sort'],
     ['a blank sessionId filter', { sessionId: '  ' }, 'sessionId'],
   ])('rejects %s on the collection', async (_label, query, field) => {
-    const { app } = setup();
+    const { app } = await setup();
     const response = await request(app).get(base).query(query);
     expect(response.status).toBe(400);
     expect(response.body.errors).toEqual([{ field, message: expect.any(String) }]);
   });
 
   it('returns 400 problem details for malformed JSON', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     const response = await request(app).put(`${base}/Demo-1`).type('application/json').send('{"waiting":');
     expect(response.status).toBe(400);
     expect(response.type).toBe('application/problem+json');
   });
 
   it('returns 404 problem details for an unknown waiting route', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     const response = await request(app).get(`${base}/Demo-1/nope`);
     expect(response.status).toBe(404);
     expect(response.type).toBe('application/problem+json');

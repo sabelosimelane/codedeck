@@ -52,6 +52,22 @@ function createMockWs() {
     },
     // Test helper to simulate incoming messages
     _emit(event, data) {
+      if (event === 'message') {
+        try {
+          const message = JSON.parse(data);
+          if (['input','resize'].includes(message.type)) {
+            const states = this.send.mock.calls.map(([raw]) => JSON.parse(raw));
+            const session = states.find(value => value.type === 'session');
+            let control = states.findLast(value => value.type === 'control_state');
+            if (!control) {
+              (listeners.message || []).forEach(cb => cb(JSON.stringify({type:'claim_control', requestId:'test-claim',cols:session.cols,rows:session.rows})));
+              control = this.send.mock.calls.map(([raw]) => JSON.parse(raw)).findLast(value => value.type === 'control_state');
+            }
+            data = JSON.stringify({...message, controlRevision:control?.controlRevision ?? 0});
+          }
+          if (message.type === 'heartbeat') data = JSON.stringify({documentVisibility:'visible',lastMessageAt:null,lastPaintAt:null,lastResizeAt:null,lastSeenSeq:0,reconnectCount:0,...message});
+        } catch { /* Deliberately malformed test messages pass through. */ }
+      }
       (listeners[event] || []).forEach(cb => cb(data));
     },
   };
@@ -61,7 +77,7 @@ function createMockWs() {
  * Creates a mock HTTP request with query parameters.
  */
 function createMockReq({ sessionId, cwd, cols, rows } = {}) {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({protocol: '2'});
   if (sessionId) params.set('sessionId', sessionId);
   if (cwd) params.set('cwd', cwd);
   if (cols) params.set('cols', String(cols));
@@ -201,7 +217,7 @@ describe('handleWsConnection', () => {
       expect(entry.ws).not.toBe(ws1);
     });
 
-    it('closes the previous WebSocket when a new connection takes over the session', () => {
+    it('keeps the previous WebSocket when another device attaches', () => {
       const ws1 = createMockWs();
       const ws2 = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
@@ -209,11 +225,7 @@ describe('handleWsConnection', () => {
       handleWsConnection(ws1, req, sessions, spawnPty);
       handleWsConnection(ws2, req, sessions, spawnPty);
 
-      expect(ws1.close).toHaveBeenCalledTimes(1);
-      expect(ws1.close).toHaveBeenCalledWith(
-        SESSION_TAKEOVER_CLOSE_CODE,
-        SESSION_TAKEOVER_CLOSE_REASON,
-      );
+      expect(ws1.close).not.toHaveBeenCalled();
       expect(sessions.get('test-1').ws).toBe(ws2);
     });
 
@@ -264,7 +276,7 @@ describe('handleWsConnection', () => {
       );
     });
 
-    it('does not send PTY output to the old WebSocket after reconnection', () => {
+    it('continues sending PTY output to the first WebSocket after another attaches', () => {
       const ws1 = createMockWs();
       const ws2 = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
@@ -282,7 +294,7 @@ describe('handleWsConnection', () => {
         const msg = JSON.parse(call[0]);
         return msg.type === 'output';
       });
-      expect(ws1DataCalls).toHaveLength(0);
+      expect(ws1DataCalls).toHaveLength(1);
     });
 
     it('does not send output when the active WebSocket is closed', () => {
@@ -420,8 +432,8 @@ describe('handleWsConnection', () => {
 
       handleWsConnection(ws, req, sessions, spawnPty);
 
-      expect(ws.send).toHaveBeenCalledWith(
-        JSON.stringify({
+      expect(ws.send.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual(
+        expect.objectContaining({
           type: 'session',
           sessionId: 'test-1',
           existing: false,
@@ -440,8 +452,8 @@ describe('handleWsConnection', () => {
       handleWsConnection(ws1, req, sessions, spawnPty);
       handleWsConnection(ws2, req, sessions, spawnPty);
 
-      expect(ws2.send).toHaveBeenCalledWith(
-        JSON.stringify({
+      expect(ws2.send.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual(
+        expect.objectContaining({
           type: 'session',
           sessionId: 'test-1',
           existing: true,
@@ -530,6 +542,7 @@ describe('handleWsConnection', () => {
       handleWsConnection(ws2, req, sessions, spawnPty);
       mockPty.write.mockClear();
 
+      ws2._emit('message', JSON.stringify({ type: 'claim_control', requestId:'new-controller',cols:80,rows:24 }));
       ws1._emit('message', JSON.stringify({ type: 'input', data: 'stale\n' }));
 
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -560,7 +573,7 @@ describe('handleWsConnection', () => {
       expect(mockPty.resize).toHaveBeenCalledWith(80, 24);
     });
 
-    it('falls back to raw string input when JSON parsing fails', () => {
+    it('rejects malformed JSON without raw terminal input', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
 
@@ -568,7 +581,7 @@ describe('handleWsConnection', () => {
 
       ws._emit('message', 'raw input');
 
-      expect(mockPty.write).toHaveBeenCalledWith('raw input');
+      expect(mockPty.write).not.toHaveBeenCalled();
     });
 
     it('ignores legacy scroll_history messages so browser scrolling no longer drives tmux copy-mode', () => {
@@ -726,7 +739,7 @@ describe('handleWsConnection', () => {
 
       expect(entry.ws).toBe(ws2);
       expect(entry.wsAttached).toBe(true);
-      expect(entry.events).toHaveLength(eventCountBeforeClose);
+      expect(entry.events).toHaveLength(eventCountBeforeClose + 1);
     });
 
     it('records pty_exited event and sets wsAttached false on PTY exit', () => {
@@ -1107,7 +1120,7 @@ describe('handleWsConnection', () => {
 
       ws._emit('message', JSON.stringify({ type: 'rehydrate' }));
 
-      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
         {
           type: 'snapshot',
@@ -1149,7 +1162,7 @@ describe('handleWsConnection', () => {
 
       ws._emit('message', JSON.stringify({ type: 'rehydrate' }));
 
-      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
         {
           type: 'snapshot',
@@ -1242,7 +1255,7 @@ describe('handleWsConnection', () => {
       expect(evt.detail).toBe('user-initiated redraw');
     });
 
-    it('defaults to unknown action when action field is missing', () => {
+    it('rejects a missing recovery action', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
 
@@ -1252,7 +1265,8 @@ describe('handleWsConnection', () => {
 
       const entry = sessions.get('test-1');
       const evt = entry.events.find(e => e.type === 'recovery_unknown');
-      expect(evt).toBeDefined();
+      expect(evt).toBeUndefined();
+      expect(JSON.parse(ws.send.mock.calls.at(-1)[0]).type).toBe('protocol_error');
     });
   });
 
@@ -1666,7 +1680,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       handleWsConnection(ws, req, sessions, runtime);
 
-      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
         { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
         {
@@ -1784,7 +1798,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       handleWsConnection(ws, req, sessions, runtime);
 
-      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
         { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
         {
@@ -1840,7 +1854,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       handleWsConnection(ws2, req, sessions, runtime);
 
-      const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
         { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
         {
@@ -1868,7 +1882,7 @@ describe('runtime abstraction (Phase 5)', () => {
       ]);
     });
 
-    it('resizes the live tmux pane before capturing a reconnect snapshot', () => {
+    it('preserves canonical dimensions when another client captures a snapshot', () => {
       const runtime = createMockRuntime(vi.fn(() => mockPty), {
         type: 'tmux',
         snapshotData: 'older line 1\nolder line 2\n',
@@ -1897,11 +1911,8 @@ describe('runtime abstraction (Phase 5)', () => {
 
       handleWsConnection(ws2, req2, sessions, runtime);
 
-      expect(events.slice(0, 2)).toEqual([
-        ['resize-session', 'test-1', 80, 24],
-        ['capture'],
-      ]);
-      expect(mockPty.resize).toHaveBeenCalledWith(80, 24);
+      expect(events).toEqual([['capture']]);
+      expect(mockPty.resize).not.toHaveBeenCalled();
     });
 
     it('advances the reconnect snapshot boundary when captured output is already present in the snapshot', () => {
@@ -1927,7 +1938,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       handleWsConnection(ws2, req, sessions, runtime);
 
-      const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
+      const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
         { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
         {
@@ -2055,7 +2066,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
         vi.runAllTimers();
 
-        const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload));
+        const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
         expect(messages).toEqual([
           {
             type: 'output',

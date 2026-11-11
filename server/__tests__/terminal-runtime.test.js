@@ -21,6 +21,100 @@ describe('createTerminalRuntime', () => {
     ptySpawn.mockReturnValue({});
   });
 
+  it.each([
+    ['gone after tmux kill', false, false],
+    ['survivor force killed', true, false],
+    ['survivor remains', true, true],
+  ])('killAsync handles %s without signalling unrelated processes', async (_case, survivor, persists) => {
+    const signals = [];
+    let time = 0;
+    let killed = false;
+    execFileSync.mockImplementation((_cmd, args) => {
+      if (args[0] === '-V') return 'tmux 3.4';
+      if (args[0] === 'has-session') throw new Error("can't find session");
+      if (args[0] === 'kill-session') return '';
+      throw new Error(`unexpected sync ${args[0]}`);
+    });
+    execFile.mockImplementation((cmd, args, _options, cb) => {
+      if (cmd === 'tmux' && args[0] === 'list-panes') cb(null, { stdout: '200\t/dev/pts/3\n', stderr: '' });
+      else if (cmd === 'ps') cb(null, { stdout: '200 1 pts/3\n201 200 ??\n999 1 other\n', stderr: '' });
+      else throw new Error(`unexpected async ${cmd}`);
+    });
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const pty = { kill: vi.fn() };
+    const runtime = createTerminalRuntime('tmux', {
+      now: () => time,
+      sleep: async ms => { time += ms; },
+      signalProcess: (pid, signal) => {
+        signals.push([pid, signal]);
+        if (signal === 'SIGKILL') { killed = true; return; }
+        if (pid === 201 && survivor && (!killed || persists)) return;
+        throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+      },
+      excludePids: [process.pid, process.ppid],
+    });
+    if (persists) {
+      await expect(runtime.killAsync({ pty }, 'demo-1')).rejects.toThrow(/demo-1.*201/);
+      expect(pty.kill).not.toHaveBeenCalled();
+    } else {
+      await runtime.killAsync({ pty }, 'demo-1');
+      expect(pty.kill).toHaveBeenCalledOnce();
+    }
+    expect(signals.filter(([, signal]) => signal === 'SIGKILL')).toEqual(survivor ? [[201, 'SIGKILL']] : []);
+    expect(signals.some(([pid]) => pid === 999)).toBe(false);
+    // A bare tmux target prefix-matches: closing demo-1 would kill demo-15.
+    expect(execFile.mock.calls.find(([cmd, args]) => cmd === 'tmux' && args[0] === 'list-panes')[1][3]).toBe('=demo-1:');
+    expect(execFileSync.mock.calls.find(([, args]) => args[0] === 'kill-session')[1]).toEqual(['kill-session', '-t', '=demo-1']);
+  });
+
+  it('killAsync treats a missing session as closed without running ps or signalling pids', async () => {
+    execFileSync.mockImplementation((_cmd, args) => {
+      if (args[0] === '-V') return 'tmux 3.4';
+      if (args[0] === 'kill-session') throw new Error("can't find session");
+      throw new Error(`unexpected sync ${args[0]}`);
+    });
+    execFile.mockImplementation((_cmd, _args, _opts, cb) => cb(Object.assign(new Error("can't find session"), { stderr: "can't find session" })));
+    const signalProcess = vi.fn();
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const pty = { kill: vi.fn() };
+    await createTerminalRuntime('tmux', { signalProcess }).killAsync({ pty }, 'demo-1');
+    expect(pty.kill).toHaveBeenCalledOnce();
+    expect(execFile.mock.calls.some(([cmd]) => cmd === 'ps')).toBe(false);
+    expect(signalProcess).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['absent after kill', null, false],
+    ['already missing', "can't find session: demo-1", false],
+    ['kill rejected', 'permission denied', true],
+    ['still present', null, true],
+  ])('closes tmux safely when %s', async (_case, killError, sessionRemains) => {
+    const events = [];
+    execFileSync.mockImplementation((_command, args) => {
+      if (args[0] === '-V') return 'tmux 3.4';
+      if (args[0] === 'kill-session') {
+        events.push('kill-session');
+        if (killError) throw Object.assign(new Error(killError), { stderr: killError });
+        return '';
+      }
+      if (args[0] === 'has-session') {
+        events.push('has-session');
+        if (sessionRemains) return '';
+        throw new Error("can't find session");
+      }
+      throw new Error(`unexpected tmux command ${args[0]}`);
+    });
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const entry = { pty: { kill: vi.fn(() => events.push('pty')) } };
+    const close = () => createTerminalRuntime('tmux').kill(entry, 'demo-1');
+    if (killError === 'permission denied') expect(close).toThrow(/demo-1.*permission denied/);
+    else if (sessionRemains) expect(close).toThrow(/demo-1.*still exists/);
+    else expect(close).not.toThrow();
+    expect(entry.pty.kill).toHaveBeenCalledTimes(killError === 'permission denied' || sessionRemains ? 0 : 1);
+    expect(events[0]).toBe('kill-session');
+    if (!killError) expect(events.slice(0, 2)).toEqual(['kill-session', 'has-session']);
+  });
+
   it('keeps tmux unavailable instead of falling back to raw pty', async () => {
     execFileSync.mockImplementation((command, args) => {
       if (command === 'tmux' && args[0] === '-V') throw new Error('tmux missing');
@@ -107,7 +201,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'display-message') return 'npm\t0\n';
+      if (args[0] === 'list-panes') return `0\tnpm\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return 'running tests without output\n';
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
@@ -122,16 +216,49 @@ describe('createTerminalRuntime', () => {
     });
     expect(execFileSync).toHaveBeenCalledWith(
       'tmux',
-      ['display-message', '-p', '-t', 'demo-1', '#{pane_current_command}\t#{pane_dead}'],
+      ['list-panes', '-t', 'demo-1:0', '-F', '#{pane_index}\t#{pane_current_command}\t#{pane_dead}\t#{window_activity}\t#{pane_current_path}'],
       { stdio: 'pipe', encoding: 'utf8' }
     );
+  });
+
+  it('classifies the lowest pane as main and a live Claude pane as delegated', async () => {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'list-panes') return `1\t2.1.321\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n0\t2.1.321\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
+      if (args[0] === 'capture-pane') return args.at(-1).endsWith('.0')
+        ? '✻ Baked for 24s · done 22:05\n────────────────────\n❯\n────────────────────\n  dev ~/work/demo Opus 5.5\n'
+        : '✽ Hatching… (17s · ↓ 88 tokens)\n────────────────────\n❯\n────────────────────\n  dev ~/work/demo Opus 5.5\n';
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+    expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({ executionStatus: 'running', executionReason: 'agent_delegated', backgroundAgents: 1 });
+  });
+
+  it('reads every pane through the async local probe', async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const snapshot = vi.fn();
+    execFile.mockImplementation((command, args, options, callback) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === 'list-panes') return callback(null, { stdout: `0\t2.1.321\t0\t${nowSeconds}\t/tmp\n1\t2.1.321\t0\t${nowSeconds}\t/tmp\n`, stderr: '' });
+      if (args[0] === 'capture-pane') return callback(null, { stdout: args.at(-1).endsWith('.0')
+        ? '✻ Baked for 24s · done 22:05\n❯\n  dev ~/work/demo Opus 5.5\n'
+        : '✽ Hatching… (17s · ↓ 88 tokens)\n❯\n  dev ~/work/demo Opus 5.5\n', stderr: '' });
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+    expect(await runtime.getSessionExecutionStateAsync('demo-1', { onSnapshot: snapshot })).toMatchObject({ executionReason: 'agent_delegated', backgroundAgents: 1 });
+    expect(snapshot).toHaveBeenCalledWith(expect.stringContaining('Baked for 24s'));
+    expect(execFile.mock.calls.filter(([, args]) => args[0] === 'capture-pane')).toHaveLength(2);
   });
 
   it('keeps a working agent CLI pane running even when its prompt line is visible', async () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'display-message') return 'node\t0\n';
+      if (args[0] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return [
         '• Working (34s • esc to interrupt)',
         '',
@@ -156,7 +283,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'display-message') return 'node\t0\n';
+      if (args[0] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return [
         '• Full verification is still running. The earlier targeted suites passed.',
         '',
@@ -176,7 +303,7 @@ describe('createTerminalRuntime', () => {
     expect(runtime.getSessionExecutionState('demo-1')).toMatchObject({
       executionStatus: 'running',
       foregroundCommand: 'node',
-      executionReason: 'agent_background_terminal',
+      executionReason: 'agent_working',
     });
   });
 
@@ -184,7 +311,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'display-message') return '2.1.114\t0\n';
+      if (args[0] === 'list-panes') return `0\t2.1.114\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return [
         'Want me to also verify there are not other blocks?',
         '',
@@ -210,7 +337,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'display-message') return 'node\t0\n';
+      if (args[0] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return [
         'Remaining risk: I did not run a live browser/API smoke',
         '',
@@ -236,7 +363,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'display-message') return 'zsh\t0\n';
+      if (args[0] === 'list-panes') return `0\tzsh\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return 'dev@host backend %\n';
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
@@ -255,7 +382,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'display-message') throw new Error('tmux not reachable');
+      if (args[0] === 'list-panes') throw new Error('tmux not reachable');
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
 
@@ -266,6 +393,10 @@ describe('createTerminalRuntime', () => {
       executionStatus: 'unknown',
       foregroundCommand: null,
       executionReason: 'tmux_lookup_failed',
+      agentCli: null,
+      backgroundAgents: 0,
+      backgroundShells: 0,
+      needsInput: false,
     });
   });
 
@@ -800,5 +931,83 @@ describe('terminal cell width helpers', () => {
     // survives truncation and stays 4 visible string characters = 5 cells.
     const truncated = truncateToTerminalCells('\u2705 OK', 4);
     expect(measureTerminalCellWidth(truncated)).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('createTerminalRuntime.createDetachedSession', () => {
+  beforeEach(() => {
+    execFile.mockReset();
+    execFileSync.mockReset();
+    ptySpawn.mockReset();
+  });
+
+  function tmuxWith({ exists = false } = {}) {
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'has-session') { if (exists && args[2] === '=demo-2') return ''; throw new Error('missing session'); }
+      if (args[0] === 'new-session' || args[0] === 'set-option' || args[0] === 'set-window-option') return '';
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+  }
+
+  it('creates a durable tmux session in the project folder without attaching a client', async () => {
+    tmuxWith();
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    createTerminalRuntime('tmux').createDetachedSession({ cwd: '/tmp/demo', cols: 120, rows: 32, sessionId: 'demo-2' });
+    expect(execFileSync).toHaveBeenCalledWith('tmux', ['new-session', '-d', '-s', 'demo-2', '-c', '/tmp/demo', '-x', '120', '-y', '32'], { stdio: 'pipe' });
+    expect(execFileSync.mock.calls.some(([, args]) => args[0] === 'set-option')).toBe(true);
+    expect(ptySpawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses to adopt a tmux session that already exists under the reserved id', async () => {
+    tmuxWith({ exists: true });
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    expect(() => createTerminalRuntime('tmux').createDetachedSession({ cwd: '/tmp/demo', cols: 120, rows: 32, sessionId: 'demo-2' })).toThrow(/already exists/);
+    expect(execFileSync.mock.calls.some(([, args]) => args[0] === 'new-session')).toBe(false);
+  });
+
+  it.each([
+    [{ cwd: '', cols: 120, rows: 32, sessionId: 'demo-2' }, /cwd/],
+    [{ cwd: '/tmp/demo', cols: 0, rows: 32, sessionId: 'demo-2' }, /cols/],
+    [{ cwd: '/tmp/demo', cols: 120, rows: 1.5, sessionId: 'demo-2' }, /rows/],
+    [{ cwd: '/tmp/demo', cols: 120, rows: 32, sessionId: ' ' }, /sessionId/],
+  ])('rejects invalid detached session input %#', async (input, message) => {
+    tmuxWith();
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    expect(() => createTerminalRuntime('tmux').createDetachedSession(input)).toThrow(message);
+  });
+});
+
+describe('tmux session existence', () => {
+  beforeEach(() => { execFile.mockReset(); execFileSync.mockReset(); ptySpawn.mockReset(); ptySpawn.mockReturnValue({}); });
+  it('checks for the exact session, so demo-1 is not mistaken for a live demo-15', async () => {
+    // tmux resolves a bare target by prefix; only "=name" is exact.
+    execFileSync.mockImplementation((command, args) => {
+      if (command !== 'tmux') throw new Error('unexpected command');
+      if (args[0] === '-V') return 'tmux 3.6a';
+      if (args[0] === 'has-session') { if (args[2] === 'demo-1') return ''; throw new Error("can't find session"); }
+      if (['new-session', 'set-option', 'set-window-option'].includes(args[0])) return '';
+      throw new Error(`unexpected tmux args: ${args.join(' ')}`);
+    });
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    createTerminalRuntime('tmux').spawn({ cwd: '/tmp/demo', cols: 120, rows: 30, sessionId: 'demo-1' });
+    expect(execFileSync).toHaveBeenCalledWith('tmux', ['has-session', '-t', '=demo-1'], { stdio: 'pipe' });
+    expect(execFileSync.mock.calls.some(([, args]) => args[0] === 'new-session')).toBe(true);
+  });
+});
+
+describe('createTerminalRuntime.getSessionActivityAsync', () => {
+  beforeEach(() => { execFile.mockReset(); execFileSync.mockReset(); });
+  it('reads the exact session\'s last activity from tmux in milliseconds', async () => {
+    execFile.mockImplementation((command, args, options, callback) => callback(null, { stdout: '1794300000\n', stderr: '' }));
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    expect(await createTerminalRuntime('tmux').getSessionActivityAsync('Equinox Local-15')).toBe(1794300000000);
+    expect(execFile.mock.calls[0].slice(0, 2)).toEqual(['tmux', ['display-message', '-p', '-t', '=Equinox_Local-15:', '#{session_activity}']]);
+  });
+  it('rejects unparseable tmux output', async () => {
+    execFile.mockImplementation((command, args, options, callback) => callback(null, { stdout: 'n/a', stderr: '' }));
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    await expect(createTerminalRuntime('tmux').getSessionActivityAsync('demo-1')).rejects.toThrow(/activity/);
   });
 });

@@ -1,0 +1,40 @@
+
+
+      ▄▀▀▄
+     ▀▀▀▀▀▀
+    ▀▀▀▀▀▀▀▀
+   ▄▀▀    ▀▀▄
+  ▄▀▀      ▀▀▄
+
+  Antigravity CLI 1.4.12
+  user@example.com (Google AI Pro)
+  Gemini 3.8 Flash (Medium)
+  ~/work/demo
+
+────────────────────────────────────────────────────────────
+> Run the shell command `sleep 15; echo done` in the foreground, then reply with one sentence.
+
+○ Thought for 9.0s (Rule dictates using `bash-server` for bash commands. The command `sleep 15; echo done` requires...)
+● Ran (sleep 15; echo done) (ctrl+o to expand)
+
+▸ Thought for 4s, 164 tokens
+
+  I have launched the command sleep 15; echo done and will wait for it to complete.
+
+  The command finished successfully with output done.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                                                                Gemini 3.8 Flash · medium
+
+
+
+
+
+
+
+
+
+
+

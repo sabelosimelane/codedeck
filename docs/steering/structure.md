@@ -42,6 +42,8 @@ codedeck/
 │   ├── index.js          # REST routes, WebSocket server, PTY spawn factory
 │   ├── ws-handler.js     # WebSocket connection handler, snapshot-first attach, diagnostics, transport replay
 │   ├── terminal-runtime.js # tmux-required terminal runtime + snapshot capture helpers
+│   ├── terminal-execution-classifier.js # Combines main pane, sub-agent panes, and silence
+│   ├── agent-profiles/  # Pure live-screen readers for Codex, Claude, Cursor, agy, Muse
 │   ├── terminal-waiting-store.js # SQLite store for per-tab waiting marks
 │   ├── routes/
 │   │   └── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)

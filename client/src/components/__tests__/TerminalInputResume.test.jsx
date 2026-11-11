@@ -25,7 +25,7 @@ vi.mock('@xterm/xterm', () => {
     constructor() {
       this.open = vi.fn();
       this.dispose = vi.fn();
-      this.write = vi.fn();
+      this.write = vi.fn((data, callback) => callback?.());
       this.focus = vi.fn();
       this.resize = vi.fn();
       this.scrollToBottom = vi.fn();
@@ -46,7 +46,7 @@ vi.mock('@xterm/xterm', () => {
 });
 
 vi.mock('@xterm/addon-fit', () => {
-  class MockFitAddon { fit() {} }
+  class MockFitAddon { fit() {} proposeDimensions() { return {cols:80,rows:24}; } }
   return { FitAddon: MockFitAddon };
 });
 
@@ -82,6 +82,11 @@ vi.mock('../ToastContext', () => ({
 }));
 
 import Terminal from '../Terminal';
+function sessionMessage(ws, message) {
+ ws.onmessage?.({data: JSON.stringify({attachmentId:'a',controllerId:'a',controlRevision:1,cols:120,rows:30,...message})});
+ ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
+}
+
 
 // --- Tests ---
 
@@ -147,14 +152,14 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's1', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 's1', existing: false });
     mocks.ws.send.mockClear();
 
     const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
     onDataCb?.('test input');
 
     expect(mocks.ws.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'input', data: 'test input' })
+      JSON.stringify({ type: 'input', data: 'test input', controlRevision: 1 })
     );
   });
 
@@ -163,7 +168,7 @@ describe('Terminal input resume after refocus', () => {
     vi.advanceTimersByTime(16);
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 'workflow-input', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 'workflow-input', existing: false });
     mocks.ws.send.mockClear();
     const onData = mocks.term.onData.mock.calls[0][0];
     mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'resetting', active: true, error: null, requestId: 'run-1' } }) });
@@ -171,7 +176,7 @@ describe('Terminal input resume after refocus', () => {
     expect(mocks.ws.send).not.toHaveBeenCalled();
     mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: 'run-1' } }) });
     onData('manual input');
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'manual input' }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'manual input', controlRevision: 1 }));
   });
 
   it('discards pre-handshake typing when reconnect restores a running workflow', () => {
@@ -182,7 +187,7 @@ describe('Terminal input resume after refocus', () => {
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
     mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'running', active: true, error: null, requestId: 'run-1' } }) });
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 'workflow-reconnect', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 'workflow-reconnect', existing: false });
     expect(mocks.ws.send.mock.calls.map(([raw]) => JSON.parse(raw)).filter(msg => msg.type === 'input')).toEqual([]);
   });
 
@@ -209,20 +214,18 @@ describe('Terminal input resume after refocus', () => {
     mocks.ws.send.mockClear();
 
     // Attach finally completes: brand-new remote session, no snapshot, no replay.
-    mocks.ws.onmessage?.({
-      data: JSON.stringify({
+    sessionMessage(mocks.ws, {
         type: 'session',
         sessionId: 'remote-1',
         existing: false,
         snapshotWindowLines: 10000,
-      }),
-    });
+      });
 
     const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
     onDataCb?.('ls\r');
 
     expect(mocks.ws.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'input', data: 'ls\r' })
+      JSON.stringify({ type: 'input', data: 'ls\r', controlRevision: 1 })
     );
   });
 
@@ -240,9 +243,7 @@ describe('Terminal input resume after refocus', () => {
     const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
     // Trigger requestResume via the public recovery path after faking readiness
     // by sending a session, then re-arming the gate as if a later resume was lost.
-    mocks.ws.onmessage?.({
-      data: JSON.stringify({ type: 'session', sessionId: 'remote-2', existing: true }),
-    });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 'remote-2', existing: true });
     // existing:true without snapshotWindowLines requests resume; drop the replay
     // so the gate stays true — then a second session (or the same late handshake
     // path) must clear it. Simulate lost-replay by never sending replay, then
@@ -254,19 +255,17 @@ describe('Terminal input resume after refocus', () => {
       mocks.ws.send.mock.calls.filter(([arg]) => typeof arg === 'string' && arg.includes('"type":"input"'))
     ).toHaveLength(0);
 
-    mocks.ws.onmessage?.({
-      data: JSON.stringify({
+    sessionMessage(mocks.ws, {
         type: 'session',
         sessionId: 'remote-2',
         existing: false,
         snapshotWindowLines: 10000,
-      }),
-    });
+      });
     mocks.ws.send.mockClear();
 
     onDataCb?.('ls\r');
     expect(mocks.ws.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'input', data: 'ls\r' })
+      JSON.stringify({ type: 'input', data: 'ls\r', controlRevision: 1 })
     );
   });
 
@@ -275,7 +274,7 @@ describe('Terminal input resume after refocus', () => {
     vi.advanceTimersByTime(16);
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage({ data: JSON.stringify({ type: 'session', sessionId: 'approval', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 'approval', existing: false });
     const changeState = status => mocks.ws.onmessage({ data: JSON.stringify({
       type: 'workflow_state', requestId: null,
       state: { status, active: true, error: null, requestId: 'run-1' },
@@ -284,14 +283,14 @@ describe('Terminal input resume after refocus', () => {
     mocks.ws.send.mockClear();
     const onData = mocks.term.onData.mock.calls[0][0];
     onData(data);
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data, controlRevision: 1 }));
     changeState('resetting');
     mocks.ws.send.mockClear();
     onData(data);
     expect(mocks.ws.send).not.toHaveBeenCalled();
   });
 
-  it('buffers input until the session handshake, then flushes in order', () => {
+  it('discards input before attachment instead of replaying commands after reconnect', () => {
     render(<Terminal sessionId="s2" cwd="/tmp" isVisible={true} />);
     vi.advanceTimersByTime(16);
 
@@ -312,15 +311,12 @@ describe('Terminal input resume after refocus', () => {
     ).toHaveLength(0);
 
     // The session handshake proves handlers are registered — flush now.
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's2', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 's2', existing: false });
 
     const inputSends = mocks.ws.send.mock.calls
       .map(([arg]) => arg)
       .filter(arg => arg.includes('"type":"input"'));
-    expect(inputSends).toEqual([
-      JSON.stringify({ type: 'input', data: 'buffered 1' }),
-      JSON.stringify({ type: 'input', data: 'buffered 2' }),
-    ]);
+    expect(inputSends).toEqual([]);
   });
 
   it('focuses terminal on visibility change to visible', () => {
@@ -329,7 +325,7 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's3', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 's3', existing: false });
 
     mocks.term.focus.mockClear();
 
@@ -354,7 +350,7 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's-focus', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 's-focus', existing: false });
     mocks.ws.send.mockClear();
     mocks.term.focus.mockClear();
 
@@ -364,7 +360,7 @@ describe('Terminal input resume after refocus', () => {
     vi.advanceTimersByTime(100);
 
     expect(mocks.term.focus).toHaveBeenCalled();
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30 }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30, controlRevision: 1 }));
     expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resume', lastSeenSeq: 0 }));
   });
 
@@ -374,7 +370,7 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's-pageshow', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 's-pageshow', existing: false });
     mocks.ws.send.mockClear();
     mocks.term.focus.mockClear();
 
@@ -384,7 +380,7 @@ describe('Terminal input resume after refocus', () => {
     vi.advanceTimersByTime(100);
 
     expect(mocks.term.focus).toHaveBeenCalled();
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30 }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30, controlRevision: 1 }));
     expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resume', lastSeenSeq: 0 }));
   });
 
@@ -394,7 +390,7 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's4', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 's4', existing: false });
     mocks.ws.send.mockClear();
 
     const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
@@ -445,7 +441,7 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's7', existing: false }) });
+    sessionMessage(mocks.ws, { type: 'session', sessionId: 's7', existing: false });
 
     rerender(<Terminal sessionId="s7" cwd="/tmp" isVisible={true} runtimeType="tmux" />);
     vi.advanceTimersByTime(16);
@@ -460,12 +456,36 @@ describe('Terminal input resume after refocus', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
+    sessionMessage(mocks.ws, {type:'session',sessionId:'s8',existing:false});
     mocks.ws.send.mockClear();
 
     terminalRef.current?.redraw();
 
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30 }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 120, rows: 30, controlRevision: 1 }));
     expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'recovery_action', action: 'redraw' }));
     expect(mocks.ws.send).not.toHaveBeenCalledWith(JSON.stringify({ type: 'rehydrate' }));
   });
+  it('waits for xterm parsing before an explicit opening claims control',()=>{
+    render(<Terminal sessionId="ready" cwd="/tmp" isVisible claimOnOpen/>);vi.advanceTimersByTime(16);
+    mocks.ws.readyState=1;mocks.ws.onopen();
+    mocks.ws.onmessage({data:JSON.stringify({type:'session',attachmentId:'a',controllerId:null,controlRevision:0,cols:120,rows:30,existing:false,incarnationId:'inc'})});
+    let drained; mocks.term.write.mockImplementation((data,callback)=>{if(callback)drained=callback;});
+    mocks.term.reset=vi.fn();
+    mocks.ws.onmessage({data:JSON.stringify({type:'snapshot',data:'old grid',lastSeq:0})});
+    mocks.ws.onmessage({data:JSON.stringify({type:'attachment_ready'})});
+    expect(mocks.ws.send.mock.calls.map(([raw])=>JSON.parse(raw)).filter(x=>x.type==='claim_control')).toEqual([]);
+    expect(drained).toBeTypeOf('function');drained();
+    expect(mocks.ws.send.mock.calls.map(([raw])=>JSON.parse(raw)).filter(x=>x.type==='claim_control')).toHaveLength(1);
+  });
+
+  it.each([true,false])('submits composer using xterm paste semantics, bracketed=%s',bracketed=>{
+    const ref=React.createRef();render(<Terminal ref={ref} sessionId="composer" cwd="/tmp" isVisible/>);vi.advanceTimersByTime(16);
+    mocks.ws.readyState=1;mocks.ws.onopen();sessionMessage(mocks.ws,{type:'session',existing:false});mocks.ws.send.mockClear();
+    mocks.term.paste=vi.fn(text=>mocks.term.onData.mock.calls[0][0]((bracketed?'\x1b[200~':'')+text.replace(/\n/g,'\r')+(bracketed?'\x1b[201~':'')));
+    const sent=vi.fn();expect(ref.current.sendComposer('one\ntwo',sent)).toBe(true);
+    expect(mocks.term.paste).toHaveBeenCalledWith('one\ntwo');
+    expect(mocks.ws.send).toHaveBeenCalledExactlyOnceWith(JSON.stringify({type:'input',data:(bracketed?'\x1b[200~one\rtwo\x1b[201~':'one\rtwo')+'\r',controlRevision:1}));
+    expect(sent).toHaveBeenCalledOnce();
+  });
+
 });

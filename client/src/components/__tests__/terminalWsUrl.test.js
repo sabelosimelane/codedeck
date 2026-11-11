@@ -17,7 +17,7 @@ describe('buildTerminalWebSocketUrl', () => {
     });
 
     expect(url).toBe(
-      'ws://localhost:43001/ws/terminal?cwd=%2Ftmp%2Fproject&sessionId=marketing-1&cols=120&rows=40'
+      'ws://localhost:43001/ws/terminal?cwd=%2Ftmp%2Fproject&sessionId=marketing-1&cols=120&rows=40&protocol=2'
     );
   });
 
@@ -36,7 +36,7 @@ describe('buildTerminalWebSocketUrl', () => {
     });
 
     expect(url).toBe(
-      'wss://codedeck.example.com/ws/terminal?cwd=%2Ftmp%2Fproject&sessionId=marketing-1&cols=80&rows=24'
+      'wss://codedeck.example.com/ws/terminal?cwd=%2Ftmp%2Fproject&sessionId=marketing-1&cols=80&rows=24&protocol=2'
     );
   });
 });

@@ -10,6 +10,10 @@ export const STATUS_REFRESH_PENDING_EXECUTION_STATE = Object.freeze({
   foregroundCommand: null,
   executionReason: 'status_refresh_pending',
   executionConfidence: 'low',
+  agentCli: null,
+  backgroundAgents: 0,
+  backgroundShells: 0,
+  needsInput: false,
 });
 
 function escapeRegExp(value) {
@@ -114,6 +118,10 @@ export function createTerminalStatusCache({
           foregroundCommand: null,
           executionReason: 'host_unreachable',
           executionConfidence: 'low',
+          agentCli: null,
+          backgroundAgents: 0,
+          backgroundShells: 0,
+          needsInput: false,
         };
         record.updatedAt = now();
         return record;

@@ -17,10 +17,11 @@ vi.mock('@xterm/xterm', () => {
       mocks.termOptions = options;
       this.open = vi.fn();
       this.dispose = vi.fn();
-      this.write = vi.fn();
+      this.write = vi.fn((data, callback) => callback?.());
       this.focus = vi.fn();
       this.resize = vi.fn();
       this.scrollToBottom = vi.fn();
+      this.scrollLines = vi.fn();
       this.refresh = vi.fn();
       this.clear = vi.fn();
       this.loadAddon = vi.fn();
@@ -77,9 +78,10 @@ function mountTerminal(props = {}) {
       cwd="/tmp"
       isVisible={true}
       runtimeType={props.runtimeType ?? 'pty'}
+      mobile={props.mobile ?? false}
     />
   );
-  vi.advanceTimersByTime(16);
+  if (vi.isFakeTimers()) vi.advanceTimersByTime(16);
   return result;
 }
 
@@ -131,6 +133,120 @@ describe('Terminal auto-scroll mouse takeover', () => {
     cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  function flick(mode = 'normal') {
+    const rendered=mountTerminal({mobile:true});connectSocket();
+    const viewport=mocks.term.open.mock.calls[0][0];
+    Object.defineProperty(viewport,'clientHeight',{value:600});
+    const wheel=vi.fn();
+    if(mode==='alternate') {
+      mocks.term.buffer.active={type:'alternate',baseY:0,viewportY:0};
+      mocks.term.modes={mouseTrackingMode:'vt200'};
+      mocks.term.element=viewport;
+      viewport.addEventListener('wheel',wheel);
+      act(()=>mocks.ws.onmessage({data:JSON.stringify({type:'session',attachmentId:'a',controllerId:'a',controlRevision:1,cols:80,rows:30})}));
+    }
+    fireEvent.touchStart(viewport,{touches:[{clientX:50,clientY:100}]});
+    act(()=>vi.advanceTimersByTime(30));
+    fireEvent.touchMove(viewport,{touches:[{clientX:50,clientY:160}]});
+    fireEvent.touchEnd(viewport,{touches:[]});
+    return {viewport,rendered,calls:mode==='alternate'?wheel:mocks.term.scrollLines};
+  }
+
+  it.each(['normal','alternate'])('continues a flick with bounded decaying momentum in %s mode',mode=>{
+    const {calls}=flick(mode);const before=calls.mock.calls.length;
+    act(()=>vi.advanceTimersByTime(100));
+    expect(calls.mock.calls.length).toBeGreaterThan(before);
+    const distance=()=>mode==='alternate'?calls.mock.calls.length:calls.mock.calls.reduce((sum,[lines])=>sum+Math.abs(lines),0);
+    const early=distance();
+    act(()=>vi.advanceTimersByTime(500));const lateStart=distance();
+    act(()=>vi.advanceTimersByTime(100));expect(distance()-lateStart).toBeLessThan(early);
+    act(()=>vi.advanceTimersByTime(1500));const stopped=calls.mock.calls.length;
+    act(()=>vi.advanceTimersByTime(500));expect(calls).toHaveBeenCalledTimes(stopped);
+  });
+
+  it.each(['touch','cancel','unmount','disconnect','control'])('stops momentum on %s',reason=>{
+    const {viewport,rendered,calls}=flick('alternate');
+    act(()=>vi.advanceTimersByTime(50));
+    expect(calls.mock.calls.length).toBeGreaterThan(3);
+    if(reason==='touch')fireEvent.touchStart(viewport,{touches:[{clientX:50,clientY:160}]});
+    if(reason==='cancel')fireEvent.touchCancel(viewport);
+    if(reason==='unmount')rendered.unmount();
+    if(reason==='disconnect')mocks.ws.readyState=3;
+    if(reason==='control')act(()=>mocks.ws.onmessage({data:JSON.stringify({type:'control_state',controllerId:'b',controlRevision:2,cols:80,rows:30})}));
+    const stopped=calls.mock.calls.length;
+    act(()=>vi.advanceTimersByTime(500));expect(calls).toHaveBeenCalledTimes(stopped);
+  });
+
+  it('scrolls mobile history locally even when the child terminal consumes touch events', () => {
+    mountTerminal({ mobile: true });connectSocket();
+    const viewport=mocks.term.open.mock.calls[0][0];
+    Object.defineProperty(viewport,'clientHeight',{value:600});
+    const child=document.createElement('div');viewport.appendChild(child);
+    const childMove=vi.fn(event=>event.stopPropagation());child.addEventListener('touchmove',childMove);
+    mocks.term.focus.mockClear();mocks.term.scrollToBottom.mockClear();mocks.ws.send.mockClear();
+    fireEvent.touchStart(child,{touches:[{clientX:50,clientY:100}]});
+    fireEvent.touchMove(child,{touches:[{clientX:50,clientY:160}]});
+    fireEvent.touchEnd(child,{touches:[]});
+    expect(mocks.term.scrollLines).toHaveBeenCalledWith(-3);
+    expect(childMove).not.toHaveBeenCalled();
+    expect(screen.getByText('Latest')).toBeTruthy();
+    expect(mocks.term.focus).not.toHaveBeenCalled();
+    expect(mocks.ws.send).not.toHaveBeenCalled();
+    act(()=>mocks.ws.onmessage({data:JSON.stringify({type:'output',seq:1,data:'new output'})}));
+    expect(mocks.term.scrollToBottom).not.toHaveBeenCalled();
+  });
+
+  it('routes a swipe to the agent wheel handler when real xterm is in mouse-enabled alternate screen', async () => {
+    vi.useRealTimers();
+    const { Terminal: RealTerminal } = await vi.importActual('@xterm/xterm');
+    const realTerm = new RealTerminal({ cols:80, rows:24 });
+    await new Promise(resolve => realTerm.write('first\r\nsecond\x1b[?1049h\x1b[?1000h\x1b[?1006h', resolve));
+    try {
+      expect(realTerm.buffer.active.type).toBe('alternate');
+      expect(realTerm.modes.mouseTrackingMode).toBe('vt200');
+      realTerm.scrollLines(-3);
+      expect(realTerm.buffer.active.viewportY).toBe(0);
+      mountTerminal({mobile:true});
+      mocks.term.buffer=realTerm.buffer;
+      mocks.term.modes=realTerm.modes;
+      const viewport=mocks.term.open.mock.calls[0][0];
+      Object.defineProperty(viewport,'clientHeight',{value:600});
+      const child=document.createElement('div');viewport.appendChild(child);
+      mocks.term.element=child;
+      const wheel=vi.fn();child.addEventListener('wheel',wheel);
+      fireEvent.touchStart(child,{touches:[{clientX:50,clientY:100}]});
+      fireEvent.touchMove(child,{touches:[{clientX:50,clientY:160}]});
+      fireEvent.touchEnd(child,{touches:[]});
+      expect(wheel).toHaveBeenCalledTimes(3);
+      expect(wheel.mock.calls[0][0]).toMatchObject({deltaY:-1,deltaMode:1,clientX:50,clientY:160});
+      expect(mocks.term.scrollLines).not.toHaveBeenCalled();
+    } finally { realTerm.dispose(); }
+  });
+
+  it.each(['none','x10'])('does not send arrows or wheel input for alternate-screen mode %s', mode => {
+    mountTerminal({mobile:true});connectSocket();
+    mocks.term.buffer.active={type:'alternate',baseY:0,viewportY:0};
+    mocks.term.modes={mouseTrackingMode:mode};
+    const viewport=mocks.term.open.mock.calls[0][0];
+    Object.defineProperty(viewport,'clientHeight',{value:600});
+    const wheel=vi.fn();viewport.addEventListener('wheel',wheel);
+    fireEvent.touchStart(viewport,{touches:[{clientX:50,clientY:100}]});
+    fireEvent.touchMove(viewport,{touches:[{clientX:50,clientY:160}]});
+    expect(wheel).not.toHaveBeenCalled();
+    expect(mocks.ws.send).not.toHaveBeenCalled();
+  });
+
+  it('does not turn multi-touch or a cancelled mobile gesture into terminal input', () => {
+    mountTerminal({mobile:true});connectSocket();
+    const viewport=mocks.term.open.mock.calls[0][0];
+    mocks.term.focus.mockClear();mocks.ws.send.mockClear();
+    fireEvent.touchStart(viewport,{touches:[{clientX:0,clientY:100},{clientX:20,clientY:100}]});
+    fireEvent.touchMove(viewport,{touches:[{clientX:0,clientY:160},{clientX:20,clientY:160}]});
+    fireEvent.touchCancel(viewport);fireEvent.touchEnd(viewport,{touches:[]});
+    expect(mocks.term.scrollLines).not.toHaveBeenCalled();
+    expect(mocks.term.focus).not.toHaveBeenCalled();expect(mocks.ws.send).not.toHaveBeenCalled();
   });
 
   it('shows the Latest button when the user wheels upward while pinned at the bottom with scrollback', () => {

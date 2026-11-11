@@ -2,8 +2,8 @@
  * WebSocket connection handler for terminal PTY sessions.
  *
  * Extracted from index.js to enable unit testing of listener management.
- * Key design: onData and onExit listeners are registered ONCE per PTY (when created).
- * They read the current WebSocket from entry.ws, avoiding closure-captured stale references.
+ * One PTY per session broadcasts to independently hydrated client attachments.
+ * Explicit protocol-v2 claims fence input and terminal dimensions by revision.
  *
  * @param {WebSocket} ws - The incoming WebSocket connection
  * @param {http.IncomingMessage} req - The HTTP upgrade request
@@ -17,6 +17,7 @@ import {
   TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE,
   TERMINAL_SNAPSHOT_WINDOW_LINES,
 } from './terminal-runtime.js';
+import { randomUUID } from 'node:crypto';
 import { isTransportFailure } from './command-runner.js';
 import { createTerminalWorkflow } from './terminal-workflow.js';
 
@@ -36,6 +37,116 @@ export const SESSION_TAKEOVER_CLOSE_REASON = 'session_taken_over';
 export const SESSION_DELETED_CLOSE_CODE = 4002;
 export const SESSION_DELETED_CLOSE_REASON = 'session_deleted';
 const MAX_TMUX_REATTACH = 3;
+
+export const TERMINAL_PROTOCOL_VERSION = 2;
+const MAX_ATTACHMENT_BYTES = 1024 * 1024;
+
+function ensureAttachment(entry, ws) {
+  entry.attachments ??= new Map();
+  if (!entry.attachments.has(ws)) {
+    entry.attachments.set(ws, {
+      id: randomUUID(), ws, ready: false, attachState: null, isCompanion: false,
+      documentVisibility: 'visible', lastClientAckAt: null,
+      clientLastMessageAt: null, clientLastPaintAt: null, clientLastResizeAt: null,
+      clientLastSeenSeq: 0, clientReconnectCount: 0,
+    });
+  }
+  return entry.attachments.get(ws);
+}
+
+function sendAttachment(entry, attachment, message) {
+  if (attachment.ws.readyState !== 1) return;
+  if (attachment.ws.bufferedAmount > MAX_ATTACHMENT_BYTES) {
+    attachment.ws.close(4008, 'slow_client_reconnect');
+    removeAttachment(entry, attachment.ws);
+    return;
+  }
+  try { attachment.ws.send(JSON.stringify(message)); }
+  catch { attachment.ws.close(4008, 'send_failed_reconnect'); removeAttachment(entry, attachment.ws); }
+}
+
+function broadcast(entry, message) {
+  for (const attachment of entry.attachments?.values() ?? []) sendAttachment(entry, attachment, message);
+}
+
+function controlState(entry, requestId = null) {
+  return { type: 'control_state', requestId, controllerId: entry.controllerId,
+    controlRevision: entry.controlRevision, cols: entry.cols, rows: entry.rows };
+}
+
+function removeAttachment(entry, ws) {
+  const attachment = entry.attachments?.get(ws);
+  if (!attachment) return;
+  entry.attachments.delete(ws);
+  attachment.attachState?.releaseGeometry?.();
+  attachment.attachState = null;
+  if (entry.controllerId === attachment.id) {
+    entry.controllerId = null;
+    entry.controlRevision++;
+    broadcast(entry, controlState(entry));
+  }
+  entry.wsAttached = entry.attachments.size > 0;
+  if (entry.ws === ws) entry.ws = entry.attachments.keys().next().value ?? null;
+  if (!entry.wsAttached) {
+    entry.lastDetachAt = new Date().toISOString();
+    detachTmuxClient(entry);
+  }
+}
+
+function deliverOutput(entry, chunk) {
+  for (const attachment of entry.attachments.values()) {
+    if (attachment.attachState?.mode === 'buffer_live_output') {
+      attachment.attachState.bufferedChunks.push(chunk);
+      attachment.attachState.bytes += Buffer.byteLength(chunk.data);
+      if (attachment.attachState.bytes > MAX_ATTACHMENT_BYTES) {
+        attachment.ws.close(4008, 'slow_client_reconnect');
+        removeAttachment(entry, attachment.ws);
+      }
+    } else sendAttachment(entry, attachment, { type: 'output', ...chunk });
+  }
+}
+
+function validateIncarnation(ws, sessionId, actual, expected, options) {
+  if (actual !== null && (typeof actual !== 'string' || actual.length === 0)) throw new Error('Terminal incarnation must identify the durable session.');
+  if (actual !== null) options.adoptSessionIncarnation?.(sessionId, actual);
+  if (expected !== null && actual !== expected) {
+    ws.send(JSON.stringify({type:'protocol_error', message:'This session incarnation is no longer available.'}));
+    ws.close(4002, 'session_incarnation_changed');
+    return false;
+  }
+  return true;
+}
+
+function validDimensions(cols, rows) {
+  return Number.isInteger(cols) && cols >= 2 && cols <= 1000
+    && Number.isInteger(rows) && rows >= 1 && rows <= 1000;
+}
+
+function validateMessage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.type !== 'string') throw new Error('Message type is required.');
+  const fields = {
+    claim_control: ['requestId', 'cols', 'rows'], input: ['data', 'controlRevision'], resize: ['cols', 'rows', 'controlRevision'],
+    resume: ['lastSeenSeq'], rehydrate: [], visibility_change: ['state'], recovery_action: ['action'], user_activity: [],
+    heartbeat: ['documentVisibility', 'lastMessageAt', 'lastPaintAt', 'lastResizeAt', 'lastSeenSeq', 'reconnectCount'],
+    workflow_start: ['requestId', 'command', 'resetCommand', 'controlRevision'], workflow_stop: ['requestId', 'controlRevision'],
+  };
+  if (!fields[value.type]) throw new Error('Unknown message type.');
+  if (Object.keys(value).some(key => key !== 'type' && !fields[value.type].includes(key))) throw new Error('Message contains an unknown field.');
+  if (['claim_control', 'resize'].includes(value.type) && !validDimensions(value.cols, value.rows)) throw new Error('cols and rows must be valid terminal dimensions.');
+  if (value.type === 'claim_control' && (typeof value.requestId !== 'string' || !/^[\w-]{1,128}$/.test(value.requestId))) throw new Error('requestId is required.');
+  if (value.type === 'input' && (typeof value.data !== 'string' || value.data.length === 0 || Buffer.byteLength(value.data) > 65536)) throw new Error('data must contain 1–65536 bytes.');
+  if (['input','resize','workflow_start','workflow_stop'].includes(value.type) && (!Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0)) throw new Error('controlRevision must be a non-negative integer.');
+  if (value.type === 'resume' && (!Number.isSafeInteger(value.lastSeenSeq) || value.lastSeenSeq < 0)) throw new Error('lastSeenSeq must be a non-negative integer.');
+  if (value.type === 'visibility_change' && !['visible','hidden'].includes(value.state)) throw new Error('state must be visible or hidden.');
+  if (value.type === 'recovery_action' && (typeof value.action !== 'string' || !/^[\w-]{1,64}$/.test(value.action))) throw new Error('action must identify a recovery action.');
+  if (value.type === 'heartbeat') {
+    for (const key of fields.heartbeat) {
+      if (key === 'documentVisibility') { if (!['visible','hidden'].includes(value[key])) throw new Error('documentVisibility must be visible or hidden.'); }
+      else if (['lastSeenSeq','reconnectCount'].includes(key)) { if (!Number.isSafeInteger(value[key]) || value[key] < 0) throw new Error(`${key} must be a non-negative integer.`); }
+      else if (value[key] !== null && (typeof value[key] !== 'string' || !Number.isFinite(Date.parse(value[key])))) throw new Error(`${key} must be a timestamp or null.`);
+    }
+  }
+}
 
 function stripTerminalControl(rawData) {
   return rawData
@@ -135,14 +246,6 @@ function safeCloseSocket(ws, { sessionId, context, code, reason } = {}) {
   }
 }
 
-function safeResizePty(entry, cols, rows, sessionId) {
-  try {
-    entry.pty.resize(cols, rows);
-  } catch (err) {
-    console.warn(`[terminal] pty_resize_failed session=${sessionId} cols=${cols} rows=${rows} error=${err.message}`);
-  }
-}
-
 function safeResizeRuntimeSession(runtime, sessionId, cols, rows) {
   if (typeof runtime?.resizeSession !== 'function') return;
 
@@ -153,13 +256,19 @@ function safeResizeRuntimeSession(runtime, sessionId, cols, rows) {
   }
 }
 
-function beginBufferedAttach(entry, snapshotSeq) {
+function beginBufferedAttach(entry, snapshotSeq, ws) {
+  const attachment = ensureAttachment(entry, ws);
+  attachment.attachState?.releaseGeometry?.();
+  let releaseGeometry;
+  const geometryReady = new Promise(resolve => { releaseGeometry = resolve; });
   const attachState = {
+    geometryReady, releaseGeometry,
     mode: 'buffer_live_output',
+    bytes: 0,
     snapshotSeq,
     bufferedChunks: [],
   };
-  entry.attachState = attachState;
+  ensureAttachment(entry, ws).attachState = attachState;
   return attachState;
 }
 
@@ -263,19 +372,18 @@ function alignSnapshotBoundaryWithBufferedOutput(snapshotHydration, attachState)
   return snapshotHydration;
 }
 
-function flushBufferedAttachOutput(entry) {
-  const attachState = entry.attachState;
+function flushBufferedAttachOutput(entry, ws) {
+  const attachment = entry.attachments.get(ws);
+  const attachState = attachment?.attachState;
   if (!attachState || attachState.mode !== 'buffer_live_output') return;
-  if (!entry.ws || entry.ws.readyState !== 1) return;
+  if (ws.readyState !== 1) return;
 
-  for (const chunk of attachState.bufferedChunks) {
-    entry.ws.send(JSON.stringify({ type: 'output', seq: chunk.seq, data: chunk.data }));
-  }
-
-  entry.attachState = null;
+  for (const chunk of attachState.bufferedChunks) sendAttachment(entry, attachment, { type: 'output', ...chunk });
+  attachment.attachState = null;
+  attachState.releaseGeometry?.();
 }
 
-function releaseBootstrapAttachOutput(entry, attachState) {
+function releaseBootstrapAttachOutput(entry, attachState, ready) {
   if (!attachState || attachState.mode !== 'drop_bootstrap_output') return;
 
   setTimeout(() => {
@@ -288,10 +396,9 @@ function releaseBootstrapAttachOutput(entry, attachState) {
 
     for (const data of deliverableChunks) {
       const chunk = trackOutputChunk(entry, data);
-      if (entry.ws && entry.ws.readyState === 1) {
-        entry.ws.send(JSON.stringify({ type: 'output', seq: chunk.seq, data: chunk.data }));
-      }
+      deliverOutput(entry, chunk);
     }
+    ready();
   }, 0);
 }
 
@@ -351,10 +458,16 @@ function applySnapshotHistoryState(entry, historyState) {
   entry.historyWarningMessage = historyState.historyWarningMessage ?? null;
 }
 
-function buildSessionHandshake(entry, sessionId, existing) {
+function buildSessionHandshake(entry, sessionId, existing, ws) {
   const runtimeType = entry?.runtimeType ?? 'pty';
   return {
     type: 'session',
+    protocol: TERMINAL_PROTOCOL_VERSION,
+    attachmentId: ensureAttachment(entry, ws).id,
+    controllerId: entry.controllerId,
+    controlRevision: entry.controlRevision,
+    cols: entry.cols, rows: entry.rows,
+    incarnationId: entry.incarnationId,
     sessionId,
     existing,
     runtimeType,
@@ -367,11 +480,13 @@ function buildSessionHandshake(entry, sessionId, existing) {
  * Build a fresh session entry. Shared by the local and remote attach flows;
  * `extra` carries the remote-only fields (host, hostRuntime).
  */
-function createSessionEntry({ pty, ws, cwd, runtimeType, extra = {} }) {
+function createSessionEntry({ pty, ws, cwd, cols, rows, incarnation, runtimeType, extra = {} }) {
   const now = new Date().toISOString();
   return {
     pty,
     ws,
+    attachments: new Map(),
+    controllerId: null, controlRevision: 0, controlConflicts: 0, cols, rows, incarnationId: incarnation,
     cwd,
     startedAt: now,
     lastOutputAt: now,
@@ -410,7 +525,7 @@ function createSessionEntry({ pty, ws, cwd, runtimeType, extra = {} }) {
 
 /** Send the handshake (+snapshot/warning) and release any buffered attach output. */
 function completeAttach(ws, entry, sessionId, isExisting, { snapshotMessage, historyWarningEvent, attachState }) {
-  const sessionHandshake = buildSessionHandshake(entry, sessionId, isExisting);
+  const sessionHandshake = buildSessionHandshake(entry, sessionId, isExisting, ws);
   if (ws.readyState === 1) {
     // Restore the input lock before the browser can flush queued input at
     // the session handshake. The loop belongs to the session, not this socket.
@@ -427,11 +542,19 @@ function completeAttach(ws, entry, sessionId, isExisting, { snapshotMessage, his
     }
   }
 
+  const ready = () => {
+    const attachment = entry.attachments.get(ws);
+    if (!attachment) return;
+    attachment.ready = true;
+    sendAttachment(entry, attachment, {type:'attachment_ready'});
+  };
   if (attachState?.mode === 'buffer_live_output') {
-    flushBufferedAttachOutput(entry);
+    flushBufferedAttachOutput(entry, ws);
   } else if (attachState?.mode === 'drop_bootstrap_output') {
-    releaseBootstrapAttachOutput(entry, attachState);
+    releaseBootstrapAttachOutput(entry, attachState, ready);
+    return;
   }
+  ready();
 }
 
 /**
@@ -442,7 +565,7 @@ function completeAttach(ws, entry, sessionId, isExisting, { snapshotMessage, his
 function registerPtyDataHandler(ptyProcess, sessionId, sessions) {
   ptyProcess.onData((data) => {
     const s = sessions.get(sessionId);
-    if (!s) return;
+    if (!s || s.pty !== ptyProcess) return;
 
     const attachState = s.attachState;
     if (attachState?.mode === 'drop_bootstrap_output') {
@@ -455,14 +578,14 @@ function registerPtyDataHandler(ptyProcess, sessionId, sessions) {
 
     const chunk = trackOutputChunk(s, data);
 
-    if (attachState?.mode === 'buffer_live_output') {
-      attachState.bufferedChunks.push(chunk);
-      return;
-    }
-
-    if (s.ws && s.ws.readyState === 1) {
-      s.ws.send(JSON.stringify({ type: 'output', seq: chunk.seq, data: chunk.data }));
-    }
+    if (s.controlOutput) {
+      s.controlOutput.push(chunk);
+      s.controlOutputBytes += Buffer.byteLength(data);
+      if (s.controlOutputBytes > MAX_ATTACHMENT_BYTES) {
+        for (const attachment of [...s.attachments.values()]) { attachment.ws.close(4008, 'resize_output_overflow_reconnect'); removeAttachment(s, attachment.ws); }
+        s.controlOutput = null;
+      }
+    } else deliverOutput(s, chunk);
   });
 }
 
@@ -554,7 +677,8 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
       pushTimelineEvent(s, 'pty_detached', 'browser socket closed; durable tmux session preserved');
       return;
     }
-    if (s.pty === ptyProcess) s.workflow?.stop();
+    if (s.pty !== ptyProcess) return;
+    s.workflow?.stop();
 
     // In tmux mode, check if the underlying session survived
     if (reattachCount < MAX_TMUX_REATTACH && runtime.isSessionRecoverable(sessionId)) {
@@ -585,18 +709,54 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
     s.alive = false;
     s.clientDetached = false;
     s.wsAttached = false;
+    s.onSessionEnded?.(sessionId);
     pushTimelineEvent(s, 'pty_exited');
     console.log(`[terminal] pty_exited session=${sessionId}`);
-    if (s.ws) s.ws.close();
+    for (const attachment of s.attachments?.values() ?? []) attachment.ws.close();
   });
 }
 
 export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds = new Set(), reservedSessionIds = new Set(), options = {}) {
+  if (options.onDesktopActivity !== undefined && typeof options.onDesktopActivity !== 'function') throw new Error('onDesktopActivity must be a function.');
+  try {
+    return attachSessionSocket(ws, req, sessions, runtime, deletedSessionIds, reservedSessionIds, options);
+  } catch {
+    // Snapshot/identity failures affect this attachment, never the shared PTY or
+    // another viewer. Do not expose provider errors or terminal content.
+    for (const entry of sessions.values()) if (entry.attachments?.has(ws)) removeAttachment(entry, ws);
+    sendSpawnError(ws, {reason:'attachment_failed',message:'Terminal attachment failed. Reconnect to retry.'});
+    safeCloseSocket(ws, {code:4008,reason:'attachment_failed_reconnect'});
+  }
+}
+
+function attachSessionSocket(ws, req, sessions, runtime, deletedSessionIds, reservedSessionIds, options) {
   const params = new URL(req.url, 'http://localhost').searchParams;
-  const cwd = params.get('cwd') || process.env.HOME;
-  const sessionId = params.get('sessionId') || `s-${Date.now()}`;
-  const cols = parseInt(params.get('cols') || '120', 10);
-  const rows = parseInt(params.get('rows') || '30', 10);
+  if (params.get('protocol') !== String(TERMINAL_PROTOCOL_VERSION)) {
+    ws.send(JSON.stringify({type:'protocol_error', message:'Reload or update CodeDeck: terminal protocol 2 is required.', supportedProtocol:2}));
+    ws.close(4006, 'protocol_update_required');
+    return;
+  }
+  const queryFields = ['protocol','sessionId','cwd','cols','rows','incarnation','companion'];
+  if ([...params.keys()].some(key => !queryFields.includes(key) || params.getAll(key).length !== 1 || params.get(key) === '')
+    || (params.has('companion') && params.get('companion') !== '1')) {
+    ws.send(JSON.stringify({type:'protocol_error',message:'Attachment query contains an invalid, empty, or duplicate field.'}));
+    ws.close(4006, 'invalid_attachment'); return;
+  }
+  const cwd = params.get('cwd') ?? process.env.HOME;
+  const sessionId = params.get('sessionId') ?? `s-${Date.now()}`;
+  const cols = Number(params.get('cols') ?? '120');
+  const rows = Number(params.get('rows') ?? '30');
+  // Desktop session identities contain the project name, including spaces and
+  // Unicode. Match the durable runtime's identity contract without rewriting IDs.
+  if (!validDimensions(cols, rows) || !sessionId.trim() || sessionId.length > 256 || /[\x00-\x1f\x7f]/.test(sessionId) || typeof cwd !== 'string' || cwd.length === 0 || cwd.includes('\0')) {
+    ws.send(JSON.stringify({type:'protocol_error', message:'sessionId, cwd, cols and rows must be valid.'})); ws.close(4006, 'invalid_attachment'); return;
+  }
+  let incarnation = options.getSessionIncarnation?.(sessionId, {create: !params.has('incarnation')}) ?? null;
+  const requiresExisting = params.has('incarnation') || params.get('companion') === '1';
+  const expectedIncarnation = params.get('incarnation');
+  if (params.get('companion') === '1' && !params.has('incarnation')) {
+    ws.send(JSON.stringify({type:'protocol_error', message:'This session incarnation is no longer available.'})); ws.close(4002, 'session_incarnation_changed'); return;
+  }
 
   if (deletedSessionIds.has(sessionId)) {
     safeCloseSocket(ws, {
@@ -639,9 +799,12 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
         cwd,
         cols,
         rows,
+        incarnation, expectedIncarnation, requiresExisting, isCompanion: params.get('companion') === '1',
         host: hostResolution.host,
         hostRuntime: hostResolution.hostRuntime,
       }, sessions, deletedSessionIds, options).catch((err) => {
+        const entry = sessions.get(sessionId);
+        if (entry) removeAttachment(entry, ws);
         console.warn(`[terminal] remote_attach_failed session=${sessionId} host=${hostResolution.host} error=${err.message}`);
         sendSpawnError(ws, {
           reason: 'spawn_failed',
@@ -678,6 +841,14 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     && entry.runtimeType === 'tmux'
     && !entry.alive
     && runtime.isSessionRecoverable(sessionId);
+  if (typeof runtime.getSessionIncarnation === 'function' && (entry?.alive || recoverableTmuxWithoutEntry || recoverableTmuxDeadEntry)) {
+    incarnation = runtime.getSessionIncarnation(sessionId);
+  }
+  if (!validateIncarnation(ws, sessionId, incarnation, expectedIncarnation, options)) return;
+  if (requiresExisting && !(entry?.alive || recoverableTmuxWithoutEntry || recoverableTmuxDeadEntry)) {
+    ws.send(JSON.stringify({type:'protocol_error',message:'This terminal session has ended.'}));
+    ws.close(4002, 'session_ended'); return;
+  }
   const isExisting = !!entry || recoverableTmuxWithoutEntry || recoverableTmuxDeadEntry;
   let snapshotMessage = null;
   let historyWarningEvent = null;
@@ -697,8 +868,13 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     let ptyProcess;
     try {
       ptyProcess = runtime.spawn({ cwd, cols, rows, sessionId });
+      if (typeof runtime.getSessionIncarnation === 'function') {
+        incarnation = runtime.getSessionIncarnation(sessionId);
+        if (!validateIncarnation(ws, sessionId, incarnation, expectedIncarnation, options)) { ptyProcess.kill(); return; }
+      }
     } catch (err) {
-      const message = `Failed to start terminal: ${err.message}`;
+      if (ptyProcess) ptyProcess.kill();
+      const message = 'Failed to start terminal or verify its durable identity.';
       ws.send(JSON.stringify({
         type: 'spawn_error',
         reason: 'spawn_failed',
@@ -709,7 +885,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
       return;
     }
 
-    entry = createSessionEntry({ pty: ptyProcess, ws, cwd, runtimeType: runtime.type });
+    entry = createSessionEntry({ pty: ptyProcess, ws, cwd, cols, rows, incarnation, runtimeType: runtime.type, extra: {onSessionEnded: options.onSessionEnded} });
 
     if (snapshotHistoryState) {
       applySnapshotHistoryState(entry, snapshotHistoryState);
@@ -736,8 +912,7 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
   } else {
     if (entry.runtimeType === 'tmux' && entry.alive) {
       const snapshotSeq = entry.lastSeq ?? 0;
-      attachState = beginBufferedAttach(entry, snapshotSeq);
-      safeResizeRuntimeSession(runtime, sessionId, cols, rows);
+      attachState = beginBufferedAttach(entry, snapshotSeq, ws);
       const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(
         resolveSnapshotHydration(runtime, sessionId, snapshotSeq),
         attachState,
@@ -750,16 +925,9 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
     }
 
     // Existing session — update the active WebSocket reference
-    const previousWs = entry.ws;
-    if (previousWs && previousWs !== ws) {
-      safeCloseSocket(previousWs, {
-        sessionId,
-        context: 'session_takeover',
-        code: SESSION_TAKEOVER_CLOSE_CODE,
-        reason: SESSION_TAKEOVER_CLOSE_REASON,
-      });
-    }
+    ensureAttachment(entry, ws);
     entry.ws = ws;
+    entry.incarnationId = incarnation;
     entry.wsAttached = true;
     entry.lastAttachAt = new Date().toISOString();
     pushTimelineEvent(entry, 'attach', recoverableTmuxDeadEntry ? 'reconnect_recovery' : 'reconnect');
@@ -793,16 +961,17 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
       applySnapshotHistoryState(entry, snapshotHistoryState);
     }
 
-    // Resize to match the new client's dimensions
-    safeResizePty(entry, cols, rows, sessionId);
+
   }
 
   registerSessionSocketHandlers(ws, entry, sessionId, {
     onInput: options.onInput,
+    onDesktopActivity: options.onDesktopActivity,
+    isCompanion: params.get('companion') === '1',
     sessionExists: () => sessions.get(sessionId) === entry && !deletedSessionIds.has(sessionId),
     resizeRuntime: (cols, rows) => {
-      if (entry.runtimeType === 'tmux') {
-        safeResizeRuntimeSession(runtime, sessionId, cols, rows);
+      if (entry.runtimeType === 'tmux' && typeof runtime.resizeSession === 'function') {
+        return runtime.resizeSession(sessionId, cols, rows);
       }
     },
     resolveHydration: typeof runtime.captureSessionSnapshot === 'function'
@@ -822,6 +991,8 @@ export function handleWsConnection(ws, req, sessions, runtime, deletedSessionIds
  *   Promise (remote); when it does, the rehydrate reply is sent on resolve.
  */
 function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
+  const attachment = ensureAttachment(entry, ws);
+  attachment.isCompanion = ops.isCompanion;
   const observeInput = (data) => {
     if (!ops.onInput) return;
     queueMicrotask(() => {
@@ -830,7 +1001,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
     });
   };
   const sendWorkflowState = (state, requestId = null) => {
-    if (ws.readyState === 1 && entry.ws === ws) ws.send(JSON.stringify({ type: 'workflow_state', requestId, state }));
+    if (ws.readyState === 1 && entry.attachments.has(ws)) ws.send(JSON.stringify({ type: 'workflow_state', requestId, state }));
   };
   const workflow = entry.workflow ?? createTerminalWorkflow({
     write: data => {
@@ -839,9 +1010,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
       observeInput(data);
     },
     notify: state => {
-      if (entry.wsAttached && entry.ws?.readyState === 1) {
-        entry.ws.send(JSON.stringify({ type: 'workflow_state', requestId: null, state }));
-      }
+      broadcast(entry, { type: 'workflow_state', requestId: null, state });
       // Release our background attachment when the loop ends. Defer until
       // any PTY exit handler has finished updating the session lifecycle.
       if (!state.active) Promise.resolve().then(() => {
@@ -850,16 +1019,73 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
     },
   });
   entry.workflow = workflow;
+  const controlFailure = () => {
+    entry.controlOutput = null;
+    if (ws.readyState === 1) ws.send(JSON.stringify({type:'control_error', message:'Terminal control resize failed; reconnect and try again.'}));
+  };
+  const resizeAndPublish = (parsed, claim) => {
+    // Snapshot data must reach its viewer before any new canonical grid. Capture
+    // these holds now: later snapshots wait this operation, avoiding a cycle.
+    const hydrationHolds = [...entry.attachments.values()].map(value => value.attachState?.geometryReady).filter(Boolean);
+    const operation = () => {
+      if (!entry.attachments.has(ws) || ws.readyState !== 1 || !ops.sessionExists()) return;
+      if (!claim && (entry.controllerId !== attachment.id || parsed.controlRevision !== entry.controlRevision)) {
+        entry.controlConflicts++;
+        ws.send(JSON.stringify({...controlState(entry),type:'control_error',message:'Control changed before resize.'}));
+        return;
+      }
+      entry.controlOutput = []; entry.controlOutputBytes = 0;
+      const finish = () => {
+        entry.pty.resize(parsed.cols, parsed.rows);
+        entry.cols = parsed.cols; entry.rows = parsed.rows;
+        if (claim && entry.attachments.has(ws) && ws.readyState === 1) {
+          entry.controllerId = attachment.id; entry.controlRevision++;
+        }
+        broadcast(entry, controlState(entry, claim ? parsed.requestId : null));
+        const buffered = entry.controlOutput ?? [];
+        entry.controlOutput = null;
+        for (const chunk of buffered) deliverOutput(entry, chunk);
+      };
+      const resized = ops.resizeRuntime(parsed.cols, parsed.rows);
+      if (resized?.then) return resized.then(finish);
+      finish();
+    };
+    const afterHydration = () => hydrationHolds.length ? Promise.all(hydrationHolds).then(operation) : operation();
+    if (entry.controlPending) entry.controlPending = entry.controlPending.then(afterHydration).catch(controlFailure);
+    else {
+      const pending = afterHydration();
+      if (pending?.then) entry.controlPending = pending.catch(controlFailure);
+    }
+    const pending = entry.controlPending;
+    if (pending) pending.finally(() => { if (entry.controlPending === pending) entry.controlPending = null; });
+  };
   // Browser -> PTY
   ws.on('message', (msg) => {
-    if (entry.ws !== ws) return;
+    if (!entry.attachments.has(ws) || !ops.sessionExists()) return;
 
     try {
+      if (Buffer.byteLength(msg) > 131072) throw new Error('Terminal message exceeds maximum size.');
       const parsed = JSON.parse(msg.toString());
+      validateMessage(parsed);
+      if (parsed.type === 'user_activity') {
+        if (!attachment.isCompanion) ops.onDesktopActivity?.();
+        return;
+      }
+      if (parsed.type === 'claim_control') {
+        if (!attachment.ready || !entry.alive) throw new Error('Attachment snapshot or terminal is not ready.');
+        try { resizeAndPublish(parsed, true); } catch { controlFailure(); }
+        return;
+      }
+      if (['input','resize','workflow_start','workflow_stop'].includes(parsed.type)
+        && (entry.controlPending || entry.controllerId !== attachment.id || parsed.controlRevision !== entry.controlRevision)) {
+        entry.controlConflicts++;
+        ws.send(JSON.stringify({...controlState(entry), type:'control_error', message:'Control changed. Interact again to take control.'}));
+        return;
+      }
       if (typeof parsed?.type === 'string' && parsed.type.startsWith('workflow_')) {
         try {
           if (typeof parsed.requestId !== 'string' || !/^[\w-]{1,128}$/.test(parsed.requestId)) throw new Error('Workflow requestId must contain 1–128 letters, digits, underscores or hyphens.');
-          const { type, ...request } = parsed;
+          const { type, controlRevision, ...request } = parsed;
           if (type === 'workflow_start') workflow.start(request);
           else if (type === 'workflow_stop') {
             if (Object.keys(request).some(key => key !== 'requestId')) throw new Error('Workflow stop contains an unknown field.');
@@ -875,10 +1101,9 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
         observeInput(parsed.data);
         workflow.input(parsed.data);
       } else if (parsed.type === 'resize') {
-        ops.resizeRuntime(parsed.cols, parsed.rows);
-        entry.pty.resize(parsed.cols, parsed.rows);
+        try { resizeAndPublish(parsed, false); } catch { controlFailure(); }
       } else if (parsed.type === 'heartbeat') {
-        entry.lastClientAckAt = new Date().toISOString();
+        attachment.lastClientAckAt = new Date().toISOString();
         // Store client-reported diagnostics from heartbeat
         if (parsed.documentVisibility) entry.documentVisibility = parsed.documentVisibility;
         if (parsed.lastMessageAt) entry.clientLastMessageAt = parsed.lastMessageAt;
@@ -886,6 +1111,8 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
         if (parsed.lastResizeAt) entry.clientLastResizeAt = parsed.lastResizeAt;
         if (typeof parsed.lastSeenSeq === 'number') entry.clientLastSeenSeq = parsed.lastSeenSeq;
         if (typeof parsed.reconnectCount === 'number') entry.clientReconnectCount = parsed.reconnectCount;
+        Object.assign(attachment, {documentVisibility:parsed.documentVisibility, clientLastMessageAt:parsed.lastMessageAt,clientLastPaintAt:parsed.lastPaintAt,clientLastResizeAt:parsed.lastResizeAt,clientLastSeenSeq:parsed.lastSeenSeq,clientReconnectCount:parsed.reconnectCount});
+        entry.lastClientAckAt = attachment.lastClientAckAt;
         // Update stall reason based on new ack
         const prevStallReason = entry.stallReason;
         entry.stallReason = computeStallReason(entry);
@@ -922,8 +1149,9 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
         }
 
         const snapshotSeq = entry.lastSeq ?? 0;
-        const attachState = beginBufferedAttach(entry, snapshotSeq);
+        const attachState = beginBufferedAttach(entry, snapshotSeq, ws);
         const finishRehydrate = (hydration) => {
+          if (!entry.attachments.has(ws) || attachment.attachState !== attachState) return;
           const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(hydration, attachState);
           applySnapshotHistoryState(entry, snapshotHydration.historyState);
 
@@ -934,7 +1162,7 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
             }
           }
 
-          flushBufferedAttachOutput(entry);
+          flushBufferedAttachOutput(entry, ws);
           entry.lastClientAckAt = new Date().toISOString();
           pushTimelineEvent(entry, 'rehydrate_served', `snapshot seq ${snapshotSeq}`);
           console.log(`[terminal] rehydrate session=${sessionId} snapshotSeq=${snapshotSeq}`);
@@ -942,21 +1170,26 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
 
         // Local hydration resolves synchronously (send ordering preserved);
         // remote hydration arrives from the host runner asynchronously.
-        const hydration = ops.resolveHydration(sessionId, snapshotSeq);
-        if (hydration && typeof hydration.then === 'function') {
-          hydration.then(finishRehydrate).catch((err) => {
-            pushTimelineEvent(entry, 'rehydrate_failed', err.message);
-            console.warn(`[terminal] rehydrate_failed session=${sessionId} error=${err.message}`);
-          });
-        } else {
-          finishRehydrate(hydration);
-        }
+        const failHydration = (err) => {
+          attachment.attachState?.releaseGeometry?.();
+          attachment.attachState = null;
+          ws.close(4008, 'snapshot_failed_reconnect');
+          removeAttachment(entry, ws);
+          pushTimelineEvent(entry, 'rehydrate_failed', 'snapshot capture failed');
+          console.warn(`[terminal] rehydrate_failed session=${sessionId}`);
+        };
+        try {
+          const hydration = ops.resolveHydration(sessionId, snapshotSeq);
+          if (hydration && typeof hydration.then === 'function') hydration.then(finishRehydrate).catch(failHydration);
+          else finishRehydrate(hydration);
+        } catch (err) { failHydration(err); }
       } else if (parsed.type === 'recovery_action') {
         const action = parsed.action || 'unknown';
         pushTimelineEvent(entry, `recovery_${action}`, `user-initiated ${action}`);
         console.log(`[terminal] recovery action=${action} session=${sessionId}`);
       } else if (parsed.type === 'visibility_change') {
-        entry.documentVisibility = parsed.state || 'visible';
+        attachment.documentVisibility = parsed.state;
+        entry.documentVisibility = parsed.state;
         const eventType = parsed.state === 'hidden' ? 'visibility_hidden' : 'visibility_visible';
         pushTimelineEvent(entry, eventType);
         // Update stall reason — visibility change may clear or trigger stall
@@ -967,23 +1200,14 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
           console.log(`[terminal] stall session=${sessionId} reason=${entry.stallReason}`);
         }
       }
-    } catch {
-      // Raw string input fallback
-      if (workflow.snapshot().status === 'resetting') return;
-      entry.pty.write(msg.toString());
-      observeInput(msg.toString());
-      workflow.input(msg.toString());
+    } catch (err) {
+      if (ws.readyState === 1) ws.send(JSON.stringify({type:'protocol_error', message: err instanceof SyntaxError ? 'Terminal message must be valid JSON.' : err.message}));
     }
   });
 
   ws.on('close', () => {
-    if (entry.ws !== ws) return;
-
-    entry.wsAttached = false;
-    entry.lastDetachAt = new Date().toISOString();
-    detachTmuxClient(entry);
+    removeAttachment(entry, ws);
     pushTimelineEvent(entry, 'detach');
-    console.log(`[terminal] detach session=${sessionId}`);
   });
 }
 
@@ -1039,7 +1263,8 @@ function registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRunti
       pushTimelineEvent(s, 'pty_detached', 'browser socket closed; durable remote tmux session preserved');
       return;
     }
-    if (s.pty === ptyProcess) s.workflow?.stop();
+    if (s.pty !== ptyProcess) return;
+    s.workflow?.stop();
 
     const markRemoteDetached = (err) => {
       s.alive = false;
@@ -1055,9 +1280,10 @@ function registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRunti
       s.alive = false;
       s.clientDetached = false;
       s.wsAttached = false;
-      pushTimelineEvent(s, 'pty_exited');
+      s.onSessionEnded?.(sessionId);
+    pushTimelineEvent(s, 'pty_exited');
       console.log(`[terminal] pty_exited session=${sessionId} host=${s.host}`);
-      if (s.ws) s.ws.close();
+      for (const attachment of s.attachments?.values() ?? []) attachment.ws.close();
     };
 
     // The recoverability probe and respawn are async: a browser close (or a
@@ -1138,8 +1364,8 @@ export async function reseedRemoteDetachedSessions({
 
     const ptyProcess = await hostRuntime.spawnAsync({
       cwd: entry.cwd,
-      cols,
-      rows,
+      cols: entry.cols ?? cols,
+      rows: entry.rows ?? rows,
       sessionId,
     });
 
@@ -1153,14 +1379,19 @@ export async function reseedRemoteDetachedSessions({
     registerPtyDataHandler(ptyProcess, sessionId, sessions);
     registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRuntime, cols, rows);
 
+    if (!entry.attachments) ensureAttachment(entry, entry.ws);
+    const snapshotSeq = entry.lastSeq ?? 0;
+    for (const attachment of entry.attachments.values()) beginBufferedAttach(entry, snapshotSeq, attachment.ws);
     const snapshot = await hostRuntime.captureSessionSnapshotAsync(sessionId, TERMINAL_SNAPSHOT_WINDOW_LINES);
-    const snapshotHydration = buildSnapshotHydration(snapshot, 'tmux', sessionId, entry.lastSeq ?? 0);
-    applySnapshotHistoryState(entry, snapshotHydration.historyState);
-    completeAttach(entry.ws, entry, sessionId, true, {
-      snapshotMessage: snapshotHydration.snapshotMessage,
-      historyWarningEvent: snapshotHydration.historyWarningEvent,
-      attachState: null,
-    });
+    for (const attachment of entry.attachments.values()) {
+      const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(buildSnapshotHydration(snapshot, 'tmux', sessionId, snapshotSeq), attachment.attachState);
+      applySnapshotHistoryState(entry, snapshotHydration.historyState);
+      completeAttach(attachment.ws, entry, sessionId, true, {
+        snapshotMessage: snapshotHydration.snapshotMessage,
+        historyWarningEvent: snapshotHydration.historyWarningEvent,
+        attachState: attachment.attachState,
+      });
+    }
     pushTimelineEvent(entry, 'host_recovered_reseed', `fresh snapshot sent for host ${host}`);
     reseeded.push(sessionId);
   }
@@ -1174,7 +1405,7 @@ export async function reseedRemoteDetachedSessions({
  * host runtime. Kept separate so the local path stays fully synchronous — the
  * local suite's send-ordering guarantees depend on that.
  */
-async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, hostRuntime }, sessions, deletedSessionIds = new Set(), options = {}) {
+async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, incarnation, expectedIncarnation, requiresExisting, isCompanion, host, hostRuntime }, sessions, deletedSessionIds = new Set(), options = {}) {
   // Per-host tmux requirement (§8.3) — the message names the host, and an
   // unreachable host is reported distinctly from a missing tmux.
   const tmuxCheck = await hostRuntime.checkTmuxAsync();
@@ -1208,6 +1439,14 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
     }
   }
 
+  if (typeof hostRuntime.getSessionIncarnationAsync === 'function' && (entry?.alive || recoverable)) {
+    incarnation = await hostRuntime.getSessionIncarnationAsync(sessionId);
+  }
+  if (!validateIncarnation(ws, sessionId, incarnation, expectedIncarnation, options)) return;
+  if (requiresExisting && !(entry?.alive || recoverable)) {
+    ws.send(JSON.stringify({type:'protocol_error',message:'This terminal session has ended.'}));
+    ws.close(4002, 'session_ended'); return;
+  }
   const recoverableWithoutEntry = !entry && recoverable;
   let recoverableDeadEntry = !!entry && !entry.alive && recoverable;
   const isExisting = !!entry || recoverableWithoutEntry;
@@ -1217,6 +1456,8 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
   let attachState = null;
 
   async function resolveRemoteHydration(snapshotSeq) {
+    const pendingControl = entry?.controlPending;
+    if (pendingControl) await pendingControl;
     const snapshot = await hostRuntime.captureSessionSnapshotAsync(sessionId, TERMINAL_SNAPSHOT_WINDOW_LINES);
     return buildSnapshotHydration(snapshot, 'tmux', sessionId, snapshotSeq);
   }
@@ -1233,7 +1474,12 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
     let ptyProcess;
     try {
       ptyProcess = await hostRuntime.spawnAsync({ cwd, cols, rows, sessionId });
+      if (typeof hostRuntime.getSessionIncarnationAsync === 'function') {
+        incarnation = await hostRuntime.getSessionIncarnationAsync(sessionId);
+        if (!validateIncarnation(ws, sessionId, incarnation, expectedIncarnation, options)) { ptyProcess.kill(); return; }
+      }
     } catch (err) {
+      if (ptyProcess) ptyProcess.kill();
       const transport = isTransportFailure(err);
       const message = transport
         ? `Host "${host}" is unreachable. ${err.message}`
@@ -1268,8 +1514,9 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
       pty: ptyProcess,
       ws,
       cwd,
+      cols, rows, incarnation,
       runtimeType: 'tmux',
-      extra: { host, hostRuntime },
+      extra: { host, hostRuntime, onSessionEnded: options.onSessionEnded },
     });
 
     if (snapshotHistoryState) {
@@ -1291,8 +1538,7 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
   } else {
     if (entry.runtimeType === 'tmux' && entry.alive) {
       const snapshotSeq = entry.lastSeq ?? 0;
-      attachState = beginBufferedAttach(entry, snapshotSeq);
-      await hostRuntime.resizeSessionAsync(sessionId, cols, rows);
+      attachState = beginBufferedAttach(entry, snapshotSeq, ws);
       const snapshotHydration = alignSnapshotBoundaryWithBufferedOutput(
         await resolveRemoteHydration(snapshotSeq),
         attachState,
@@ -1325,16 +1571,9 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
       attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
     }
 
-    const previousWs = entry.ws;
-    if (previousWs && previousWs !== ws) {
-      safeCloseSocket(previousWs, {
-        sessionId,
-        context: 'session_takeover',
-        code: SESSION_TAKEOVER_CLOSE_CODE,
-        reason: SESSION_TAKEOVER_CLOSE_REASON,
-      });
-    }
+    ensureAttachment(entry, ws);
     entry.ws = ws;
+    entry.incarnationId = incarnation;
     entry.wsAttached = true;
     entry.lastAttachAt = new Date().toISOString();
     // Refresh the routing pin: the host's sshTarget may have changed since the
@@ -1371,15 +1610,16 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
       applySnapshotHistoryState(entry, snapshotHistoryState);
     }
 
-    safeResizePty(entry, cols, rows, sessionId);
   }
 
   registerSessionSocketHandlers(ws, entry, sessionId, {
     onInput: options.onInput,
+    onDesktopActivity: options.onDesktopActivity,
+    isCompanion,
     sessionExists: () => sessions.get(sessionId) === entry && !deletedSessionIds.has(sessionId),
     resizeRuntime: (resizeCols, resizeRows) => {
       // Best-effort remote resize; errors are swallowed inside the runtime.
-      hostRuntime.resizeSessionAsync(sessionId, resizeCols, resizeRows);
+      return hostRuntime.resizeSessionAsync(sessionId, resizeCols, resizeRows);
     },
     resolveHydration: (id, seq) => resolveRemoteHydration(seq),
   });
@@ -1389,10 +1629,8 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, host, 
   // The socket may have closed while we awaited SSH round-trips — its 'close'
   // event fired before our handler was registered, so record the detach here
   // or the entry would look attached forever and never be GC'd.
-  if (ws.readyState !== 1 && entry.ws === ws) {
-    entry.wsAttached = false;
-    entry.lastDetachAt = new Date().toISOString();
-    detachTmuxClient(entry);
+  if (ws.readyState !== 1) {
+    removeAttachment(entry, ws);
     pushTimelineEvent(entry, 'detach', 'socket closed during attach');
   }
 }

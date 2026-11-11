@@ -38,7 +38,7 @@ function createMockWs() {
 }
 
 function createMockReq({ sessionId, cwd, cols, rows } = {}) {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({protocol:'2'});
   if (sessionId) params.set('sessionId', sessionId);
   if (cwd) params.set('cwd', cwd);
   if (cols) params.set('cols', String(cols));
@@ -135,7 +135,9 @@ it('keeps a remote workflow attached after browser disconnect and releases it wh
   const f = attachRemote();
   await f.result;
   const pty = f.hostRuntime.ptys[0];
-  f.ws._emit('message', JSON.stringify({ type: 'workflow_start', requestId: 'remote-run', command: 'one pass', resetCommand: '/clear' }));
+  f.ws._emit('message', JSON.stringify({type:'claim_control',requestId:'claim',cols:100,rows:40}));
+  await flushAsync();
+  f.ws._emit('message', JSON.stringify({ type: 'workflow_start', controlRevision:1, requestId: 'remote-run', command: 'one pass', resetCommand: '/clear' }));
   const identifier = pty.write.mock.calls[0][0].match(/Iteration identifier: ([\w-]+)/)[1];
   f.ws.readyState = 3;
   f.ws._emit('close');
@@ -246,7 +248,7 @@ describe('remote session attach', () => {
     const second = attachRemote({ sessions, hostRuntime, ws: secondWs });
     await second.result;
 
-    expect(first.ws.close).toHaveBeenCalledWith(4001, 'session_taken_over');
+    expect(first.ws.close).not.toHaveBeenCalled();
     const snapshot = sentMessages(secondWs).find(m => m.type === 'snapshot');
     expect(snapshot.data).toBe('fresh-reseed\r\n');
     expect(sessions.get('rp-1').ws).toBe(secondWs);
@@ -440,7 +442,7 @@ describe('remote attach lifecycle', () => {
     expect(hostRuntime.spawnAsync).toHaveBeenCalledTimes(1);
     expect(sessions.size).toBe(1);
     // The second connection took over the first (existing reconnect semantics).
-    expect(first.ws.close).toHaveBeenCalledWith(4001, 'session_taken_over');
+    expect(first.ws.close).not.toHaveBeenCalled();
     expect(sessions.get('rp-1').ws).toBe(second.ws);
   });
 
@@ -513,7 +515,7 @@ describe('remote attach lifecycle', () => {
     expect(hostRuntime.killAsync).not.toHaveBeenCalled();
   });
 
-  it('recovers if the previous browser closes while a replacement is hydrating', async () => {
+  it('keeps the shared PTY when the previous browser closes while another hydrates', async () => {
     const sessions = new Map();
     const hostRuntime = createFakeHostRuntime({ recoverable: true });
     const first = attachRemote({ sessions, hostRuntime });
@@ -532,12 +534,12 @@ describe('remote attach lifecycle', () => {
     await flushAsync(2);
 
     first.ws._emit('close');
-    expect(sessions.get('rp-1').alive).toBe(false);
+    expect(sessions.get('rp-1').alive).toBe(true);
     releaseSnapshot();
     await second.result;
 
     const entry = sessions.get('rp-1');
-    expect(hostRuntime.spawnAsync).toHaveBeenCalledTimes(2);
+    expect(hostRuntime.spawnAsync).toHaveBeenCalledTimes(1);
     expect(entry.ws).toBe(second.ws);
     expect(entry.wsAttached).toBe(true);
     expect(entry.alive).toBe(true);
@@ -560,6 +562,8 @@ describe('remote attach lifecycle', () => {
     first.ws._emit('close');
     // The remote tmux session terminates in the same window — nothing left to recover.
     hostRuntime.isSessionRecoverableAsync.mockResolvedValue(false);
+    hostRuntime.ptys[0].emitExit({exitCode:0});
+    await flushAsync();
     releaseSnapshot();
     await second.result;
 
@@ -597,10 +601,12 @@ describe('remote session messages', () => {
     const { ws, sessions, result } = attachRemote({ hostRuntime });
     await result;
 
-    ws._emit('message', JSON.stringify({ type: 'input', data: 'ls\n' }));
+    ws._emit('message', JSON.stringify({type:'claim_control',requestId:'claim',cols:100,rows:40}));
+    await flushAsync();
+    ws._emit('message', JSON.stringify({ type: 'input', data: 'ls\n',controlRevision:1 }));
     expect(sessions.get('rp-1').pty.write).toHaveBeenCalledWith('ls\n');
 
-    ws._emit('message', JSON.stringify({ type: 'resize', cols: 90, rows: 25 }));
+    ws._emit('message', JSON.stringify({ type: 'resize', cols: 90, rows: 25,controlRevision:1 }));
     await flushAsync();
     expect(hostRuntime.resizeSessionAsync).toHaveBeenCalledWith('rp-1', 90, 25);
     expect(sessions.get('rp-1').pty.resize).toHaveBeenCalledWith(90, 25);
@@ -618,4 +624,79 @@ describe('remote session messages', () => {
     const snapshot = sentMessages(ws).find(m => m.type === 'snapshot');
     expect(snapshot.data).toBe('rehydrated\r\n');
   });
+});
+
+
+describe('remote multiple attachment ordering', () => {
+  it('serializes concurrent remote claims, broadcasts dimensions first, and rejects stale input', async () => {
+    const sessions = new Map(); const hostRuntime = createFakeHostRuntime();
+    const a = attachRemote({sessions,hostRuntime}); await a.result;
+    const b = attachRemote({sessions,hostRuntime}); await b.result;
+    let release;
+    hostRuntime.resizeSessionAsync.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    a.ws._emit('message', JSON.stringify({type:'claim_control',requestId:'a',cols:80,rows:24}));
+    b.ws._emit('message', JSON.stringify({type:'claim_control',requestId:'b',cols:90,rows:30}));
+    hostRuntime.ptys[0].emitData('resize output');
+    expect(sentMessages(b.ws).filter(m=>m.type==='output')).toHaveLength(0);
+    release(); await flushAsync();
+    const controls = sentMessages(b.ws).filter(m=>m.type==='control_state');
+    expect(controls.map(m=>m.requestId)).toEqual(['a','b']);
+    expect(controls.map(m=>m.controlRevision)).toEqual([1,2]);
+    a.ws._emit('message',JSON.stringify({type:'input',data:'stale',controlRevision:1}));
+    expect(hostRuntime.ptys[0].write).not.toHaveBeenCalled();
+    expect(sentMessages(a.ws).at(-1).type).toBe('control_error');
+  });
+  it('rehydrates only the requesting client while another continues receiving output', async () => {
+    const sessions = new Map(); const hostRuntime = createFakeHostRuntime();
+    const a=attachRemote({sessions,hostRuntime});await a.result;
+    const b=attachRemote({sessions,hostRuntime});await b.result;
+    let release;
+    hostRuntime.captureSessionSnapshotAsync.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+    a.ws._emit('message',JSON.stringify({type:'rehydrate'}));
+    hostRuntime.ptys[0].emitData('live');
+    expect(sentMessages(b.ws).at(-1)).toMatchObject({type:'output',data:'live'});
+    expect(sentMessages(a.ws).filter(m=>m.type==='output')).toHaveLength(0);
+    release({data:'history',lineCount:1,windowLines:10000,historyGuaranteed:true});await flushAsync();
+    expect(sentMessages(a.ws).at(-1)).toMatchObject({type:'output',data:'live'});
+  });
+  it('recovery reseeds every live attachment without changing ownership',async()=>{
+    const sessions=new Map();const hostRuntime=createFakeHostRuntime({recoverable:true});
+    const a=attachRemote({sessions,hostRuntime});await a.result;await flushAsync();
+    const b=attachRemote({sessions,hostRuntime});await b.result;
+    const entry=sessions.get('rp-1');entry.alive=false;entry.remoteDetached=true;
+    a.ws.send.mockClear();b.ws.send.mockClear();
+    await reseedRemoteDetachedSessions({sessions,host:'devbox',hostRuntime});
+    for(const ws of [a.ws,b.ws])expect(sentMessages(ws).some(m=>m.type==='snapshot')).toBe(true);
+    expect(entry.controllerId).toBeNull();
+  });
+});
+
+
+it('rejects an expired remote incarnation before spawning its replacement',async()=>{
+  const hostRuntime=createFakeHostRuntime({recoverable:true});
+  hostRuntime.getSessionIncarnationAsync=vi.fn(async()=> 'new-incarnation');
+  const ws=createMockWs();const sessions=new Map();const adoptSessionIncarnation=vi.fn();
+  await handleWsConnection(ws,{url:'/ws/terminal?protocol=2&sessionId=rp-1&cwd=/tmp&incarnation=old-incarnation'},sessions,createLocalRuntime(),new Set(),new Set(),{
+    resolveHostRuntime:()=>({host:'devbox',hostRuntime}),getSessionIncarnation:()=> 'old-incarnation',adoptSessionIncarnation,
+  });
+  expect(ws.close).toHaveBeenCalledWith(4002,'session_incarnation_changed');
+  expect(hostRuntime.spawnAsync).not.toHaveBeenCalled();
+  expect(adoptSessionIncarnation).toHaveBeenCalledWith('rp-1','new-incarnation');
+});
+
+it('holds remote control geometry changes until an in-flight snapshot is delivered',async()=>{
+  const sessions=new Map();const hostRuntime=createFakeHostRuntime();
+  const a=attachRemote({sessions,hostRuntime});await a.result;
+  let release;
+  hostRuntime.captureSessionSnapshotAsync.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+  const b=attachRemote({sessions,hostRuntime});await flushAsync();
+  a.ws._emit('message',JSON.stringify({type:'claim_control',requestId:'during-capture',cols:50,rows:20}));
+  await flushAsync();
+  expect(hostRuntime.resizeSessionAsync).not.toHaveBeenCalled();
+  release({data:'old grid',lineCount:1,windowLines:10000,historyGuaranteed:true});
+  await b.result;await flushAsync();
+  const messages=sentMessages(b.ws);
+  expect(messages.findIndex(m=>m.type==='snapshot')).toBeLessThan(messages.findIndex(m=>m.type==='control_state'));
+  expect(messages.find(m=>m.type==='session')).toMatchObject({cols:100,rows:40});
+  expect(messages.find(m=>m.type==='control_state')).toMatchObject({cols:50,rows:20});
 });

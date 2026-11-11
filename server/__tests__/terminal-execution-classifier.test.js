@@ -12,6 +12,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'node',
       paneDead: '1',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: '• Working (34s • esc to interrupt)',
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_DEAD,
@@ -25,6 +26,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: 'some terminal text',
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_UNKNOWN,
@@ -38,6 +40,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'zsh',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         'Deployment to production completed successfully',
         '',
@@ -57,6 +60,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'bash',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         'Starting deployment process...',
         'Deploying to production...',
@@ -75,6 +79,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'zsh',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         'dev@host frontend.v3 %',
         'Starting deployment process...',
@@ -95,6 +100,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'npm',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: 'running tests without output',
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_RUNNING,
@@ -108,6 +114,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'node',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '• Working (34s • esc to interrupt)',
         '',
@@ -127,6 +134,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'node',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '• Full verification is still running. The earlier targeted suites passed.',
         '',
@@ -138,7 +146,7 @@ describe('terminal execution classifier', () => {
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_RUNNING,
       foregroundCommand: 'node',
-      executionReason: 'agent_background_terminal',
+      executionReason: 'agent_working',
       executionConfidence: 'high',
     });
   });
@@ -147,6 +155,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'node',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         'Remaining risk: I did not run a live browser/API smoke',
         '',
@@ -166,6 +175,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.114',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         'Want me to also verify there are not other blocks?',
         '',
@@ -186,8 +196,9 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.114',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
-        '✢ Smooshing…',
+        '✢ Smooshing… (1s · ↓ 1 tokens)',
         '',
         '──────────────────────────────────────────────────────────',
         '❯',
@@ -198,7 +209,7 @@ describe('terminal execution classifier', () => {
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_RUNNING,
       foregroundCommand: '2.1.114',
-      executionReason: 'agent_streaming',
+      executionReason: 'agent_working',
       executionConfidence: 'high',
     });
   });
@@ -207,6 +218,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.114',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '⏺ Calling bash-server, kube-mcp 11 times… (ctrl+o to expand)',
         '',
@@ -220,7 +232,7 @@ describe('terminal execution classifier', () => {
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_RUNNING,
       foregroundCommand: '2.1.114',
-      executionReason: 'agent_streaming',
+      executionReason: 'agent_working',
       executionConfidence: 'high',
     });
   });
@@ -229,6 +241,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.114',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '⏺ Done — backend now distinguishes 404 from 500.',
         '',
@@ -251,6 +264,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.114',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '⏺ Calling bash-server, kube-mcp 11 times… (ctrl+o to expand)',
         '⏺ Read 3 files (ctrl+o to expand)',
@@ -279,6 +293,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.304',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '⏺ Phones can now switch workspaces.',
         line,
@@ -300,10 +315,11 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.304',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: `${spinner} Thinking… (3m 30s · ↑ 1.5k tokens)\n❯`,
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_RUNNING,
-      executionReason: 'agent_streaming',
+      executionReason: 'agent_working',
       executionConfidence: 'high',
     });
   });
@@ -312,6 +328,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.114',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '⏺ Write(server/tests/services/devPromptService.test.js)',
         '  ⎿  Wrote 117 lines to server/tests/services/devPromptService.test.js',
@@ -328,7 +345,7 @@ describe('terminal execution classifier', () => {
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_RUNNING,
       foregroundCommand: '2.1.114',
-      executionReason: 'agent_streaming',
+      executionReason: 'agent_working',
       executionConfidence: 'high',
     });
   });
@@ -337,6 +354,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: '2.1.114',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '✻ Worked for 1m 12s',
         '',
@@ -357,6 +375,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'node',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '• Ran git diff --stat && git diff --name-only --diff-filter=U',
         '  └  .workflow/integration-parity-alignment.md         |   7 +',
@@ -382,6 +401,7 @@ describe('terminal execution classifier', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'node',
       paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
       snapshotText: [
         '• Ran git commit -m "Refactor module exports across packages" -m "This consolidates the',
         '  │ public exports of the affected packages and updates the entry point so downstream',

@@ -1,3 +1,4 @@
+import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import express from 'express';
@@ -15,7 +16,7 @@ const settings = { baseUrl: 'http://localhost:3100', provider: 'test', model: 's
 const providers = [{ id: 'test', enabled: true, available: true, defaultModel: 'small', models: ['small', 'large'], effort: ['low'], capabilities: {}, toolPolicies: [] }];
 const cleanup = [];
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); vi.restoreAllMocks(); });
-function setup() {
+async function setup() {
   const db = new Database(':memory:'); cleanup.push(() => db.close());
   const directory = mkdtempSync(path.join(tmpdir(), 'codedeck-naming-')); cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const credentials = createNamingCredentialStore(path.join(directory, 'credential'));
@@ -24,12 +25,12 @@ function setup() {
   const service = createNamingService({ store, generate: async () => 'Fix login redirects', capture: async () => 'fix login' });
   const app = express();
   app.use(createNamingRouter({ store, service, credentials, conduit, sessionExists: id => /^Demo-\d+$/.test(id) }));
-  return { app, store, credentials, conduit, service, directory, db };
+  return { app: await loopbackTestServer(app), routerApp: app, store, credentials, conduit, service, directory, db };
 }
 
 describe('naming APIs', () => {
   it('saves local CLI selection without a Conduit connection or credential', async () => {
-    const { app, conduit, credentials } = setup();
+    const { app, conduit, credentials } = await setup();
     const selection = { provider: 'claude', model: 'sonnet', effort: 'low' };
     for (let i = 0; i < 2; i++) {
       const saved = await request(app).put('/api/session-naming/settings').send(selection);
@@ -39,7 +40,7 @@ describe('naming APIs', () => {
     expect(conduit.catalog).not.toHaveBeenCalled(); expect(credentials.read()).toBeNull();
   });
   it('round-trips custom providers and returns field errors without running a CLI on save', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     const profile = { id: 'cursor', command: 'agent', args: ['--print', '--model', '{model}', '{prompt}'], effortArgs: [], input: 'argument', output: 'json' };
     const selection = { provider: 'cursor', model: 'custom', effort: null, providers: [profile] };
     const results = await Promise.all([1, 2].map(() => request(app).put('/api/session-naming/settings').send(selection)));
@@ -53,7 +54,7 @@ describe('naming APIs', () => {
     expect((await request(app).get('/api/session-naming/settings')).body).toEqual(selection);
   });
   it('validates each CLI setting with problem details', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     for (const body of [{}, { provider: null, model: null, effort: null }, { provider: 'shell', model: 'x', effort: null }, { provider: 'claude', model: '', effort: null }, { provider: 'claude', model: 'x'.repeat(257), effort: null }, { provider: 'claude', model: '$(id)', effort: null }, { provider: 'codex', model: 'x', effort: 'bad' }]) {
       const result = await request(app).put('/api/session-naming/settings').send(body);
       expect(result.status).toBe(400);
@@ -63,7 +64,7 @@ describe('naming APIs', () => {
     for (const model of ['x', 'x'.repeat(256)]) expect((await request(app).put('/api/session-naming/settings').send({ provider: 'codex', model, effort: null })).status).toBe(200);
   });
   it('persists manual titles, validates boundaries, and returns a paginated list', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     for (const title of ['', null, 'x'.repeat(61), 'a\nb']) {
       expect((await request(app).put('/api/session-naming/titles/Demo-1').send({ title })).status).toBe(400);
     }
@@ -77,13 +78,13 @@ describe('naming APIs', () => {
     expect((await request(app).put('/api/session-naming/titles/missing').send({ title: 'test' })).status).toBe(404);
   });
   it('returns 202 for retry without waiting for a result', async () => {
-    const { app, store, service } = setup(); store.saveSettings({ provider: 'claude', model: 'sonnet', effort: null });
+    const { app, store, service } = await setup(); store.saveSettings({ provider: 'claude', model: 'sonnet', effort: null });
     store.ensure('Demo-1'); store.update('Demo-1', { state: 'failed', error: 'failed' });
     expect((await request(app).post('/api/session-naming/titles/Demo-1/retry').send({})).status).toBe(202);
     await service.waitForIdle(); expect(store.get('Demo-1').state).toBe('named');
   });
   it('stores credentials in a private file and supports removal', async () => {
-    const { credentials, directory } = setup(); credentials.write('private-key');
+    const { credentials, directory } = await setup(); credentials.write('private-key');
     expect(statSync(path.join(directory, 'credential')).mode & 0o777).toBe(0o600);
     credentials.write(null); expect(credentials.read()).toBeNull();
   });

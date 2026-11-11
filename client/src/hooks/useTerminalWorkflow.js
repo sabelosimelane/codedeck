@@ -21,7 +21,7 @@ function validateMessage(message) {
   }
 }
 
-export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
+export function useTerminalWorkflow({ wsRef, sessionReadyRef, controlRef }) {
   const [state, setState] = useState(STOPPED);
   const [pending, setPending] = useState(false);
   const stateRef = useRef(STOPPED);
@@ -58,6 +58,11 @@ export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
       toastRef.current({ type: 'error', message: 'Wait for the terminal to connect before starting a workflow.' });
       return;
     }
+    if (controlRef && !controlRef.current.isController()) {
+      controlRef.current.claim();
+      toastRef.current({ type: 'warning', message: 'Taking terminal control. Retry the workflow action after acknowledgement.' });
+      return;
+    }
     if (pendingRef.current) return;
     const requestId = crypto.randomUUID();
     pendingRef.current = requestId;
@@ -65,7 +70,7 @@ export function useTerminalWorkflow({ wsRef, sessionReadyRef }) {
     lockedRef.current = true;
     inputLockedRef.current = true;
     try {
-      ws.send(JSON.stringify({ type, requestId, ...fields }));
+      ws.send(JSON.stringify({ type, requestId, ...fields, ...(controlRef ? { controlRevision: controlRef.current.revision() } : {}) }));
       timerRef.current = setTimeout(() => {
         fail('Workflow acknowledgement timed out. Automation may still be running; reconnecting to check its state.');
         ws.close();

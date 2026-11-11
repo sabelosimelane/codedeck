@@ -1,12 +1,20 @@
+import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import { describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createProjectsRouter } from '../routes/projects.js';
+import { createProjectDeletionService } from '../project-deletion-service.js';
 
 const HOSTS = [{ name: 'devbox', sshTarget: 'devbox' }];
 
-function makeApp({ projects = [], hosts = HOSTS, localPathExists, createRunner, getReachability } = {}) {
+async function makeApp({ projects = [], hosts = HOSTS, localPathExists, createRunner, getReachability, sessionIds = [], sessionEntries = [], deleteTerminalSession = vi.fn(async () => {}) } = {}) {
   const state = { projects: [...projects] };
+  const sessions = new Map(sessionEntries);
+  const listSessionIds = vi.fn(async () => sessionIds);
+  const deleteProject = createProjectDeletionService({
+    loadProjects: () => state.projects, saveProjects: p => { state.projects = p; },
+    sessions, listSessionIds, deleteTerminalSession,
+  });
   const app = express();
   app.use(express.json());
   app.use(createProjectsRouter({
@@ -16,8 +24,9 @@ function makeApp({ projects = [], hosts = HOSTS, localPathExists, createRunner, 
     localPathExists: localPathExists ?? (() => true),
     createRunner: createRunner ?? (() => remoteRunner()),
     getReachability,
+    deleteProject,
   }));
-  return { app, state };
+  return { app: await loopbackTestServer(app), routerApp: app, state, sessions, listSessionIds, deleteTerminalSession };
 }
 
 /** Fake remote runner: `test -d` result configurable per scenario. */
@@ -37,7 +46,7 @@ function remoteRunner({ pathExists = true, transportError = false } = {}) {
 
 describe('GET /api/projects', () => {
   it('includes host on every project, defaulting to local', async () => {
-    const { app } = makeApp({
+    const { app } = await makeApp({
       projects: [
         { name: 'a', path: '/a' },
         { name: 'b', path: '/b', host: 'devbox' },
@@ -49,7 +58,7 @@ describe('GET /api/projects', () => {
   });
 
   it('includes live reachability on every project for sidebar truthfulness', async () => {
-    const { app } = makeApp({
+    const { app } = await makeApp({
       projects: [
         { name: 'local-app', path: '/local' },
         { name: 'remote-app', path: '/remote', host: 'devbox' },
@@ -82,7 +91,7 @@ describe('GET /api/projects', () => {
 describe('POST /api/projects', () => {
   it('creates a local project exactly as before (no host field sent)', async () => {
     const localPathExists = vi.fn(() => true);
-    const { app, state } = makeApp({ localPathExists });
+    const { app, state } = await makeApp({ localPathExists });
     const res = await request(app).post('/api/projects').send({ name: 'p', path: '/tmp/p' });
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ name: 'p', path: '/tmp/p', host: 'local' });
@@ -92,21 +101,21 @@ describe('POST /api/projects', () => {
   });
 
   it('treats an explicit host "local" as the local host', async () => {
-    const { app, state } = makeApp();
+    const { app, state } = await makeApp();
     const res = await request(app).post('/api/projects').send({ name: 'p', path: '/tmp/p', host: 'local' });
     expect(res.status).toBe(201);
     expect(state.projects[0]).not.toHaveProperty('host');
   });
 
   it('rejects a missing local path with 400 (unchanged behavior)', async () => {
-    const { app } = makeApp({ localPathExists: () => false });
+    const { app } = await makeApp({ localPathExists: () => false });
     const res = await request(app).post('/api/projects').send({ name: 'p', path: '/nope' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('path does not exist');
   });
 
   it('rejects an unknown host with 400', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await request(app).post('/api/projects').send({ name: 'p', path: '/tmp/p', host: 'ghost' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/unknown host/i);
@@ -114,7 +123,7 @@ describe('POST /api/projects', () => {
 
   it('creates a remote project after validating the path through the host runner', async () => {
     const runner = remoteRunner({ pathExists: true });
-    const { app, state } = makeApp({ createRunner: () => runner });
+    const { app, state } = await makeApp({ createRunner: () => runner });
     const res = await request(app).post('/api/projects').send({ name: 'p', path: '/srv/app', host: 'devbox' });
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ name: 'p', path: '/srv/app', host: 'devbox' });
@@ -124,7 +133,7 @@ describe('POST /api/projects', () => {
   });
 
   it('rejects a remote path that does not exist with 400', async () => {
-    const { app, state } = makeApp({ createRunner: () => remoteRunner({ pathExists: false }) });
+    const { app, state } = await makeApp({ createRunner: () => remoteRunner({ pathExists: false }) });
     const res = await request(app).post('/api/projects').send({ name: 'p', path: '/nope', host: 'devbox' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('path does not exist');
@@ -133,7 +142,7 @@ describe('POST /api/projects', () => {
 
   it('returns 503 host unreachable without invoking the runner when reachability is already unreachable', async () => {
     const runner = remoteRunner();
-    const { app, state } = makeApp({
+    const { app, state } = await makeApp({
       createRunner: () => runner,
       getReachability: () => ({ reachability: 'unreachable', lastError: 'connect timeout' }),
     });
@@ -145,7 +154,7 @@ describe('POST /api/projects', () => {
   });
 
   it('returns 503 host unreachable when validation cannot reach the host — never creates unvalidated', async () => {
-    const { app, state } = makeApp({ createRunner: () => remoteRunner({ transportError: true }) });
+    const { app, state } = await makeApp({ createRunner: () => remoteRunner({ transportError: true }) });
     const res = await request(app).post('/api/projects').send({ name: 'p', path: '/srv/app', host: 'devbox' });
     expect(res.status).toBe(503);
     expect(res.body).toMatchObject({ error: 'host unreachable', host: 'devbox' });
@@ -153,31 +162,31 @@ describe('POST /api/projects', () => {
   });
 
   it('scopes path uniqueness per host: same path on the same host → 409', async () => {
-    const { app } = makeApp({ projects: [{ name: 'a', path: '/srv/app', host: 'devbox' }] });
+    const { app } = await makeApp({ projects: [{ name: 'a', path: '/srv/app', host: 'devbox' }] });
     const res = await request(app).post('/api/projects').send({ name: 'b', path: '/srv/app', host: 'devbox' });
     expect(res.status).toBe(409);
   });
 
   it('allows the same path on different hosts', async () => {
-    const { app } = makeApp({ projects: [{ name: 'a', path: '/srv/app', host: 'devbox' }] });
+    const { app } = await makeApp({ projects: [{ name: 'a', path: '/srv/app', host: 'devbox' }] });
     const res = await request(app).post('/api/projects').send({ name: 'b', path: '/srv/app' });
     expect(res.status).toBe(201);
   });
 
   it('still blocks duplicate local paths (absent host and explicit local are the same host)', async () => {
-    const { app } = makeApp({ projects: [{ name: 'a', path: '/tmp/p' }] });
+    const { app } = await makeApp({ projects: [{ name: 'a', path: '/tmp/p' }] });
     const res = await request(app).post('/api/projects').send({ name: 'b', path: '/tmp/p', host: 'local' });
     expect(res.status).toBe(409);
   });
 
   it('requires name and path (unchanged behavior)', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     expect((await request(app).post('/api/projects').send({ name: 'p' })).status).toBe(400);
     expect((await request(app).post('/api/projects').send({ path: '/tmp/p' })).status).toBe(400);
   });
 
   it('rejects a duplicate project name even across hosts — session ids derive from names', async () => {
-    const { app } = makeApp({ projects: [{ name: 'web', path: '/local/web' }] });
+    const { app } = await makeApp({ projects: [{ name: 'web', path: '/local/web' }] });
     const res = await request(app).post('/api/projects').send({ name: 'web', path: '/srv/web', host: 'devbox' });
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/name/i);
@@ -190,13 +199,13 @@ describe('POST /api/projects', () => {
 
 describe('PUT /api/projects/:name', () => {
   it('returns 404 for an unknown project (unchanged)', async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     expect((await request(app).put('/api/projects/ghost').send({ name: 'x' })).status).toBe(404);
   });
 
   it('renames a local project with local path validation (unchanged)', async () => {
     const localPathExists = vi.fn(() => true);
-    const { app, state } = makeApp({
+    const { app, state } = await makeApp({
       projects: [{ name: 'a', path: '/tmp/a' }],
       localPathExists,
     });
@@ -207,7 +216,7 @@ describe('PUT /api/projects/:name', () => {
   });
 
   it('rejects a local rename to a missing path with 400 (unchanged)', async () => {
-    const { app } = makeApp({
+    const { app } = await makeApp({
       projects: [{ name: 'a', path: '/tmp/a' }],
       localPathExists: () => false,
     });
@@ -216,7 +225,7 @@ describe('PUT /api/projects/:name', () => {
 
   it('validates a remote project path change through the host runner', async () => {
     const runner = remoteRunner({ pathExists: true });
-    const { app, state } = makeApp({
+    const { app, state } = await makeApp({
       projects: [{ name: 'a', path: '/srv/app', host: 'devbox' }],
       createRunner: () => runner,
     });
@@ -228,7 +237,7 @@ describe('PUT /api/projects/:name', () => {
 
   it('returns 503 without runner invocation when a remote path change targets an already-unreachable host', async () => {
     const runner = remoteRunner();
-    const { app, state } = makeApp({
+    const { app, state } = await makeApp({
       projects: [{ name: 'remote', path: '/old', host: 'devbox' }],
       createRunner: () => runner,
       getReachability: () => ({ reachability: 'unreachable', lastError: 'connect timeout' }),
@@ -241,7 +250,7 @@ describe('PUT /api/projects/:name', () => {
   });
 
   it('returns 503 when a remote path change cannot be validated (host unreachable)', async () => {
-    const { app, state } = makeApp({
+    const { app, state } = await makeApp({
       projects: [{ name: 'a', path: '/srv/app', host: 'devbox' }],
       createRunner: () => remoteRunner({ transportError: true }),
     });
@@ -251,7 +260,7 @@ describe('PUT /api/projects/:name', () => {
   });
 
   it('rejects renaming a project to a name another project already uses', async () => {
-    const { app } = makeApp({
+    const { app } = await makeApp({
       projects: [{ name: 'a', path: '/tmp/a' }, { name: 'b', path: '/tmp/b' }],
     });
     const res = await request(app).put('/api/projects/a').send({ name: 'b' });
@@ -259,7 +268,7 @@ describe('PUT /api/projects/:name', () => {
   });
 
   it('applies shelf/waiting fields without touching name/path (unchanged)', async () => {
-    const { app, state } = makeApp({ projects: [{ name: 'a', path: '/tmp/a' }] });
+    const { app, state } = await makeApp({ projects: [{ name: 'a', path: '/tmp/a' }] });
     const res = await request(app).put('/api/projects/a').send({ shelved: true, shelvedAt: 't1' });
     expect(res.status).toBe(200);
     expect(state.projects[0]).toMatchObject({ shelved: true, shelvedAt: 't1' });
@@ -267,15 +276,72 @@ describe('PUT /api/projects/:name', () => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /api/projects/:name — unchanged
+// DELETE /api/projects/:name
 // ---------------------------------------------------------------------------
 
 describe('DELETE /api/projects/:name', () => {
-  it('removes the project (unchanged behavior)', async () => {
-    const { app, state } = makeApp({ projects: [{ name: 'a', path: '/tmp/a' }] });
+  it('removes a project with no sessions', async () => {
+    const { app, state } = await makeApp({ projects: [{ name: 'a', path: '/tmp/a' }] });
     const res = await request(app).delete('/api/projects/a');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
     expect(state.projects).toHaveLength(0);
+  });
+
+  it('returns a 404 problem with traceId for an unknown project', async () => {
+    const { app, listSessionIds } = await makeApp();
+    const res = await request(app).delete('/api/projects/ghost');
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/application\/problem\+json/);
+    expect(res.body).toMatchObject({ status: 404, traceId: expect.any(String), path: '/api/projects/ghost' });
+    expect(listSessionIds).not.toHaveBeenCalled();
+  });
+
+  it('closes listed and in-memory sessions before removing the project', async () => {
+    const deleted = vi.fn(async () => {});
+    const { app, state } = await makeApp({
+      projects: [{ name: 'Mace Local', path: '/tmp/mace' }],
+      sessionIds: ['Mace_Local-3'], sessionEntries: [['Mace Local-4', {}]],
+      deleteTerminalSession: deleted,
+    });
+    const res = await request(app).delete('/api/projects/Mace%20Local');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(deleted.mock.calls.map(([id]) => id)).toEqual(['Mace Local-3', 'Mace Local-4']);
+    expect(state.projects).toHaveLength(0);
+  });
+
+  it('attempts all sessions and keeps the project when one close fails', async () => {
+    const deleted = vi.fn(async id => { if (id === 'demo-1') throw new Error('still alive'); });
+    const { app, state } = await makeApp({
+      projects: [{ name: 'demo', path: '/tmp/demo' }], sessionIds: ['demo-1', 'demo-2'], deleteTerminalSession: deleted,
+    });
+    const res = await request(app).delete('/api/projects/demo');
+    expect(res.status).toBe(500);
+    expect(res.body.detail).toMatch(/1.*demo-1/);
+    expect(res.body.traceId).toEqual(expect.any(String));
+    expect(deleted).toHaveBeenCalledTimes(2);
+    expect(state.projects).toHaveLength(1);
+  });
+
+  it('returns 503 when a close fails due to host transport', async () => {
+    const deleted = vi.fn(async () => { throw Object.assign(new Error('connect timeout'), { code: 255 }); });
+    const { app, state } = await makeApp({
+      projects: [{ name: 'demo', path: '/tmp/demo', host: 'devbox' }], sessionIds: ['demo-1'], deleteTerminalSession: deleted,
+    });
+    expect((await request(app).delete('/api/projects/demo')).status).toBe(503);
+    expect(state.projects).toHaveLength(1);
+  });
+
+  it('rejects an ambiguous sanitised tmux name before killing anything', async () => {
+    const { app, state, deleteTerminalSession } = await makeApp({
+      projects: [{ name: 'Mace Local', path: '/a' }, { name: 'Mace_Local', path: '/b' }],
+      sessionIds: ['Mace_Local-3'],
+    });
+    const res = await request(app).delete('/api/projects/Mace%20Local');
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ status: 409, traceId: expect.any(String) });
+    expect(deleteTerminalSession).not.toHaveBeenCalled();
+    expect(state.projects).toHaveLength(2);
   });
 });

@@ -8,8 +8,8 @@ import ShortcutsOverlay from './components/ShortcutsOverlay';
 import PaneDivider from './components/PaneDivider';
 import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
+import { useSessionAttention } from './hooks/useSessionAttention';
 import { openFilePreviewTab } from './utils/fileActions';
-import { getTerminalStatus } from './utils/terminalActivity';
 import { useSessionTitles } from './hooks/useSessionTitles';
 import { useWaitingSessions } from './hooks/useWaitingSessions';
 import {
@@ -58,21 +58,13 @@ function AppContent() {
     const saved = localStorage.getItem('codedeck-filetree-width');
     return saved ? parseInt(saved, 10) : 260;
   });
-  const [finishedSessionIds, setFinishedSessionIds] = useState(new Set());
-  const [mutedStatusSessionIds, setMutedStatusSessionIds] = useState(() => {
-    try {
-      const stored = localStorage.getItem('codedeck-muted-status-sessions');
-      const parsed = stored ? JSON.parse(stored) : [];
-      return new Set(Array.isArray(parsed) ? parsed : []);
-    } catch {
-      return new Set();
-    }
-  });
   const { showToast } = useToast();
+  // Finished and muted state is owned by the backend so the phone and every
+  // browser tab honour the same rules.
+  const { finishedSessionIds, mutedStatusSessionIds, resetFinishedSession, toggleMutedStatusSession } = useSessionAttention(sessionStatus, showToast);
   const { waitingSessionIds, toggleWaiting } = useWaitingSessions(showToast, { sessionStatus, finishedSessionIds });
   const sessionStatusRequestInFlightRef = useRef(false);
   const systemResourcesRequestInFlightRef = useRef(false);
-  const prevSessionStatusRef = useRef([]);
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -186,85 +178,6 @@ function AppContent() {
     const id = setInterval(fetchSessionStatus, 2000);
     return () => clearInterval(id);
   }, [fetchSessionStatus]);
-
-  // Detect terminals that transition from busy to idle/unknown and mark them as finished.
-  // The previous-snapshot read and ref advance happen in the effect body (once per change),
-  // NOT inside the state updater — React StrictMode double-invokes updaters to surface
-  // impurity, and a ref mutation inside one corrupts the prev/current comparison so the
-  // busy→idle transition is never recorded. Keep the updater pure.
-  useEffect(() => {
-    const prevSessions = prevSessionStatusRef.current;
-    prevSessionStatusRef.current = sessionStatus;
-
-    const prevMap = new Map(prevSessions.map(s => [s.sessionId, s]));
-    const currentSessionIds = new Set(sessionStatus.map(s => s.sessionId));
-
-    setFinishedSessionIds(prev => {
-      const next = new Set(prev);
-      let changed = false;
-
-      // Clean up sessions that no longer exist
-      for (const sessionId of next) {
-        if (!currentSessionIds.has(sessionId)) {
-          next.delete(sessionId);
-          changed = true;
-        }
-      }
-
-      for (const session of sessionStatus) {
-        const prevSession = prevMap.get(session.sessionId);
-        const prevStatus = prevSession ? getTerminalStatus(prevSession) : null;
-        const currentStatus = getTerminalStatus(session);
-
-        if (currentStatus === 'busy') {
-          if (next.has(session.sessionId)) {
-            next.delete(session.sessionId);
-            changed = true;
-          }
-        } else if (prevStatus === 'busy' && (currentStatus === 'idle' || currentStatus === 'unknown')) {
-          if (session.alive && !next.has(session.sessionId)) {
-            next.add(session.sessionId);
-            changed = true;
-          }
-        }
-      }
-
-      return changed ? next : prev;
-    });
-  }, [sessionStatus]);
-
-  const resetFinishedSession = useCallback((sessionId) => {
-    setFinishedSessionIds(prev => {
-      if (!prev.has(sessionId)) return prev;
-      const next = new Set(prev);
-      next.delete(sessionId);
-      return next;
-    });
-  }, []);
-
-  const toggleMutedStatusSession = useCallback((sessionId) => {
-    setMutedStatusSessionIds(prev => {
-      const next = new Set(prev);
-      if (next.has(sessionId)) {
-        next.delete(sessionId);
-      } else {
-        next.add(sessionId);
-      }
-
-      try {
-        const values = Array.from(next);
-        if (values.length === 0) {
-          localStorage.removeItem('codedeck-muted-status-sessions');
-        } else {
-          localStorage.setItem('codedeck-muted-status-sessions', JSON.stringify(values));
-        }
-      } catch {
-        // Non-critical preference persistence.
-      }
-
-      return next;
-    });
-  }, []);
 
   const addProject = async (name, path, host = 'local') => {
     try {
@@ -398,7 +311,8 @@ function AppContent() {
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
       if (!res.ok) {
-        showToast({ type: 'error', message: 'Failed to remove project' });
+        const problem = await res.json().catch(() => ({}));
+        showToast({ type: 'error', message: typeof problem.detail === 'string' ? problem.detail : 'Failed to remove project' });
         return;
       }
       if (activeProject?.name === name) setActiveProject(null);

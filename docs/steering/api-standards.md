@@ -1,5 +1,22 @@
 # API standards mapping: session naming and terminal waiting
 
+## Android companion
+
+`/api/mobile/v1` implements capabilities, projects, sessions, device registration,
+test notifications and private event resolution. Collections use the pagination
+envelope below. Projects filter by `name` and sort by `name`/`id`; sessions filter
+by `id`/`projectId`/`status` and sort by `title`/`id`/`status`. Every sort appends
+`id`; unknown query fields fail with 400. The router owns its 12 KB JSON parser.
+Errors use `server/mobile-access.js` Problem Details with field errors and trace IDs.
+Device PUT is idempotent by installation UUID; DELETE returns 204, including repeated
+deletion. Test notification POST returns 202 for a new identifiable test event,
+409 for disabled permission/token, 503 when FCM is unconfigured, 404 for unknown installation.
+Events carry epoch-millisecond `createdAt`; test events have null session identities.
+Session `cwd` may be null when unavailable. No token appears in device API responses.
+HTTP and WebSocket upgrades share loopback/owner/origin authorization.
+FCM sends use opossum with explicit timeout and persistent retry/expiry; failure
+does not block terminal traffic. See `docs/android-companion.md` for setup and gates.
+
 The global API rules are mapped here for the `/api/session-naming` and
 `/api/terminal-waiting` routes. Existing unrelated endpoints are outside these
 features' migration scope.

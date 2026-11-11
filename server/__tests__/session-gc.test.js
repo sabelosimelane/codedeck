@@ -64,6 +64,15 @@ describe('shouldPruneTerminalSession', () => {
 });
 
 describe('pruneTerminalSessions', () => {
+  it('warns with the session id when best-effort kill fails', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sessions = new Map([['drop-1', createEntry({ alive: false })]]);
+    const runtime = { kill: vi.fn(() => { throw new Error('permission denied'); }), isSessionRecoverable: () => false };
+    pruneTerminalSessions({ sessions, runtime, nowMs: Date.parse('2026-04-12T10:00:30.000Z') });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('drop-1'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('permission denied'));
+    warn.mockRestore();
+  });
   it('kills and removes prunable sessions from the registry', () => {
     const runtime = {
       kill: vi.fn(),

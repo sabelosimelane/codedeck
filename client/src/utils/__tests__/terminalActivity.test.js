@@ -12,9 +12,20 @@ import {
   resolveTerminalCompletionNotificationMs,
   getTabTerminalStatus,
   getTerminalStatus,
+  getTerminalPaneLabel,
 } from '../terminalActivity';
 
 describe('terminalActivity', () => {
+  it.each([
+    [{ needsInput: true, backgroundAgents: 2 }, 'Needs input'],
+    [{ backgroundAgents: 2 }, 'Running · 2 agents'],
+    [{ backgroundAgents: 1 }, 'Running · 1 agent'],
+    [{ backgroundShells: 3 }, 'Running · 3 shells'],
+    [{ backgroundShells: 1 }, 'Running · 1 shell'],
+    [{}, 'Running'],
+  ])('labels pane detail %j', (session, label) => {
+    expect(getTerminalPaneLabel({ executionStatus: 'running', ...session }, 'Running')).toBe(label);
+  });
   const now = new Date('2026-04-11T10:00:00.000Z').getTime();
 
   it('marks recent live output as busy', () => {

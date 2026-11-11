@@ -213,4 +213,25 @@ describe('useWaitingSessions', () => {
     renderHook(() => useWaitingSessions(showToast));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Failed to load waiting tabs' }));
   });
+  it('follows marks set or cleared elsewhere, as reported by the status poll', async () => {
+    global.fetch = vi.fn(async () => page([{ sessionId: 'Demo-1', waiting: true, waitingAt: '2026-09-22T10:00:00.000Z' }]));
+    const row = (sessionId, waiting) => ({ sessionId, alive: true, executionStatus: 'idle', waiting });
+    const { result, rerender } = renderHook(({ sessionStatus }) => useWaitingSessions(showToast, { sessionStatus }), { initialProps: { sessionStatus: [] } });
+    await waitFor(() => expect(result.current.waitingSessionIds.has('Demo-1')).toBe(true));
+
+    // The phone parked Demo-2; the server auto-cleared Demo-1.
+    rerender({ sessionStatus: [row('Demo-1', false), row('Demo-2', true)] });
+    await waitFor(() => expect([...result.current.waitingSessionIds]).toEqual(['Demo-2']));
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('keeps marks for sessions the poll does not report on', async () => {
+    global.fetch = vi.fn(async () => page([{ sessionId: 'Hidden-1', waiting: true, waitingAt: '2026-09-22T10:00:00.000Z' }]));
+    const { result, rerender } = renderHook(({ sessionStatus }) => useWaitingSessions(showToast, { sessionStatus }), { initialProps: { sessionStatus: [] } });
+    await waitFor(() => expect(result.current.waitingSessionIds.has('Hidden-1')).toBe(true));
+    rerender({ sessionStatus: [{ sessionId: 'Other-1', alive: true, executionStatus: 'idle', waiting: false }, { sessionId: 'Legacy-1', alive: true, executionStatus: 'idle' }] });
+    expect(result.current.waitingSessionIds.has('Hidden-1')).toBe(true);
+    expect(result.current.waitingSessionIds.has('Legacy-1')).toBe(false);
+  });
 });

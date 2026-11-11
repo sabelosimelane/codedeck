@@ -1,0 +1,39 @@
+
+
+
+› Message from @sleeper (ctrl+o to
+expand)
+
+⏺ The sleeper agent reported done:
+  its sleep 35 completed in the
+  background. The sleep 70 command
+  is still running.
+
+
+⏺ Teammate @sleeper finished
+  done
+
+⏺ The sleeper is finished and idle;
+  only the sleep 70 background
+  command is still outstanding.
+
+⏺ Background command "Sleep for 70
+seconds in background" completed
+(exit code 0)
+
+⏺ Both are finished: the background
+  sleep 70 exited with code 0, and
+  the sleeper agent reported done
+  after its sleep 35 (which it had
+  to run as a background command,
+  because the harness blocks
+  standalone foreground sleeps).
+
+───────────────────────────────────
+❯ 
+───────────────────────────────────
+  dev ~/work/demo
+  ⏵⏵ bypass permissions on  · ← …
+
+  ⏺ main
+  ◯ sleeper  Run sleep 35  2m 17s

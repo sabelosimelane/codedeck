@@ -1,0 +1,20 @@
+• Ran E2E_FRONTEND_URL=https://app.example.com npx playwright test --config playwright.supervision.config.ts
+  └   ✓  4 [mobile] › tests/e2e/supervision/layout-search.spec.ts:52:1 › search filters through the API and survives opening a conversation (1.9s)
+
+      4 passed (10.2s)
+    + 6 lines (^t to expand)
+
+• Shipped abc1234 to main and deployed web:10.nov.21.20.
+
+  • Rollout successful; frontend ready.
+  • Four desktop/mobile checks passed against production-served assets using mocked APIs.
+  • Working tree clean.
+
+  Authenticated live search results remain unverified.
+
+  Worked for 2m 34s • 21:22
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol high · ~/work/demo · Ready · Context 59% used
+  ← for agents · ? for shortcuts                                                                                                                               ⚠ 11 warnings · f2 to view

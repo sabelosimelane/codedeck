@@ -4,6 +4,17 @@ export const TERMINAL_ACTIVITY_WINDOW_MS = 45000;
 export const TERMINAL_COMPLETION_NOTIFICATION_MS = 30000;
 export const DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS = TERMINAL_COMPLETION_NOTIFICATION_MS;
 
+export function getTerminalPaneLabel(session, existingLabel) {
+  if (session?.needsInput) return 'Needs input';
+  if (session?.executionStatus === 'running' || session?.status === 'running') {
+    const agents = session.backgroundAgents ?? 0;
+    if (agents > 0) return `Running · ${agents} agent${agents === 1 ? '' : 's'}`;
+    const shells = session.backgroundShells ?? 0;
+    if (shells > 0) return `Running · ${shells} shell${shells === 1 ? '' : 's'}`;
+  }
+  return existingLabel;
+}
+
 function isHostUnreachableSession(session) {
   return session?.reachability === 'unreachable'
     || session?.executionReason === 'host_unreachable';

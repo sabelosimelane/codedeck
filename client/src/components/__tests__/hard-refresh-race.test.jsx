@@ -29,7 +29,7 @@ vi.mock('@xterm/xterm', () => {
     constructor() {
       this.open = vi.fn();
       this.dispose = vi.fn();
-      this.write = vi.fn();
+      this.write = vi.fn((data, callback) => callback?.());
       this.focus = vi.fn();
       this.resize = vi.fn();
       this.scrollToBottom = vi.fn();
@@ -101,7 +101,8 @@ function mountAndReplay(replayChunks) {
 
   mocks.ws.readyState = 1;
   mocks.ws.onopen?.();
-  mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's1', existing: true }) });
+  mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', attachmentId: 'a', controllerId: 'a', controlRevision: 1, cols: 120, rows: 30, sessionId: 's1', existing: true }) });
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
 
   // Clear mocks so post-replay assertions are isolated
   mocks.term.scrollToBottom.mockClear();
@@ -171,7 +172,8 @@ describe('Hard refresh -> replay -> input resume', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 's2', existing: true }) });
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', attachmentId: 'a', controllerId: 'a', controlRevision: 1, cols: 120, rows: 30, sessionId: 's2', existing: true }) });
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
     mocks.ws.send.mockClear();
 
     // Simulate xterm.js emitting a DA response during replay (resumeInFlight is true)
@@ -189,7 +191,7 @@ describe('Hard refresh -> replay -> input resume', () => {
     mocks.ws.send.mockClear();
 
     onDataCb?.('ls');
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'ls' }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'ls', controlRevision: 1 }));
   });
 
   it('allows immediate input for new sessions (no resume gate)', () => {
@@ -198,12 +200,13 @@ describe('Hard refresh -> replay -> input resume', () => {
 
     mocks.ws.readyState = 1;
     mocks.ws.onopen?.();
-    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', sessionId: 'new', existing: false }) });
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'session', attachmentId: 'a', controllerId: 'a', controlRevision: 1, cols: 120, rows: 30, sessionId: 'new', existing: false }) });
+    mocks.ws.onmessage?.({data:JSON.stringify({type:'attachment_ready'})});
     mocks.ws.send.mockClear();
 
     const onDataCb = mocks.term.onData.mock.calls[0]?.[0];
     onDataCb?.('ls');
 
-    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'ls' }));
+    expect(mocks.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'input', data: 'ls', controlRevision: 1 }));
   });
 });
