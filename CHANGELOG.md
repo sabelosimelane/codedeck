@@ -1,5 +1,36 @@
 # Changelog
 
+## [2026-11-13] - Run workflow pipelines in isolated worktrees
+
+### Executive Summary
+* Start saved workflows, watch their terminal tabs appear, and stop, resume or continue their steps from the runs bar. Each run uses an isolated Git worktree with a Setup cleanliness guard and explicit cleanup feedback. This release covers phases 1–4; definition editors and the sidebar indicator remain planned.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx`, `PipelineRunsBar.jsx` — Start/preflight dialog and run controls with step, pass-limit and worktree state.
+  * `client/src/hooks/usePipelineRuns.js`, `client/src/utils/pipelinesApi.js`, `terminalAdoption.js` — Poll runs, resolve terminal transitions, fence project mutations and adopt background terminals.
+* **🔌 API/Interface:**
+  * `server/routes/pipelines.js` — Validated, paginated agent/workflow/run APIs, settings, preflight and owner actions.
+* **🛠️ Codebase:**
+  * `shared/pipeline-definitions.mjs` — Definition validation and literal workflow-input substitution.
+  * `server/pipelines/agent-store.js`, `workflow-store.js`, `settings-store.js`, `run-store.js` — Persist definitions, settings and execution snapshots.
+  * `server/pipelines/run-machine.js`, `run-engine.js`, `run-worktree.js`, `agent-readiness.js` — Sequential background execution, Setup isolation, action serialization, prompt readiness, recovery and cleanup.
+  * `server/index.js`, `server/routes/terminal-delete.js` — Wire pipeline services, sanitized runtime readiness snapshots and terminal closure notifications.
+  * `server/ws-handler.js`, `server/mobile-session-start.js`, `server/terminal-workflow.js` — Background terminal attachment, absolute working directories, shared geometry and bounded repeat passes.
+  * `server/agent-profiles/agy.js`, `claude.js`, `codex.js`, `cursor.js`, `muse.js`, `index.js` — Expose prompt visibility for readiness.
+  * `client/src/App.jsx`, `client/src/components/TerminalArea.jsx`, `TerminalWorkflow.jsx` — Connect run controls and multi-session adoption; validate workflow commands.
+  * `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md`, `docs/todos/2026-11-13-134947-workflow-pipelines.md`, `CHANGELOG.md` — Record specification, delivered scope and verification.
+* **🐛 Bug Fix:**
+  * Catch queued transition failures, settle execution waiters, acknowledge accepted owner actions promptly and revalidate queued actions. Check Setup cleanliness when continuing past its pass limit.
+  * Preserve literal replacement tokens, reject stale project mutation responses, report blocked cleanup and retry final-state resolution before dropping completed runs.
+  * Known issue retained after browser review: Continue returning a Setup guard error correctly updates the run bar but still shows a green “continued” toast.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-agent-readiness.test.js`, `pipeline-definition-store.test.js`, `pipeline-definitions.test.js`, `pipeline-run-engine.test.js`, `pipeline-run-live.test.js`, `pipeline-run-machine.test.js`, `pipeline-run-store.test.js`, `pipeline-run-worktree-live.test.js`, `pipeline-run-worktree.test.js`, `pipelines-api.test.js` — Pipeline validation, persistence, transition, action, worktree and live tmux coverage.
+  * `server/__tests__/terminal-background-attach.test.js`, `terminal-background-attach-live.test.js`, `mobile-session-start.test.js`, `terminal-workflow.test.js`, `ws-handler.test.js` — Background terminal lifecycle and loop regressions.
+  * `client/src/components/pipelines/__tests__/RunWorkflowDialog.test.jsx`, `PipelineRunsBar.test.jsx`, `TerminalAreaAdoption.test.jsx`, `client/src/hooks/__tests__/usePipelineRuns.test.jsx`, `client/src/utils/__tests__/pipelinesApi.test.js`, `terminalAdoption.test.js` — UI actions, adoption, polling and feedback regressions.
+  * `client/src/App.test.jsx`, `client/src/components/__tests__/SessionSearchApp.test.jsx`, `TerminalAreaRestore.test.jsx`, `TerminalWorkflow.test.jsx` — Existing app/session behavior and workflow validation.
+  * Full regression: 1,425 server tests and 502 client tests passed; production frontend build passed. Browser verification used an isolated database/server snapshot and a deterministic agent fixture with real tmux, readiness detection and Git worktrees; live AI provider execution was not tested.
+
 ## [2026-11-13] - Search and resume past agent conversations
 
 ### Executive Summary

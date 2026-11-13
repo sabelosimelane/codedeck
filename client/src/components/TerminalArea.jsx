@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play } from 'lucide-react';
 import TerminalInspector from './TerminalInspector';
+import PipelineRunsBar from './pipelines/PipelineRunsBar';
 import { useToast } from './ToastContext';
 import {
   shouldPersistLayout,
@@ -300,7 +301,29 @@ function getPaneStatusTitle(sessionId, status, session) {
     : baseTitle;
 }
 
-export default function TerminalArea({ project, sessionStatus = [], sessionTitles = {}, onTitlesChanged = () => {}, namingError = null, onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), waitingSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {}, onToggleWaiting = () => {}, onOpenSessionSearch = () => {}, resumedSessionId = null, onResumedAttached = () => {} }) {
+export default function TerminalArea({
+  project,
+  sessionStatus = [],
+  sessionTitles = {},
+  onTitlesChanged = () => {},
+  namingError = null,
+  onSessionStatusRefresh = () => {},
+  finishedSessionIds = new Set(),
+  mutedStatusSessionIds = new Set(),
+  waitingSessionIds = new Set(),
+  onResetFinishedSession = () => {},
+  onToggleMutedStatusSession = () => {},
+  onToggleWaiting = () => {},
+  onOpenSessionSearch = () => {},
+  onOpenRunWorkflow = () => {},
+  adoptSessions = [],
+  onSessionsAdopted = () => {},
+  pipelineRuns = [],
+  onStopPipelineRun = () => {},
+  onResumePipelineRun = () => {},
+  onContinuePipelineRun = () => {},
+  onCleanupPipelineRun = () => {},
+}) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
@@ -310,7 +333,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
   const containerRef = useRef(null);
   const terminalRefs = useRef(new Map());
   const intentionalOpenIds = useRef(new Set());
-  const attachedResumeRef = useRef(null);
+  const attachedAdoptRef = useRef(null);
   const prevProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
   const restoringRef = useRef(false);
@@ -609,28 +632,62 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
     }), { persistImmediately: true });
   }, [requestTerminalSessionId, updateTerminalState]);
 
-  // The resume endpoint already created the server session. Reuse the tab
-  // attachment path without calling /api/terminal for a second session ID.
+  // Backend-confirmed sessions (session search resume + pipeline step tabs)
+  // reuse the attach path without calling /api/terminal for a second session ID.
   useEffect(() => {
-    if (!resumedSessionId) { attachedResumeRef.current = null; return; }
-    if (restoringRef.current || prevProjectRef.current !== project.name) return;
-    const key = `${project.name}:${resumedSessionId}`;
-    if (attachedResumeRef.current === key) return;
-    attachedResumeRef.current = key;
-    unmarkDeletedSessionIds(project.name, [resumedSessionId]);
-    const existing = stateRef.current.tabs.find(tab => tab.panes.some(pane => pane.sessionId === resumedSessionId));
-    if (existing) {
-      setActiveTabId(existing.id);
-    } else {
-      const number = getSessionNumber(project.name, resumedSessionId);
-      if (number !== null) sessionCounter = Math.max(sessionCounter, number);
-      const tab = createTab(resumedSessionId);
-      intentionalOpenIds.current.add(resumedSessionId);
-      setActivePaneId(tab.panes[0].id);
-      updateTerminalState(previous => ({ tabs: [...previous.tabs, tab], activeTabId: tab.id }), { persistImmediately: true });
+    if (!adoptSessions?.length) {
+      attachedAdoptRef.current = null;
+      return;
     }
-    onResumedAttached(resumedSessionId);
-  }, [project.name, resumedSessionId, state, setActiveTabId, updateTerminalState, onResumedAttached]);
+    if (restoringRef.current || prevProjectRef.current !== project.name) return;
+    const key = `${project.name}:${adoptSessions.map((item) => `${item.sessionId}:${item.activate ? 1 : 0}`).join('|')}`;
+    if (attachedAdoptRef.current === key) return;
+    attachedAdoptRef.current = key;
+
+    const sessionIds = adoptSessions.map((item) => item.sessionId).filter(Boolean);
+    unmarkDeletedSessionIds(project.name, sessionIds);
+
+    let nextActivePaneId = null;
+    updateTerminalState((previous) => {
+      let tabs = previous.tabs;
+      let activeTabId = previous.activeTabId;
+      for (const item of adoptSessions) {
+        const sessionId = item.sessionId;
+        if (!sessionId) continue;
+        const existing = tabs.find((tab) => tab.panes.some((pane) => pane.sessionId === sessionId));
+        if (existing) {
+          if (item.activate) {
+            activeTabId = existing.id;
+            const pane = existing.panes.find((entry) => entry.sessionId === sessionId) || existing.panes[0];
+            nextActivePaneId = pane?.id ?? nextActivePaneId;
+          }
+          continue;
+        }
+        const number = getSessionNumber(project.name, sessionId);
+        if (number !== null) sessionCounter = Math.max(sessionCounter, number);
+        const tab = createTab(sessionId);
+        intentionalOpenIds.current.add(sessionId);
+        tabs = [...tabs, tab];
+        if (item.activate) {
+          activeTabId = tab.id;
+          nextActivePaneId = tab.panes[0].id;
+        }
+      }
+      return { tabs, activeTabId };
+    }, { persistImmediately: true });
+
+    if (nextActivePaneId) setActivePaneId(nextActivePaneId);
+    onSessionsAdopted(sessionIds);
+  }, [project.name, adoptSessions, state, updateTerminalState, onSessionsAdopted]);
+
+  const activatePipelineSession = useCallback((sessionId) => {
+    if (!sessionId) return;
+    const existing = stateRef.current.tabs.find((tab) => tab.panes.some((pane) => pane.sessionId === sessionId));
+    if (!existing) return;
+    const pane = existing.panes.find((entry) => entry.sessionId === sessionId) || existing.panes[0];
+    setActiveTabId(existing.id);
+    if (pane) setActivePaneId(pane.id);
+  }, [setActiveTabId]);
 
   // Close a single pane — redistribute, or close tab if last pane
   const closePane = useCallback(async (tabId, paneId, sessionId) => {
@@ -939,6 +996,15 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
         </span>
       </div>
 
+      <PipelineRunsBar
+        runs={pipelineRuns}
+        onStop={onStopPipelineRun}
+        onResume={onResumePipelineRun}
+        onContinue={onContinuePipelineRun}
+        onCleanup={onCleanupPipelineRun}
+        onActivateStep={activatePipelineSession}
+      />
+
       {/* Tab bar */}
       <div
         data-testid="terminal-tab-row"
@@ -1070,6 +1136,14 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
         </div>
 
         {/* Actions */}
+        <button
+          onClick={onOpenRunWorkflow}
+          aria-label="Run workflow"
+          title="Run workflow"
+          style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer' }}
+        >
+          <Play size={14} />
+        </button>
         <ShortcutHint label="Session search" keys={IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S']}>
           <button onClick={onOpenSessionSearch} aria-label="Session search" title={formatShortcutTitle('Session search', IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S'])} style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer' }}>
             <Search size={14} />

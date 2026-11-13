@@ -274,4 +274,86 @@ describe('terminal workflow', () => {
     const { workflow } = setup();
     expect(() => workflow.output(data)).toThrow(/output/);
   });
+
+  describe('maxIterations pass limit', () => {
+    it('stops with limitReached on the Nth CONTINUE without arming a reset', () => {
+      const { workflow, write } = setup();
+      workflow.start({ ...request, maxIterations: 2 });
+      expect(workflow.snapshot()).toMatchObject({ iteration: 1, limitReached: false, status: 'running' });
+      workflow.output(signal(token(write), 'CONTINUE'));
+      expect(workflow.snapshot().status).toBe('resetting');
+      vi.advanceTimersByTime(1000);
+      workflow.output('cleared');
+      vi.advanceTimersByTime(1000);
+      expect(workflow.snapshot()).toMatchObject({ iteration: 2, status: 'running', limitReached: false });
+      const writesBeforeLimit = write.mock.calls.length;
+      workflow.output(signal(token(write), 'CONTINUE'));
+      expect(workflow.snapshot()).toMatchObject({ status: 'stopped', active: false, limitReached: true, iteration: 2 });
+      vi.advanceTimersByTime(60000);
+      expect(write).toHaveBeenCalledTimes(writesBeforeLimit);
+    });
+
+    it('stops on the first CONTINUE when maxIterations is 1', () => {
+      const { workflow, write } = setup();
+      workflow.start({ ...request, maxIterations: 1 });
+      const writes = write.mock.calls.length;
+      workflow.output(signal(token(write), 'CONTINUE'));
+      expect(workflow.snapshot()).toMatchObject({ status: 'stopped', limitReached: true, iteration: 1 });
+      vi.advanceTimersByTime(60000);
+      expect(write).toHaveBeenCalledTimes(writes);
+    });
+
+    it('completes normally before the pass limit', () => {
+      const { workflow, write } = setup();
+      workflow.start({ ...request, maxIterations: 3 });
+      workflow.output(signal(token(write), 'COMPLETE'));
+      expect(workflow.snapshot()).toMatchObject({ status: 'complete', limitReached: false, iteration: 1 });
+    });
+
+    it('keeps unlimited CONTINUE behaviour when maxIterations is absent', () => {
+      const { workflow, write } = setup();
+      workflow.start(request);
+      expect(workflow.snapshot()).toMatchObject({ iteration: 1, limitReached: false });
+      workflow.output(signal(token(write), 'CONTINUE'));
+      expect(workflow.snapshot()).toMatchObject({ status: 'resetting', limitReached: false });
+      vi.advanceTimersByTime(1000);
+      expect(write).toHaveBeenLastCalledWith('\x1b[200~/clear\x1b[201~');
+    });
+
+    it('user Stop does not set limitReached', () => {
+      const { workflow, write } = setup();
+      workflow.start({ ...request, maxIterations: 5 });
+      workflow.stop();
+      expect(workflow.snapshot()).toMatchObject({ status: 'stopped', limitReached: false });
+    });
+
+    it.each([0, 101, 1.5, '2', null, true])('rejects invalid maxIterations %j before writing', maxIterations => {
+      const { workflow, write } = setup();
+      expect(() => workflow.start({ ...request, maxIterations })).toThrow();
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it.each([1, 100])('accepts boundary maxIterations %j', maxIterations => {
+      const { workflow, write } = setup();
+      workflow.start({ ...request, maxIterations });
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(workflow.snapshot().status).toBe('running');
+      workflow.stop();
+    });
+
+    it('rejects replay with a different maxIterations without disturbing the active workflow', () => {
+      const { workflow, write } = setup();
+      workflow.start({ ...request, maxIterations: 3 });
+      expect(() => workflow.start({ ...request, maxIterations: 4 })).toThrow(/requestId/);
+      expect(workflow.snapshot().active).toBe(true);
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+
+    it('acknowledges duplicate starts that share the same maxIterations', () => {
+      const { workflow, write } = setup();
+      workflow.start({ ...request, maxIterations: 2 });
+      workflow.start({ ...request, maxIterations: 2 });
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+  });
 });

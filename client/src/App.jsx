@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
 import FileTree from './components/FileTree';
@@ -6,13 +6,16 @@ import FileBrowserPanel from './components/FileBrowserPanel';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import ShortcutsOverlay from './components/ShortcutsOverlay';
 import SessionSearch from './components/SessionSearch';
+import RunWorkflowDialog from './components/pipelines/RunWorkflowDialog';
 import PaneDivider from './components/PaneDivider';
 import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
 import { useSessionAttention } from './hooks/useSessionAttention';
+import { usePipelineRuns } from './hooks/usePipelineRuns';
 import { openFilePreviewTab } from './utils/fileActions';
 import { useSessionTitles } from './hooks/useSessionTitles';
 import { useWaitingSessions } from './hooks/useWaitingSessions';
+import { buildRunAdoptionSessions, planTerminalAdoption } from './utils/terminalAdoption';
 import {
   DEFAULT_APP_TITLE,
   SYSTEM_RESOURCES_URL,
@@ -56,7 +59,9 @@ function AppContent() {
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
   const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
   const [showSessionSearch, setShowSessionSearch] = useState(false);
+  const [showRunWorkflow, setShowRunWorkflow] = useState(false);
   const [resumedSession, setResumedSession] = useState(null);
+  const [adoptedSessionIds, setAdoptedSessionIds] = useState(() => new Set());
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
     const saved = localStorage.getItem('codedeck-filetree-width');
     return saved ? parseInt(saved, 10) : 260;
@@ -66,6 +71,15 @@ function AppContent() {
   // browser tab honour the same rules.
   const { finishedSessionIds, mutedStatusSessionIds, resetFinishedSession, toggleMutedStatusSession } = useSessionAttention(sessionStatus, showToast);
   const { waitingSessionIds, toggleWaiting } = useWaitingSessions(showToast, { sessionStatus, finishedSessionIds });
+  const {
+    runs: pipelineRuns,
+    locallyStartedRunIds,
+    startRun,
+    stopRun,
+    resumeRun,
+    continueRun,
+    cleanupRun,
+  } = usePipelineRuns({ projectName: activeProject?.name || null, showToast });
   const sessionStatusRequestInFlightRef = useRef(false);
   const systemResourcesRequestInFlightRef = useRef(false);
 
@@ -168,6 +182,10 @@ function AppContent() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    setAdoptedSessionIds(new Set());
+  }, [activeProject?.name]);
 
   const fetchSessionStatus = useCallback(async () => {
     if (sessionStatusRequestInFlightRef.current) return;
@@ -361,6 +379,26 @@ function AppContent() {
   const searchParams = new URLSearchParams(window.location.search);
   const currentPreviewPath = searchParams.get('preview');
   const previewHost = searchParams.get('host') || 'local';
+
+  const adoptSessions = useMemo(() => {
+    if (!activeProject) return [];
+    const aliveSessionIds = new Set(
+      sessionStatus.filter((session) => session.alive).map((session) => session.sessionId),
+    );
+    return planTerminalAdoption({
+      existingSessionIds: adoptedSessionIds,
+      resumeSessionId: resumedSession?.project === activeProject.name ? resumedSession.sessionId : null,
+      runSessions: buildRunAdoptionSessions(pipelineRuns, locallyStartedRunIds, aliveSessionIds),
+    });
+  }, [
+    activeProject,
+    adoptedSessionIds,
+    resumedSession,
+    pipelineRuns,
+    locallyStartedRunIds,
+    sessionStatus,
+  ]);
+
   if (currentPreviewPath) {
     return <PreviewPage filePath={currentPreviewPath} host={previewHost} onOpenFile={(p) => openFile(p, previewHost)} />;
   }
@@ -426,8 +464,25 @@ function AppContent() {
             waitingSessionIds={waitingSessionIds}
             onToggleWaiting={toggleWaiting}
             onOpenSessionSearch={() => setShowSessionSearch(true)}
-            resumedSessionId={resumedSession?.project === activeProject.name ? resumedSession.sessionId : null}
-            onResumedAttached={(sessionId) => setResumedSession(current => current?.sessionId === sessionId ? null : current)}
+            onOpenRunWorkflow={() => setShowRunWorkflow(true)}
+            adoptSessions={adoptSessions}
+            onSessionsAdopted={(sessionIds) => {
+              setAdoptedSessionIds((current) => {
+                const next = new Set(current);
+                for (const sessionId of sessionIds) next.add(sessionId);
+                return next;
+              });
+              if (resumedSession && sessionIds.includes(resumedSession.sessionId)) {
+                setResumedSession((current) => (
+                  current?.sessionId === resumedSession.sessionId ? null : current
+                ));
+              }
+            }}
+            pipelineRuns={pipelineRuns}
+            onStopPipelineRun={stopRun}
+            onResumePipelineRun={resumeRun}
+            onContinuePipelineRun={continueRun}
+            onCleanupPipelineRun={cleanupRun}
           />
         ) : (
           <div style={{
@@ -463,6 +518,13 @@ function AppContent() {
             if (destination && destination.name !== activeProject.name) setActiveProject(destination);
             fetchSessionStatus();
           }}
+        />
+      )}
+      {showRunWorkflow && activeProject && (
+        <RunWorkflowDialog
+          projectName={activeProject.name}
+          onClose={() => setShowRunWorkflow(false)}
+          onStart={startRun}
         />
       )}
       {showProjectSwitcher && (

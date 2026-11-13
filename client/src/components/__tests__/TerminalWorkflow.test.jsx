@@ -72,6 +72,19 @@ describe('terminal workflow controls', () => {
     expect(screen.getByRole('alert').textContent).toBe('Reset did not settle.');
     expect(screen.getByLabelText('Command').disabled).toBe(false);
   });
+  it('shows Pass limit reached when stopped with limitReached', () => {
+    render(
+      <TerminalWorkflow
+        sessionId="terminal-1"
+        state={{ ...stopped, limitReached: true }}
+        pending={false}
+        connected
+        onStart={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('status').textContent).toBe('Pass limit reached');
+  });
 });
 
 describe('workflow transport', () => {

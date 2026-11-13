@@ -15,6 +15,10 @@ export function matches({ foregroundCommand, lines }) {
     || (text.some(line => DIALOG_OPTION.test(line)) && text.some(line => DIALOG_HINT.test(line)));
 }
 
+export function promptVisible(lines) {
+  return Boolean(promptRegion(lines, line => INPUT_PROMPT.test(line)).prompt);
+}
+
 export function read(lines) {
   const tail = dialogTail(lines);
   if (tail.some(line => DIALOG_OPTION.test(line)) && tail.some(line => DIALOG_HINT.test(line))) {

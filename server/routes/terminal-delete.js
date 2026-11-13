@@ -5,7 +5,7 @@ import { SESSION_DELETED_CLOSE_CODE, SESSION_DELETED_CLOSE_REASON } from '../ws-
 export function createTerminalSessionDeleter({
   sessions, deletedSessionIds, reservedSessionIds, terminalRuntime,
   resolveHostRuntime, namingService, waitingStore, sessionAttention,
-  mobileStore, statusCache,
+  mobileStore, statusCache, onSessionDeleted,
 }) {
   return async id => {
     const entry = sessions.get(id);
@@ -37,6 +37,13 @@ export function createTerminalSessionDeleter({
     }
     statusCache.invalidateSession(id);
     sessions.delete(id);
+    if (typeof onSessionDeleted === 'function') {
+      try {
+        onSessionDeleted(id);
+      } catch (error) {
+        console.warn(`[terminal] onSessionDeleted failed session=${id} error=${error.message}`);
+      }
+    }
   };
 }
 

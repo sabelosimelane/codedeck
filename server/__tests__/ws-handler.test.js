@@ -1682,7 +1682,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
-        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
+        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false } },
         {
           type: 'session',
           sessionId: 'test-1',
@@ -1800,7 +1800,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       const messages = ws.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
-        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
+        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false } },
         {
           type: 'session',
           sessionId: 'test-1',
@@ -1856,7 +1856,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
-        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
+        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false } },
         {
           type: 'session',
           sessionId: 'test-1',
@@ -1940,7 +1940,7 @@ describe('runtime abstraction (Phase 5)', () => {
 
       const messages = ws2.send.mock.calls.map(([payload]) => JSON.parse(payload)).filter(m => m.type !== 'attachment_ready').map(({protocol, attachmentId, controllerId, controlRevision, cols, rows, incarnationId, ...m}) => m);
       expect(messages).toEqual([
-        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null } },
+        { type: 'workflow_state', requestId: null, state: { status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false } },
         {
           type: 'session',
           sessionId: 'test-1',

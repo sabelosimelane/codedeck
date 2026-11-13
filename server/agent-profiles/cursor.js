@@ -16,6 +16,10 @@ export function matches({ foregroundCommand, lines }) {
     || (text.some(line => TRUST_OPTION.test(line)) && text.some(line => /Trust this workspace/.test(line)));
 }
 
+export function promptVisible(lines) {
+  return Boolean(promptRegion(lines, line => INPUT_PROMPT.test(line)).prompt);
+}
+
 export function read(lines) {
   const text = screenLines(lines);
   const hasPrompt = text.some(line => INPUT_PROMPT.test(line));

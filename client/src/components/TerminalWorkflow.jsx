@@ -25,7 +25,7 @@ export default function TerminalWorkflow({ sessionId, state, pending, connected,
     <div className="terminal-workflow" onMouseDown={event => event.stopPropagation()}>
       <div className="terminal-workflow-bar">
         <button className="terminal-action-btn" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}>Workflow</button>
-        <span role="status">{pending ? 'Waiting for acknowledgement…' : LABELS[state.status]}</span>
+        <span role="status">{pending ? 'Waiting for acknowledgement…' : (state.status === 'stopped' && state.limitReached ? 'Pass limit reached' : LABELS[state.status])}</span>
         {state.active && <button className="terminal-action-btn" disabled={pending || !connected} onClick={onStop}>Stop</button>}
       </div>
       {state.error && <div role="alert" className="terminal-workflow-error">{state.error}</div>}

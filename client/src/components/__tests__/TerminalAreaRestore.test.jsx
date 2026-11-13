@@ -23,6 +23,7 @@ vi.mock('lucide-react', () => {
     Hourglass: Icon,
     Search: Icon,
     Pencil: Icon,
+    Play: Icon,
   };
 });
 
@@ -102,9 +103,9 @@ it('renders persisted titles on tabs and panes without changing terminal identit
   it('attaches a backend-confirmed resumed session as the active tab without creating another session', async () => {
     const sessions = [{ sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true }];
     global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : sessions }));
-    const onResumedAttached = vi.fn();
-    const view = render(<TerminalArea project={PROJECT} sessionStatus={sessions} resumedSessionId="Gamma-9" onResumedAttached={onResumedAttached} />);
-    await waitFor(() => expect(onResumedAttached).toHaveBeenCalledWith('Gamma-9'));
+    const onSessionsAdopted = vi.fn();
+    const view = render(<TerminalArea project={PROJECT} sessionStatus={sessions} adoptSessions={[{ sessionId: 'Gamma-9', activate: true }]} onSessionsAdopted={onSessionsAdopted} />);
+    await waitFor(() => expect(onSessionsAdopted).toHaveBeenCalledWith(['Gamma-9']));
     expect(view.getByTestId('terminal-tab').getAttribute('data-active')).toBe('true');
     expect(global.fetch.mock.calls.some(([url]) => url === '/api/terminal')).toBe(false);
   });
@@ -112,9 +113,9 @@ it('renders persisted titles on tabs and panes without changing terminal identit
   it('selects a resumed session after restoring a different project layout', async () => {
     const sessions = [{ sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true }, { sessionId: 'Gamma-10', cwd: '/tmp/gamma', alive: true }];
     global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : sessions }));
-    const onResumedAttached = vi.fn();
-    const view = render(<TerminalArea project={PROJECT} sessionStatus={sessions} resumedSessionId="Gamma-9" onResumedAttached={onResumedAttached} />);
-    await waitFor(() => expect(onResumedAttached).toHaveBeenCalledWith('Gamma-9'));
+    const onSessionsAdopted = vi.fn();
+    const view = render(<TerminalArea project={PROJECT} sessionStatus={sessions} adoptSessions={[{ sessionId: 'Gamma-9', activate: true }]} onSessionsAdopted={onSessionsAdopted} />);
+    await waitFor(() => expect(onSessionsAdopted).toHaveBeenCalledWith(['Gamma-9']));
     expect(view.getAllByTestId('terminal-tab')).toHaveLength(2);
     expect(view.getAllByTestId('terminal-tab')[0].getAttribute('data-active')).toBe('true');
   });

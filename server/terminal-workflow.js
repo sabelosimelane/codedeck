@@ -11,12 +11,15 @@ const MAX_OUTPUT = 65536;
 function validateStart(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Workflow start requires an object.');
   for (const field of Object.keys(request)) {
-    if (!['requestId', 'command', 'resetCommand'].includes(field)) throw new Error('Workflow start contains an unknown field.');
+    if (!['requestId', 'command', 'resetCommand', 'maxIterations'].includes(field)) throw new Error('Workflow start contains an unknown field.');
   }
-  const { requestId, command, resetCommand } = request;
+  const { requestId, command, resetCommand, maxIterations } = request;
   if (typeof requestId !== 'string' || !/^[\w-]{1,128}$/.test(requestId)) throw new Error('Workflow requestId must contain 1–128 letters, digits, underscores or hyphens.');
   if (typeof command !== 'string' || !command.trim() || command.length > 16384 || /[\x00-\x08\x0b-\x1f\x7f]/.test(command)) throw new Error('Workflow command must contain 1–16384 characters without terminal control codes.');
   if (typeof resetCommand !== 'string' || !resetCommand.trim() || resetCommand.length > 256 || /[\x00-\x1f\x7f]/.test(resetCommand)) throw new Error('Workflow resetCommand must contain 1–256 characters on one line without terminal control codes.');
+  if (maxIterations !== undefined && (!Number.isInteger(maxIterations) || maxIterations < 1 || maxIterations > 100)) {
+    throw new Error('Workflow maxIterations must be an integer from 1 to 100.');
+  }
 }
 
 // Focus reports, mouse events and cursor keys are not an answer; Enter or text is.
@@ -39,23 +42,33 @@ export function createTerminalWorkflow({ write, notify }) {
   let identifier = null;
   let rawOutput = '';
   let phase = 'waiting';
+  let pass = 0;
+  let limitReached = false;
   let quietTimer;
   let resetTimer;
   let enterTimer;
   const requests = new Map();
   const issuedIdentifiers = new Set();
 
-  const snapshot = () => ({ status, active: ACTIVE.has(status), error, requestId: request?.requestId ?? null });
+  const snapshot = () => ({
+    status,
+    active: ACTIVE.has(status),
+    error,
+    requestId: request?.requestId ?? null,
+    iteration: pass,
+    limitReached,
+  });
   const publish = () => notify(snapshot());
   function cancelTimers() {
     clearTimeout(quietTimer);
     clearTimeout(resetTimer);
     clearTimeout(enterTimer);
   }
-  function finish(nextStatus, message = null) {
+  function finish(nextStatus, message = null, { reachedLimit = false } = {}) {
     cancelTimers();
     status = nextStatus;
     error = message;
+    limitReached = reachedLimit;
     identifier = null;
     rawOutput = '';
     phase = 'waiting';
@@ -79,6 +92,7 @@ export function createTerminalWorkflow({ write, notify }) {
     cancelTimers();
     status = 'running';
     phase = 'waiting';
+    pass += 1;
     // Short enough to copy; the counter prevents reuse within this session.
     identifier = `${randomUUID().slice(0, 8)}-${(issuedIdentifiers.size + 1).toString(36)}`;
     issuedIdentifiers.add(identifier);
@@ -105,7 +119,11 @@ export function createTerminalWorkflow({ write, notify }) {
       validateStart(input);
       const previous = requests.get(input.requestId);
       if (previous) {
-        if (previous.command !== input.command || previous.resetCommand !== input.resetCommand) throw new Error('Workflow requestId was already used with different commands.');
+        if (
+          previous.command !== input.command
+          || previous.resetCommand !== input.resetCommand
+          || previous.maxIterations !== input.maxIterations
+        ) throw new Error('Workflow requestId was already used with different commands.');
         publish();
         return;
       }
@@ -115,6 +133,8 @@ export function createTerminalWorkflow({ write, notify }) {
       request = { ...input };
       requests.set(request.requestId, request);
       error = null;
+      limitReached = false;
+      pass = 0;
       iteration();
     },
     stop() { finish('stopped'); },
@@ -156,6 +176,8 @@ export function createTerminalWorkflow({ write, notify }) {
         // Keep the identifier: after the user answers, the agent finishes this pass.
         status = 'needs_input';
         publish();
+      } else if (request.maxIterations !== undefined && pass >= request.maxIterations) {
+        finish('stopped', null, { reachedLimit: true });
       } else {
         identifier = null;
         status = 'resetting';

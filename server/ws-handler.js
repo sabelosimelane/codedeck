@@ -11,14 +11,16 @@
  * @param {object} runtime - Terminal runtime (from terminal-runtime.js) with spawn/kill/isSessionRecoverable
  */
 
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import {
   getTerminalHistoryWarningMessage,
   getTerminalRuntimeStatus,
   TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE,
   TERMINAL_SNAPSHOT_WINDOW_LINES,
 } from './terminal-runtime.js';
-import { randomUUID } from 'node:crypto';
 import { isTransportFailure } from './command-runner.js';
+import { INITIAL_COLS, INITIAL_ROWS } from './mobile-session-start.js';
 import { createTerminalWorkflow } from './terminal-workflow.js';
 
 const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -502,7 +504,7 @@ function createSessionEntry({ pty, ws, cwd, cols, rows, incarnation, runtimeType
     historyWarningMessage: null,
     attachState: null,
     // Diagnostic metadata (Phase 1)
-    wsAttached: true,
+    wsAttached: ws != null,
     lastAttachAt: now,
     lastDetachAt: null,
     lastClientAckAt: null,
@@ -519,6 +521,8 @@ function createSessionEntry({ pty, ws, cwd, cols, rows, incarnation, runtimeType
     clientLastResizeAt: null,
     clientLastSeenSeq: 0,
     clientReconnectCount: 0,
+    backgroundHolds: 0,
+    workflowObservers: [],
     ...extra,
   };
 }
@@ -594,6 +598,7 @@ const intentionallyDetachedPtys = new WeakSet();
 /** Release a tmux client attachment while leaving its durable session alive. */
 function detachTmuxClient(entry) {
   if (entry?.workflow?.snapshot().active) return;
+  if ((entry?.backgroundHolds ?? 0) > 0) return;
   if (entry?.runtimeType !== 'tmux' || !entry.alive || !entry.pty) return;
   const pty = entry.pty;
   intentionallyDetachedPtys.add(pty);
@@ -609,6 +614,153 @@ function detachTmuxClient(entry) {
     pushTimelineEvent(entry, 'detach_kill_failed', err.message);
     console.warn(`[terminal] detach_kill_failed error=${err.message}`);
   }
+}
+
+function observeSessionInput(ops, sessionId, data) {
+  if (!ops.onInput) return;
+  queueMicrotask(() => {
+    try { ops.onInput(sessionId, data); }
+    catch { console.warn('[session-naming] input observation failed'); }
+  });
+}
+
+function removeWorkflowObserver(entry, fn) {
+  if (!fn || !entry.workflowObservers) return;
+  const index = entry.workflowObservers.indexOf(fn);
+  if (index !== -1) entry.workflowObservers.splice(index, 1);
+}
+
+/**
+ * Lazily create the session's loop engine. Browser sockets and background
+ * attaches share one engine so a later viewer receives the same workflow_state.
+ */
+function ensureSessionWorkflow(entry, ops) {
+  if (entry.workflow) return entry.workflow;
+  entry.workflowObservers ??= [];
+  const workflow = createTerminalWorkflow({
+    write: data => {
+      if (!entry.alive || !ops.sessionExists()) throw new Error('Workflow terminal attachment is unavailable.');
+      entry.pty.write(data);
+      observeSessionInput(ops, ops.sessionId, data);
+    },
+    notify: state => {
+      broadcast(entry, { type: 'workflow_state', requestId: null, state });
+      for (const observer of entry.workflowObservers) {
+        try { observer(state); }
+        catch (err) { console.warn(`[workflow] observer failed error=${err.message}`); }
+      }
+      // Release our background attachment when the loop ends. Defer until
+      // any PTY exit handler has finished updating the session lifecycle.
+      if (!state.active) Promise.resolve().then(() => {
+        if (!entry.wsAttached) detachTmuxClient(entry);
+      });
+    },
+  });
+  entry.workflow = workflow;
+  return workflow;
+}
+
+function buildBackgroundHandle(entry, sessionId, sessions, deletedSessionIds, ops) {
+  const workflow = ensureSessionWorkflow(entry, ops);
+  entry.backgroundHolds = (entry.backgroundHolds ?? 0) + 1;
+  let observer = null;
+  let released = false;
+  return {
+    entry,
+    workflow,
+    write(data) {
+      if (!entry.alive || sessions.get(sessionId) !== entry || deletedSessionIds.has(sessionId)) {
+        throw new Error('Workflow terminal attachment is unavailable.');
+      }
+      entry.pty.write(data);
+      observeSessionInput(ops, sessionId, data);
+    },
+    observe(fn) {
+      if (typeof fn !== 'function') throw new Error('Workflow observe requires a function.');
+      removeWorkflowObserver(entry, observer);
+      observer = fn;
+      entry.workflowObservers.push(fn);
+    },
+    release() {
+      if (released) return;
+      released = true;
+      removeWorkflowObserver(entry, observer);
+      observer = null;
+      entry.backgroundHolds = Math.max(0, (entry.backgroundHolds ?? 1) - 1);
+      if (!entry.wsAttached) detachTmuxClient(entry);
+    },
+  };
+}
+
+/**
+ * Attach to a durable tmux session without a browser socket so a pipeline run
+ * can drive the PTY. Mirrors the browser attach cases: no entry, live entry,
+ * dead recoverable entry. Tombstoned ids are rejected.
+ */
+export function attachBackgroundSession(sessionId, sessions, runtime, deletedSessionIds = new Set(), options = {}) {
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256 || /[\x00-\x1f\x7f]/.test(sessionId)) {
+    throw new Error('Background attach sessionId must be a valid terminal identity.');
+  }
+  if (deletedSessionIds.has(sessionId)) throw new Error('Background attach refused: session is deleted.');
+  if (!runtime || typeof runtime.spawn !== 'function') throw new Error('Background attach requires a terminal runtime.');
+
+  const cols = options.cols === undefined ? INITIAL_COLS : options.cols;
+  const rows = options.rows === undefined ? INITIAL_ROWS : options.rows;
+  if (!validDimensions(cols, rows)) throw new Error('Background attach cols and rows must be valid terminal dimensions.');
+  const cwd = options.cwd === undefined ? (process.env.HOME || '/') : options.cwd;
+  if (typeof cwd !== 'string' || cwd.length === 0 || !path.isAbsolute(cwd) || cwd.includes('\0')) {
+    throw new Error('Background attach cwd must be a nonempty absolute path.');
+  }
+
+  let entry = sessions.get(sessionId);
+  const workflowOpsFor = (target) => ({
+    sessionId,
+    onInput: options.onInput,
+    sessionExists: () => sessions.get(sessionId) === target && !deletedSessionIds.has(sessionId),
+  });
+  const recoverableWithoutEntry = !entry
+    && runtime.type === 'tmux'
+    && typeof runtime.isSessionRecoverable === 'function'
+    && runtime.isSessionRecoverable(sessionId);
+  const recoverableDeadEntry = !!entry
+    && entry.runtimeType === 'tmux'
+    && !entry.alive
+    && typeof runtime.isSessionRecoverable === 'function'
+    && runtime.isSessionRecoverable(sessionId);
+
+  if (!entry) {
+    if (!recoverableWithoutEntry) throw new Error('Background attach refused: session does not exist or is not recoverable.');
+    const incarnation = typeof runtime.getSessionIncarnation === 'function'
+      ? runtime.getSessionIncarnation(sessionId)
+      : (options.getSessionIncarnation?.(sessionId) ?? null);
+    const ptyProcess = runtime.spawn({ cwd, cols, rows, sessionId });
+    entry = createSessionEntry({
+      pty: ptyProcess, ws: null, cwd, cols, rows, incarnation, runtimeType: runtime.type,
+      extra: { onSessionEnded: options.onSessionEnded, wsAttached: false },
+    });
+    sessions.set(sessionId, entry);
+    registerPtyDataHandler(ptyProcess, sessionId, sessions);
+    registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, rows);
+    pushTimelineEvent(entry, 'attach', 'background');
+    console.log(`[terminal] attach session=${sessionId} type=background`);
+    return buildBackgroundHandle(entry, sessionId, sessions, deletedSessionIds, workflowOpsFor(entry));
+  }
+
+  if (entry.alive) {
+    return buildBackgroundHandle(entry, sessionId, sessions, deletedSessionIds, workflowOpsFor(entry));
+  }
+
+  if (!recoverableDeadEntry) throw new Error('Background attach refused: session ended.');
+
+  const ptyProcess = runtime.spawn({ cwd: entry.cwd, cols, rows, sessionId });
+  entry.pty = ptyProcess;
+  registerPtyDataHandler(ptyProcess, sessionId, sessions);
+  registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, rows);
+  entry.alive = true;
+  entry.clientDetached = false;
+  pushTimelineEvent(entry, 'tmux_reattach', 'background recovery');
+  console.log(`[terminal] tmux_reattach session=${sessionId} type=background_recovery`);
+  return buildBackgroundHandle(entry, sessionId, sessions, deletedSessionIds, workflowOpsFor(entry));
 }
 
 /**
@@ -993,32 +1145,11 @@ function attachSessionSocket(ws, req, sessions, runtime, deletedSessionIds, rese
 function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
   const attachment = ensureAttachment(entry, ws);
   attachment.isCompanion = ops.isCompanion;
-  const observeInput = (data) => {
-    if (!ops.onInput) return;
-    queueMicrotask(() => {
-      try { ops.onInput(sessionId, data); }
-      catch { console.warn('[session-naming] input observation failed'); }
-    });
-  };
+  const observeInput = (data) => observeSessionInput(ops, sessionId, data);
   const sendWorkflowState = (state, requestId = null) => {
     if (ws.readyState === 1 && entry.attachments.has(ws)) ws.send(JSON.stringify({ type: 'workflow_state', requestId, state }));
   };
-  const workflow = entry.workflow ?? createTerminalWorkflow({
-    write: data => {
-      if (!entry.alive || !ops.sessionExists()) throw new Error('Workflow terminal attachment is unavailable.');
-      entry.pty.write(data);
-      observeInput(data);
-    },
-    notify: state => {
-      broadcast(entry, { type: 'workflow_state', requestId: null, state });
-      // Release our background attachment when the loop ends. Defer until
-      // any PTY exit handler has finished updating the session lifecycle.
-      if (!state.active) Promise.resolve().then(() => {
-        if (!entry.wsAttached) detachTmuxClient(entry);
-      });
-    },
-  });
-  entry.workflow = workflow;
+  const workflow = ensureSessionWorkflow(entry, { ...ops, sessionId });
   const controlFailure = () => {
     entry.controlOutput = null;
     if (ws.readyState === 1) ws.send(JSON.stringify({type:'control_error', message:'Terminal control resize failed; reconnect and try again.'}));

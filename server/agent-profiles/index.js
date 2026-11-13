@@ -7,3 +7,7 @@ const profiles = [claude, muse, cursor, agy, codex];
 export function findAgentProfile({ foregroundCommand, lines }) {
   return profiles.find(profile => profile.matches({ foregroundCommand, lines })) || null;
 }
+
+export function findAgentProfileById(id) {
+  return profiles.find(profile => profile.id === id) || null;
+}

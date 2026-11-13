@@ -61,6 +61,18 @@ vi.mock('./utils/fileActions', () => ({
   openFilePreviewTab: vi.fn(),
 }));
 
+vi.mock('./hooks/usePipelineRuns', () => ({
+  usePipelineRuns: () => ({
+    runs: [],
+    locallyStartedRunIds: new Set(),
+    startRun: vi.fn(),
+    stopRun: vi.fn(),
+    resumeRun: vi.fn(),
+    continueRun: vi.fn(),
+    cleanupRun: vi.fn(),
+  }),
+}));
+
 import App from './App';
 import { SYSTEM_RESOURCES_URL } from './utils/systemResourceTitle';
 

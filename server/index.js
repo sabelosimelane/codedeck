@@ -4,7 +4,7 @@ import { createServer } from 'http';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { spawn as spawnProcess, execFileSync } from 'child_process';
+import { spawn as spawnProcess, execFile, execFileSync } from 'child_process';
 import * as fsSync from 'node:fs';
 import os from 'node:os';
 import multer from 'multer';
@@ -15,7 +15,22 @@ import {
   computeSessionHealth,
   computeStallReason,
   sanitizePreviewLine,
+  attachBackgroundSession,
 } from './ws-handler.js';
+import { createTerminalWorkflow } from './terminal-workflow.js';
+import { findAgentProfile } from './agent-profiles/index.js';
+import { createAgentStore } from './pipelines/agent-store.js';
+import { createWorkflowStore } from './pipelines/workflow-store.js';
+import { createSettingsStore } from './pipelines/settings-store.js';
+import { createRunStore } from './pipelines/run-store.js';
+import {
+  create as createPipelineWorktree,
+  remove as removePipelineWorktree,
+  listDirtyPaths as listPipelineDirtyPaths,
+} from './pipelines/run-worktree.js';
+import { createRunEngine } from './pipelines/run-engine.js';
+import { classify as classifyAgentReadiness } from './pipelines/agent-readiness.js';
+import { createPipelinesRouter } from './routes/pipelines.js';
 import {
   createHostTerminalRuntime,
   createTerminalRuntime,
@@ -75,7 +90,7 @@ const privateAccess = createPrivateAccess({
 });
 app.use(privateAccess.middleware);
 // Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
-app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -766,10 +781,14 @@ const terminalStatusCache = createTerminalStatusCache({
   getReachability: hostReachability.getReachability,
   onActivity: namingService.observe,
 });
+const pipelineRunEngineRef = { current: null };
 const terminalDeleteDeps = {
   sessions, deletedSessionIds, reservedSessionIds, terminalRuntime,
   resolveHostRuntime, namingService, waitingStore: terminalWaitingStore,
   sessionAttention, mobileStore, statusCache: terminalStatusCache,
+  onSessionDeleted: (sessionId) => {
+    pipelineRunEngineRef.current?.notifySessionClosed?.(sessionId);
+  },
 };
 const deleteTerminalSession = createTerminalSessionDeleter(terminalDeleteDeps);
 deleteProject = createProjectDeletionService({
@@ -815,6 +834,98 @@ const mobileSessionStarter = createMobileSessionStarter({
   },
   releaseReservation: sessionId => reservedSessionIds.delete(sessionId),
 });
+
+const pipelineAgentStore = createAgentStore(db);
+const pipelineWorkflowStore = createWorkflowStore(db);
+const pipelineSettingsStore = createSettingsStore(db);
+const pipelineRunStore = createRunStore(db);
+const pipelineRunEngine = createRunEngine({
+  runStore: pipelineRunStore,
+  createWorktree: async (run) => {
+    const project = loadProjects().find(candidate => candidate.name === run.project);
+    if (!project?.path) throw new Error(`Project ${run.project} not found for worktree create`);
+    return createPipelineWorktree({
+      homePath: run.homePath,
+      worktreePath: run.worktreePath,
+      branch: run.worktreeBranch,
+      projectPath: project.path,
+      execFile,
+    });
+  },
+  removeWorktree: async (run) => removePipelineWorktree({
+    homePath: run.homePath,
+    worktreePath: run.worktreePath,
+    execFile,
+  }),
+  listDirtyPaths: async ({ worktreePath }) => listPipelineDirtyPaths({ worktreePath, execFile }),
+  pathExists: async (target) => {
+    try {
+      await fs.access(target);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  startSession: async ({ project, cwd }) => {
+    const started = await mobileSessionStarter.start(project, { cwd });
+    return started.id;
+  },
+  attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
+    sessionId, sessions, terminalRuntime, deletedSessionIds, { cwd },
+  ),
+  createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+  classifyReadiness: classifyAgentReadiness,
+  readExecutionState: async (sessionId) => {
+    const entry = sessions.get(sessionId);
+    const entryExists = !deletedSessionIds.has(sessionId)
+      && (Boolean(entry) || Boolean(resolveHostRuntime(sessionId)?.hostRuntime ?? terminalRuntime));
+    const runtime = entry?.hostRuntime ?? resolveHostRuntime(sessionId)?.hostRuntime ?? terminalRuntime;
+    let execution = {};
+    let lines = [];
+    try {
+      // Capture via the runtime so tmux session names are sanitized (spaces/dots/Unicode).
+      let snapshotText;
+      const options = { onSnapshot: (text) => { snapshotText = text; } };
+      if (typeof runtime.getSessionStatusAsync === 'function') {
+        const status = await runtime.getSessionStatusAsync(entry, sessionId, options);
+        execution = status?.executionState ?? {};
+      } else if (typeof runtime.getSessionExecutionStateAsync === 'function') {
+        execution = await runtime.getSessionExecutionStateAsync(sessionId, options);
+      } else {
+        execution = runtime.getSessionExecutionState?.(sessionId) ?? {};
+      }
+      if (typeof snapshotText === 'string') {
+        lines = snapshotText.replace(/\r/g, '').split('\n');
+      }
+    } catch (err) {
+      console.warn(`[pipelines] execution state failed session=${sessionId} error=${err.message}`);
+    }
+    const profile = findAgentProfile({
+      foregroundCommand: execution.foregroundCommand,
+      lines,
+    });
+    const isAlive = entry?.alive !== false && entryExists;
+    return {
+      executionReason: execution.executionReason,
+      foregroundCommand: execution.foregroundCommand,
+      lines,
+      profile,
+      isAlive,
+      entryExists,
+    };
+  },
+});
+pipelineRunEngineRef.current = pipelineRunEngine;
+app.use(createPipelinesRouter({
+  agentStore: pipelineAgentStore,
+  workflowStore: pipelineWorkflowStore,
+  settingsStore: pipelineSettingsStore,
+  runStore: pipelineRunStore,
+  findProject: name => loadProjects().find(project => project.name === name) ?? null,
+  engine: pipelineRunEngine,
+  execFile,
+}));
+
 const agentHistory = createAgentHistory({ home: os.homedir(), fs: fsSync, Database: db.constructor });
 app.use(createAgentSessionsRouter({
   loadProjects,
@@ -837,6 +948,7 @@ process.once('exit', () => mobileNotifications.stop());
 const sessionPruneTimer = setInterval(() => {
   const onPruned = (sessionId, entry) => {
     mobileStore.retireSession(sessionId);
+    pipelineRunEngineRef.current?.notifySessionClosed?.(sessionId);
     console.log(`[terminal] pruned session=${sessionId} host=${entry.host ?? 'local'} alive=${entry.alive} wsAttached=${entry.wsAttached}`);
   };
   pruneTerminalSessions({ sessions, runtime: terminalRuntime, onPruned });
@@ -846,16 +958,17 @@ const sessionPruneTimer = setInterval(() => {
 }, 60 * 1000);
 sessionPruneTimer.unref?.();
 
+const terminalWsOptions = {
+  resolveHostRuntime,
+  getReachability: hostReachability.getReachability,
+  onInput: (sessionId, data) => { sessionAttention.touch(sessionId); namingService.input(sessionId, data); },
+  onDesktopActivity: () => { lastDesktopActivityAt = Date.now(); },
+  getSessionIncarnation: (id, { create } = {}) => create ? mobileStore.ensureIncarnation(id) : mobileStore.currentIncarnation(id),
+  onSessionEnded: mobileStore.retireSession,
+  adoptSessionIncarnation: mobileStore.adoptIncarnation,
+};
 wss.on('connection', (ws, req) => {
-  handleWsConnection(ws, req, sessions, terminalRuntime, deletedSessionIds, reservedSessionIds, {
-    resolveHostRuntime,
-    getReachability: hostReachability.getReachability,
-    onInput: (sessionId, data) => { sessionAttention.touch(sessionId); namingService.input(sessionId, data); },
-    onDesktopActivity: () => { lastDesktopActivityAt = Date.now(); },
-    getSessionIncarnation: (id, { create } = {}) => create ? mobileStore.ensureIncarnation(id) : mobileStore.currentIncarnation(id),
-    onSessionEnded: mobileStore.retireSession,
-    adoptSessionIncarnation: mobileStore.adoptIncarnation,
-  });
+  handleWsConnection(ws, req, sessions, terminalRuntime, deletedSessionIds, reservedSessionIds, terminalWsOptions);
 });
 
 // -------------------------------------------------------------------

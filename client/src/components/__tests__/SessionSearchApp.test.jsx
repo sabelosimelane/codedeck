@@ -4,7 +4,23 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 
 const mocks = vi.hoisted(() => ({ showToast: vi.fn() }));
 vi.mock('../Sidebar', () => ({ default: ({ activeProjects, activeProject, onSelect }) => <div>{activeProjects.map(project => <button key={project.name} onClick={() => onSelect(project)}>{project.name}</button>)}<span data-testid="active-project">{activeProject?.name}</span></div> }));
-vi.mock('../TerminalArea', () => ({ default: ({ project, resumedSessionId, onOpenSessionSearch }) => <div><button onClick={onOpenSessionSearch}>Open session search</button><span data-testid="terminal-project">{project.name}</span><span data-testid="resumed-tab">{resumedSessionId}</span></div> }));
+vi.mock('../TerminalArea', () => ({ default: ({ project, adoptSessions = [], onOpenSessionSearch }) => {
+  const active = adoptSessions.find((item) => item.activate)?.sessionId
+    || adoptSessions[0]?.sessionId
+    || '';
+  return <div><button onClick={onOpenSessionSearch}>Open session search</button><span data-testid="terminal-project">{project.name}</span><span data-testid="resumed-tab">{active}</span></div>;
+} }));
+vi.mock('../../hooks/usePipelineRuns', () => ({
+  usePipelineRuns: () => ({
+    runs: [],
+    locallyStartedRunIds: new Set(),
+    startRun: vi.fn(),
+    stopRun: vi.fn(),
+    resumeRun: vi.fn(),
+    continueRun: vi.fn(),
+    cleanupRun: vi.fn(),
+  }),
+}));
 vi.mock('../FileTree', () => ({ default: () => null }));
 vi.mock('../FileBrowserPanel', () => ({ default: () => null }));
 vi.mock('../ProjectSwitcher', () => ({ default: () => null }));

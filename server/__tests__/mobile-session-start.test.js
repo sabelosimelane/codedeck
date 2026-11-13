@@ -105,4 +105,29 @@ describe('createMobileSessionStarter', () => {
     const { deps } = setup();
     expect(() => createMobileSessionStarter({ ...deps, [field]: undefined })).toThrow(new RegExp(field));
   });
+
+  it('uses an absolute cwd override for create and the returned descriptor', async () => {
+    const { starter, localRuntime } = setup();
+    const result = await starter.start('alpha', { cwd: '/tmp/pipeline-worktree' });
+    expect(localRuntime.createDetachedSession).toHaveBeenCalledWith({
+      cwd: '/tmp/pipeline-worktree', cols: 120, rows: 32, sessionId: 'alpha-1',
+    });
+    expect(result.cwd).toBe('/tmp/pipeline-worktree');
+  });
+
+  it.each(['', 'relative/path', 'tmp', null, 42])('rejects non-absolute cwd %#', cwd => {
+    const { starter, localRuntime } = setup();
+    return expect(starter.start('alpha', { cwd })).rejects.toThrow(/cwd/).then(() => {
+      expect(localRuntime.createDetachedSession).not.toHaveBeenCalled();
+    });
+  });
+
+  it('keeps the project path when no cwd override is supplied', async () => {
+    const { starter, localRuntime } = setup();
+    const result = await starter.start('alpha');
+    expect(localRuntime.createDetachedSession).toHaveBeenCalledWith({
+      cwd: '/work/alpha', cols: 120, rows: 32, sessionId: 'alpha-1',
+    });
+    expect(result.cwd).toBe('/work/alpha');
+  });
 });

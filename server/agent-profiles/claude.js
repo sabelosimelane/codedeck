@@ -19,6 +19,10 @@ export function matches({ foregroundCommand, lines }) {
     || text.some(line => MODE_FOOTER.test(line));
 }
 
+export function promptVisible(lines) {
+  return Boolean(promptRegion(lines, line => INPUT_PROMPT.test(line)).prompt);
+}
+
 export function read(lines) {
   const tail = dialogTail(lines);
   // A selection dialog replaces the prompt box, so its mode footer is gone.
