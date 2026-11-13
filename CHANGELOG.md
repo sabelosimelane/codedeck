@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-11-14] - List a worktree git cannot read instead of failing the worktree list
+
+### Executive Summary
+* The Run workflow dialog could not load its worktree list for a project that has a worktree whose link to the repository is broken (found on a live project straight after release). Such a worktree is now shown as one that cannot be chosen, with the reason, and the rest of the list loads.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** `GET /api/pipelines/worktrees` returned 500 when `git status` failed with "not a git repository" in one listed worktree; git still lists such a directory and does not mark it prunable.
+  * **Solution:** `server/pipelines/run-worktree.js` — `readWorktreeChanges` reports that worktree as unreadable and still throws on any other git failure. `server/routes/pipelines.js` — the list marks it not selectable with reason `unreadable` and `dirty: null`; `POST /api/pipelines/runs` refuses it with 409.
+* **🛠️ Codebase:**
+  * `client/src/utils/pipelineRecords.js` — Accept the reason code `unreadable`.
+  * `README.md`, `docs/steering/api-standards.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — Document the reason.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-worktree.test.js`, `pipeline-run-worktree-live.test.js`, `pipelines-api.test.js`, `client/src/utils/__tests__/pipelineRecords.test.js` — Clean, dirty and unreadable worktrees (including real git with a broken link), the list and the run refusal.
+
 ## [2026-11-14] - Choose a worktree for workflow runs; remove the per-terminal Workflow bar
 
 ### Executive Summary

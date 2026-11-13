@@ -9,6 +9,7 @@ import {
   listWorktrees,
   planNames,
   preflight,
+  readWorktreeChanges,
   remove,
   resolveHomeRepoPath,
 } from '../pipelines/run-worktree.js';
@@ -305,6 +306,32 @@ describeLive('pipeline run-worktree live', () => {
 
       expect(await listDirtyPaths({ worktreePath: linked, execFile })).toEqual(['notes.txt']);
       expect(await listDirtyPaths({ worktreePath: detached, execFile })).toEqual([]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a worktree as clean, dirty, or unreadable when its link to the repository is broken', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-wt-read-'));
+    const home = path.join(base, 'codedeck');
+    try {
+      const head = initRepo(home);
+      const clean = path.join(realpathSync(base), 'worktrees', 'codedeck-clean');
+      const dirty = path.join(realpathSync(base), 'worktrees', 'codedeck-dirty');
+      const broken = path.join(realpathSync(base), 'worktrees', 'codedeck-broken');
+      git(home, ['worktree', 'add', clean, '-b', 'clean', head]);
+      git(home, ['worktree', 'add', dirty, '-b', 'dirty', head]);
+      git(home, ['worktree', 'add', broken, '-b', 'broken', head]);
+      writeFileSync(path.join(dirty, 'notes.txt'), 'untracked\n');
+      // The directory stays, so git still lists it and does not call it prunable.
+      writeFileSync(path.join(broken, '.git'), `gitdir: ${path.join(base, 'moved-away')}\n`);
+
+      const listed = await listWorktrees({ projectPath: home, execFile });
+      expect(listed.find(worktree => worktree.path === broken)).toEqual({ path: broken, head, branch: 'broken', missing: false });
+
+      expect(await readWorktreeChanges({ worktreePath: clean, execFile })).toEqual({ readable: true, dirty: false });
+      expect(await readWorktreeChanges({ worktreePath: dirty, execFile })).toEqual({ readable: true, dirty: true });
+      expect(await readWorktreeChanges({ worktreePath: broken, execFile })).toEqual({ readable: false });
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

@@ -244,8 +244,9 @@ stateDiagram-v2
 **Existing worktrees (added after v1.0).** `GET /worktrees?project=` lists the working trees git
 reports for the project's repository (`path,asc` by default; `page`/`size` as other collections).
 Each item has `path`, `name`, `branch` (null when detached), `head`, `current` (the project's own
-checkout), `dirty` (null when the directory is missing), `selectable` and `reason` (`missing`,
-`detached` or `in_use`, else null). `POST /runs` accepts an optional absolute `worktreePath` that
+checkout), `dirty` (null when the directory is missing or git cannot read it), `selectable` and `reason`
+(`missing`, `unreadable`, `detached` or `in_use`, else null). `unreadable` is a directory git lists
+but cannot open as a working tree, for example after its repository moved. `POST /runs` accepts an optional absolute `worktreePath` that
 must equal one of those paths: unknown → 404, not selectable → 409. Such a run starts in
 `external` with the worktree's branch and HEAD as `worktree.branch` and `baseCommit`, has no Setup
 step and needs no setup agent. Completion and the cleanup action move it to `released` without

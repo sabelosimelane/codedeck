@@ -284,6 +284,21 @@ export async function listDirtyPaths({ worktreePath, execFile } = {}) {
 }
 
 /**
+ * Whether a listed worktree has uncommitted changes. A directory git cannot open as a
+ * working tree (its link to the repository is broken, for example after the repository
+ * moved) is reported as unreadable; any other git failure is thrown.
+ * @returns {Promise<{ readable: true, dirty: boolean } | { readable: false }>}
+ */
+export async function readWorktreeChanges({ worktreePath, execFile } = {}) {
+  try {
+    return { readable: true, dirty: (await listDirtyPaths({ worktreePath, execFile })).length > 0 };
+  } catch (err) {
+    if (String(err?.stderr ?? '').includes('not a git repository')) return { readable: false };
+    throw err;
+  }
+}
+
+/**
  * Remove a worktree (Spec §8.2). Never passes --force.
  * @returns {Promise<{ ok: true } | { ok: false, detail: string }>}
  */

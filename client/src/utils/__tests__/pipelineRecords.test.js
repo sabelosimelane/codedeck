@@ -140,6 +140,11 @@ describe('parseWorktree', () => {
     expect(parseWorktree({ ...blocked, reason: { ...blocked.reason, extra: 1 } })).toEqual(blocked);
   });
 
+  it.each(['missing', 'unreadable', 'detached', 'in_use'])('accepts the reason code %s', (code) => {
+    const record = worktree({ dirty: null, selectable: false, reason: { code, message: 'Why it cannot be chosen.' } });
+    expect(parseWorktree(record)).toEqual(record);
+  });
+
   it.each([
     ['worktree', null],
     ['worktree', []],

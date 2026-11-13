@@ -17,7 +17,7 @@ import {
   planNames as defaultPlanNames,
   resolveHomeRepoPath as defaultResolveHomeRepoPath,
   listWorktrees as defaultListWorktrees,
-  listDirtyPaths as defaultListDirtyPaths,
+  readWorktreeChanges as defaultReadWorktreeChanges,
   buildSetupPrompt,
 } from '../pipelines/run-worktree.js';
 
@@ -29,6 +29,7 @@ const WORKTREE_SORT = ['path'];
 const SETUP_AGENT_MISSING = 'setup_agent_missing';
 const WORKTREE_REASONS = {
   missing: 'The worktree directory is missing.',
+  unreadable: 'Git cannot read this worktree.',
   detached: 'No branch is checked out in this worktree.',
   in_use: 'An open workflow run is using this worktree.',
 };
@@ -185,12 +186,16 @@ function sameStartBody(existing, body) {
     && existingPath === body.worktreePath;
 }
 
-/** Why a worktree cannot take a run, or null when it can. The first reason that applies is reported. */
-function worktreeRefusal(worktree, runs) {
+/**
+ * Why a worktree cannot take a run, or null when it can. The first reason that applies is reported.
+ * `changes` is what git read in the worktree, or null for a missing one, which is never read.
+ */
+function worktreeRefusal(worktree, changes, runs) {
   const code = worktree.missing ? 'missing'
-    : worktree.branch === null ? 'detached'
-      : runs.some(run => run.worktreePath === worktree.path && isOpenRun(run)) ? 'in_use'
-        : null;
+    : !changes.readable ? 'unreadable'
+      : worktree.branch === null ? 'detached'
+        : runs.some(run => run.worktreePath === worktree.path && isOpenRun(run)) ? 'in_use'
+          : null;
   return code === null ? null : { code, message: WORKTREE_REASONS[code] };
 }
 
@@ -326,7 +331,7 @@ export function createPipelinesRouter(deps) {
     planNames = defaultPlanNames,
     resolveHomeRepoPath = defaultResolveHomeRepoPath,
     listWorktrees = defaultListWorktrees,
-    listDirtyPaths = defaultListDirtyPaths,
+    readWorktreeChanges = defaultReadWorktreeChanges,
     execFile = defaultExecFile,
     realpath,
     scheduleStart = setImmediate,
@@ -564,16 +569,15 @@ export function createPipelinesRouter(deps) {
     const runs = runStore.list();
     const page = paginate(worktrees.map(worktree => ({ ...worktree, id: worktree.path })), query);
     const data = await Promise.all(page.data.map(async (worktree) => {
-      const reason = worktreeRefusal(worktree, runs);
+      const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
+      const reason = worktreeRefusal(worktree, changes, runs);
       return {
         path: worktree.path,
         name: path.basename(worktree.path),
         branch: worktree.branch,
         head: worktree.head,
         current: worktree.path === projectPath,
-        dirty: worktree.missing
-          ? null
-          : (await listDirtyPaths({ worktreePath: worktree.path, execFile })).length > 0,
+        dirty: changes?.readable ? changes.dirty : null,
         selectable: reason === null,
         reason,
       };
@@ -677,7 +681,8 @@ export function createPipelinesRouter(deps) {
       const worktrees = await listWorktrees({ projectPath: project.path, execFile });
       worktree = worktrees.find(candidate => candidate.path === body.worktreePath) ?? null;
       if (!worktree) throw new PipelineError('Worktree not found for this project', 404);
-      const refusal = worktreeRefusal(worktree, runStore.list());
+      const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
+      const refusal = worktreeRefusal(worktree, changes, runStore.list());
       if (refusal) throw new PipelineError(refusal.message, 409, undefined, { reasons: [refusal] });
       names = { worktreePath: worktree.path, branch: worktree.branch };
     } else {

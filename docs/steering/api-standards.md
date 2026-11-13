@@ -103,7 +103,7 @@ stable identity tiebreaker; unknown filters and sorts are rejected.
 | GET/PUT `/settings` | Setup agent selection with revision |
 | GET `/preflight?project=...` | Eligibility reasons and dirty-checkout warning for a local Git repository root |
 | GET `/worktrees?project=...` | Paginated working trees of the project's repository (sort `path,asc\|desc`); each says whether a run may use it and why not |
-| POST `/runs` | Request UUID, workflow, project and input; optional `worktreePath` of an existing worktree (404 unknown, 409 detached, missing or in use) instead of a new one; snapshots definitions; requestId replay is idempotent and conflicting reuse is 409 |
+| POST `/runs` | Request UUID, workflow, project and input; optional `worktreePath` of an existing worktree (404 unknown, 409 missing, unreadable by git, detached or in use) instead of a new one; snapshots definitions; requestId replay is idempotent and conflicting reuse is 409 |
 | GET `/runs`, GET `/runs/:id` | Persisted progress, steps, worktree state and allowed actions |
 | POST `/runs/:id/stop` | Stop automation; repeated Stop is idempotent |
 | POST `/runs/:id/resume` | Fresh attempt; refuses a missing worktree |

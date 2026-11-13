@@ -902,15 +902,18 @@ describe('pipelines API — worktrees', () => {
   const FEATURE_WT = { path: '/tmp/worktrees/demo-git-feature', head: HEAD_B, branch: 'feature/x', missing: false };
   const DETACHED_WT = { path: '/tmp/worktrees/demo-git-detached', head: HEAD_B, branch: null, missing: false };
   const MISSING_WT = { path: '/tmp/worktrees/demo-git-gone', head: HEAD_B, branch: 'gone', missing: true };
+  const UNREADABLE_WT = { path: '/tmp/worktrees/demo-git-broken', head: HEAD_B, branch: 'broken', missing: false };
 
   async function setupWorktrees(worktrees = [HOME_WT, FEATURE_WT], overrides = {}) {
     const listWorktrees = vi.fn(async () => worktrees);
-    const listDirtyPaths = vi.fn(async ({ worktreePath }) => (worktreePath === FEATURE_WT.path ? ['README.md'] : []));
+    const readWorktreeChanges = vi.fn(async ({ worktreePath }) => (worktreePath === UNREADABLE_WT.path
+      ? { readable: false }
+      : { readable: true, dirty: worktreePath === FEATURE_WT.path }));
     const ctx = await setup({
       ...overrides,
-      routerDeps: { listWorktrees, listDirtyPaths, realpath: async value => value, execFile: 'exec-file-stub', ...overrides.routerDeps },
+      routerDeps: { listWorktrees, readWorktreeChanges, realpath: async value => value, execFile: 'exec-file-stub', ...overrides.routerDeps },
     });
-    return { ...ctx, listWorktrees, listDirtyPaths };
+    return { ...ctx, listWorktrees, readWorktreeChanges };
   }
 
   const startBody = (workflow, overrides = {}) => ({
@@ -955,7 +958,21 @@ describe('pipelines API — worktrees', () => {
       dirty: null, selectable: false, reason: { code: 'missing', message: 'The worktree directory is missing.' },
     });
     expect(byName['demo-git']).toMatchObject({ selectable: true, reason: null });
-    expect(ctx.listDirtyPaths).not.toHaveBeenCalledWith(expect.objectContaining({ worktreePath: MISSING_WT.path }));
+    expect(ctx.readWorktreeChanges).not.toHaveBeenCalledWith(expect.objectContaining({ worktreePath: MISSING_WT.path }));
+  });
+
+  it('lists a worktree git cannot read as not selectable instead of failing the whole list', async () => {
+    const ctx = await setupWorktrees([HOME_WT, UNREADABLE_WT, { ...UNREADABLE_WT, path: '/tmp/worktrees/demo-git-fine' }]);
+    const response = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo' });
+
+    expect(response.status).toBe(200);
+    const byName = Object.fromEntries(response.body.data.map(item => [item.name, item]));
+    expect(byName['demo-git-broken']).toEqual({
+      path: UNREADABLE_WT.path, name: 'demo-git-broken', branch: 'broken', head: HEAD_B, current: false,
+      dirty: null, selectable: false, reason: { code: 'unreadable', message: 'Git cannot read this worktree.' },
+    });
+    expect(byName['demo-git-fine']).toMatchObject({ dirty: false, selectable: true, reason: null });
+    expect(byName['demo-git']).toMatchObject({ dirty: false, selectable: true, reason: null });
   });
 
   it('pages and sorts by path deterministically', async () => {
@@ -967,7 +984,7 @@ describe('pipelines API — worktrees', () => {
     expect(second.body.data.map(item => item.path)).toEqual([FEATURE_WT.path]);
     expect(second.body.page).toEqual({ currentPage: 1, size: 2, totalElements: 3, totalPages: 2, hasNextPage: false });
     // Only the returned page is inspected for uncommitted changes.
-    expect(ctx.listDirtyPaths).toHaveBeenCalledTimes(3);
+    expect(ctx.readWorktreeChanges).toHaveBeenCalledTimes(3);
 
     const descending = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo', sort: 'path,desc' });
     expect(descending.body.data.map(item => item.path)).toEqual([FEATURE_WT.path, DETACHED_WT.path, PROJECT.path]);
@@ -1092,6 +1109,7 @@ describe('pipelines API — worktrees', () => {
   it.each([
     ['detached', DETACHED_WT, 'No branch is checked out in this worktree.'],
     ['missing', MISSING_WT, 'The worktree directory is missing.'],
+    ['unreadable', UNREADABLE_WT, 'Git cannot read this worktree.'],
   ])('returns 409 for a %s worktree', async (_label, worktree, message) => {
     const ctx = await setupWorktrees([HOME_WT, worktree]);
     const { workflow } = await seedReady(ctx);

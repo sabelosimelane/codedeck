@@ -106,8 +106,8 @@ linked worktrees, each with its branch and whether it has uncommitted changes.
 A run in an existing worktree uses it as it is: there is no Setup step, no setup
 agent is needed, and CodeDeck never removes that worktree. When such a run ends
 or is stopped, **Dismiss run** closes it and leaves the worktree in place. A
-worktree with no branch checked out, a missing directory, or an open run already
-using it cannot be chosen.
+worktree with no branch checked out, a missing directory, a directory git cannot
+read, or an open run already using it cannot be chosen.
 
 The runs bar shows steps, passes, branch and available controls. **Stop** stops
 automation; the agent may still be working. **Resume** warns about that terminal

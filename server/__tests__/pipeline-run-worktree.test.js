@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { create, listDirtyPaths, listWorktrees, planNames, preflight, remove } from '../pipelines/run-worktree.js';
+import { create, listDirtyPaths, listWorktrees, planNames, preflight, readWorktreeChanges, remove } from '../pipelines/run-worktree.js';
 
 const RUN_ID = '0d9e4b1a-1111-4111-8111-111111111111';
 const HOME = '/Users/me/git/codedeck';
@@ -443,5 +443,28 @@ describe('listWorktrees', () => {
   it('surfaces a git failure', async () => {
     const execFile = fakeExecFile([{ match: () => true, error: { message: 'fatal: not a git repository' } }]);
     await expect(listWorktrees({ projectPath: HOME, execFile })).rejects.toThrow(/not a git repository/);
+  });
+});
+
+describe('readWorktreeChanges', () => {
+  const WT = '/Users/me/git/worktrees/codedeck-feature';
+  const status = result => fakeExecFile([{ match: args => args.join(' ') === `-C ${WT} status --porcelain`, ...result }]);
+
+  it('reports a readable worktree without changes as clean', async () => {
+    expect(await readWorktreeChanges({ worktreePath: WT, execFile: status({ stdout: '' }) })).toEqual({ readable: true, dirty: false });
+  });
+
+  it('reports a readable worktree with changes as dirty', async () => {
+    expect(await readWorktreeChanges({ worktreePath: WT, execFile: status({ stdout: '?? notes.txt\n' }) })).toEqual({ readable: true, dirty: true });
+  });
+
+  it('reports a directory git cannot open as a working tree as unreadable', async () => {
+    const execFile = status({ error: { code: 128, message: 'Command failed', stderr: 'fatal: not a git repository: (null)\n' } });
+    expect(await readWorktreeChanges({ worktreePath: WT, execFile })).toEqual({ readable: false });
+  });
+
+  it('fails loudly on any other git failure', async () => {
+    const execFile = status({ error: { code: 128, message: 'Command failed', stderr: 'fatal: unable to read index file\n' } });
+    await expect(readWorktreeChanges({ worktreePath: WT, execFile })).rejects.toThrow('Command failed');
   });
 });

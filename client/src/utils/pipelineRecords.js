@@ -84,7 +84,7 @@ export function parseSettings(record) {
 }
 
 const COMMIT_ID = /^[0-9a-f]{40}$/;
-const WORKTREE_REASON_CODES = ['missing', 'detached', 'in_use'];
+const WORKTREE_REASON_CODES = ['missing', 'unreadable', 'detached', 'in_use'];
 
 function parseWorktreeReason(reason) {
   if (reason === null) return null;
