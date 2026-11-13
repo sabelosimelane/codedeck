@@ -1,15 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
+import { AGENT_PRESETS, buildLaunchCommand, parseLaunchCommand } from '../../../../shared/agent-presets.mjs';
 import { validateAgentBody } from '../../../../shared/pipeline-definitions.mjs';
 import { createAgent, deleteAgent, getAgent, updateAgent } from '../../utils/pipelinesApi';
 import { parseAgent } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
-import { OtherErrors, TextField, diagnoseSaveFailure, errorsByField, failureMessage } from './definitionForm';
+import { OtherErrors, SelectField, TextField, diagnoseSaveFailure, errorsByField, failureMessage } from './definitionForm';
 
-const FORM_FIELDS = ['name', 'launchCommand', 'resetCommand'];
-const NEW_AGENT = { id: null, revision: null, name: '', launchCommand: '', resetCommand: '/clear' };
+const SHOWN_FIELDS = ['name', 'model', 'effort', 'launchCommand', 'resetCommand'];
+const CUSTOM = 'custom';
+const BLANK_SELECTION = { model: '', effort: '', skipPermissions: false };
+const NEW_AGENT = { id: null, revision: null, name: '', resetCommand: '/clear', provider: AGENT_PRESETS[0].id, ...BLANK_SELECTION, customCommand: '' };
 
-const toForm = ({ id, revision, name, launchCommand, resetCommand }) => ({ id, revision, name, launchCommand, resetCommand });
+/** A saved command a preset builds opens as that preset's choices; any other opens as a custom command. */
+function toForm({ id, revision, name, launchCommand, resetCommand }) {
+  const selection = parseLaunchCommand(launchCommand);
+  return selection === null
+    ? { id, revision, name, resetCommand, provider: CUSTOM, ...BLANK_SELECTION, customCommand: launchCommand }
+    : { id, revision, name, resetCommand, ...selection, customCommand: '' };
+}
+
+/** `{ command, errors }` for the form's launch choice; `command` is null while a preset field is invalid. */
+function launchOf(form) {
+  return form.provider === CUSTOM ? { command: form.customCommand, errors: [] } : buildLaunchCommand(form);
+}
 
 /** Agents list with an inline add/edit form. Every change is saved to the backend, then reloaded from it. */
 export default function AgentList({ agents, onChanged, onDirtyChange }) {
@@ -20,15 +34,19 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
   const [busy, setBusy] = useState(false);
   const [deleteError, setDeleteError] = useState(null);
 
-  const dirty = form !== null && FORM_FIELDS.some(field => form[field] !== loaded[field]);
+  const launch = form === null ? null : launchOf(form);
+  const preset = form === null ? undefined : AGENT_PRESETS.find(candidate => candidate.id === form.provider);
+  const dirty = form !== null && (
+    form.name !== loaded.name || form.resetCommand !== loaded.resetCommand || launch.command !== loaded.launchCommand
+  );
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
 
-  const openForm = (agent) => {
-    const next = toForm(agent);
+  const showForm = (next) => {
     setForm(next);
-    setLoaded(next);
+    setLoaded({ name: next.name, resetCommand: next.resetCommand, launchCommand: launchOf(next).command });
     setErrors({});
   };
+  const openForm = agent => showForm(toForm(agent));
   // Opening another agent would replace the form, so an unsaved one is only dropped on purpose.
   const requestForm = (agent) => {
     if (dirty && !window.confirm('Discard the unsaved changes to this agent?')) return;
@@ -40,12 +58,21 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
     setErrors({});
   };
   const setField = field => value => setForm(current => ({ ...current, [field]: value }));
+  // Model names and efforts belong to one CLI, so they do not carry over to another provider.
+  const setProvider = provider => setForm((current) => {
+    if (provider === CUSTOM) return { ...current, provider, customCommand: launchOf(current).command ?? current.customCommand };
+    return { ...current, provider, model: '', effort: '' };
+  });
 
   const save = async () => {
     const editing = form.id !== null;
-    const fields = { name: form.name, launchCommand: form.launchCommand, resetCommand: form.resetCommand };
+    const fields = { name: form.name, launchCommand: launch.command ?? '', resetCommand: form.resetCommand };
     const body = editing ? { ...fields, revision: form.revision } : fields;
-    const invalid = validateAgentBody(body, { revisionRequired: editing });
+    // An invalid preset field is reported on that field, not again as a missing launch command.
+    const invalid = [
+      ...launch.errors,
+      ...validateAgentBody(body, { revisionRequired: editing }).filter(error => launch.errors.length === 0 || error.field !== 'launchCommand'),
+    ];
     if (invalid.length > 0) {
       setErrors(errorsByField(invalid));
       return;
@@ -101,7 +128,7 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
     <section className="pipeline-section" aria-label="Agents">
       <h3>Agents</h3>
       <p className="pipeline-hint">
-        A named CLI a node runs in. The launch command starts it interactively and owns its model, effort and permission flags.
+        A named CLI a node runs in. Choose a provider, model and effort, or write the launch command yourself.
       </p>
 
       {agents.length === 0 && <p className="pipeline-empty">No agents yet.</p>}
@@ -127,16 +154,47 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
       {deleteError && <p role="alert" className="pipeline-field-error">{deleteError}</p>}
 
       {form === null ? (
-        <button type="button" className="pipeline-add" disabled={busy} onClick={() => openForm(NEW_AGENT)}>
+        <button type="button" className="pipeline-add" disabled={busy} onClick={() => showForm(NEW_AGENT)}>
           <Plus size={12} /> Add agent
         </button>
       ) : (
         <div className="pipeline-form">
           <h4>{form.id === null ? 'New agent' : 'Edit agent'}</h4>
           <TextField label="Agent name" caption="Name" value={form.name} onChange={setField('name')} error={errors.name} maxLength={64} placeholder="codex-sol-high" />
-          <TextField label="Launch command" caption="Launch command" value={form.launchCommand} onChange={setField('launchCommand')} error={errors.launchCommand} maxLength={2048} placeholder={'codex --model gpt-6-sol -c model_reasoning_effort="high"'} />
+          <SelectField label="Provider" caption="Provider" value={form.provider} onChange={setProvider}>
+            {AGENT_PRESETS.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+            <option value={CUSTOM}>Custom command</option>
+          </SelectField>
+          {preset ? (
+            <>
+              <div className="pipeline-node-row">
+                <TextField
+                  label="Model"
+                  caption={preset.efforts.length > 0 ? "Model (blank uses the CLI's default)" : "Model (blank uses the CLI's default; the name includes the effort)"}
+                  value={form.model}
+                  onChange={setField('model')}
+                  error={errors.model}
+                  maxLength={128}
+                  placeholder={preset.modelExample}
+                />
+                {preset.efforts.length > 0 && (
+                  <SelectField label="Effort" caption="Effort" value={form.effort} onChange={setField('effort')} error={errors.effort}>
+                    <option value="">CLI default</option>
+                    {preset.efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
+                  </SelectField>
+                )}
+              </div>
+              <label className="pipeline-check">
+                <input type="checkbox" aria-label="Skip permission prompts" checked={form.skipPermissions} onChange={event => setField('skipPermissions')(event.target.checked)} />
+                <span>Skip permission prompts <code>{preset.skipPermissionsFlag}</code> — without it a run pauses whenever the agent asks for permission</span>
+              </label>
+              <TextField label="Launch command" caption="Launch command (built from the choices above)" value={launch.command ?? ''} onChange={() => {}} error={errors.launchCommand} readOnly />
+            </>
+          ) : (
+            <TextField label="Launch command" caption="Launch command" value={form.customCommand} onChange={setField('customCommand')} error={errors.launchCommand} maxLength={2048} placeholder={'codex --model gpt-6-sol -c model_reasoning_effort="high"'} />
+          )}
           <TextField label="Reset command" caption="Reset command (clears context between passes)" value={form.resetCommand} onChange={setField('resetCommand')} error={errors.resetCommand} maxLength={256} />
-          <OtherErrors errors={errors} shownFields={FORM_FIELDS} />
+          <OtherErrors errors={errors} shownFields={SHOWN_FIELDS} />
           <div className="pipeline-form-actions">
             <button type="button" className="pipeline-primary" disabled={busy} onClick={save}>Save agent</button>
             <button type="button" disabled={busy} onClick={closeForm}>Cancel</button>

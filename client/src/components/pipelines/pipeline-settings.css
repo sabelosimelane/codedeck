@@ -13,6 +13,10 @@
 
 .pipeline-settings input, .pipeline-settings select, .pipeline-settings textarea { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-base); color: var(--text-primary); font-family: var(--font-mono); font-size: 12px; outline: none; }
 .pipeline-settings textarea { resize: vertical; line-height: 1.5; }
+.pipeline-settings input[readonly] { background: var(--bg-surface); color: var(--text-secondary); cursor: default; }
+.pipeline-settings input[type="checkbox"] { width: auto; flex-shrink: 0; margin: 2px 0 0; padding: 0; accent-color: var(--accent); }
+.pipeline-check { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; font-size: 11px; line-height: 1.5; color: var(--text-secondary); cursor: pointer; }
+.pipeline-check code { font-family: var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; }
 .pipeline-settings [aria-invalid="true"] { border-color: var(--danger); }
 
 .pipeline-list { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; }

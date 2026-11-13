@@ -81,10 +81,18 @@ appear as a toast. Resizing or reconnecting ends selection with a notice.
 
 ## Workflow pipelines
 
-Open **Settings → Workflows** to add agents (launch and reset commands), choose a
+Open **Settings → Workflows** to add agents, choose a
 Setup agent, and save an ordered workflow. Each node has a prompt, an agent and
 either a single pass or repetition until completion with a maximum pass count.
 `{input}` in prompts is replaced once with the input supplied when starting a run.
+
+An agent is a launch command plus a reset command. For Claude Code, Codex and Cursor,
+pick the provider, type a model ID and choose an effort; CodeDeck builds the launch
+command and shows it. A blank model or effort uses the CLI's default. Cursor model
+names include the effort, so it has no separate effort choice. **Skip permission
+prompts** adds the CLI's own bypass flag; without it a run pauses whenever the agent
+asks for permission. Choose **Custom command** to write the command yourself (aliases,
+extra flags, other CLIs). A model ID is not checked until a run launches the agent.
 
 Select a local Git repository project and click **Run workflow** beside Session
 search. Preflight blocks ineligible projects and warns that uncommitted changes

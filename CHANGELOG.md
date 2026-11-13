@@ -8,6 +8,7 @@
 ### Technical Details
 * **✨ New Feature:**
   * Settings tabs and agent/workflow editors with field validation, revision conflict handling and unsaved-draft protection.
+  * `shared/agent-presets.mjs`, `client/src/components/pipelines/AgentList.jsx` — Build an agent's launch command from a provider (Claude Code, Codex, Cursor), model, effort and permission choice, or enter a custom command.
   * All-project sidebar run counts with non-overlapping two-second polling and visible request failures.
   * `client/src/components/pipelines/RunWorkflowDialog.jsx`, `PipelineRunsBar.jsx` — Start/preflight dialog and run controls with step, pass-limit and worktree state.
   * `client/src/hooks/usePipelineRuns.js`, `client/src/utils/pipelinesApi.js`, `terminalAdoption.js` — Poll runs, resolve terminal transitions, fence project mutations and adopt background terminals.

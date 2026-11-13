@@ -172,14 +172,15 @@ describe('PipelineSettings agents', () => {
     click('Add agent');
     expect(screen.getByLabelText('Reset command').value).toBe('/clear');
     type('Agent name', 'haiku-setup');
-    type('Launch command', 'claude --model haiku');
+    type('Provider', 'custom');
+    type('Launch command', 'claude --model haiku --chrome');
     click('Save agent');
 
     expect(await agents().findByText('haiku-setup')).toBeTruthy();
     expect(backend.mutations()).toEqual([{
       method: 'POST',
       path: '/agents',
-      body: { name: 'haiku-setup', launchCommand: 'claude --model haiku', resetCommand: '/clear' },
+      body: { name: 'haiku-setup', launchCommand: 'claude --model haiku --chrome', resetCommand: '/clear' },
     }]);
     toast('success', 'Agent "haiku-setup" added');
     expect(screen.queryByLabelText('Agent name')).toBeNull();
@@ -188,6 +189,8 @@ describe('PipelineSettings agents', () => {
   it('shows each invalid field from the shared validator and sends nothing', async () => {
     await renderSettings();
     click('Add agent');
+    type('Provider', 'custom');
+    type('Launch command', '');
     type('Reset command', '');
     click('Save agent');
 
@@ -204,7 +207,6 @@ describe('PipelineSettings agents', () => {
     backend.failNext('POST', 'agents', { status: 409, message: 'A agent with this name already exists' });
     click('Add agent');
     type('Agent name', 'codex-high');
-    type('Launch command', 'codex');
     click('Save agent');
 
     await waitFor(() => toast('error', 'A agent with this name already exists'));
@@ -221,7 +223,6 @@ describe('PipelineSettings agents', () => {
     });
     click('Add agent');
     type('Agent name', 'x');
-    type('Launch command', 'codex');
     click('Save agent');
 
     expect(await screen.findByText('Launch command rejected')).toBeTruthy();
@@ -247,7 +248,7 @@ describe('PipelineSettings agents', () => {
     click('Edit agent codex-high');
     expect(screen.getByLabelText('Agent name').value).toBe('codex-high');
     expect(screen.getByLabelText('Launch command').value).toBe('codex --model gpt-6-sol');
-    type('Launch command', 'codex --model gpt-6.1-sol');
+    type('Model', 'gpt-6.1-sol');
     type('Reset command', '/new');
     click('Save agent');
 
@@ -305,7 +306,6 @@ describe('PipelineSettings agents', () => {
     backend.failNext('POST', 'agents', { network: true });
     click('Add agent');
     type('Agent name', 'codex');
-    type('Launch command', 'codex');
     click('Save agent');
 
     await waitFor(() => toast('error', 'Server unreachable'));
@@ -373,6 +373,147 @@ describe('PipelineSettings agents', () => {
     click('Cancel');
     expect(lastDirty()).toBe(false);
     expect(screen.queryByLabelText('Agent name')).toBeNull();
+  });
+});
+
+describe('PipelineSettings agent presets', () => {
+  const alias = () => ({ id: A2, name: 'claude-cc', launchCommand: 'cc', resetCommand: '/clear', revision: 1, ...STAMPS });
+  const command = () => screen.getByLabelText('Launch command');
+  const providerOptions = () => [...screen.getByLabelText('Provider').options].map(option => [option.value, option.textContent]);
+
+  it('opens a new agent on Claude Code with the command built for it', async () => {
+    await renderSettings();
+    click('Add agent');
+
+    expect(providerOptions()).toEqual([
+      ['claude', 'Claude Code'], ['codex', 'Codex'], ['cursor', 'Cursor'], ['custom', 'Custom command'],
+    ]);
+    expect(screen.getByLabelText('Provider').value).toBe('claude');
+    expect(screen.getByLabelText('Model').value).toBe('');
+    expect(screen.getByLabelText('Effort').value).toBe('');
+    expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
+    expect(command().value).toBe('claude');
+    expect(command().readOnly).toBe(true);
+    expect(lastDirty()).toBe(false);
+  });
+
+  it('adds an agent from a provider, model and effort', async () => {
+    await renderSettings();
+    click('Add agent');
+    type('Agent name', 'opus-high');
+    type('Model', 'opus');
+    type('Effort', 'high');
+    expect(command().value).toBe('claude --model opus --effort high');
+    click('Save agent');
+
+    expect(await agents().findByText('claude --model opus --effort high')).toBeTruthy();
+    expect(backend.mutations()).toEqual([{
+      method: 'POST',
+      path: '/agents',
+      body: { name: 'opus-high', launchCommand: 'claude --model opus --effort high', resetCommand: '/clear' },
+    }]);
+    toast('success', 'Agent "opus-high" added');
+  });
+
+  it('offers the efforts of the chosen provider and adds its permission flag when asked', async () => {
+    await renderSettings();
+    click('Add agent');
+    const efforts = () => [...screen.getByLabelText('Effort').options].map(option => option.value);
+    expect(efforts()).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+    type('Provider', 'codex');
+    expect(efforts()).toEqual(['', 'low', 'medium', 'high', 'xhigh']);
+    type('Model', 'gpt-6-sol');
+    type('Effort', 'xhigh');
+    fireEvent.click(screen.getByLabelText('Skip permission prompts'));
+    expect(command().value).toBe('codex --model gpt-6-sol -c model_reasoning_effort="xhigh" --dangerously-bypass-approvals-and-sandbox');
+  });
+
+  it('has no effort choice for Cursor, whose model names carry it', async () => {
+    await renderSettings();
+    click('Add agent');
+    type('Provider', 'cursor');
+    expect(screen.queryByLabelText('Effort')).toBeNull();
+    type('Model', 'gpt-5.6-sol-high');
+    expect(command().value).toBe('agent --model gpt-5.6-sol-high');
+  });
+
+  it('clears the model and effort when the provider changes, keeping the permission choice', async () => {
+    await renderSettings();
+    click('Add agent');
+    type('Model', 'opus');
+    type('Effort', 'max');
+    fireEvent.click(screen.getByLabelText('Skip permission prompts'));
+    type('Provider', 'codex');
+
+    expect(screen.getByLabelText('Model').value).toBe('');
+    expect(screen.getByLabelText('Effort').value).toBe('');
+    expect(command().value).toBe('codex --dangerously-bypass-approvals-and-sandbox');
+  });
+
+  it('shows a saved command a preset builds as that provider, model and effort', async () => {
+    await renderSettings({ agents: [{ ...codex(), launchCommand: 'codex --model gpt-6-sol -c model_reasoning_effort="high"' }] });
+    click('Edit agent codex-high');
+
+    expect(screen.getByLabelText('Provider').value).toBe('codex');
+    expect(screen.getByLabelText('Model').value).toBe('gpt-6-sol');
+    expect(screen.getByLabelText('Effort').value).toBe('high');
+    expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
+    expect(lastDirty()).toBe(false);
+  });
+
+  it('shows any other saved command as a custom command, unchanged', async () => {
+    await renderSettings({ agents: [alias()] });
+    click('Edit agent claude-cc');
+
+    expect(screen.getByLabelText('Provider').value).toBe('custom');
+    expect(command().value).toBe('cc');
+    expect(command().readOnly).toBe(false);
+    expect(screen.queryByLabelText('Model')).toBeNull();
+    expect(screen.queryByLabelText('Effort')).toBeNull();
+    expect(screen.queryByLabelText('Skip permission prompts')).toBeNull();
+    expect(lastDirty()).toBe(false);
+  });
+
+  it('carries the built command into Custom command for editing by hand', async () => {
+    await renderSettings();
+    click('Add agent');
+    type('Agent name', 'opus-chrome');
+    type('Model', 'opus');
+    type('Provider', 'custom');
+    expect(command().value).toBe('claude --model opus');
+    expect(command().readOnly).toBe(false);
+
+    type('Launch command', 'claude --model opus --chrome');
+    click('Save agent');
+    expect(await agents().findByText('claude --model opus --chrome')).toBeTruthy();
+    expect(backend.mutations().at(-1).body.launchCommand).toBe('claude --model opus --chrome');
+  });
+
+  it('shows an invalid model on its field and sends nothing', async () => {
+    await renderSettings();
+    click('Add agent');
+    type('Agent name', 'bad');
+    type('Model', 'opus; rm -rf');
+    expect(command().value).toBe('');
+    expect(lastDirty()).toBe(true);
+    click('Save agent');
+
+    expect(screen.getByLabelText('Model').getAttribute('aria-invalid')).toBe('true');
+    expect(screen.getByText('Use letters, digits and . _ : / - only, starting with a letter or digit, at most 128 characters')).toBeTruthy();
+    expect(screen.queryByText(/launchCommand must contain/)).toBeNull();
+    expect(backend.mutations()).toEqual([]);
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('reports a changed model as unsaved', async () => {
+    await renderSettings({ agents: [codex()] });
+    click('Edit agent codex-high');
+    expect(lastDirty()).toBe(false);
+    type('Model', 'gpt-6.1-sol');
+    expect(lastDirty()).toBe(true);
+    type('Model', 'gpt-6-sol');
+    expect(lastDirty()).toBe(false);
   });
 });
 
