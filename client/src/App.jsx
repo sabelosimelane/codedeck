@@ -1,3 +1,4 @@
+import { usePipelineRunCounts } from './hooks/usePipelineRunCounts';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
@@ -80,6 +81,7 @@ function AppContent() {
     continueRun,
     cleanupRun,
   } = usePipelineRuns({ projectName: activeProject?.name || null, showToast });
+  const openRunCounts = usePipelineRunCounts(showToast);
   const sessionStatusRequestInFlightRef = useRef(false);
   const systemResourcesRequestInFlightRef = useRef(false);
 
@@ -407,6 +409,7 @@ function AppContent() {
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
       <Sidebar
         activeProjects={activeProjects}
+        openRunCounts={openRunCounts}
         waitingProjects={waitingProjects}
         shelvedProjects={shelvedProjects}
         activeProject={activeProject}

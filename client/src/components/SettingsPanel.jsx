@@ -3,9 +3,20 @@ import { X, Settings, FolderOpen, RotateCcw, Save } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import HostsSection from './HostsSection';
 import SessionNamingSettings from './SessionNamingSettings';
+import PipelineSettings from './pipelines/PipelineSettings';
 import { useToast } from './ToastContext';
 
 const DEFAULT_NOTIFICATION_COOLDOWN_SECONDS = 30;
+
+// The footer saves General and Session naming together; Hosts and Workflows save per item.
+const TABS = [
+  { id: 'general', label: 'General', footer: true },
+  { id: 'naming', label: 'Session naming', footer: true },
+  { id: 'hosts', label: 'Hosts', footer: false },
+  { id: 'workflows', label: 'Workflows', footer: false },
+];
+const tabId = id => `settings-tab-${id}`;
+const tabPanelId = id => `settings-tabpanel-${id}`;
 
 export default function SettingsPanel({ onClose, onSaved }) {
   const [defaultPath, setDefaultPath] = useState('');
@@ -19,7 +30,13 @@ export default function SettingsPanel({ onClose, onSaved }) {
   const [dirty, setDirty] = useState(false);
   const namingRef = useRef(null);
   const [namingState, setNamingState] = useState({ dirty: false, busy: true, valid: false });
+  const [activeTab, setActiveTab] = useState('general');
+  const [hostsDirty, setHostsDirty] = useState(false);
+  const [workflowsDirty, setWorkflowsDirty] = useState(false);
   const anyDirty = dirty || namingState.dirty;
+  const showFooter = TABS.find(tab => tab.id === activeTab).footer;
+  // The footer Save covers a panel that may be on a hidden tab, so its blocking problem is named.
+  const namingIncomplete = namingState.dirty && !namingState.busy && !namingState.valid;
   const cannotSave = saving || namingState.busy || (namingState.dirty && !namingState.valid);
   const { showToast } = useToast();
 
@@ -117,6 +134,21 @@ export default function SettingsPanel({ onClose, onSaved }) {
     setSaving(false);
   };
 
+  const requestClose = () => {
+    const unsaved = anyDirty || hostsDirty || workflowsDirty;
+    if (unsaved && !window.confirm('Close settings and discard unsaved changes?')) return;
+    onClose();
+  };
+
+  // Every panel stays mounted: the footer calls the naming panel's save() and panels keep local drafts.
+  const panelProps = id => ({
+    role: 'tabpanel',
+    id: tabPanelId(id),
+    'aria-labelledby': tabId(id),
+    hidden: activeTab !== id,
+    style: activeTab === id ? contentStyle : hiddenPanelStyle,
+  });
+
   const handleBrowseSelect = (selectedPath) => {
     setDefaultPath(selectedPath);
     setShowBrowser(false);
@@ -124,21 +156,38 @@ export default function SettingsPanel({ onClose, onSaved }) {
 
   return (
     <>
-      <div style={overlayStyle} onClick={onClose}>
-        <div style={panelStyle} onClick={e => e.stopPropagation()}>
+      <div style={overlayStyle} data-testid="settings-overlay" onClick={requestClose}>
+        <div style={panelStyle} role="dialog" aria-modal="true" aria-label="Settings" onClick={e => e.stopPropagation()}>
           {/* Header */}
           <div style={headerStyle}>
             <div style={headerLeftStyle}>
               <Settings size={15} style={{ color: 'var(--accent)' }} />
               <span style={headerTitleStyle}>settings</span>
             </div>
-            <button onClick={onClose} style={closeBtnStyle} title="Close settings">
+            <button onClick={requestClose} style={closeBtnStyle} title="Close settings" aria-label="Close settings">
               <X size={14} />
             </button>
           </div>
 
-          {/* Content */}
-          <div style={contentStyle}>
+          <div role="tablist" aria-label="Settings sections" style={tabListStyle}>
+            {TABS.map(tab => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                id={tabId(tab.id)}
+                aria-selected={activeTab === tab.id}
+                aria-controls={tabPanelId(tab.id)}
+                aria-invalid={tab.id === 'naming' && namingIncomplete}
+                onClick={() => setActiveTab(tab.id)}
+                style={activeTab === tab.id ? activeTabStyle : tabStyle}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div {...panelProps('general')}>
             {/* Section: Paths */}
             <div style={sectionStyle}>
               <div style={sectionLabelStyle}>
@@ -219,15 +268,26 @@ export default function SettingsPanel({ onClose, onSaved }) {
               </div>
             </div>
 
-            {/* Section: Hosts */}
+          </div>
+
+          <div {...panelProps('naming')}>
             <SessionNamingSettings ref={namingRef} onStateChange={setNamingState} />
-            <HostsSection />
+          </div>
+
+          <div {...panelProps('hosts')}>
+            <HostsSection onDirtyChange={setHostsDirty} />
+          </div>
+
+          <div {...panelProps('workflows')}>
+            <PipelineSettings onDirtyChange={setWorkflowsDirty} />
           </div>
 
           {/* Footer */}
-          <div style={footerStyle}>
+          {showFooter && <div style={footerStyle}>
             <div style={footerLeftStyle}>
-              {anyDirty && (
+              {namingIncomplete ? (
+                <span style={{ ...unsavedStyle, color: 'var(--danger)' }}>Session naming has incomplete settings</span>
+              ) : anyDirty && (
                 <span style={unsavedStyle}>unsaved changes</span>
               )}
             </div>
@@ -264,7 +324,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
                 {saving ? 'Saving...' : 'Save'}
               </button>
             </div>
-          </div>
+          </div>}
         </div>
       </div>
 
@@ -295,9 +355,9 @@ const overlayStyle = {
 };
 
 const panelStyle = {
-  width: 480,
+  width: 880,
   maxWidth: '90vw',
-  maxHeight: '80vh',
+  height: '80vh',
   background: 'var(--bg-sidebar)',
   borderRadius: 12,
   border: '1px solid var(--border)',
@@ -343,6 +403,32 @@ const contentStyle = {
   flex: 1,
   overflowY: 'auto',
   padding: '16px',
+};
+
+const hiddenPanelStyle = {
+  display: 'none',
+};
+
+const tabListStyle = {
+  display: 'flex',
+  gap: 4,
+  padding: '8px 12px 0',
+  borderBottom: '1px solid var(--border)',
+};
+
+const tabStyle = {
+  padding: '8px 12px',
+  fontSize: '12px',
+  fontFamily: 'var(--font-mono)',
+  color: 'var(--text-muted)',
+  borderBottom: '2px solid transparent',
+  marginBottom: -1,
+};
+
+const activeTabStyle = {
+  ...tabStyle,
+  color: 'var(--accent)',
+  borderBottom: '2px solid var(--accent)',
 };
 
 const sectionStyle = {

@@ -17,7 +17,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - File tree browsing — view project files, click to open in system editor (VS Code, etc.)
 - Per-project file browsing — scoped file tree panel decoupled from active project
 - Directory browser — filesystem navigator for adding projects
-- Settings panel — configurable default path for project picker
+- Settings panel — General, Session naming, Hosts and Workflows tabs; agents, Setup selection and ordered workflow editors
 - PTY session persistence — terminals survive WebSocket reconnects, layout restored from localStorage
 - Session search — search each agent CLI's local conversation history and resume a conversation in a terminal tab in its project
 - Live sidebar cockpit — per-project status (active/idle/dead), terminal count, elapsed time
@@ -29,8 +29,8 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Truthful durable terminals — tmux is required, reconnects reseed from fresh snapshots, and degraded preserved history is warned explicitly instead of silently bluffing
 - Optional sleep prevention — `CODEDECK_CAFFEINATE=1` wraps startup under macOS `caffeinate`
 
-**Future (not yet specified):**
-- Workflow panel for orchestrating tasks across projects
+- Workflow pipelines — isolated Git worktree per run, Setup cleanliness guard, ordered agent steps, bounded repeat passes, Stop/Resume/Continue and safe cleanup
+- Pipeline runs bar and sidebar counts — persisted run progress with automatic terminal-tab adoption; backend restarts require explicit Resume
 
 ## Domain Model
 - **Project**: a named directory on disk. Stored as `{ name, path }` in SQLite config.
@@ -53,3 +53,6 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - A tab's waiting mark is cleared by the backend when its session is deleted — session ids are reused, and a stale mark would silence a new terminal
 - The backend is the source of truth for all state — frontend never holds authoritative state
 - Every user action that modifies state must round-trip through the backend
+
+Pipeline definitions and run snapshots are persisted in SQLite. Completed clean worktrees
+are removed without forcing; branches remain. Open runs include cleanup that needs attention.

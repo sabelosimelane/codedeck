@@ -18,7 +18,7 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Truthful terminal scrollback** — VS Code-style scrolling, snapshot-first reconnects, and visible warnings when preserved history cannot be guaranteed
 - **Terminal resilience** — debug inspector, transport replay catch-up, visibility-aware recovery, heartbeat monitoring
 - **Durable sessions** — tmux-backed sessions survive browser detaches and server restarts
-- **Terminal workflows** — repeat a command in your running agent, clearing context between passes until the agent reports completion
+- **Workflow pipelines** — configure agents and multi-step workflows, run them in isolated Git worktrees, and watch progress across projects
 - **Descriptive session titles** — optional background naming through configurable local CLIs, with manual rename and retry
 - **Session search** — find past agent-CLI conversations and resume one in its project
 - **Toast notifications** — success/error feedback on every action, no silent failures
@@ -79,7 +79,32 @@ The highlight stays after copying. Selection alone does not copy, and terminal
 OSC 52 sequences cannot read or overwrite the clipboard. Clipboard failures
 appear as a toast. Resizing or reconnecting ends selection with a notice.
 
-## Terminal workflows
+## Workflow pipelines
+
+Open **Settings → Workflows** to add agents (launch and reset commands), choose a
+Setup agent, and save an ordered workflow. Each node has a prompt, an agent and
+either a single pass or repetition until completion with a maximum pass count.
+`{input}` in prompts is replaced once with the input supplied when starting a run.
+
+Select a local Git repository project and click **Run workflow** beside Session
+search. Preflight blocks ineligible projects and warns that uncommitted changes
+will not enter the run. CodeDeck creates a branch and a worktree beside the home
+repository, runs Setup first, then opens each step in a new terminal tab. Setup
+must leave the worktree clean before the workflow's nodes can begin.
+
+The runs bar shows steps, passes, branch and available controls. **Stop** stops
+automation; the agent may still be working. **Resume** warns about that terminal
+and creates a fresh attempt. At the pass limit, **Continue** advances to the next
+step. Runs survive browser disconnects. A backend restart marks active runs
+**interrupted**, ready for an explicit Resume. The sidebar counts each project's
+open runs, including runs that need attention or worktree cleanup.
+
+Completion removes a clean worktree and keeps its branch. Modified or untracked
+files block removal and appear in the runs bar; resolve them and choose **Clean up
+worktree**. CodeDeck never forces removal. These pipelines use local projects;
+remote projects are ineligible.
+
+### Per-terminal Workflow bar
 
 Start your agent in a terminal and finish any setup or permission dialogs. At an empty
 prompt, open **Workflow**, enter your command (for example, `/feature-dev docs/todos/my-feature.md`),

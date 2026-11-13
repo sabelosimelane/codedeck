@@ -54,6 +54,54 @@ export function listWorkflows({ signal } = {}) {
   return listAll('/workflows', { signal });
 }
 
+export function listAgents({ signal } = {}) {
+  return listAll('/agents', { signal });
+}
+
+function itemPath(collection, id) {
+  return `/${collection}/${encodeURIComponent(id)}`;
+}
+
+export function getAgent(id, { signal } = {}) {
+  return request(itemPath('agents', id), { signal });
+}
+
+export function createAgent(fields, { signal } = {}) {
+  return request('/agents', { method: 'POST', body: fields, signal });
+}
+
+export function updateAgent(id, fields, { signal } = {}) {
+  return request(itemPath('agents', id), { method: 'PUT', body: fields, signal });
+}
+
+export function deleteAgent(id, { signal } = {}) {
+  return request(itemPath('agents', id), { method: 'DELETE', signal });
+}
+
+export function getWorkflow(id, { signal } = {}) {
+  return request(itemPath('workflows', id), { signal });
+}
+
+export function createWorkflow(fields, { signal } = {}) {
+  return request('/workflows', { method: 'POST', body: fields, signal });
+}
+
+export function updateWorkflow(id, fields, { signal } = {}) {
+  return request(itemPath('workflows', id), { method: 'PUT', body: fields, signal });
+}
+
+export function deleteWorkflow(id, { signal } = {}) {
+  return request(itemPath('workflows', id), { method: 'DELETE', signal });
+}
+
+export function getPipelineSettings({ signal } = {}) {
+  return request('/settings', { signal });
+}
+
+export function updatePipelineSettings({ setupAgentId, revision }, { signal } = {}) {
+  return request('/settings', { method: 'PUT', body: { setupAgentId, revision }, signal });
+}
+
 export function preflightProject(project, { signal } = {}) {
   const params = new URLSearchParams({ project });
   return request(`/preflight?${params}`, { signal });

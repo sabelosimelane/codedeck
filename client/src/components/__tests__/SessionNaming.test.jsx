@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import SessionNamingSettings from '../SessionNamingSettings';
 import SettingsPanel from '../SettingsPanel';
 vi.mock('../HostsSection', () => ({ default: () => null }));
+vi.mock('../pipelines/PipelineSettings', () => ({ default: () => null }));
 import SessionTitleActions from '../SessionTitleActions';
 import { getTerminalTabLabel } from '../../utils/terminalTabLabel';
 import { useSessionTitles } from '../../hooks/useSessionTitles';
@@ -30,6 +31,7 @@ describe('session naming settings', () => {
       return ok({});
     }); vi.stubGlobal('fetch', fetch);
     render(<SettingsPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Session naming' }));
     await waitFor(() => expect(screen.getByLabelText('Naming model').value).toBe('sonnet'));
     expect(screen.queryByLabelText('Conduit endpoint')).toBeNull();
     fireEvent.change(screen.getByLabelText('Naming provider'), { target: { value: 'codex' } });
@@ -75,6 +77,7 @@ describe('session naming settings', () => {
   it('reverts changes and displays save failures', async () => {
     vi.stubGlobal('fetch', vi.fn((_url, options) => options?.method === 'PUT' ? Promise.resolve({ ok: false, json: async () => ({ message: 'Selection rejected' }) }) : ok({ provider: 'claude', model: 'sonnet', effort: 'low' })));
     render(<SettingsPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Session naming' }));
     await waitFor(() => expect(screen.getByLabelText('Naming model').value).toBe('sonnet'));
     fireEvent.change(screen.getByLabelText('Naming model'), { target: { value: 'opus' } });
     fireEvent.click(screen.getByRole('button', { name: 'Revert' }));

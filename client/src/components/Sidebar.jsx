@@ -144,6 +144,17 @@ function renderWaitingCount(projectName, waitingSessionIds) {
   );
 }
 
+function renderOpenRunCount(projectName, counts) {
+  const count = counts.get(projectName) || 0;
+  if (count === 0) return null;
+  const label = `${count} open ${count === 1 ? 'run' : 'runs'}`;
+  return <span title={label} aria-label={label} style={{
+    flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10,
+    padding: '2px 5px', borderRadius: 999, color: 'var(--accent)',
+    background: 'var(--accent-dim)',
+  }}>{count}</span>;
+}
+
 const STATUS_COLORS = {
   active: 'var(--accent)',
   finished: 'var(--warning)',
@@ -152,7 +163,7 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, waitingProjects = [], shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts }) {
+export default function Sidebar({ activeProjects, waitingProjects = [], openRunCounts = new Map(), shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts }) {
   // Parked sessions stop pulsing and blinking here too — reusing the visual path
   // the mute drives, without joining the mute set the eye icon reports.
   const quietStatusSessionIds = getQuietStatusSessionIds(mutedStatusSessionIds, waitingSessionIds);
@@ -669,6 +680,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                     </span>
                   )}
                   {!isCompact && renderWaitingCount(project.name, waitingSessionIds)}
+                  {renderOpenRunCount(project.name, openRunCounts)}
                 </div>
                 {!isCompact && renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
 
@@ -905,6 +917,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                             </span>
                           )}
                         </div>
+                        {renderOpenRunCount(project.name, openRunCounts)}
                         {renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                         {!isRenaming && (
                           <div className="project-inline-actions">
@@ -1137,6 +1150,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], shelvedP
                             </span>
                           )}
                         </div>
+                        {renderOpenRunCount(project.name, openRunCounts)}
                         {renderHostReachabilityBadges({ hostName, isHostUnreachable, lastError })}
                         {!isRenaming && (
                           <div className="project-inline-actions">

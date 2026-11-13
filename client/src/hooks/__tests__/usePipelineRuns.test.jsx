@@ -236,6 +236,36 @@ describe('usePipelineRuns', () => {
     expect(showToast).toHaveBeenCalledWith({ type: 'success', message: expect.stringMatching(/stopped/i) });
   });
 
+  it('reports an action that leaves the run in error as a failure, once', async () => {
+    const paused = runView({ status: 'limit_paused', actions: { stop: true, resume: false, continue: true, cleanup: false } });
+    const failed = runView({
+      status: 'error',
+      error: 'Setup left uncommitted changes in the worktree.',
+      actions: { stop: false, resume: true, continue: false, cleanup: true },
+    });
+    let continuedOnServer = false;
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).includes('/continue')) {
+        continuedOnServer = true;
+        return okRun(failed);
+      }
+      if (String(url).includes('/runs?')) return okList([continuedOnServer ? failed : paused]);
+      return okList([]);
+    });
+
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    showToast.mockClear();
+
+    await act(async () => {
+      await result.current.continueRun('r1');
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+
+    expect(result.current.runs[0].status).toBe('error');
+    expect(showToast.mock.calls).toEqual([[{ type: 'error', message: 'Setup left uncommitted changes in the worktree.' }]]);
+  });
+
   it('does not merge a Start response into a different active project', async () => {
     let resolveStart;
     const startPromise = new Promise((resolve) => { resolveStart = resolve; });

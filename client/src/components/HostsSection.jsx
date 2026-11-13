@@ -26,7 +26,7 @@ const REACHABILITY_COLORS = {
  * test-connection. Every mutating call round-trips through the backend and
  * surfaces both success and failure as toasts (backend is source of truth).
  */
-export default function HostsSection() {
+export default function HostsSection({ onDirtyChange }) {
   const { showToast } = useToast();
   const [hosts, setHosts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -54,6 +54,14 @@ export default function HostsSection() {
   useEffect(() => {
     loadHosts();
   }, [loadHosts]);
+
+  // A half-typed new host or a changed edit form is unsaved work the settings modal asks about on close.
+  const editedHost = editing ? hosts.find(host => host.name === editing.original) : null;
+  const dirty = newName.trim() !== '' || newTarget.trim() !== ''
+    || (editing !== null && (editing.name !== editing.original || editing.sshTarget !== editedHost?.sshTarget));
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   const handleAdd = async () => {
     const name = newName.trim();

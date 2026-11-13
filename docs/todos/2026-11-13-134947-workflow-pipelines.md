@@ -1,8 +1,8 @@
 # Workflow Pipelines
 
 **Spec**: `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md`
-**Status**: In Progress
-**Last completed**: Phase 4: Run Dialog, Runs Bar and Tab Adoption
+**Status**: Complete
+**Last completed**: Phase 6: Sidebar Indicator, Documentation and Final Verification
 **Created**: 2026-11-13
 
 > Working rules for every phase: strict TDD (red test first), Vitest with `--maxWorkers=1`, per-field
@@ -88,7 +88,7 @@
 - [x] `client/src/components/pipelines/RunWorkflowDialog.jsx` — workflow select, input, preflight reasons blocking Start, uncommitted-changes warning, Start; button beside Session search in `TerminalArea.jsx`
 - [x] `client/src/components/pipelines/PipelineRunsBar.jsx` — step chips with status and pass `k/N`, branch, error / blocked-cleanup detail, buttons from `actions`, chip click activates the tab, Resume confirmation naming the previous terminal
 - [x] Component tests — `RunWorkflowDialog.test.jsx`, `PipelineRunsBar.test.jsx`
-- [ ] Browser check via `./server.sh restart`: create an agent, setup agent and a two-node workflow through the API, start a run from the dialog, watch tabs appear, exercise Stop and Resume
+- [x] Browser check on owner-authorized unused port (replaces `./server.sh restart`): create an agent, setup agent and a two-node workflow through the API, start a run from the dialog, watch tabs appear, exercise Stop and Resume
 
 ## Phase 5: Settings Tabs and Editors
 > Agents, the setup agent and workflows become manageable in the UI; the settings modal gets tabs.
@@ -96,22 +96,22 @@
 > **Outputs:** tabbed `SettingsPanel.jsx`; `PipelineSettings.jsx`, `AgentList.jsx`, `WorkflowList.jsx`, `WorkflowEditor.jsx`
 > **Closed when:** every definition operation is possible from the UI with toasts, and the existing settings behaviour is unchanged
 
-- [ ] `client/src/components/SettingsPanel.jsx` — 880 px wide, fixed height, tab strip (General, Session naming, Hosts, Workflows), all panels mounted, footer only on General and Session naming, confirm on close when dirty (Spec §8.11)
-- [ ] Component tests — new `SettingsPanelTabs.test.jsx`; update `SessionNaming.test.jsx` to select its tab first; footer Save still saves naming and config together
-- [ ] `client/src/components/pipelines/AgentList.jsx` — list, inline add/edit/delete, reset command pre-filled with `/clear`, 409-on-delete message shown
-- [ ] Setup agent select, saved on change with `revision`
-- [ ] `WorkflowList.jsx` + `WorkflowEditor.jsx` — draft of name and nodes, add/remove/move, agent select, prompt textarea, repeat mode and maximum, shared-validator field errors plus API `errors`, stale-revision reload
-- [ ] Component tests — `PipelineSettings.test.jsx`: each mutation's success and failure toast, validation errors rendered per field, stale revision flow
-- [ ] Browser check via `./server.sh restart`: build the agents and a workflow entirely in the UI, then run it
+- [x] `client/src/components/SettingsPanel.jsx` — 880 px wide, fixed height, tab strip (General, Session naming, Hosts, Workflows), all panels mounted, footer only on General and Session naming, confirm on close when dirty (Spec §8.11)
+- [x] Component tests — new `SettingsPanelTabs.test.jsx`; update `SessionNaming.test.jsx` to select its tab first; footer Save still saves naming and config together
+- [x] `client/src/components/pipelines/AgentList.jsx` — list, inline add/edit/delete, reset command pre-filled with `/clear`, 409-on-delete message shown
+- [x] Setup agent select, saved on change with `revision`
+- [x] `WorkflowList.jsx` + `WorkflowEditor.jsx` — draft of name and nodes, add/remove/move, agent select, prompt textarea, repeat mode and maximum, shared-validator field errors plus API `errors`, stale-revision reload
+- [x] Component tests — `PipelineSettings.test.jsx`: each mutation's success and failure toast, validation errors rendered per field, stale revision flow
+- [x] Browser check on owner-authorized unused port (replaces `./server.sh restart`): build the agents and a workflow entirely in the UI, then run it
 
 ## Phase 6: Sidebar Indicator, Documentation and Final Verification
 > Local verification only.
 
-- [ ] Sidebar project row shows the count of open runs (Spec §8.11); component test `SidebarPipelineRuns.test.jsx`
-- [ ] Update `docs/steering/api-standards.md` (pipelines mapping), `docs/steering/structure.md`, `docs/steering/product.md`, `README.md` (replace the Terminal workflows section's scope, keep the per-terminal bar), `CHANGELOG.md`
-- [x] Full regression: `cd server && npx vitest run --maxWorkers=1` and `cd client && npx vitest run --maxWorkers=1`
-- [ ] End-to-end browser pass through `./server.sh`: a real two-node workflow on a scratch git project, including a pass-limit pause, a Stop + Resume, a backend restart mid-run, and a blocked then successful cleanup
-- [ ] Code review pass against the pre-commit checklists in `docs/guidelines/instructions.txt`
+- [x] Sidebar project row shows the count of open runs (Spec §8.11); component test `SidebarPipelineRuns.test.jsx`
+- [x] Update `docs/steering/api-standards.md` (pipelines mapping), `docs/steering/structure.md`, `docs/steering/product.md`, `README.md` (replace the Terminal workflows section's scope, keep the per-terminal bar), `CHANGELOG.md`
+- [x] Full regression of the final tree (earlier phases 1–4 snapshot passed): `cd server && npx vitest run --maxWorkers=1` and `cd client && npx vitest run --maxWorkers=1`
+- [x] End-to-end browser pass on isolated unused port (replaces `./server.sh`): a real two-node workflow on a scratch git project, including a pass-limit pause, a Stop + Resume, a backend restart mid-run, and a blocked then successful cleanup
+- [x] Code review pass against the pre-commit checklists in `docs/guidelines/instructions.txt`
 
 ## Session Notes
 
@@ -200,3 +200,106 @@
 **Browser evidence**: Isolated server/database snapshot on port 43121, scratch Git project and private tmux socket, deterministic agent fixture with the real readiness classifier. Verified Start/tab adoption, project names with spaces/dots/Unicode, literal `$&`/`$$`, Stop/Resume, pass-limit Continue, backend restart/interruption/resume, completion feedback with failed-final-fetch retry, project-switch mutation fencing, Setup dirty-worktree rejection, and blocked then successful cleanup. Continue acknowledged in 22 ms while execution remained active. Temporary server processes and tmux server were stopped.
 **Known P2 retained**: `usePipelineRuns.js` action success toast still says “continued” when Continue returns HTTP 200 with a Setup guard `error`; the runs bar correctly reports the error and no user step starts. Owner requested merge/cleanup/restart after this finding was reported. Follow up with a failing hook test and status-aware action feedback.
 **Scope**: Phases 5–6 remain unfinished. The browser pass used an isolated snapshot, not the managed main instance or a live AI provider; the explicit `./server.sh` checks above remain open. Main restart is authorized for the merge handoff.
+
+### Session — 2026-11-13 (Phase 5)
+**Completed**: Phase 5: Settings Tabs and Editors (code and component tests; the "then run it" half of the browser check is still open)
+**Key files**: `client/src/components/SettingsPanel.jsx`, `HostsSection.jsx`, `client/src/components/pipelines/{PipelineSettings,AgentList,WorkflowList,WorkflowEditor,definitionForm}.jsx`, `pipeline-settings.css`, `client/src/utils/pipelinesApi.js`, `client/src/utils/pipelineRecords.js`
+**Tests**: `SettingsPanelTabs.test.jsx`, `HostsSectionDirty.test.jsx`, `SessionNaming.test.jsx` (selects its tab), `pipelines/__tests__/PipelineSettings.test.jsx`, `pipelines/__tests__/definitionForm.test.js`, `utils/__tests__/pipelinesApi.test.js`, `utils/__tests__/pipelineRecords.test.js`. Targeted run only (11 files, 150 tests, including `usePipelineRuns.test.jsx`); the full client and server suites were not re-run this session.
+**Browser evidence**: built client served by an isolated backend (`HOME`/`TMUX_TMPDIR` in a scratch directory, `PORT=43121`). Four tabs render at the new size; added an agent, chose it as setup agent, saw the missing-maximum error on a repeating node, then saved a one-node workflow, all from the UI with toasts and no console errors; `GET /api/pipelines/{agents,workflows,settings}` on that instance returned what the UI showed. The instance was stopped afterwards. Not done: starting a run from those definitions with a real agent CLI, and the same check on the managed `./server.sh` instance.
+**Next**: Phase 6: Sidebar Indicator, Documentation and Final Verification. Also still open: the Phase 4 and Phase 5 browser checks on the real instance.
+**Bug fixes**: the retained P2 is fixed. Stop/Resume/Continue that return a run already in `error` now toast that run's error instead of "continued"; a hook test went red first (`usePipelineRuns.test.jsx`, "reports an action that leaves the run in error as a failure, once").
+**Review fixes**: one independent review of the diff (not the three the skill asks for). Applied, each with a test that failed first: field errors are cleared when nodes are moved or removed (they are keyed by position); opening another agent or workflow over an unsaved form asks first; the footer names an incomplete Session naming panel when that is what disables Save; `createdAt`/`updatedAt` are guarded on agent and workflow responses.
+**Quirks**: this worktree was recreated on the existing `feature/workflow-pipelines` branch after the first one was removed at merge; `.workflow/` is git-ignored and was restored from the home checkout's `.workflow/archives/workflow-pipelines-238c90a/ignored-files.tar.gz`.
+
+### Deviations
+- **[Phase 5 / SettingsPanel] — Hosts reports unsaved edits**
+  - **Planned**: Todo lists only `SettingsPanel.jsx` for the close confirmation; `HostsSection.jsx` is not named
+  - **Found**: Spec §8.11 says closing with unsaved changes "anywhere" asks first, and Hosts keeps a half-typed new host and an edit form in local state
+  - **Did**: Added an optional `onDirtyChange` prop to `HostsSection` (new host fields non-blank, or an edit form that differs from the host); no other Hosts behaviour changed
+  - **Follow-up**: none
+- **[Phase 5 / client edge] — response guards added**
+  - **Planned**: Todo names no client-side validation of API responses
+  - **Found**: The working rules require per-field guards on everything crossing an edge
+  - **Did**: `client/src/utils/pipelineRecords.js` checks every field of agent, workflow (with nodes and repeat) and settings responses and fails the load naming the record and field. Its tests were written together with the module rather than red first
+  - **Follow-up**: `RunWorkflowDialog` still reads workflows unguarded (Phase 4 code, not changed here)
+- **[Phase 5 / stale revision] — conflict told apart by reading the item back**
+  - **Planned**: "a 409 tells the owner the item changed and reloads it"
+  - **Found**: The API answers 409 for a stale revision and for a taken name, with only the message text differing
+  - **Did**: On a 409 from PUT the editor GETs the item: a different revision means stale (toast, latest loaded into the form); the same revision means another conflict (API message shown, draft kept); a 404 closes the form. Agents get the same handling as workflows
+  - **Follow-up**: none
+- **[Phase 5 / editor] — choices the spec leaves open**
+  - **Planned**: Spec silent on a default maximum, on removing the last node, and on adding a workflow with no agents
+  - **Found**: —
+  - **Did**: Maximum passes starts empty and must be typed (no invented default); Remove is disabled on the only node and Add node at 32; Add workflow is disabled with a hint until an agent exists; deleting an agent or workflow asks for confirmation
+  - **Follow-up**: say if a pre-filled maximum is wanted
+- **[Phase 5 / scope] — retained P2 fixed in this session**
+  - **Planned**: The merge session left the Continue toast bug as a follow-up; it is not a Phase 5 task
+  - **Found**: `runAction` in `usePipelineRuns.js` always toasted success when the request returned 200
+  - **Did**: An action whose returned run is in `error` now toasts that run's error; Stop, Resume and Continue share the path
+  - **Follow-up**: none
+- **[Phase 5 / browser check] — isolated instance instead of `./server.sh restart`**
+  - **Planned**: Build the agents and a workflow in the UI on the managed instance, then run it
+  - **Found**: Ports 43000/43001 belong to the owner's live instance on `main`; a run needs a real agent CLI
+  - **Did**: Checked the definition UI on an isolated instance (see Browser evidence); left the checkbox open because nothing was run
+  - **Follow-up**: owner to run a workflow from UI-built definitions once this branch is on the live instance
+
+
+### Session — 2026-11-13 (Phase 6, iteration 89f0b7c5-2)
+**Completed this pass**: Sidebar indicator, documentation, three reviews and final browser verification. Phase 6 remains incomplete until feature-test runs full regression of this tree.
+**Rules**: Count every project's backend-open runs across all pages; show counts on active/waiting/shelved rows and compact active rows; no badge at zero; poll every 2 seconds without overlap; retain last counts and toast failures once until recovery; ignore late responses after unmount.
+### Deviations
+- **[Phase 6 / polling] — separate all-project counts poll**
+  - **Planned**: Sidebar project rows show their open-run counts; source unspecified.
+  - **Found**: `usePipelineRuns.js` polls only the active project and clears state on project changes.
+  - **Did**: Reuse paginated `listOpenRuns()` in a separate counts hook so inactive projects remain visible without changing run adoption or action semantics.
+  - **Follow-up**: none
+- **[Phase 6 / verification] — broad regression deferred to feature-test**
+  - **Planned**: Todo includes full regression; it has an earlier passing snapshot.
+  - **Found**: Invoked feature-dev explicitly prohibits a full regression sweep in this pass.
+  - **Did**: Run focused count/sidebar/app tests and browser checks; leave current-tree full regression for feature-test.
+  - **Follow-up**: feature-test must verify this final tree.
+
+**Review issue resolved**: Full run response guards added in `pipelineRunRecords.js` after the conventions review rejected project-only validation. Every run/step/repeat/worktree/action field has missing-field rejection coverage; malformed identifiers, statuses, paths, timestamps, session IDs and bounds are covered. Three reviewers finished; the guard fix was re-reviewed cleanly.
+**Targeted evidence**: Initial sidebar tests failed on absent badges and hook import; after implementation 24 tests across sidebar/hook/app passed. Full response-guard tests first failed on missing parser import; final guard/hook/sidebar run passed 68 tests across 3 files. `npx vite build` passed 3446 modules (large chunk warning).
+
+**Browser evidence**: `http://localhost:59629`, disposable HOME/SQLite and private TMUX_TMPDIR under `/tmp/cd-phase6-v0AFFR`. Created agent, Setup selection and two-node workflow entirely in Settings; started from dialog. Real Git/tmux/readiness classifier with deterministic Codex fixture (no live AI provider). Observed automatic tabs, expanded/compact count 1, pass-limit pause, Stop + Resume, backend restart → interrupted, Resume attempt 3, Continue → Review complete. Untracked `cleanup-proof.txt` blocked automatic cleanup and left count 1; removed the test file then UI cleanup returned state removed; badge and runs bar disappeared. Branch retained. Browser closed; run PIDs 23548/65949 and private tmux stopped. Main instance untouched.
+**Key files**: `App.jsx`, `Sidebar.jsx`, `usePipelineRunCounts.js`, `pipelineRunRecords.js`, new count/sidebar/response tests, README, CHANGELOG and three steering docs.
+**Next**: feature-test final-tree full server/client regression; Phase 6 last checkbox remains open. No commit, push, merge or deployment in this pass.
+- **[Phase 6 / browser lifecycle] — unused-port instance and Playwright**
+  - **Planned**: Browser pass via managed lifecycle, without disrupting the owner's active instance.
+  - **Found**: Owner previously authorized unused ports; Chrome DevTools failed reading DevToolsActivePort with EPERM.
+  - **Did**: Built UI served by PATH `run` on unused port 59629, isolated HOME and tmux; Playwright completed the browser pass. Closed all test processes afterward.
+  - **Follow-up**: none; live AI-provider behavior remains unverified.
+
+## Exit Report
+
+**Feature**: Workflow Pipelines
+**Todo file**: `docs/todos/2026-11-13-134947-workflow-pipelines.md`
+**Phases**: 5 of 6 complete
+**Tasks**: 60 of 61 complete (98%)
+
+### This session
+- **Completed**: Phase 6 implementation, documentation, code review and browser verification; final regression pending.
+- **Built**: All-project sidebar counts and full run response guards, with red/green targeted tests.
+- **Key decisions**: Use separate all-project poll; preserve active-project action/adoption behavior.
+- **Deviations**: 3 — separate count poll; regression reserved for feature-test; unused-port Playwright verification. Details above.
+
+### Next
+- **Phase**: Phase 6: final-tree regression via feature-test.
+- **What it involves**: Run full server and client suites with --maxWorkers=1; update completion if green.
+- **Blockers**: none.
+
+### Status
+- 🔄 In progress — final regression remains.
+
+### Session — 2026-11-13 (Phase 6 final regression)
+**Completed**: Phase 6: Sidebar Indicator, Documentation and Final Verification — feature complete.
+**Evidence**: Node v22.22.0. `cd server && npx vitest run --maxWorkers=1` → Test Files 67 passed (67), Tests 1425 passed (1425). `cd client && npx vitest run --maxWorkers=1` → Test Files 61 passed (61), Tests 680 passed (680). No code changes this session.
+**Next**: none in this todo. Changes remain uncommitted on `feature/workflow-pipelines` in `/Users/sabside/git/worktrees/codedeck-workflow-pipelines`; commit/merge/ship awaits the owner. Preserve ignored `.workflow/2026-11-13-134947-workflow-pipelines.md` on worktree cleanup.
+
+### Deviations
+- **[Phase 6 / full regression] — run inside feature-dev**
+  - **Planned**: feature-dev defers full sweeps to feature-test.
+  - **Found**: the regression was the only remaining todo task, and this CodeDeck workflow loop runs only `/feature-dev`.
+  - **Did**: ran both full suites with `--maxWorkers=1` so the todo could close.
+  - **Follow-up**: none.

@@ -3,9 +3,20 @@ import {
   PipelineApiError,
   cleanupRun,
   continueRun,
+  createAgent,
+  createWorkflow,
+  deleteAgent,
+  deleteWorkflow,
+  getAgent,
+  getPipelineSettings,
   getRun,
+  getWorkflow,
+  listAgents,
   listOpenRuns,
   listWorkflows,
+  updateAgent,
+  updatePipelineSettings,
+  updateWorkflow,
   preflightProject,
   resumeRun,
   startRun,
@@ -134,5 +145,83 @@ describe('pipelinesApi', () => {
     global.fetch = vi.fn(async () => jsonResponse({ data: null, page: { hasNextPage: false } }));
 
     await expect(listOpenRuns()).rejects.toThrow(/invalid/i);
+  });
+
+  describe('definitions', () => {
+    const AGENT_ID = '6f1c1c1c-1111-4111-8111-111111111111';
+    const WORKFLOW_ID = 'a2d0a2d0-2222-4222-8222-222222222222';
+
+    function lastCall() {
+      const [url, options] = global.fetch.mock.calls.at(-1);
+      return { url, method: options.method, body: options.body === undefined ? undefined : JSON.parse(options.body) };
+    }
+
+    it('lists every agent across pages', async () => {
+      global.fetch = vi.fn(async (url) => jsonResponse(String(url).includes('page=0')
+        ? { data: [{ id: 'a1' }], page: { hasNextPage: true } }
+        : { data: [{ id: 'a2' }], page: { hasNextPage: false } }));
+
+      await expect(listAgents()).resolves.toEqual([{ id: 'a1' }, { id: 'a2' }]);
+      expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([
+        '/api/pipelines/agents?page=0&size=100',
+        '/api/pipelines/agents?page=1&size=100',
+      ]);
+    });
+
+    it('creates, reads, replaces and deletes an agent', async () => {
+      global.fetch = vi.fn(async () => jsonResponse({ id: AGENT_ID }));
+      const fields = { name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+
+      await createAgent(fields);
+      expect(lastCall()).toEqual({ url: '/api/pipelines/agents', method: 'POST', body: fields });
+
+      await getAgent(AGENT_ID);
+      expect(global.fetch.mock.calls.at(-1)[0]).toBe(`/api/pipelines/agents/${AGENT_ID}`);
+
+      await updateAgent(AGENT_ID, { ...fields, revision: 3 });
+      expect(lastCall()).toEqual({ url: `/api/pipelines/agents/${AGENT_ID}`, method: 'PUT', body: { ...fields, revision: 3 } });
+
+      global.fetch = vi.fn(async () => ({ ok: true, status: 204, json: async () => { throw new Error('no body'); } }));
+      await expect(deleteAgent(AGENT_ID)).resolves.toEqual({});
+      expect(lastCall()).toEqual({ url: `/api/pipelines/agents/${AGENT_ID}`, method: 'DELETE', body: undefined });
+    });
+
+    it('creates, reads, replaces and deletes a workflow', async () => {
+      global.fetch = vi.fn(async () => jsonResponse({ id: WORKFLOW_ID }));
+      const fields = { name: 'Feature', nodes: [{ name: 'Develop', agentId: AGENT_ID, prompt: '/dev {input}', repeat: { mode: 'once' } }] };
+
+      await createWorkflow(fields);
+      expect(lastCall()).toEqual({ url: '/api/pipelines/workflows', method: 'POST', body: fields });
+
+      await getWorkflow(WORKFLOW_ID);
+      expect(global.fetch.mock.calls.at(-1)[0]).toBe(`/api/pipelines/workflows/${WORKFLOW_ID}`);
+
+      await updateWorkflow(WORKFLOW_ID, { ...fields, revision: 2 });
+      expect(lastCall()).toEqual({ url: `/api/pipelines/workflows/${WORKFLOW_ID}`, method: 'PUT', body: { ...fields, revision: 2 } });
+
+      await deleteWorkflow(WORKFLOW_ID);
+      expect(lastCall()).toEqual({ url: `/api/pipelines/workflows/${WORKFLOW_ID}`, method: 'DELETE', body: undefined });
+    });
+
+    it('reads and replaces the pipeline settings', async () => {
+      global.fetch = vi.fn(async () => jsonResponse({ setupAgentId: null, revision: 1 }));
+
+      await expect(getPipelineSettings()).resolves.toEqual({ setupAgentId: null, revision: 1 });
+      expect(global.fetch.mock.calls.at(-1)[0]).toBe('/api/pipelines/settings');
+
+      await updatePipelineSettings({ setupAgentId: AGENT_ID, revision: 1 });
+      expect(lastCall()).toEqual({ url: '/api/pipelines/settings', method: 'PUT', body: { setupAgentId: AGENT_ID, revision: 1 } });
+    });
+
+    it('carries the status, message and field errors of a refused mutation', async () => {
+      global.fetch = vi.fn(async () => jsonResponse(
+        { message: 'Cannot delete an agent used by a workflow', errors: [] },
+        { ok: false, status: 409 },
+      ));
+
+      const failure = await deleteAgent(AGENT_ID).catch(error => error);
+      expect(failure).toBeInstanceOf(PipelineApiError);
+      expect(failure).toMatchObject({ status: 409, message: 'Cannot delete an agent used by a workflow' });
+    });
   });
 });

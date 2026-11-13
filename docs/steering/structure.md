@@ -154,3 +154,19 @@ codedeck/
 `GET /api/agent-sessions` lists local project conversations from Claude Code, Codex, Cursor agent, and Antigravity. Optional `project`, `cli`, and `q` filters use exact project/CLI matches and a case-insensitive title/prompt substring. Zero-based `page` defaults to 0; `size` defaults to 20 and is limited to 100. The only sort is `-updatedAt`, with CLI and conversation UUID as stable ties. The response has `data`, `page`, and per-CLI `sources` availability. A named remote project returns 409; unknown projects return 404.
 
 `POST /api/agent-sessions/resume` takes `{cli, conversationId, project}`, checks that the UUID exists for that local project, allocates a new detached tmux terminal through the mobile session starter, and submits the fixed CLI resume command. It returns 201 with `{sessionId, project, cli, conversationId}`. Concurrent identical requests return 409. Both endpoints use RFC 9457 problem details and `X-Trace-Id`; 400 responses contain field errors. The readers open external SQLite stores read-only.
+
+## Workflow pipelines
+
+- `shared/pipeline-definitions.mjs`: shared definition validation and prompt composition.
+- `server/pipelines/`: revisioned SQLite stores, Git worktree operations, readiness
+  classification, pure run state transitions and serialized background execution.
+- `server/routes/pipelines.js`: definitions, settings, preflight and owner actions;
+  transport validation and RFC 9457 errors. See `api-standards.md` for the contract.
+- `client/src/components/pipelines/`: definition editors, Run dialog and runs bar.
+- `client/src/hooks/usePipelineRuns.js`: active-project runs and action feedback.
+- `client/src/hooks/usePipelineRunCounts.js`: all-project open-run counts, polled
+  every two seconds without overlapping requests; pagination uses `pipelinesApi`.
+- `client/src/utils/terminalAdoption.js`: plan step tabs without stealing focus.
+- `SettingsPanel.jsx` keeps tab panels mounted; Hosts/Workflows save per item and
+  report dirty drafts for close confirmation. Sidebar renders counts for active,
+  waiting and shelved project rows, including compact active rows.

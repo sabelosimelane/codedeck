@@ -3,10 +3,12 @@
 ## [2026-11-13] - Run workflow pipelines in isolated worktrees
 
 ### Executive Summary
-* Start saved workflows, watch their terminal tabs appear, and stop, resume or continue their steps from the runs bar. Each run uses an isolated Git worktree with a Setup cleanliness guard and explicit cleanup feedback. This release covers phases 1–4; definition editors and the sidebar indicator remain planned.
+* Start saved workflows, watch their terminal tabs appear, and stop, resume or continue their steps from the runs bar. Each run uses an isolated Git worktree with a Setup cleanliness guard and explicit cleanup feedback. Agents, Setup selection and ordered workflow nodes are editable in the tabbed Settings modal; sidebar project rows show open-run counts.
 
 ### Technical Details
 * **✨ New Feature:**
+  * Settings tabs and agent/workflow editors with field validation, revision conflict handling and unsaved-draft protection.
+  * All-project sidebar run counts with non-overlapping two-second polling and visible request failures.
   * `client/src/components/pipelines/RunWorkflowDialog.jsx`, `PipelineRunsBar.jsx` — Start/preflight dialog and run controls with step, pass-limit and worktree state.
   * `client/src/hooks/usePipelineRuns.js`, `client/src/utils/pipelinesApi.js`, `terminalAdoption.js` — Poll runs, resolve terminal transitions, fence project mutations and adopt background terminals.
 * **🔌 API/Interface:**
@@ -23,7 +25,7 @@
 * **🐛 Bug Fix:**
   * Catch queued transition failures, settle execution waiters, acknowledge accepted owner actions promptly and revalidate queued actions. Check Setup cleanliness when continuing past its pass limit.
   * Preserve literal replacement tokens, reject stale project mutation responses, report blocked cleanup and retry final-state resolution before dropping completed runs.
-  * Known issue retained after browser review: Continue returning a Setup guard error correctly updates the run bar but still shows a green “continued” toast.
+  * Stop/Resume/Continue returning a run in error show that error instead of a success toast.
 * **🧪 Tests:**
   * `server/__tests__/pipeline-agent-readiness.test.js`, `pipeline-definition-store.test.js`, `pipeline-definitions.test.js`, `pipeline-run-engine.test.js`, `pipeline-run-live.test.js`, `pipeline-run-machine.test.js`, `pipeline-run-store.test.js`, `pipeline-run-worktree-live.test.js`, `pipeline-run-worktree.test.js`, `pipelines-api.test.js` — Pipeline validation, persistence, transition, action, worktree and live tmux coverage.
   * `server/__tests__/terminal-background-attach.test.js`, `terminal-background-attach-live.test.js`, `mobile-session-start.test.js`, `terminal-workflow.test.js`, `ws-handler.test.js` — Background terminal lifecycle and loop regressions.

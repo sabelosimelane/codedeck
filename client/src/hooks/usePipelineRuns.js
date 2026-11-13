@@ -151,10 +151,16 @@ export function usePipelineRuns({ projectName, showToast }) {
       if (!mountedRef.current || projectNameRef.current !== project) return next;
       setRuns((current) => mergeRun(current, next));
       previousStatusRef.current.set(next.id, next.status);
-      showToast({
-        type: 'success',
-        message: typeof successMessage === 'function' ? successMessage(next) : successMessage,
-      });
+      // The request can succeed while the run it returns has already failed (a Setup guard, a
+      // launch that exits): the owner is told what the run says, not that the action worked.
+      if (next.status === 'error') {
+        showToast({ type: 'error', message: statusToastMessage(next) });
+      } else {
+        showToast({
+          type: 'success',
+          message: typeof successMessage === 'function' ? successMessage(next) : successMessage,
+        });
+      }
       await refresh({ queueIfBusy: true });
       return next;
     } catch (failure) {

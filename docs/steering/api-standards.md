@@ -88,3 +88,32 @@ Coverage: `server/__tests__/terminal-waiting-store.test.js`,
 `client/src/hooks/__tests__/useWaitingSessions.test.jsx`,
 `client/src/components/__tests__/TerminalAreaWaiting.test.jsx`, and
 `client/src/components/__tests__/SidebarWaitingCount.test.jsx`.
+
+## Workflow pipelines
+
+All paths below are under `/api/pipelines`; the router owns a 512 KB JSON parser.
+Errors are RFC 9457 problem documents with `message`, field `errors` when applicable,
+`traceId`, and matching `X-Trace-Id`. Lists use the pagination envelope above and a
+stable identity tiebreaker; unknown filters and sorts are rejected.
+
+| Method and path | Contract |
+| --- | --- |
+| GET/POST `/agents`, GET/PUT/DELETE `/agents/:id` | Named launch/reset definitions; PUT requires revision; referenced agents cannot be deleted |
+| GET/POST `/workflows`, GET/PUT/DELETE `/workflows/:id` | Named ordered nodes, agent references, prompt and repeat rules; PUT requires revision |
+| GET/PUT `/settings` | Setup agent selection with revision |
+| GET `/preflight?project=...` | Eligibility reasons and dirty-checkout warning for a local Git repository root |
+| POST `/runs` | Request UUID, workflow, project and input; snapshots definitions; requestId replay is idempotent and conflicting reuse is 409 |
+| GET `/runs`, GET `/runs/:id` | Persisted progress, steps, worktree state and allowed actions |
+| POST `/runs/:id/stop` | Stop automation; repeated Stop is idempotent |
+| POST `/runs/:id/resume` | Fresh attempt; refuses a missing worktree |
+| POST `/runs/:id/continue` | Advance from a pass-limit pause |
+| POST `/runs/:id/cleanup` | Remove a clean worktree without force; retain branch |
+
+Agents/workflows filter by exact `name`, and runs by `status`, `project`,
+`workflowId`, or `open=true|false`. The runs bar filters by project; sidebar counts
+page through all open runs. Definition conflicts and disallowed run actions return
+409. Missing records return 404. Setup's clean-worktree guard and blocked cleanup
+are represented in the returned run; clients must inspect run status even on HTTP 200.
+
+Coverage: `server/__tests__/pipelines-api.test.js`, `pipeline-run-engine.test.js`,
+`pipeline-run-store.test.js`, and client pipeline settings, run-hook and sidebar tests.
