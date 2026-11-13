@@ -5,6 +5,7 @@ import FileTree from './components/FileTree';
 import FileBrowserPanel from './components/FileBrowserPanel';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import ShortcutsOverlay from './components/ShortcutsOverlay';
+import SessionSearch from './components/SessionSearch';
 import PaneDivider from './components/PaneDivider';
 import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
@@ -54,6 +55,8 @@ function AppContent() {
   const [fileBrowserProject, setFileBrowserProject] = useState(null);
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
   const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
+  const [showSessionSearch, setShowSessionSearch] = useState(false);
+  const [resumedSession, setResumedSession] = useState(null);
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
     const saved = localStorage.getItem('codedeck-filetree-width');
     return saved ? parseInt(saved, 10) : 260;
@@ -144,6 +147,13 @@ function AppContent() {
       if (key === 'p' && isCmdOrCtrl && event.shiftKey && !event.altKey) {
         event.preventDefault();
         setShowProjectSwitcher(prev => !prev);
+        return;
+      }
+
+      // Cmd/Ctrl + Shift + S: Search agent conversations
+      if (key === 's' && isCmdOrCtrl && event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setShowSessionSearch(prev => !prev);
         return;
       }
 
@@ -415,6 +425,9 @@ function AppContent() {
             onToggleMutedStatusSession={toggleMutedStatusSession}
             waitingSessionIds={waitingSessionIds}
             onToggleWaiting={toggleWaiting}
+            onOpenSessionSearch={() => setShowSessionSearch(true)}
+            resumedSessionId={resumedSession?.project === activeProject.name ? resumedSession.sessionId : null}
+            onResumedAttached={(sessionId) => setResumedSession(current => current?.sessionId === sessionId ? null : current)}
           />
         ) : (
           <div style={{
@@ -439,6 +452,18 @@ function AppContent() {
       )}
       {showShortcutsOverlay && (
         <ShortcutsOverlay onClose={() => setShowShortcutsOverlay(false)} />
+      )}
+      {showSessionSearch && activeProject && (
+        <SessionSearch
+          project={activeProject}
+          onClose={() => setShowSessionSearch(false)}
+          onResumed={(session) => {
+            setResumedSession({ sessionId: session.sessionId, project: session.project });
+            const destination = projects.find(candidate => candidate.name === session.project);
+            if (destination && destination.name !== activeProject.name) setActiveProject(destination);
+            fetchSessionStatus();
+          }}
+        />
       )}
       {showProjectSwitcher && (
         <ProjectSwitcher

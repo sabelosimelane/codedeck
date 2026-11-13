@@ -1,5 +1,58 @@
 # Changelog
 
+## [2026-11-13] - Search and resume past agent conversations
+
+### Executive Summary
+* You can search past Claude Code, Codex, Cursor, and Antigravity conversations for the current project (or all local projects) and resume one in a new terminal tab. Untitled chats show their first prompt so they stay findable.
+
+### Technical Details
+* **✨ New Feature:**
+  * Session search modal (Cmd/Ctrl+Shift+S or tab-bar search) lists local CLI history, filters by project/CLI/query, and resumes a conversation in its project.
+* **🔌 API/Interface:**
+  * `GET /api/agent-sessions` — Paginated local conversations with project, CLI, and title/prompt filters; per-CLI source availability.
+  * `POST /api/agent-sessions/resume` — Allocate a detached tmux terminal and submit the CLI resume command; concurrent identical resumes return 409.
+* **🛠️ Codebase:**
+  * `server/agent-history/` — Read-only history readers (Claude, Codex, Cursor, Antigravity), merge/search service, resume command helpers, and detached submit.
+  * `server/routes/agent-sessions.js` — RFC 9457 problem-details router for list and resume.
+  * `server/index.js` — Wire agent history into the mobile session starter and mount the agent-sessions routes.
+  * `client/src/components/SessionSearch.jsx` — Search UI with debounce, scope, keyboard highlight, and resume toasts.
+  * `client/src/components/session-search.css` — Modal styling using existing theme tokens.
+  * `client/src/App.jsx` — Shortcut, modal mount, and project switch on resume.
+  * `client/src/components/TerminalArea.jsx` — Search action and attach a resumed session without allocating a second ID.
+  * `client/src/components/ShortcutsOverlay.jsx` — Document Cmd/Ctrl+Shift+S.
+  * `README.md`, `docs/steering/product.md`, `docs/steering/structure.md` — Document session search and the API.
+  * `CHANGELOG.md` — Record the session search release.
+  * `.gitignore` — Ignore `.claude/` tooling worktrees.
+* **🧪 Tests:**
+  * `server/__tests__/agent-history/` — Cover readers, merge/search, resume submit, and API validation.
+  * `client/src/components/__tests__/SessionSearch.test.jsx`, `SessionSearchApp.test.jsx`, `TerminalAreaRestore.test.jsx` — Cover search UI, app wiring, and resumed tab attachment.
+
+## [2026-11-11] - Reliable agent activity detection, Android companion, and verified terminal close
+
+### Executive Summary
+* Agent status now reads each CLI’s live prompt/status region instead of scanning the whole transcript, so finished answers no longer stick on “Running.” An Android companion app can watch sessions and receive push notifications when attention is needed, while desktop presence suppresses noisy alerts. Closing a terminal and deleting a project now verify that tmux sessions are actually gone.
+
+### Technical Details
+* **✨ New Feature:**
+  * Per-CLI live-region activity profiles (Codex, Claude Code, Cursor agent, Antigravity, Muse) with silence veto, sub-agent/background shell reporting, and needs-input detection.
+  * Android companion: mobile API, device store, session discovery, attention tracking, FCM pushes, and Capacitor client; hold pushes while the desktop was active in the last two minutes.
+* **🐛 Bug Fix:**
+  * Problem: transcript lines such as “• Working tree clean.” kept panes marked Running. Solution: classify only the live footer/prompt region per CLI profile.
+  * Problem: closing `demo-1` could prefix-match and kill `demo-15`, and failed kills left the UI believing the session was gone. Solution: exact tmux targets, verified close with force-kill fallback, and RFC 9457 errors that keep the session tracked on failure.
+  * Problem: deleting a project could orphan live terminals. Solution: close project sessions first and keep the project if any cannot be closed.
+* **🔌 API/Interface:**
+  * Mobile companion routes, session-attention API, and verified terminal-delete endpoint.
+* **🛠️ Codebase:**
+  * `server/agent-profiles/` — Pure live-screen readers and shared live-region helpers.
+  * `server/terminal-execution-classifier.js` — Combine main pane, sub-agent panes, and silence veto.
+  * `server/terminal-runtime.js`, `server/ws-handler.js` — Multiclient attachment, incarnation, and verified close behavior.
+  * `server/mobile-*.js`, `server/routes/mobile.js`, `server/session-attention.js`, `server/routes/session-attention.js`, `server/routes/terminal-delete.js`, `server/project-deletion-service.js` — Companion backend and safer teardown.
+  * `client/src/mobile/`, `client/android/`, `client/vite.mobile.config.js`, `docs/android-companion.md` — Capacitor Android companion app and docs.
+  * `client/src/hooks/useSessionAttention.js`, `client/src/utils/desktopActivity.js`, `client/src/utils/terminalActivity.js`, `client/src/utils/terminalControl.js` — Desktop presence and attention wiring.
+  * `CHANGELOG.md` — Record the activity, companion, and close verification release.
+* **🧪 Tests:**
+  * Agent screen fixtures and classifier/profile tests; mobile API, notifications, attention, terminal-delete, multiclient, and incarnation coverage; companion frontend tests.
+
 ## [2026-11-03] - Configure custom CLI providers for session naming
 
 ### Executive Summary

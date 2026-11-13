@@ -5,6 +5,7 @@ const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform)
 const SHORTCUTS = [
   { category: 'Navigation', items: [
     { label: 'Switch project', mac: ['⌘', '⇧', 'P'], other: ['Ctrl', '⇧', 'P'] },
+    { label: 'Session search', mac: ['⌘', '⇧', 'S'], other: ['Ctrl', '⇧', 'S'] },
     { label: 'Select pane 1-9', mac: ['⌘', '⌥', '1-9'], other: ['Ctrl', 'Alt', '1-9'] },
   ]},
   { category: 'Terminals', items: [

@@ -20,6 +20,7 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Durable sessions** — tmux-backed sessions survive browser detaches and server restarts
 - **Terminal workflows** — repeat a command in your running agent, clearing context between passes until the agent reports completion
 - **Descriptive session titles** — optional background naming through configurable local CLIs, with manual rename and retry
+- **Session search** — find past agent-CLI conversations and resume one in its project
 - **Toast notifications** — success/error feedback on every action, no silent failures
 
 ## Setup
@@ -55,6 +56,18 @@ Agent status comes from the live prompt, status, and footer region of each CLI p
 7. Click the **hourglass** on a tab — beside its close button — or press **Cmd/Ctrl+Shift+U** on the active tab, to mark it waiting when you have handed its work to an agent. Waiting tabs shrink, dim and group to the left of the tab bar, their status indicators stop pulsing everywhere (tab, pane header, and sidebar), and the sidebar shows a count per project. The mark clears itself as soon as the work finishes or the session dies, so the finished styling and completion notification still reach you. Phone pushes are held while the desktop UI has been used in the last two minutes.
 8. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
 9. Toast notifications confirm every action and surface errors.
+
+## Session search
+
+Click the search icon in the terminal tab bar or press **Cmd/Ctrl+Shift+S**.
+The modal lists past Claude Code, Codex, Cursor, and Antigravity conversations
+for the current project, with an option to search all local projects. It reads
+each CLI's own history. Untitled conversations show their first prompt. Choose
+a conversation to resume it in a new terminal tab in its project.
+
+Claude Code and Codex history is limited to interactive sessions. Cursor and
+Antigravity cannot be filtered for headless runs, so delegated runs may appear.
+Session search covers local projects only.
 
 ## Copying terminal text
 

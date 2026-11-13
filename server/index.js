@@ -4,7 +4,9 @@ import { createServer } from 'http';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { spawn as spawnProcess } from 'child_process';
+import { spawn as spawnProcess, execFileSync } from 'child_process';
+import * as fsSync from 'node:fs';
+import os from 'node:os';
 import multer from 'multer';
 import db from './db.js';
 import {
@@ -53,6 +55,9 @@ import { fileURLToPath } from 'node:url';
 import { createPrivateAccess } from './mobile-access.js';
 import { createMobileStore, MobileError } from './mobile-store.js';
 import { createMobileSessionStarter } from './mobile-session-start.js';
+import { createAgentHistory } from './agent-history/index.js';
+import { createAgentSessionsRouter } from './routes/agent-sessions.js';
+import { submitDetachedCommand } from './agent-history/submit.js';
 import { createMobileRouter } from './routes/mobile.js';
 import { createMobileDiscovery } from './mobile-integration.js';
 import { createMobileNotifications, DESKTOP_PRESENCE_MS, initializeFcmProvider } from './mobile-notifications.js';
@@ -70,7 +75,7 @@ const privateAccess = createPrivateAccess({
 });
 app.use(privateAccess.middleware);
 // Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
-app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -810,6 +815,13 @@ const mobileSessionStarter = createMobileSessionStarter({
   },
   releaseReservation: sessionId => reservedSessionIds.delete(sessionId),
 });
+const agentHistory = createAgentHistory({ home: os.homedir(), fs: fsSync, Database: db.constructor });
+app.use(createAgentSessionsRouter({
+  loadProjects,
+  history: agentHistory,
+  startSession: projectName => mobileSessionStarter.start(projectName),
+  submitCommand: (sessionId, command) => submitDetachedCommand(sessionId, command, { execFile: execFileSync, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) }),
+}));
 app.use(createMobileRouter({
   store: mobileStore, notifications: mobileNotifications,
   notificationsReady: () => notificationProvider !== null, ...mobileDiscovery,

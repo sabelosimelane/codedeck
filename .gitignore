@@ -11,6 +11,7 @@ coverage/
 # Personal/local tooling artifacts
 .mcp-bash-config.json
 .playwright-mcp/
+.claude/
 .workflow/
 .tmp/
 .omx/

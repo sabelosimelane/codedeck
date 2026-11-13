@@ -19,6 +19,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Directory browser — filesystem navigator for adding projects
 - Settings panel — configurable default path for project picker
 - PTY session persistence — terminals survive WebSocket reconnects, layout restored from localStorage
+- Session search — search each agent CLI's local conversation history and resume a conversation in a terminal tab in its project
 - Live sidebar cockpit — per-project status (active/idle/dead), terminal count, elapsed time
 - Waiting tabs — manually park a tab whose work has been delegated to an agent; it renders compact and dimmed at the left of the tab bar, its status indicators stop pulsing everywhere, it is counted per project in the sidebar, and the mark auto-clears when the work finishes — whichever project is on screen
 - Toast notification system — success/error feedback on all actions

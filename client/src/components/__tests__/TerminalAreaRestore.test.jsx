@@ -21,6 +21,7 @@ vi.mock('lucide-react', () => {
     Eye: Icon,
     EyeOff: Icon,
     Hourglass: Icon,
+    Search: Icon,
     Pencil: Icon,
   };
 });
@@ -96,6 +97,35 @@ it('renders persisted titles on tabs and panes without changing terminal identit
     await waitFor(()=>expect(mocks.terminalApis.has('Gamma-9')).toBe(true));
     const api=mocks.terminalApis.get('Gamma-9'); expect(api.claimControl).not.toHaveBeenCalled();
     fireEvent.click(view.getByTestId('terminal-tab'));await waitFor(()=>expect(api.claimControl).toHaveBeenCalledTimes(1));
+  });
+
+  it('attaches a backend-confirmed resumed session as the active tab without creating another session', async () => {
+    const sessions = [{ sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true }];
+    global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : sessions }));
+    const onResumedAttached = vi.fn();
+    const view = render(<TerminalArea project={PROJECT} sessionStatus={sessions} resumedSessionId="Gamma-9" onResumedAttached={onResumedAttached} />);
+    await waitFor(() => expect(onResumedAttached).toHaveBeenCalledWith('Gamma-9'));
+    expect(view.getByTestId('terminal-tab').getAttribute('data-active')).toBe('true');
+    expect(global.fetch.mock.calls.some(([url]) => url === '/api/terminal')).toBe(false);
+  });
+
+  it('selects a resumed session after restoring a different project layout', async () => {
+    const sessions = [{ sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true }, { sessionId: 'Gamma-10', cwd: '/tmp/gamma', alive: true }];
+    global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : sessions }));
+    const onResumedAttached = vi.fn();
+    const view = render(<TerminalArea project={PROJECT} sessionStatus={sessions} resumedSessionId="Gamma-9" onResumedAttached={onResumedAttached} />);
+    await waitFor(() => expect(onResumedAttached).toHaveBeenCalledWith('Gamma-9'));
+    expect(view.getAllByTestId('terminal-tab')).toHaveLength(2);
+    expect(view.getAllByTestId('terminal-tab')[0].getAttribute('data-active')).toBe('true');
+  });
+
+  it('opens session search from the tab-bar action and Cmd/Ctrl+Shift+S', async () => {
+    global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : [] }));
+    const onOpenSessionSearch = vi.fn();
+    const view = render(<TerminalArea project={PROJECT} onOpenSessionSearch={onOpenSessionSearch} />);
+    fireEvent.click(view.getByRole('button', { name: 'Session search' }));
+    fireEvent.keyDown(window, { key: 'S', metaKey: true, shiftKey: true });
+    expect(onOpenSessionSearch).toHaveBeenCalledTimes(2);
   });
 
   let originalFetch;

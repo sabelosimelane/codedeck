@@ -44,9 +44,11 @@ codedeck/
 │   ├── terminal-runtime.js # tmux-required terminal runtime + snapshot capture helpers
 │   ├── terminal-execution-classifier.js # Combines main pane, sub-agent panes, and silence
 │   ├── agent-profiles/  # Pure live-screen readers for Codex, Claude, Cursor, agy, Muse
+│   ├── agent-history/   # Read-only CLI history readers, merge/search, and resume command/service
 │   ├── terminal-waiting-store.js # SQLite store for per-tab waiting marks
 │   ├── routes/
-│   │   └── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)
+│   │   ├── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)
+│   │   └── agent-sessions.js     # Paginated local agent conversations + resume API
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
 │   └── __tests__/
@@ -64,6 +66,7 @@ codedeck/
 │       │   ├── TerminalInspector.jsx # Debug inspector: health, timeline, recovery actions, snapshot copy
 │       │   ├── PaneDivider.jsx       # Draggable vertical divider between terminal panes
 │       │   ├── ShortcutsOverlay.jsx  # Keyboard shortcut reference modal
+│       │   ├── SessionSearch.jsx     # Agent conversation history search and resume modal
 │       │   ├── FileTree.jsx          # Directory tree renderer
 │       │   ├── FileBrowserPanel.jsx  # Modal overlay for per-project file browsing
 │       │   ├── DirectoryBrowser.jsx  # Modal filesystem navigator (project picker)
@@ -145,3 +148,9 @@ codedeck/
 - ONLY use `./start.sh` when you intentionally want a foreground dev session that dies with the terminal
 - NEVER document `node server/index.js` as the normal startup path — the supported backend dev entrypoint is `cd server && npm run dev`
 - ALWAYS use the existing CSS custom properties for colors — no hardcoded hex values in components (except in the theme definition itself)
+
+## Agent session history API
+
+`GET /api/agent-sessions` lists local project conversations from Claude Code, Codex, Cursor agent, and Antigravity. Optional `project`, `cli`, and `q` filters use exact project/CLI matches and a case-insensitive title/prompt substring. Zero-based `page` defaults to 0; `size` defaults to 20 and is limited to 100. The only sort is `-updatedAt`, with CLI and conversation UUID as stable ties. The response has `data`, `page`, and per-CLI `sources` availability. A named remote project returns 409; unknown projects return 404.
+
+`POST /api/agent-sessions/resume` takes `{cli, conversationId, project}`, checks that the UUID exists for that local project, allocates a new detached tmux terminal through the mobile session starter, and submits the fixed CLI resume command. It returns 201 with `{sessionId, project, cli, conversationId}`. Concurrent identical requests return 409. Both endpoints use RFC 9457 problem details and `X-Trace-Id`; 400 responses contain field errors. The readers open external SQLite stores read-only.

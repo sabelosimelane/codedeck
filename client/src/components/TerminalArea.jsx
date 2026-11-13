@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search } from 'lucide-react';
 import TerminalInspector from './TerminalInspector';
 import { useToast } from './ToastContext';
 import {
@@ -300,7 +300,7 @@ function getPaneStatusTitle(sessionId, status, session) {
     : baseTitle;
 }
 
-export default function TerminalArea({ project, sessionStatus = [], sessionTitles = {}, onTitlesChanged = () => {}, namingError = null, onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), waitingSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {}, onToggleWaiting = () => {} }) {
+export default function TerminalArea({ project, sessionStatus = [], sessionTitles = {}, onTitlesChanged = () => {}, namingError = null, onSessionStatusRefresh = () => {}, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), waitingSessionIds = new Set(), onResetFinishedSession = () => {}, onToggleMutedStatusSession = () => {}, onToggleWaiting = () => {}, onOpenSessionSearch = () => {}, resumedSessionId = null, onResumedAttached = () => {} }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
@@ -310,6 +310,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
   const containerRef = useRef(null);
   const terminalRefs = useRef(new Map());
   const intentionalOpenIds = useRef(new Set());
+  const attachedResumeRef = useRef(null);
   const prevProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
   const restoringRef = useRef(false);
@@ -608,6 +609,29 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
     }), { persistImmediately: true });
   }, [requestTerminalSessionId, updateTerminalState]);
 
+  // The resume endpoint already created the server session. Reuse the tab
+  // attachment path without calling /api/terminal for a second session ID.
+  useEffect(() => {
+    if (!resumedSessionId) { attachedResumeRef.current = null; return; }
+    if (restoringRef.current || prevProjectRef.current !== project.name) return;
+    const key = `${project.name}:${resumedSessionId}`;
+    if (attachedResumeRef.current === key) return;
+    attachedResumeRef.current = key;
+    unmarkDeletedSessionIds(project.name, [resumedSessionId]);
+    const existing = stateRef.current.tabs.find(tab => tab.panes.some(pane => pane.sessionId === resumedSessionId));
+    if (existing) {
+      setActiveTabId(existing.id);
+    } else {
+      const number = getSessionNumber(project.name, resumedSessionId);
+      if (number !== null) sessionCounter = Math.max(sessionCounter, number);
+      const tab = createTab(resumedSessionId);
+      intentionalOpenIds.current.add(resumedSessionId);
+      setActivePaneId(tab.panes[0].id);
+      updateTerminalState(previous => ({ tabs: [...previous.tabs, tab], activeTabId: tab.id }), { persistImmediately: true });
+    }
+    onResumedAttached(resumedSessionId);
+  }, [project.name, resumedSessionId, state, setActiveTabId, updateTerminalState, onResumedAttached]);
+
   // Close a single pane — redistribute, or close tab if last pane
   const closePane = useCallback(async (tabId, paneId, sessionId) => {
     markDeletedSessionIds(project.name, [sessionId]);
@@ -833,6 +857,13 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
         return;
       }
 
+      if (key === 's') {
+        e.preventDefault();
+        e.stopPropagation();
+        onOpenSessionSearch();
+        return;
+      }
+
       // Cmd+Shift+K — clear active pane
       if (key === 'k' && activePaneId) {
         e.preventDefault();
@@ -874,7 +905,7 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [splitRight, addTab, activeTabId, activeTab, activePaneId, clearPane, closePane, pendingSessionIds, onToggleMutedStatusSession, onToggleWaiting]);
+  }, [splitRight, addTab, activeTabId, activeTab, activePaneId, clearPane, closePane, pendingSessionIds, onToggleMutedStatusSession, onToggleWaiting, onOpenSessionSearch]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -1039,6 +1070,11 @@ export default function TerminalArea({ project, sessionStatus = [], sessionTitle
         </div>
 
         {/* Actions */}
+        <ShortcutHint label="Session search" keys={IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S']}>
+          <button onClick={onOpenSessionSearch} aria-label="Session search" title={formatShortcutTitle('Session search', IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S'])} style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer' }}>
+            <Search size={14} />
+          </button>
+        </ShortcutHint>
         <ShortcutHint
           label="Split right"
           keys={splitRightKeys}
