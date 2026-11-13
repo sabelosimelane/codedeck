@@ -1,6 +1,8 @@
 import { ELAPSED, dialogTail, promptRegion, screenLines } from './live-region.js';
 
 export const id = 'muse';
+// How this CLI invokes a skill; workflow prompts are written with `/name`.
+export const skillPrefix = '/';
 
 const INPUT_PROMPT = /^❯(?:\s|$)/u;
 const DIALOG_OPTION = /^⟩ \d+\s/u;

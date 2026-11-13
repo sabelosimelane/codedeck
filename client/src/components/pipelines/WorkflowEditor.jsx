@@ -150,7 +150,7 @@ export default function WorkflowEditor({ workflow, agents, onSaved, onChanged, o
                   {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                 </SelectField>
               </div>
-              <TextField multiline rows={3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="/feature-dev {input}" />
+              <TextField multiline rows={3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="/feature-dev {input}" />
               <div className="pipeline-node-row">
                 <SelectField label={`Node ${number} repeat`} caption="Repeat" value={node.mode} onChange={setNodeField(index, 'mode')} error={errors[`${prefix}.repeat.mode`]}>
                   <option value="once">Run once</option>

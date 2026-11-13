@@ -75,7 +75,7 @@ function executionState(overrides = {}) {
     executionReason: 'agent_prompt_idle',
     foregroundCommand: 'node',
     lines: ['› '],
-    profile: { promptVisible: () => true },
+    profile: { promptVisible: () => true, skillPrefix: '/' },
     isAlive: true,
     entryExists: true,
     ...overrides,
@@ -188,6 +188,36 @@ afterEach(() => {
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+  });
+
+  async function runSkillStep(profile) {
+    const ctx = setupEngine({ readinessQueue: [executionState({ profile })] });
+    const skill = definition();
+    skill.steps[0].prompt = '/feature-dev docs/todos/x.md';
+    const run = ctx.runStore.create(validRun({ definition: skill }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100); // launch Enter
+    await vi.advanceTimersByTimeAsync(1000); // first poll → ready
+    await done;
+    return { ctx, run: ctx.runStore.get(run.id) };
+  }
+
+  it('sends a leading /skill as $skill when the CLI that became ready invokes skills with $', async () => {
+    const { ctx, run } = await runSkillStep({ promptVisible: () => true, skillPrefix: '$' });
+    expect(ctx.getWorkflowStartArgs().command).toBe('$feature-dev docs/todos/x.md');
+    expect(run.status).toBe('complete');
+  });
+
+  it('sends a leading /skill as written when the CLI that became ready invokes skills with /', async () => {
+    const { ctx } = await runSkillStep({ promptVisible: () => true, skillPrefix: '/' });
+    expect(ctx.getWorkflowStartArgs().command).toBe('/feature-dev docs/todos/x.md');
+  });
+
+  it('fails the run when the ready CLI profile does not say how it invokes skills', async () => {
+    const { ctx, run } = await runSkillStep({ promptVisible: () => true });
+    expect(ctx.getWorkflowStartArgs()).toBeNull();
+    expect(run.status).toBe('error');
+    expect(run.error).toContain('skill prefix must be "/" or "$"');
   });
 
   it('happy path: single step reaches complete', async () => {

@@ -85,6 +85,9 @@ Open **Settings → Workflows** to add agents, choose a
 Setup agent, and save an ordered workflow. Each node has a prompt, an agent and
 either a single pass or repetition until completion with a maximum pass count.
 `{input}` in prompts is replaced once with the input supplied when starting a run.
+Write a skill as `/name` at the start of a prompt (for example `/feature-dev {input}`).
+Codex invokes skills with `$`, so when the CLI running the step is Codex, CodeDeck sends
+that leading `/name` as `$name`; the rest of the prompt is sent as written.
 
 An agent is a launch command plus a reset command. For Claude Code, Codex and Cursor,
 pick the provider, type a model ID and choose an effort; CodeDeck builds the launch

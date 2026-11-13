@@ -1,6 +1,8 @@
 import { ELAPSED, count, dialogTail, promptRegion, screenLines } from './live-region.js';
 
 export const id = 'codex';
+// Codex invokes a skill with `$name`; a workflow prompt writes it as `/name`.
+export const skillPrefix = '$';
 
 const INPUT_PROMPT = /^›(?:\s|$)/u;
 const DIALOG_OPTION = /^› \d+\. /u;

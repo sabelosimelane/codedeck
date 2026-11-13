@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-11-14] - Send a workflow step's skill to Codex with $
+
+### Executive Summary
+* Codex invokes skills with `$name`, not `/name`, so a step such as `/feature-dev …` did nothing useful when its agent was Codex. A prompt is still written with `/name`; when the CLI running the step is Codex, CodeDeck now sends that leading skill as `$name`. The same workflow therefore works whichever agent a node uses.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/pipelines/skill-prefix.js` (new) — `applySkillPrefix` rewrites only a leading `/name` followed by white space or the end; paths, namespaced commands and later text are left as written.
+  * `server/agent-profiles/codex.js`, `claude.js`, `cursor.js`, `agy.js`, `muse.js` — Each profile declares its `skillPrefix` (`$` for Codex, `/` for the others).
+  * `server/pipelines/run-engine.js` — The step's prompt is sent with the prefix of the profile that matched the screen when the agent became ready; a profile without a valid prefix fails the run.
+* **🛠️ Codebase:**
+  * `client/src/components/pipelines/WorkflowEditor.jsx` — The prompt caption mentions the rule.
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — Document the rule.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-skill-prefix.test.js` (new), `pipeline-run-engine.test.js`, `pipeline-run-live.test.js` — The rule, each profile's prefix, and the command the engine sends for `$` and `/` CLIs. Full server suite passed (1,564 tests); a run with a real Codex agent was not tested.
+
 ## [2026-11-14] - Start preset agents past shell aliases
 
 ### Executive Summary

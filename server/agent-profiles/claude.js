@@ -1,6 +1,8 @@
 import { count, dialogTail, promptRegion, screenLines } from './live-region.js';
 
 export const id = 'claude';
+// How this CLI invokes a skill; workflow prompts are written with `/name`.
+export const skillPrefix = '/';
 
 const INPUT_PROMPT = /^❯(?:\s|$)/u;
 const MODE_FOOTER = /^⏵⏵ /u;

@@ -5,6 +5,7 @@
  */
 
 import { applyEvent, computeActions } from './run-machine.js';
+import { applySkillPrefix } from './skill-prefix.js';
 
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -346,8 +347,9 @@ export function createRunEngine({
       }
 
       const attempt = current.steps[stepIndex].attempt;
-      // Snapshot prompts are already composed once at POST /runs (Spec §4.4).
-      const command = defStep.prompt;
+      // Snapshot prompts are already composed once at POST /runs (Spec §4.4). The CLI that
+      // became ready decides how a leading /skill is written (Codex: $skill).
+      const command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
       const maxIterations = maxIterationsFor(defStep.repeat);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
 

@@ -252,7 +252,7 @@ describeLive('pipeline run live (Phase 3)', () => {
         executionReason: 'agent_prompt_idle',
         foregroundCommand: 'node',
         lines: ['› '],
-        profile: { promptVisible: () => true },
+        profile: { promptVisible: () => true, skillPrefix: '/' },
         isAlive: true,
         entryExists: true,
       }),

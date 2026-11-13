@@ -168,6 +168,13 @@ The launch command is the interactive command for the CLI, e.g.
 Node prompts in the snapshot are already composed: every `{input}` is replaced by the run's input in
 a single pass (`replaceAll`), so an input containing `{input}` is not expanded again.
 
+**Skill prefix (added after v1.0).** A prompt names a skill as `/name` at its start. When a step's
+agent becomes ready, the engine reads `skillPrefix` from the agent profile that matched the screen
+(`$` for Codex, `/` for Claude, Cursor, agy and Muse) and sends a leading `/name` (name of letters,
+digits, `_` and `-`, followed by white space or the end) with that prefix. Nothing else in the
+prompt changes, and the snapshot keeps the prompt as written. A ready profile without a valid
+`skillPrefix` fails the run.
+
 **Step progress record:**
 
 | Field | Type | Constraints |

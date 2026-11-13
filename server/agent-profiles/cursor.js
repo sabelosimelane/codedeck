@@ -1,6 +1,8 @@
 import { promptRegion, screenLines } from './live-region.js';
 
 export const id = 'cursor';
+// How this CLI invokes a skill; workflow prompts are written with `/name`.
+export const skillPrefix = '/';
 
 // `→ Plan, search, build anything` when fresh, `→ Add a follow-up` afterwards.
 const INPUT_PROMPT = /^→ (?:Add a follow-up|Plan, search, build anything)\b/u;
