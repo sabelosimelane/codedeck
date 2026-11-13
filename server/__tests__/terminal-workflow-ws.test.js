@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { handleWsConnection } from '../ws-handler.js';
+import { attachBackgroundSession, handleWsConnection } from '../ws-handler.js';
 
 function fixture(runtimeType = 'pty') {
   const output = []; const exits = [];
@@ -13,11 +13,16 @@ function fixture(runtimeType = 'pty') {
   const req = { url: '/ws/terminal?protocol=2&sessionId=demo-1&cwd=/tmp&cols=100&rows=30' };
   const attach = target => handleWsConnection(target, req, sessions, runtime, new Set(), new Set(), { onInput });
   attach(ws);
-  return { ws, sessions, pty, socket, attach, onInput, output: text => output.forEach(fn => fn(text)), exit: () => exits.forEach(fn => fn({ exitCode: 0 })) };
+  const startBackground = () => {
+    const handle = attachBackgroundSession('demo-1', sessions, runtime, new Set(), { cwd: '/tmp', onInput });
+    handle.observe(state => { if (!state.active) handle.release(); });
+    handle.workflow.start({ requestId: 'start-1', command: '/feature-dev demo.md', resetCommand: '/clear' });
+    return handle;
+  };
+  return { startBackground, ws, sessions, pty, socket, attach, onInput, output: text => output.forEach(fn => fn(text)), exit: () => exits.forEach(fn => fn({ exitCode: 0 })) };
 }
-const start = { type: 'workflow_start', requestId: 'start-1', command: '/feature-dev demo.md', resetCommand: '/clear' };
 const send = (ws, value) => {
-  if (['input','workflow_start','workflow_stop'].includes(value.type)) {
+  if (value.type === 'input') {
     const session = messages(ws).find(m=>m.type==='session');
     let control = messages(ws).findLast(m=>m.type==='control_state');
     if (!control || control.controllerId !== session.attachmentId) {
@@ -34,15 +39,21 @@ const marker = (pty, status) => `[[CDW:${pty.write.mock.calls[0][0].match(/Itera
 describe('workflow over terminal WebSocket', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+  it.each(['workflow_start', 'workflow_stop'])('rejects removed %s as unknown without writing to the PTY', type => {
+    const f = fixture();
+    send(f.ws, { type, requestId: 'removed-control', ...(type === 'workflow_start' ? { command: 'cmd', resetCommand: '/clear' } : {}) });
+    expect(messages(f.ws).at(-1)).toMatchObject({ type: 'protocol_error', message: 'Unknown message type.' });
+    expect(f.pty.write).not.toHaveBeenCalled();
+  });
   it('reports stopped state on a fresh backend session so stale browser state is cleared', () => {
     const f = fixture();
     expect(messages(f.ws)[0]).toMatchObject({ type: 'workflow_state', state: { status: 'stopped', active: false } });
   });
-  it('acknowledges Start, observes automatic input, completes from live output and restores typing', async () => {
+  it('observes background automatic input, completes from live output and restores typing', async () => {
     const f = fixture();
-    send(f.ws, start);
+    f.startBackground();
     expect(f.pty.write).toHaveBeenCalledTimes(1);
-    expect(messages(f.ws)).toContainEqual(expect.objectContaining({ type: 'workflow_state', requestId: 'start-1', state: expect.objectContaining({ active: true }) }));
+    expect(messages(f.ws)).toContainEqual(expect.objectContaining({ type: 'workflow_state', requestId: null, state: expect.objectContaining({ active: true }) }));
     await Promise.resolve();
     expect(f.onInput).toHaveBeenCalledWith('demo-1', f.pty.write.mock.calls[0][0]);
     send(f.ws, { type: 'input', data: 'y' });
@@ -54,7 +65,7 @@ describe('workflow over terminal WebSocket', () => {
   });
   it.each(['y', '\r', '\x1b[<0;10;20M', '\x1b[<0;10;20m'])('delivers approval input %j while running but blocks it during reset', data => {
     const f = fixture();
-    send(f.ws, start);
+    f.startBackground();
     send(f.ws, { type: 'input', data });
     expect(f.pty.write).toHaveBeenLastCalledWith(data);
     expect(f.sessions.get('demo-1').workflow.snapshot().status).toBe('running');
@@ -63,17 +74,9 @@ describe('workflow over terminal WebSocket', () => {
     send(f.ws, { type: 'input', data });
     expect(f.pty.write).not.toHaveBeenCalled();
   });
-  it('deduplicates Start and acknowledges Stop without sending an interrupt', () => {
-    const f = fixture();
-    send(f.ws, start); send(f.ws, start);
-    expect(f.pty.write).toHaveBeenCalledTimes(1);
-    send(f.ws, { type: 'workflow_stop', requestId: 'stop-1' });
-    expect(messages(f.ws).at(-1)).toMatchObject({ type: 'workflow_state', requestId: 'stop-1', state: { status: 'stopped', active: false } });
-    expect(f.pty.write).toHaveBeenCalledTimes(1);
-  });
   it('publishes an identifier mismatch error and releases manual input without resetting', () => {
     const f = fixture();
-    send(f.ws, start);
+    f.startBackground();
     vi.advanceTimersByTime(100);
     f.output('[[CDW:21b30afa-19ab-4ee4-963a-38c1694ee034:CONTINUE]]');
     expect(messages(f.ws)).toContainEqual(expect.objectContaining({
@@ -88,7 +91,7 @@ describe('workflow over terminal WebSocket', () => {
   });
   it('keeps a paused workflow attached, delivers the answer and reports it running again', async () => {
     const f = fixture();
-    send(f.ws, start);
+    f.startBackground();
     f.output(marker(f.pty, 'NEEDS_INPUT'));
     expect(messages(f.ws)).toContainEqual(expect.objectContaining({ type: 'workflow_state', state: expect.objectContaining({ status: 'needs_input', active: true }) }));
     await Promise.resolve();
@@ -98,7 +101,7 @@ describe('workflow over terminal WebSocket', () => {
     expect(messages(f.ws).at(-1)).toMatchObject({ type: 'workflow_state', state: { status: 'running', active: true } });
   });
   it.each(['exit', 'delete'])('cancels a queued reset on %s', reason => {
-    const f = fixture(); send(f.ws, start);
+    const f = fixture(); f.startBackground();
     f.output(marker(f.pty, 'CONTINUE'));
     if (reason === 'exit') f.exit();
     if (reason === 'delete') f.sessions.delete('demo-1');
@@ -106,7 +109,7 @@ describe('workflow over terminal WebSocket', () => {
     expect(f.pty.write).toHaveBeenCalledTimes(1);
   });
   it('continues the next pass while the browser is disconnected, then releases the attachment on completion', async () => {
-    const f = fixture('tmux'); send(f.ws, start);
+    const f = fixture('tmux'); f.startBackground();
     vi.advanceTimersByTime(100);
     f.ws.readyState = 3;
     f.ws.emit('close');
@@ -127,8 +130,8 @@ describe('workflow over terminal WebSocket', () => {
     const reconnected = f.socket(); f.attach(reconnected);
     expect(messages(reconnected)).toContainEqual(expect.objectContaining({ type: 'workflow_state', state: expect.objectContaining({ status: 'complete' }) }));
   });
-  it.each(['disconnect', 'takeover'])('reattaches to the same workflow after %s without duplicate submissions, and Stop still cancels reset', reason => {
-    const f = fixture('tmux'); send(f.ws, start);
+  it.each(['disconnect', 'takeover'])('reattaches to the same workflow after %s and a background stop still cancels reset', reason => {
+    const f = fixture('tmux'); f.startBackground();
     vi.advanceTimersByTime(100);
     const workflow = f.sessions.get('demo-1').workflow;
     f.output(marker(f.pty, 'CONTINUE'));
@@ -138,31 +141,27 @@ describe('workflow over terminal WebSocket', () => {
     f.ws.emit('close');
     expect(f.sessions.get('demo-1').workflow).toBe(workflow);
     expect(messages(next)[0]).toMatchObject({ type: 'workflow_state', state: { status: 'resetting', active: true } });
-    send(next, start);
     expect(f.pty.write).toHaveBeenCalledTimes(2);
-    send(next, { type: 'workflow_stop', requestId: 'stop-after-reconnect' });
+    workflow.stop();
     vi.advanceTimersByTime(10000);
     expect(f.pty.write).toHaveBeenCalledTimes(2);
     expect(workflow.snapshot().status).toBe('stopped');
   });
   it('consumes live completion during snapshot buffering so reconnect cannot lose the signal', () => {
-    const f = fixture('tmux'); send(f.ws, start);
+    const f = fixture('tmux'); f.startBackground();
     const entry = f.sessions.get('demo-1');
     entry.attachState = { mode: 'buffer_live_output', bufferedChunks: [] };
     f.output(marker(f.pty, 'COMPLETE'));
     expect(entry.workflow.snapshot().status).toBe('complete');
   });
-  it.each([
-    { ...start, command: null }, { ...start, requestId: null },
-    { ...start, surprise: true }, { type: 'workflow_stop', requestId: 'stop', surprise: true },
-    { type: 'workflow_other', requestId: 'other' },
-  ])('reports invalid controls without injecting them into the terminal %#', input => {
-    const f = fixture(); send(f.ws, input);
-    expect(['workflow_error','protocol_error']).toContain(messages(f.ws).at(-1).type);
+  it('rejects unknown controls without injecting them into the terminal', () => {
+    const f = fixture();
+    send(f.ws, { type: 'workflow_other', requestId: 'other' });
+    expect(messages(f.ws).at(-1)).toEqual({ type: 'protocol_error', message: 'Unknown message type.' });
     expect(f.pty.write).not.toHaveBeenCalled();
   });
   it('does not accept replayed terminal history as a new workflow result', () => {
-    const f = fixture(); send(f.ws, start);
+    const f = fixture(); f.startBackground();
     const entry = f.sessions.get('demo-1');
     entry.replayBuffer.push({ seq: 1, data: marker(f.pty, 'COMPLETE') });
     send(f.ws, { type: 'resume', lastSeenSeq: 0 });

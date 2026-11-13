@@ -24,6 +24,14 @@ it.each([
  let target = row; for (const key of keys) target = target[key]; target[field] = value;
  expect(() => parseRun(row)).toThrow(field);
 });
+it.each(['not_created', 'present', 'removed', 'removal_blocked', 'external', 'released'])('accepts worktree state %s', state => {
+ const row = validRun(); row.worktree.state = state;
+ expect(parseRun(row).worktree.state).toBe(state);
+});
+it('rejects an unknown worktree state', () => {
+ const row = validRun(); row.worktree.state = 'borrowed';
+ expect(() => parseRun(row)).toThrow('state');
+});
 it('requires error details and terminal timestamps', () => {
  expect(() => parseRun({ ...validRun(), status: 'error' })).toThrow('error');
  expect(() => parseRun({ ...validRun(), status: 'complete' })).toThrow('finishedAt');

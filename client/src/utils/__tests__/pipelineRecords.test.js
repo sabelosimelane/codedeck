@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PipelineApiError } from '../pipelinesApi';
-import { loadDefinitions, parseAgent, parseSettings, parseWorkflow } from '../pipelineRecords';
+import { loadDefinitions, parseAgent, parsePreflight, parseSettings, parseWorkflow, parseWorktree } from '../pipelineRecords';
 
 const A1 = '11111111-1111-4111-8111-111111111111';
 const W1 = '33333333-3333-4333-8333-333333333333';
@@ -126,3 +126,79 @@ describe('loadDefinitions', () => {
     await expect(loadDefinitions()).rejects.toThrow(/revision/);
   });
 });
+
+describe('parseWorktree', () => {
+  const HEAD = 'a'.repeat(40);
+  const worktree = (patch = {}) => ({
+    path: '/git/worktrees/demo-feature', name: 'demo-feature', branch: 'feature/x', head: HEAD,
+    current: false, dirty: true, selectable: true, reason: null, ...patch,
+  });
+  const blocked = worktree({ branch: null, dirty: null, selectable: false, reason: { code: 'missing', message: 'The worktree directory is missing.' } });
+
+  it('returns every field of a valid worktree and nothing else', () => {
+    expect(parseWorktree({ ...worktree(), extra: 'ignored' })).toEqual(worktree());
+    expect(parseWorktree({ ...blocked, reason: { ...blocked.reason, extra: 1 } })).toEqual(blocked);
+  });
+
+  it.each([
+    ['worktree', null],
+    ['worktree', []],
+    ['path', worktree({ path: 'relative/dir' })],
+    ['path', worktree({ path: '/a\nb' })],
+    ['path', worktree({ path: 7 })],
+    ['name', worktree({ name: '' })],
+    ['name', worktree({ name: undefined })],
+    ['branch', worktree({ branch: '' })],
+    ['branch', worktree({ branch: undefined })],
+    ['head', worktree({ head: 'abc' })],
+    ['head', worktree({ head: null })],
+    ['current', worktree({ current: 'false' })],
+    ['dirty', worktree({ dirty: 'no' })],
+    ['dirty', worktree({ dirty: undefined })],
+    ['selectable', worktree({ selectable: 1 })],
+    ['reason', worktree({ reason: undefined })],
+    ['reason', worktree({ reason: 'in_use' })],
+    ['reason.code', worktree({ selectable: false, reason: { code: 'whatever', message: 'x' } })],
+    ['reason.message', worktree({ selectable: false, reason: { code: 'in_use', message: '' } })],
+    ['selectable', worktree({ selectable: true, reason: { code: 'in_use', message: 'x' } })],
+    ['selectable', worktree({ selectable: false, reason: null })],
+  ])('rejects an invalid %s', (field, record) => {
+    rejects(parseWorktree, record, field);
+  });
+});
+
+describe('parsePreflight', () => {
+  const HEAD = 'b'.repeat(40);
+  const preflight = (patch = {}) => ({ project: 'Demo', eligible: true, reasons: [], branch: 'main', head: HEAD, dirty: false, ...patch });
+  const blocked = preflight({
+    eligible: false, branch: null, head: null, dirty: null,
+    reasons: [{ code: 'not_git_toplevel', message: 'The project path must be the top level of a git working tree.' }],
+  });
+
+  it('returns every field of a valid preflight and nothing else', () => {
+    expect(parsePreflight({ ...preflight(), extra: 1 })).toEqual(preflight());
+    expect(parsePreflight(blocked)).toEqual(blocked);
+  });
+
+  it.each([
+    ['preflight', null],
+    ['project', preflight({ project: '' })],
+    ['eligible', preflight({ eligible: 'true' })],
+    ['reasons', preflight({ reasons: undefined })],
+    ['reasons', preflight({ reasons: {} })],
+    ['reasons[0]', preflight({ eligible: false, reasons: ['nope'] })],
+    ['reasons[0].code', preflight({ eligible: false, reasons: [{ code: '', message: 'x' }] })],
+    ['reasons[0].message', preflight({ eligible: false, reasons: [{ code: 'x', message: 5 }] })],
+    ['eligible', preflight({ eligible: true, reasons: [{ code: 'x', message: 'y' }] })],
+    ['eligible', preflight({ eligible: false, reasons: [] })],
+    ['branch', preflight({ branch: '' })],
+    ['branch', preflight({ branch: undefined })],
+    ['head', preflight({ head: 'abc' })],
+    ['head', preflight({ head: undefined })],
+    ['dirty', preflight({ dirty: 'no' })],
+    ['dirty', preflight({ dirty: undefined })],
+  ])('rejects an invalid %s', (field, record) => {
+    rejects(parsePreflight, record, field);
+  });
+});
+

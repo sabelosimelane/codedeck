@@ -636,7 +636,8 @@ describe('PipelineSettings workflows', () => {
     for (let count = 1; count < 32; count++) click('Add node');
     expect(nodeNames()).toHaveLength(32);
     expect(screen.getByRole('button', { name: 'Add node' }).disabled).toBe(true);
-  });
+    // 31 role queries over a form that grows to 32 nodes take 4–6 s on a busy machine.
+  }, 20000);
 
   it('edits a workflow, sending its revision and dropping the maximum of a single-pass node', async () => {
     await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });

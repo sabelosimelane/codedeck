@@ -17,6 +17,7 @@ import {
   updateAgent,
   updatePipelineSettings,
   updateWorkflow,
+  listWorktrees,
   preflightProject,
   resumeRun,
   startRun,
@@ -100,6 +101,28 @@ describe('pipelinesApi', () => {
         input: 'build it',
       }),
     }));
+  });
+
+  it('lists every page of a project\'s worktrees', async () => {
+    global.fetch = vi.fn(async (url) => jsonResponse(String(url).includes('page=0')
+      ? { data: [{ path: '/a' }], page: { hasNextPage: true } }
+      : { data: [{ path: '/b' }], page: { hasNextPage: false } }));
+
+    await expect(listWorktrees('My Project')).resolves.toEqual([{ path: '/a' }, { path: '/b' }]);
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/pipelines/worktrees?page=0&size=100&project=My+Project',
+      '/api/pipelines/worktrees?page=1&size=100&project=My+Project',
+    ]);
+  });
+
+  it('sends worktreePath only when an existing worktree is chosen', async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ id: 'r1' }, { status: 201 }));
+    const fields = { requestId: 'req-1', workflowId: '11111111-1111-1111-1111-111111111111', project: 'Demo', input: 'x' };
+
+    await startRun({ ...fields, worktreePath: '/git/worktrees/demo-feature' });
+    await startRun({ ...fields, worktreePath: undefined });
+    const bodies = global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
+    expect(bodies).toEqual([{ ...fields, worktreePath: '/git/worktrees/demo-feature' }, fields]);
   });
 
   it.each([

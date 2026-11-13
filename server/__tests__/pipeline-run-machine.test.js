@@ -182,6 +182,26 @@ describe('computeActions (Spec §8.8)', () => {
     expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'not_created', finishedAt: AT })).resume).toBe(true);
   });
 
+  it('an existing worktree the owner chose can be resumed, and the run released, but is never removable state', () => {
+    expect(computeActions(run({ status: 'running', worktreeState: 'external' }))).toEqual({ stop: true, resume: false, continue: false, cleanup: false });
+    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'external', finishedAt: AT }))).toEqual({ stop: false, resume: true, continue: false, cleanup: true });
+    expect(computeActions(run({ status: 'error', error: 'x', worktreeState: 'external', finishedAt: AT }))).toEqual({ stop: false, resume: true, continue: false, cleanup: true });
+    expect(computeActions(run({ status: 'interrupted', worktreeState: 'external' }))).toEqual({ stop: true, resume: true, continue: false, cleanup: true });
+  });
+
+  it('a released run offers neither resume nor cleanup', () => {
+    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'released', finishedAt: AT }))).toEqual({ stop: false, resume: false, continue: false, cleanup: false });
+    expect(computeActions(run({ status: 'complete', worktreeState: 'released', finishedAt: AT }))).toEqual({ stop: false, resume: false, continue: false, cleanup: false });
+  });
+
+  it('resumes a stopped run in an existing worktree', () => {
+    const stopped = run({
+      status: 'stopped', stopReason: 'user', worktreeState: 'external', finishedAt: AT,
+      steps: [{ ...run().steps[0], status: 'stopped', sessionId: 'Demo-1', attempt: 1, startedAt: AT, finishedAt: AT }],
+    });
+    expect(applyEvent(stopped, { type: 'resume', at: AT }).status).toBe('running');
+  });
+
   it('cleanup allowed for terminal/interrupted statuses with removable worktree states', () => {
     expect(computeActions(run({ status: 'complete', worktreeState: 'not_created', finishedAt: AT })).cleanup).toBe(true);
     expect(computeActions(run({ status: 'complete', worktreeState: 'present', finishedAt: AT })).cleanup).toBe(true);

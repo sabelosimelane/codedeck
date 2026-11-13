@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { handleWsConnection, computeSessionHealth, reseedRemoteDetachedSessions } from '../ws-handler.js';
+import { attachBackgroundSession, handleWsConnection, computeSessionHealth, reseedRemoteDetachedSessions } from '../ws-handler.js';
 
 // ---------------------------------------------------------------------------
 // Harness — mirrors the mock factories used by ws-handler.test.js, plus a fake
@@ -135,9 +135,9 @@ it('keeps a remote workflow attached after browser disconnect and releases it wh
   const f = attachRemote();
   await f.result;
   const pty = f.hostRuntime.ptys[0];
-  f.ws._emit('message', JSON.stringify({type:'claim_control',requestId:'claim',cols:100,rows:40}));
-  await flushAsync();
-  f.ws._emit('message', JSON.stringify({ type: 'workflow_start', controlRevision:1, requestId: 'remote-run', command: 'one pass', resetCommand: '/clear' }));
+  const handle = attachBackgroundSession('rp-1', f.sessions, f.localRuntime, new Set(), { cwd: '/srv/app' });
+  handle.observe(state => { if (!state.active) handle.release(); });
+  handle.workflow.start({ requestId: 'remote-run', command: 'one pass', resetCommand: '/clear' });
   const identifier = pty.write.mock.calls[0][0].match(/Iteration identifier: ([\w-]+)/)[1];
   f.ws.readyState = 3;
   f.ws._emit('close');

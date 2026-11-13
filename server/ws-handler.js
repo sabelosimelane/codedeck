@@ -130,14 +130,13 @@ function validateMessage(value) {
     claim_control: ['requestId', 'cols', 'rows'], input: ['data', 'controlRevision'], resize: ['cols', 'rows', 'controlRevision'],
     resume: ['lastSeenSeq'], rehydrate: [], visibility_change: ['state'], recovery_action: ['action'], user_activity: [],
     heartbeat: ['documentVisibility', 'lastMessageAt', 'lastPaintAt', 'lastResizeAt', 'lastSeenSeq', 'reconnectCount'],
-    workflow_start: ['requestId', 'command', 'resetCommand', 'controlRevision'], workflow_stop: ['requestId', 'controlRevision'],
   };
   if (!fields[value.type]) throw new Error('Unknown message type.');
   if (Object.keys(value).some(key => key !== 'type' && !fields[value.type].includes(key))) throw new Error('Message contains an unknown field.');
   if (['claim_control', 'resize'].includes(value.type) && !validDimensions(value.cols, value.rows)) throw new Error('cols and rows must be valid terminal dimensions.');
   if (value.type === 'claim_control' && (typeof value.requestId !== 'string' || !/^[\w-]{1,128}$/.test(value.requestId))) throw new Error('requestId is required.');
   if (value.type === 'input' && (typeof value.data !== 'string' || value.data.length === 0 || Buffer.byteLength(value.data) > 65536)) throw new Error('data must contain 1–65536 bytes.');
-  if (['input','resize','workflow_start','workflow_stop'].includes(value.type) && (!Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0)) throw new Error('controlRevision must be a non-negative integer.');
+  if (['input','resize'].includes(value.type) && (!Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0)) throw new Error('controlRevision must be a non-negative integer.');
   if (value.type === 'resume' && (!Number.isSafeInteger(value.lastSeenSeq) || value.lastSeenSeq < 0)) throw new Error('lastSeenSeq must be a non-negative integer.');
   if (value.type === 'visibility_change' && !['visible','hidden'].includes(value.state)) throw new Error('state must be visible or hidden.');
   if (value.type === 'recovery_action' && (typeof value.action !== 'string' || !/^[\w-]{1,64}$/.test(value.action))) throw new Error('action must identify a recovery action.');
@@ -1146,9 +1145,6 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
   const attachment = ensureAttachment(entry, ws);
   attachment.isCompanion = ops.isCompanion;
   const observeInput = (data) => observeSessionInput(ops, sessionId, data);
-  const sendWorkflowState = (state, requestId = null) => {
-    if (ws.readyState === 1 && entry.attachments.has(ws)) ws.send(JSON.stringify({ type: 'workflow_state', requestId, state }));
-  };
   const workflow = ensureSessionWorkflow(entry, { ...ops, sessionId });
   const controlFailure = () => {
     entry.controlOutput = null;
@@ -1207,26 +1203,13 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
         try { resizeAndPublish(parsed, true); } catch { controlFailure(); }
         return;
       }
-      if (['input','resize','workflow_start','workflow_stop'].includes(parsed.type)
+      if (['input','resize'].includes(parsed.type)
         && (entry.controlPending || entry.controllerId !== attachment.id || parsed.controlRevision !== entry.controlRevision)) {
         entry.controlConflicts++;
         ws.send(JSON.stringify({...controlState(entry), type:'control_error', message:'Control changed. Interact again to take control.'}));
         return;
       }
-      if (typeof parsed?.type === 'string' && parsed.type.startsWith('workflow_')) {
-        try {
-          if (typeof parsed.requestId !== 'string' || !/^[\w-]{1,128}$/.test(parsed.requestId)) throw new Error('Workflow requestId must contain 1–128 letters, digits, underscores or hyphens.');
-          const { type, controlRevision, ...request } = parsed;
-          if (type === 'workflow_start') workflow.start(request);
-          else if (type === 'workflow_stop') {
-            if (Object.keys(request).some(key => key !== 'requestId')) throw new Error('Workflow stop contains an unknown field.');
-            workflow.stop();
-          } else throw new Error('Unknown workflow control type.');
-          sendWorkflowState(workflow.snapshot(), parsed.requestId);
-        } catch (err) {
-          ws.send(JSON.stringify({ type: 'workflow_error', requestId: typeof parsed.requestId === 'string' && /^[\w-]{1,128}$/.test(parsed.requestId) ? parsed.requestId : null, message: err.message }));
-        }
-      } else if (parsed.type === 'input') {
+      if (parsed.type === 'input') {
         if (workflow.snapshot().status === 'resetting') return;
         entry.pty.write(parsed.data);
         observeInput(parsed.data);

@@ -100,6 +100,15 @@ will not enter the run. CodeDeck creates a branch and a worktree beside the home
 repository, runs Setup first, then opens each step in a new terminal tab. Setup
 must leave the worktree clean before the workflow's nodes can begin.
 
+The dialog's **Worktree** list offers a new worktree (the default) and every
+existing working tree of the repository: the project's own checkout and its
+linked worktrees, each with its branch and whether it has uncommitted changes.
+A run in an existing worktree uses it as it is: there is no Setup step, no setup
+agent is needed, and CodeDeck never removes that worktree. When such a run ends
+or is stopped, **Dismiss run** closes it and leaves the worktree in place. A
+worktree with no branch checked out, a missing directory, or an open run already
+using it cannot be chosen.
+
 The runs bar shows steps, passes, branch and available controls. **Stop** stops
 automation; the agent may still be working. **Resume** warns about that terminal
 and creates a fresh attempt. At the pass limit, **Continue** advances to the next
@@ -111,31 +120,6 @@ Completion removes a clean worktree and keeps its branch. Modified or untracked
 files block removal and appear in the runs bar; resolve them and choose **Clean up
 worktree**. CodeDeck never forces removal. These pipelines use local projects;
 remote projects are ineligible.
-
-### Per-terminal Workflow bar
-
-Start your agent in a terminal and finish any setup or permission dialogs. At an empty
-prompt, open **Workflow**, enter your command (for example, `/feature-dev docs/todos/my-feature.md`),
-check the reset command (defaults to `/clear`), and click **Start**.
-
-CodeDeck submits the command with instructions for the agent to report **CONTINUE**,
-**COMPLETE**, or **NEEDS_INPUT** using a unique signal. CONTINUE clears context and
-submits another pass; COMPLETE ends the loop.
-NEEDS_INPUT pauses it: answer the agent in the terminal and the workflow returns to
-**Running**, then carries on when the agent signals CONTINUE or COMPLETE. Keep progress in a file
-that the command reads each pass. Commands and reset behavior must suit your agent.
-
-Typing and file uploads are locked during the loop. **Stop** releases the terminal
-without interrupting the agent's current work. If the agent opens a dialog or omits
-the signal, stop the workflow, handle it manually, and start again at an empty prompt.
-Silence is never treated as completion. Reset submission waits for terminal output
-to settle; this does not prove that an agent accepted the reset.
-
-Workflows keep running when you switch projects, refresh, or disconnect the browser.
-Reconnecting restores the current workflow status without submitting another command.
-The backend keeps a terminal attachment open until the loop ends. **Stop**, closing
-the terminal, or losing the terminal connection ends repetition. Restarting the CodeDeck
-server also stops workflows: their state is held in backend memory, not on disk.
 
 ## Session naming
 

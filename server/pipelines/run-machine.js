@@ -5,9 +5,10 @@
 
 const STOPPABLE = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'interrupted']);
 const RESUMABLE = new Set(['interrupted', 'stopped', 'error']);
-const RESUME_WORKTREE = new Set(['not_created', 'present']);
+const RESUME_WORKTREE = new Set(['not_created', 'present', 'external']);
 const CLEANUP_STATUS = new Set(['complete', 'stopped', 'error', 'interrupted']);
-const CLEANUP_WORKTREE = new Set(['not_created', 'present', 'removal_blocked']);
+// Cleanup of an `external` worktree only releases it from the run; see run-engine cleanupWorktree.
+const CLEANUP_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', 'external']);
 const ACTIVE_STEP = new Set(['pending', 'launching', 'running', 'needs_input', 'interrupted', 'stopped', 'failed']);
 
 function clone(run) {

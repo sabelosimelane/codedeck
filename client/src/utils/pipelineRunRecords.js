@@ -50,7 +50,7 @@ export function parseRun(run, index = 0) {
   guard(text(run.worktree.path) && run.worktree.path.startsWith('/') && !/[\x00-\x1f\x7f]/.test(run.worktree.path), 'worktree.path');
   guard(text(run.worktree.branch) && run.worktree.branch.length <= 256, 'worktree.branch');
   guard(nullable(run.worktree.baseCommit, value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value)), 'worktree.baseCommit');
-  guard(['not_created', 'present', 'removed', 'removal_blocked'].includes(run.worktree.state), 'worktree.state');
+  guard(['not_created', 'present', 'removed', 'removal_blocked', 'external', 'released'].includes(run.worktree.state), 'worktree.state');
   guard(nullable(run.worktree.detail, value => text(value) && value.length <= 2000), 'worktree.detail');
   guard(object(run.actions), 'actions');
   for (const action of ['stop', 'resume', 'continue', 'cleanup']) guard(typeof run.actions[action] === 'boolean', `actions.${action}`);

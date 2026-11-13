@@ -169,14 +169,14 @@ export function usePipelineRuns({ projectName, showToast }) {
     }
   }, [refresh, showToast]);
 
-  const startRun = useCallback(async ({ requestId, workflowId, input }) => {
+  const startRun = useCallback(async ({ requestId, workflowId, input, worktreePath }) => {
     const project = projectNameRef.current;
     if (!project) {
       showToast({ type: 'error', message: 'Select a project before starting a workflow' });
       return null;
     }
     try {
-      const created = await apiStartRun({ requestId, workflowId, project, input });
+      const created = await apiStartRun({ requestId, workflowId, project, input, worktreePath });
       if (!mountedRef.current || projectNameRef.current !== project) return created;
       setLocallyStartedRunIds((current) => {
         const next = new Set(current);
@@ -217,6 +217,11 @@ export function usePipelineRuns({ projectName, showToast }) {
         showToast({
           type: 'error',
           message: next.worktree.detail || `${next.workflowName || 'Workflow'} worktree cleanup was blocked`,
+        });
+      } else if (next.worktree?.state === 'released') {
+        showToast({
+          type: 'success',
+          message: `${next.workflowName || 'Workflow'} run dismissed; its worktree was left in place`,
         });
       } else {
         showToast({

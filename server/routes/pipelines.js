@@ -1,6 +1,8 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { execFile as defaultExecFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   validateAgentBody,
   validateWorkflowBody,
@@ -14,13 +16,22 @@ import {
   preflight as defaultPreflight,
   planNames as defaultPlanNames,
   resolveHomeRepoPath as defaultResolveHomeRepoPath,
+  listWorktrees as defaultListWorktrees,
+  listDirtyPaths as defaultListDirtyPaths,
   buildSetupPrompt,
 } from '../pipelines/run-worktree.js';
 
 const BASE = '/api/pipelines';
 const DEFAULT_SIZE = 20;
 const MAX_SIZE = 100;
-const OPEN_WORKTREE = new Set(['not_created', 'present', 'removal_blocked']);
+const OPEN_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', 'external']);
+const WORKTREE_SORT = ['path'];
+const SETUP_AGENT_MISSING = 'setup_agent_missing';
+const WORKTREE_REASONS = {
+  missing: 'The worktree directory is missing.',
+  detached: 'No branch is checked out in this worktree.',
+  in_use: 'An open workflow run is using this worktree.',
+};
 
 const AGENT_SORT = ['name', 'updatedAt'];
 const WORKFLOW_SORT = ['name', 'updatedAt'];
@@ -164,10 +175,23 @@ function pendingStep() {
   };
 }
 
+const EXISTING_WORKTREE_STATES = new Set(['external', 'released']);
+
 function sameStartBody(existing, body) {
+  const existingPath = EXISTING_WORKTREE_STATES.has(existing.worktreeState) ? existing.worktreePath : undefined;
   return existing.workflowId === body.workflowId
     && existing.project === body.project
-    && existing.input === body.input;
+    && existing.input === body.input
+    && existingPath === body.worktreePath;
+}
+
+/** Why a worktree cannot take a run, or null when it can. The first reason that applies is reported. */
+function worktreeRefusal(worktree, runs) {
+  const code = worktree.missing ? 'missing'
+    : worktree.branch === null ? 'detached'
+      : runs.some(run => run.worktreePath === worktree.path && isOpenRun(run)) ? 'in_use'
+        : null;
+  return code === null ? null : { code, message: WORKTREE_REASONS[code] };
 }
 
 function mapMutationError(err, entity) {
@@ -215,6 +239,7 @@ function buildDefinitionSnapshot({
   input,
   homePath,
   worktreePath,
+  withSetup,
 }) {
   const errors = [];
   const needsInput = workflow.nodes.some(node => String(node.prompt).includes('{input}'));
@@ -222,8 +247,9 @@ function buildDefinitionSnapshot({
     errors.push({ field: 'input', message: 'input is required when a node prompt contains {input}' });
   }
 
-  const setupAgent = settings?.setupAgentId ? agentStore.get(settings.setupAgentId) : null;
-  if (!setupAgent) {
+  // Setup prepares a worktree CodeDeck has just created; an existing worktree is used as it is.
+  const setupAgent = withSetup && settings?.setupAgentId ? agentStore.get(settings.setupAgentId) : null;
+  if (withSetup && !setupAgent) {
     errors.push({ field: 'setupAgentId', message: 'Choose a setup agent in Settings → Workflows.' });
   }
 
@@ -247,19 +273,19 @@ function buildDefinitionSnapshot({
 
   if (errors.length) throw fieldErrors(errors);
 
-  const setupStep = {
+  const setupSteps = withSetup ? [{
     kind: 'setup',
     name: 'Setup',
     prompt: buildSetupPrompt(homePath, worktreePath),
     repeat: { mode: 'until_complete', max: 3 },
     agent: agentSnapshot(setupAgent),
-  };
+  }] : [];
 
   return {
     workflowId: workflow.id,
     workflowName: workflow.name,
     workflowRevision: workflow.revision,
-    steps: [setupStep, ...nodeSteps],
+    steps: [...setupSteps, ...nodeSteps],
   };
 }
 
@@ -299,6 +325,8 @@ export function createPipelinesRouter(deps) {
     preflight = defaultPreflight,
     planNames = defaultPlanNames,
     resolveHomeRepoPath = defaultResolveHomeRepoPath,
+    listWorktrees = defaultListWorktrees,
+    listDirtyPaths = defaultListDirtyPaths,
     execFile = defaultExecFile,
     realpath,
     scheduleStart = setImmediate,
@@ -489,6 +517,70 @@ export function createPipelinesRouter(deps) {
     });
   }));
 
+  // --- Worktrees ---
+
+  /** Preflight for a project, refusing with 409 unless the only thing missing is `ignoredCode`. */
+  async function requireRunnableProject(project, ignoredCode) {
+    const settings = settingsStore.get();
+    const check = await preflight({
+      projectPath: project.path,
+      projectHost: project.host,
+      setupAgentId: settings.setupAgentId,
+      execFile,
+      realpath,
+    });
+    const blocking = check.reasons.filter(reason => reason.code !== ignoredCode);
+    if (blocking.length > 0) {
+      throw new PipelineError(
+        blocking[0]?.message || 'Run start preconditions failed',
+        409,
+        undefined,
+        { reasons: blocking },
+      );
+    }
+    return settings;
+  }
+
+  router.get(`${BASE}/worktrees`, route(async (req, res) => {
+    const query = parseCollectionQuery(req.query, {
+      sortFields: WORKTREE_SORT,
+      defaultSort: 'path,asc',
+      filters: [{
+        name: 'project',
+        parse: (value) => {
+          if (!isText(value)) throw fieldError('project', 'A project name is required');
+          return value;
+        },
+      }],
+    });
+    if (query.filters.project === undefined) throw fieldError('project', 'A project name is required');
+    const project = findProject(query.filters.project);
+    if (!project) throw new PipelineError('Project not found', 404);
+    // Listing worktrees needs a local git repository, not a setup agent.
+    await requireRunnableProject(project, SETUP_AGENT_MISSING);
+
+    const worktrees = await listWorktrees({ projectPath: project.path, execFile });
+    const projectPath = await (realpath ?? fs.promises.realpath)(project.path);
+    const runs = runStore.list();
+    const page = paginate(worktrees.map(worktree => ({ ...worktree, id: worktree.path })), query);
+    const data = await Promise.all(page.data.map(async (worktree) => {
+      const reason = worktreeRefusal(worktree, runs);
+      return {
+        path: worktree.path,
+        name: path.basename(worktree.path),
+        branch: worktree.branch,
+        head: worktree.head,
+        current: worktree.path === projectPath,
+        dirty: worktree.missing
+          ? null
+          : (await listDirtyPaths({ worktreePath: worktree.path, execFile })).length > 0,
+        selectable: reason === null,
+        reason,
+      };
+    }));
+    res.json({ data, page: page.page });
+  }));
+
   // --- Runs ---
 
   router.get(`${BASE}/runs`, route((req, res) => {
@@ -552,7 +644,9 @@ export function createPipelinesRouter(deps) {
       workflowId: req.body.workflowId,
       project: req.body.project,
       input: req.body.input,
+      worktreePath: req.body.worktreePath,
     };
+    const useExisting = body.worktreePath !== undefined;
 
     const existing = runStore.getByRequestId(body.requestId);
     if (existing) {
@@ -568,34 +662,31 @@ export function createPipelinesRouter(deps) {
     const project = findProject(body.project);
     if (!project) throw new PipelineError('Project not found', 404);
 
-    const settings = settingsStore.get();
-    const check = await preflight({
-      projectPath: project.path,
-      projectHost: project.host,
-      setupAgentId: settings.setupAgentId,
-      execFile,
-      realpath,
-    });
-    if (!check.eligible) {
-      const first = check.reasons[0];
-      throw new PipelineError(
-        first?.message || 'Run start preconditions failed',
-        409,
-        undefined,
-        { reasons: check.reasons },
-      );
-    }
+    // A new worktree is prepared by the Setup step, so only that case needs a setup agent.
+    const settings = await requireRunnableProject(project, useExisting ? SETUP_AGENT_MISSING : null);
 
     const homePath = await resolveHomeRepoPath({
       projectPath: project.path,
       execFile,
     });
     const runId = randomUUID();
-    const names = planNames({
-      runId,
-      workflowName: workflow.name,
-      homeRepoPath: homePath,
-    });
+    let names;
+    let worktree = null;
+    if (useExisting) {
+      // The path is only ever one git itself reported for this project.
+      const worktrees = await listWorktrees({ projectPath: project.path, execFile });
+      worktree = worktrees.find(candidate => candidate.path === body.worktreePath) ?? null;
+      if (!worktree) throw new PipelineError('Worktree not found for this project', 404);
+      const refusal = worktreeRefusal(worktree, runStore.list());
+      if (refusal) throw new PipelineError(refusal.message, 409, undefined, { reasons: [refusal] });
+      names = { worktreePath: worktree.path, branch: worktree.branch };
+    } else {
+      names = planNames({
+        runId,
+        workflowName: workflow.name,
+        homeRepoPath: homePath,
+      });
+    }
 
     const definition = buildDefinitionSnapshot({
       workflow,
@@ -604,6 +695,7 @@ export function createPipelinesRouter(deps) {
       input: body.input,
       homePath,
       worktreePath: names.worktreePath,
+      withSetup: !useExisting,
     });
 
     let run;
@@ -623,8 +715,8 @@ export function createPipelinesRouter(deps) {
         homePath,
         worktreePath: names.worktreePath,
         worktreeBranch: names.branch,
-        baseCommit: null,
-        worktreeState: 'not_created',
+        baseCommit: worktree ? worktree.head : null,
+        worktreeState: worktree ? 'external' : 'not_created',
         worktreeDetail: null,
         finishedAt: null,
       });

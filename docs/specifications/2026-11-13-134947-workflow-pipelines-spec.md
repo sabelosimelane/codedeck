@@ -21,8 +21,8 @@ project. For each run CodeDeck:
 4. removes the worktree when the run completes, provided nothing in it is uncommitted.
 
 The existing loop engine (`createTerminalWorkflow`) becomes the per-step building block; the pipeline
-is a layer above it. The existing per-terminal **Workflow** bar is unchanged and remains the way to
-loop one command in a terminal that is already open.
+is a layer above it. The per-terminal **Workflow** bar and its browser control messages were removed;
+only pipeline runs use the loop engine.
 
 ### 1.1 Decisions this spec encodes
 
@@ -238,6 +238,19 @@ stateDiagram-v2
 | `present` | The worktree exists on disk |
 | `removed` | Cleanup removed it (or there was nothing to remove) |
 | `removal_blocked` | Git refused to remove it; `worktree_detail` says why |
+| `external` | An existing worktree the owner chose for the run. CodeDeck did not create it and never removes it |
+| `released` | The run no longer uses its `external` worktree (run complete, or dismissed); nothing was removed |
+
+**Existing worktrees (added after v1.0).** `GET /worktrees?project=` lists the working trees git
+reports for the project's repository (`path,asc` by default; `page`/`size` as other collections).
+Each item has `path`, `name`, `branch` (null when detached), `head`, `current` (the project's own
+checkout), `dirty` (null when the directory is missing), `selectable` and `reason` (`missing`,
+`detached` or `in_use`, else null). `POST /runs` accepts an optional absolute `worktreePath` that
+must equal one of those paths: unknown → 404, not selectable → 409. Such a run starts in
+`external` with the worktree's branch and HEAD as `worktree.branch` and `baseCommit`, has no Setup
+step and needs no setup agent. Completion and the cleanup action move it to `released` without
+calling git; Resume is allowed from `external` and refused when the directory is gone. A worktree is
+`in_use` while an open run (§6.1) references its path, whichever run created it.
 
 ## 6. API Endpoints
 
@@ -533,8 +546,8 @@ makes the run `error`: "Setup left uncommitted changes in the worktree", followe
 `createTerminalWorkflow.start` accepts an optional `maxIterations` (integer 1–100). When a CONTINUE
 signal arrives on pass number `maxIterations`, the loop engine finishes with status `stopped` and
 `limitReached: true` instead of resetting. `snapshot()` gains `iteration` and `limitReached`. No new
-status value is added, so the existing client and the browser's own `workflow_start` message (which
-cannot carry `maxIterations`) behave as before.
+status value is added. The per-terminal bar and its browser control messages were removed; only
+pipeline runs start the loop engine.
 
 | Step repeat | `maxIterations` | COMPLETE | Limit reached |
 |---|---|---|---|
@@ -638,14 +651,13 @@ place of `project.path`; its returned `cwd` reflects it.
   project's open runs that are alive. Only the first step of a run started in this browser activates;
   later steps open in the background so they do not take focus.
 
-**Existing Workflow bar** — its status label shows "Pass limit reached" when the loop engine reports
-`limitReached`.
+**Per-terminal Workflow bar** — removed; only pipeline runs use the loop engine and display pass-limit state.
 
 **Sidebar** — a project row shows the number of its open runs.
 
-### 8.12 Unchanged behaviour worth stating
+### 8.12 Behaviour worth stating
 
-- The per-terminal Workflow bar, its WebSocket messages and its control rules.
+- The per-terminal Workflow bar and its browser control messages were removed; only pipeline runs use the loop engine.
 - Each step is an ordinary terminal: finished styling, waiting marks, session naming and the existing
   per-terminal completion notification apply to it as to any terminal. There is no run-level push
   notification.
@@ -667,8 +679,8 @@ place of `project.path`; its returned `cwd` reflects it.
 - With no browser attached, a session created for a step can be written to and its output observed,
   and a browser attaching later sees the same loop-engine state.
 - A browser attaching and leaving during launch does not end the engine's attachment.
-- `maxIterations` ends the loop engine with `limitReached` on the Nth CONTINUE; existing workflow
-  tests still pass; the browser's `workflow_start` is unaffected.
+- `maxIterations` ends the loop engine with `limitReached` on the Nth CONTINUE; existing engine
+  tests still pass. Only pipeline runs start the loop engine; the per-terminal bar was removed.
 - A run started through the API on a local git project creates its worktree and branch, runs Setup,
   runs every node in its own terminal inside the worktree in order, and reaches `complete`.
 - A `once` step advances after one pass on either signal; an `until_complete` step advances on

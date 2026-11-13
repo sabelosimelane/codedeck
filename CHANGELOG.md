@@ -1,5 +1,32 @@
 # Changelog
 
+## [2026-11-14] - Choose a worktree for workflow runs; remove the per-terminal Workflow bar
+
+### Executive Summary
+* The Run workflow dialog now lists the repository's worktrees, so a run can use one that already exists instead of always creating a new one. A run in an existing worktree skips Setup and never removes that worktree. The old per-terminal Workflow bar is gone: workflows are started only from the Run workflow dialog, which leaves one way to run them instead of two.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx` — Worktree list: a new worktree, or an existing one with its branch, uncommitted-changes mark and the reason it cannot be chosen (missing, no branch, in use by an open run).
+  * `client/src/components/pipelines/PipelineRunsBar.jsx`, `client/src/hooks/usePipelineRuns.js` — A run in an existing worktree offers **Dismiss run** instead of **Clean up worktree** and reports that the worktree was left in place.
+* **🔌 API/Interface:**
+  * `server/routes/pipelines.js` — `GET /api/pipelines/worktrees` (paginated, sortable by path); `POST /api/pipelines/runs` accepts `worktreePath`, returning 404 for a path git does not report and 409 for a missing, detached or in-use worktree; such a run needs no Setup agent.
+  * `server/ws-handler.js` — The browser messages `workflow_start` and `workflow_stop` are no longer accepted; `workflow_state` is still sent.
+* **🛠️ Codebase:**
+  * `server/pipelines/run-worktree.js` — `listWorktrees` reads `git worktree list --porcelain` and validates every entry.
+  * `server/pipelines/run-store.js`, `run-machine.js`, `run-engine.js` — Worktree states `external` and `released`; cleanup of an external worktree releases it without calling git; Resume checks that the directory still exists.
+  * `shared/pipeline-definitions.mjs` — Validate the optional `worktreePath` of a run start.
+  * `client/src/utils/pipelinesApi.js`, `pipelineRecords.js`, `pipelineRunRecords.js` — Worktree list request, per-field guards for worktree and preflight records, and the two new worktree states.
+  * `client/src/components/Terminal.jsx`, `client/src/hooks/useTerminalWorkflow.js` — The terminal no longer renders the Workflow bar; the hook only receives workflow state for input locks.
+  * `client/src/components/TerminalWorkflow.jsx`, `terminal-workflow.css` — Deleted.
+  * `README.md`, `docs/steering/product.md`, `structure.md`, `api-standards.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — Document the worktree list and drop the per-terminal Workflow bar.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-worktree.test.js`, `pipeline-run-worktree-live.test.js`, `pipeline-run-machine.test.js`, `pipeline-run-engine.test.js`, `pipeline-run-store.test.js`, `pipeline-definitions.test.js`, `pipelines-api.test.js` — Worktree listing (including real git), states, run start in an existing worktree, refusals and validation.
+  * `server/__tests__/terminal-workflow-ws.test.js`, `ws-handler-remote.test.js` — Loops are started through the background attachment; the removed messages are rejected.
+  * `client/src/components/pipelines/__tests__/RunWorkflowDialog.test.jsx`, `PipelineRunsBar.test.jsx`, `PipelineSettings.test.jsx`, `client/src/hooks/__tests__/usePipelineRuns.test.jsx`, `client/src/utils/__tests__/pipelineRecords.test.js`, `pipelineRunRecords.test.js`, `pipelinesApi.test.js` — Worktree choice, dismissal, record guards and a longer timeout for the 32-node test.
+  * `client/src/components/__tests__/WorkflowState.test.jsx` (new), `TerminalInputResume.test.jsx`; `TerminalWorkflow.test.jsx` deleted — Terminal input locking without the bar.
+  * Regression: 1,520 server tests passed; 744 of 745 client tests passed, and the one failure (a timeout under machine load) passed in its own file after its timeout was raised; the full client suite was not rerun after that. Production frontend build passed. Browser checks used an isolated server with a stub agent; a run with a real agent CLI was not tested.
+
 ## [2026-11-13] - Run workflow pipelines in isolated worktrees
 
 ### Executive Summary

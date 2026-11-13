@@ -1072,3 +1072,62 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(ctx.startSession).not.toHaveBeenCalled();
   });
 });
+
+describe('createRunEngine with an existing worktree', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  const external = (overrides = {}) => validRun({
+    worktreePath: '/tmp/worktrees/home-existing',
+    worktreeBranch: 'feature/existing',
+    baseCommit: BASE_COMMIT,
+    worktreeState: 'external',
+    ...overrides,
+  });
+
+  it('runs in the chosen worktree without creating one, and releases it on completion without removing it', async () => {
+    const ctx = setupEngine();
+    const run = ctx.runStore.create(external());
+
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+
+    const finished = ctx.runStore.get(run.id);
+    expect(finished.status).toBe('complete');
+    expect(finished.worktreeState).toBe('released');
+    expect(finished.worktreeDetail).toBeNull();
+    expect(ctx.createWorktree).not.toHaveBeenCalled();
+    expect(ctx.removeWorktree).not.toHaveBeenCalled();
+    expect(ctx.startSession).toHaveBeenCalledWith({ project: 'Demo', cwd: '/tmp/worktrees/home-existing' });
+    expect(ctx.attachBackground).toHaveBeenCalledWith('Demo-1', { cwd: '/tmp/worktrees/home-existing' });
+  });
+
+  it('cleanup of a stopped run releases the worktree without calling git', async () => {
+    const ctx = setupEngine();
+    const run = ctx.runStore.create(external());
+    ctx.runStore.update(run.id, { status: 'stopped', stopReason: 'user', finishedAt: new Date().toISOString() });
+
+    const released = await ctx.engine.cleanup(run.id);
+    expect(released.worktreeState).toBe('released');
+    expect(ctx.removeWorktree).not.toHaveBeenCalled();
+    await expect(ctx.engine.cleanup(run.id)).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+    await expect(ctx.engine.resume(run.id)).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+  });
+
+  it('refuses Resume when the chosen worktree directory is gone', async () => {
+    const ctx = setupEngine({ pathExists: vi.fn(async () => false) });
+    const run = ctx.runStore.create(external());
+    ctx.runStore.update(run.id, {
+      status: 'interrupted',
+      steps: [step({ status: 'interrupted', sessionId: 'Demo-9', attempt: 1 })],
+    });
+
+    await expect(ctx.engine.resume(run.id)).rejects.toMatchObject({ code: 'WORKTREE_MISSING' });
+    expect(ctx.pathExists).toHaveBeenCalledWith('/tmp/worktrees/home-existing');
+    expect(ctx.runStore.get(run.id).status).toBe('interrupted');
+  });
+});
+

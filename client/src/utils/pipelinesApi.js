@@ -107,6 +107,11 @@ export function preflightProject(project, { signal } = {}) {
   return request(`/preflight?${params}`, { signal });
 }
 
+/** Every working tree of the project's repository: its home checkout and linked worktrees. */
+export function listWorktrees(project, { signal } = {}) {
+  return listAll('/worktrees', { signal, query: { project } });
+}
+
 export function listOpenRuns({ project, signal } = {}) {
   const query = { open: 'true' };
   if (project) query.project = project;
@@ -117,10 +122,11 @@ export function getRun(runId, { signal } = {}) {
   return request(`/runs/${encodeURIComponent(runId)}`, { signal });
 }
 
-export function startRun({ requestId, workflowId, project, input }, { signal } = {}) {
+/** `worktreePath` names an existing worktree to run in; without it the run gets a new worktree. */
+export function startRun({ requestId, workflowId, project, input, worktreePath }, { signal } = {}) {
   return request('/runs', {
     method: 'POST',
-    body: { requestId, workflowId, project, input },
+    body: { requestId, workflowId, project, input, ...(worktreePath === undefined ? {} : { worktreePath }) },
     signal,
   });
 }

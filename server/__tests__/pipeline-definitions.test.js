@@ -205,6 +205,27 @@ describe('validateRunStartBody', () => {
   it('rejects unknown fields', () => {
     expect(fields(validateRunStartBody({ ...valid, extra: 1 }))).toContain('extra');
   });
+
+  it('accepts an absolute worktreePath of 1–4096 characters, or none', () => {
+    expect(validateRunStartBody({ ...valid, worktreePath: '/Users/me/git/worktrees/codedeck-x' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, worktreePath: '/' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, worktreePath: `/${'a'.repeat(4095)}` })).toEqual([]);
+  });
+
+  it.each([
+    ['null', null],
+    ['a number', 5],
+    ['an array', ['/a']],
+    ['an empty string', ''],
+    ['a relative path', 'worktrees/x'],
+    ['a newline', '/a\nb'],
+    ['a NUL byte', '/a\u0000b'],
+    ['4097 characters', `/${'a'.repeat(4096)}`],
+  ])('rejects a worktreePath that is %s', (_label, worktreePath) => {
+    expect(validateRunStartBody({ ...valid, worktreePath })).toEqual([
+      { field: 'worktreePath', message: 'Use the absolute path of an existing worktree, 1–4096 characters on one line, or leave it out for a new worktree' },
+    ]);
+  });
 });
 
 describe('composePrompt', () => {

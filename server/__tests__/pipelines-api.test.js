@@ -894,3 +894,277 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
     expect(resumed.body.steps[0].priorSessionIds).toEqual(['Demo-1']);
   });
 });
+
+describe('pipelines API — worktrees', () => {
+  const HEAD_A = 'a'.repeat(40);
+  const HEAD_B = 'b'.repeat(40);
+  const HOME_WT = { path: PROJECT.path, head: HEAD_A, branch: 'main', missing: false };
+  const FEATURE_WT = { path: '/tmp/worktrees/demo-git-feature', head: HEAD_B, branch: 'feature/x', missing: false };
+  const DETACHED_WT = { path: '/tmp/worktrees/demo-git-detached', head: HEAD_B, branch: null, missing: false };
+  const MISSING_WT = { path: '/tmp/worktrees/demo-git-gone', head: HEAD_B, branch: 'gone', missing: true };
+
+  async function setupWorktrees(worktrees = [HOME_WT, FEATURE_WT], overrides = {}) {
+    const listWorktrees = vi.fn(async () => worktrees);
+    const listDirtyPaths = vi.fn(async ({ worktreePath }) => (worktreePath === FEATURE_WT.path ? ['README.md'] : []));
+    const ctx = await setup({
+      ...overrides,
+      routerDeps: { listWorktrees, listDirtyPaths, realpath: async value => value, execFile: 'exec-file-stub', ...overrides.routerDeps },
+    });
+    return { ...ctx, listWorktrees, listDirtyPaths };
+  }
+
+  const startBody = (workflow, overrides = {}) => ({
+    requestId: 'run-existing',
+    workflowId: workflow.id,
+    project: 'Demo',
+    input: 'docs/todos/feature.md',
+    worktreePath: FEATURE_WT.path,
+    ...overrides,
+  });
+
+  it('lists the project worktrees in the paginated envelope', async () => {
+    const ctx = await setupWorktrees([FEATURE_WT, HOME_WT]);
+    const response = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: [
+        { path: PROJECT.path, name: 'demo-git', branch: 'main', head: HEAD_A, current: true, dirty: false, selectable: true, reason: null },
+        { path: FEATURE_WT.path, name: 'demo-git-feature', branch: 'feature/x', head: HEAD_B, current: false, dirty: true, selectable: true, reason: null },
+      ],
+      page: { currentPage: 0, size: 20, totalElements: 2, totalPages: 1, hasNextPage: false },
+    });
+    expect(ctx.listWorktrees).toHaveBeenCalledWith({ projectPath: PROJECT.path, execFile: 'exec-file-stub' });
+  });
+
+  it('marks detached, missing and in-use worktrees as not selectable, with the reason', async () => {
+    const ctx = await setupWorktrees([HOME_WT, FEATURE_WT, DETACHED_WT, MISSING_WT]);
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow));
+    expect(started.status).toBe(201);
+
+    const response = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo' });
+    const byName = Object.fromEntries(response.body.data.map(item => [item.name, item]));
+    expect(byName['demo-git-feature']).toMatchObject({
+      selectable: false, reason: { code: 'in_use', message: 'An open workflow run is using this worktree.' },
+    });
+    expect(byName['demo-git-detached']).toMatchObject({
+      branch: null, selectable: false, reason: { code: 'detached', message: 'No branch is checked out in this worktree.' },
+    });
+    expect(byName['demo-git-gone']).toMatchObject({
+      dirty: null, selectable: false, reason: { code: 'missing', message: 'The worktree directory is missing.' },
+    });
+    expect(byName['demo-git']).toMatchObject({ selectable: true, reason: null });
+    expect(ctx.listDirtyPaths).not.toHaveBeenCalledWith(expect.objectContaining({ worktreePath: MISSING_WT.path }));
+  });
+
+  it('pages and sorts by path deterministically', async () => {
+    const ctx = await setupWorktrees([FEATURE_WT, HOME_WT, DETACHED_WT]);
+    const first = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo', size: 2, page: 0 });
+    const second = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo', size: 2, page: 1 });
+    expect(first.body.data.map(item => item.path)).toEqual([PROJECT.path, DETACHED_WT.path]);
+    expect(first.body.page).toEqual({ currentPage: 0, size: 2, totalElements: 3, totalPages: 2, hasNextPage: true });
+    expect(second.body.data.map(item => item.path)).toEqual([FEATURE_WT.path]);
+    expect(second.body.page).toEqual({ currentPage: 1, size: 2, totalElements: 3, totalPages: 2, hasNextPage: false });
+    // Only the returned page is inspected for uncommitted changes.
+    expect(ctx.listDirtyPaths).toHaveBeenCalledTimes(3);
+
+    const descending = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo', sort: 'path,desc' });
+    expect(descending.body.data.map(item => item.path)).toEqual([FEATURE_WT.path, DETACHED_WT.path, PROJECT.path]);
+
+    const beyond = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo', page: 5 });
+    expect(beyond.status).toBe(200);
+    expect(beyond.body.data).toEqual([]);
+  });
+
+  it.each([
+    ['no project', {}, 'project'],
+    ['an empty project', { project: '' }, 'project'],
+    ['an unknown query field', { project: 'Demo', branch: 'main' }, 'branch'],
+    ['size 0', { project: 'Demo', size: 0 }, 'size'],
+    ['size 101', { project: 'Demo', size: 101 }, 'size'],
+    ['a negative page', { project: 'Demo', page: -1 }, 'page'],
+    ['a non-numeric page', { project: 'Demo', page: 'x' }, 'page'],
+    ['an unknown sort field', { project: 'Demo', sort: 'branch,asc' }, 'sort'],
+    ['a sort without a direction', { project: 'Demo', sort: 'path' }, 'sort'],
+  ])('rejects %s with a 400 naming the field', async (_label, query, field) => {
+    const ctx = await setupWorktrees();
+    const response = await request(ctx.app).get(`${base}/worktrees`).query(query);
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ status: 400, traceId: expect.any(String), path: expect.stringContaining('/worktrees') });
+    expect(response.body.errors.map(error => error.field)).toEqual([field]);
+    expect(ctx.listWorktrees).not.toHaveBeenCalled();
+  });
+
+  it('accepts the size boundaries 1 and 100', async () => {
+    const ctx = await setupWorktrees();
+    expect((await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo', size: 1 })).body.data).toHaveLength(1);
+    expect((await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo', size: 100 })).status).toBe(200);
+  });
+
+  it('returns 404 for an unknown or hostile project name without running git', async () => {
+    const ctx = await setupWorktrees();
+    for (const project of ['Ghost', "Demo'; DROP TABLE pipeline_runs;--", '<script>alert(1)</script>']) {
+      const response = await request(ctx.app).get(`${base}/worktrees`).query({ project });
+      expect(response.status).toBe(404);
+      expect(response.body.message).toBe('Project not found');
+      expect(JSON.stringify(response.body)).not.toContain('<script>');
+    }
+    expect(ctx.listWorktrees).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 with the reasons when the project cannot run workflows', async () => {
+    const reasons = [{ code: 'not_git_toplevel', message: 'The project path must be the top level of a git working tree.' }];
+    const ctx = await setupWorktrees([HOME_WT], {
+      preflight: vi.fn(async () => ({ eligible: false, reasons, branch: null, head: null, dirty: null })),
+    });
+    const response = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo' });
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ message: reasons[0].message, reasons, traceId: expect.any(String) });
+    expect(ctx.listWorktrees).not.toHaveBeenCalled();
+  });
+
+  it('lists worktrees when only the setup agent is missing', async () => {
+    const ctx = await setupWorktrees([HOME_WT], {
+      preflight: vi.fn(async () => ({
+        eligible: false,
+        reasons: [{ code: 'setup_agent_missing', message: 'Choose a setup agent in Settings → Workflows.' }],
+        branch: 'main', head: HEAD_A, dirty: false,
+      })),
+    });
+    const response = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo' });
+    expect(response.status).toBe(200);
+    expect(response.body.data).toHaveLength(1);
+  });
+
+  it('starts a run in an existing worktree: no Setup step, branch and commit taken from git', async () => {
+    const ctx = await setupWorktrees();
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow));
+
+    expect(started.status).toBe(201);
+    expect(started.body.worktree).toEqual({
+      path: FEATURE_WT.path, branch: 'feature/x', baseCommit: HEAD_B, state: 'external', detail: null,
+    });
+    expect(started.body.steps.map(item => [item.kind, item.name])).toEqual([['node', 'Develop']]);
+    expect(started.body.actions).toEqual({ stop: true, resume: false, continue: false, cleanup: false });
+    const stored = ctx.runStore.get(started.body.id);
+    expect(stored.definition.steps.map(item => item.kind)).toEqual(['node']);
+    expect(stored.worktreeState).toBe('external');
+    ctx.flushStart();
+    expect(ctx.engine.start).toHaveBeenCalledWith(started.body.id);
+
+    const listed = await request(ctx.app).get(`${base}/runs`).query({ open: 'true' });
+    expect(listed.body.data.map(item => item.id)).toEqual([started.body.id]);
+  });
+
+  it('needs no setup agent for an existing worktree, but still needs one for a new worktree', async () => {
+    const ctx = await setupWorktrees([HOME_WT, FEATURE_WT], {
+      preflight: vi.fn(async () => ({
+        eligible: false,
+        reasons: [{ code: 'setup_agent_missing', message: 'Choose a setup agent in Settings → Workflows.' }],
+        branch: 'main', head: HEAD_A, dirty: false,
+      })),
+    });
+    const agent = ctx.agentStore.create(agentBody());
+    const workflow = ctx.workflowStore.create({ name: 'Feature', nodes: [node(agent.id)] });
+
+    const existing = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow));
+    expect(existing.status).toBe(201);
+
+    const { worktreePath, ...withoutPath } = startBody(workflow, { requestId: 'run-new' });
+    const fresh = await request(ctx.app).post(`${base}/runs`).send(withoutPath);
+    expect(fresh.status).toBe(409);
+    expect(fresh.body.message).toBe('Choose a setup agent in Settings → Workflows.');
+  });
+
+  it('returns 404 when the path is not one of the project worktrees', async () => {
+    const ctx = await setupWorktrees();
+    const { workflow } = await seedReady(ctx);
+    for (const worktreePath of ['/etc', '/tmp/worktrees/demo-git-feature/', '/tmp/worktrees/demo-git-feature; rm -rf /']) {
+      const response = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { worktreePath }));
+      expect(response.status).toBe(404);
+      expect(response.body.message).toBe('Worktree not found for this project');
+    }
+    expect(ctx.runStore.list()).toEqual([]);
+  });
+
+  it.each([
+    ['detached', DETACHED_WT, 'No branch is checked out in this worktree.'],
+    ['missing', MISSING_WT, 'The worktree directory is missing.'],
+  ])('returns 409 for a %s worktree', async (_label, worktree, message) => {
+    const ctx = await setupWorktrees([HOME_WT, worktree]);
+    const { workflow } = await seedReady(ctx);
+    const response = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { worktreePath: worktree.path }));
+    expect(response.status).toBe(409);
+    expect(response.body.message).toBe(message);
+    expect(ctx.runStore.list()).toEqual([]);
+  });
+
+  it('refuses a worktree an open run is using, and allows it again once that run has released it', async () => {
+    const ctx = await setupWorktrees();
+    const { workflow } = await seedReady(ctx);
+    const first = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow));
+    expect(first.status).toBe(201);
+
+    const second = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { requestId: 'run-second' }));
+    expect(second.status).toBe(409);
+    expect(second.body.message).toBe('An open workflow run is using this worktree.');
+
+    ctx.runStore.update(first.body.id, { status: 'complete', finishedAt: new Date().toISOString(), worktreeState: 'released' });
+    const third = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { requestId: 'run-third' }));
+    expect(third.status).toBe(201);
+  });
+
+  it('refuses the worktree of a stopped run that CodeDeck created', async () => {
+    const created = { path: '/Users/me/git/worktrees/codedeck-feature-owned', head: HEAD_B, branch: 'workflow/feature-owned', missing: false };
+    const ctx = await setupWorktrees([HOME_WT, created], {
+      planNames: () => ({ shortId: 'owned', slug: 'feature', homeRepoPath: '/Users/me/git/codedeck', worktreePath: created.path, branch: created.branch }),
+    });
+    const { workflow } = await seedReady(ctx);
+    const { worktreePath, ...withoutPath } = startBody(workflow, { requestId: 'run-owner' });
+    const owner = await request(ctx.app).post(`${base}/runs`).send(withoutPath);
+    expect(owner.status).toBe(201);
+    ctx.runStore.update(owner.body.id, { status: 'stopped', stopReason: 'user', finishedAt: new Date().toISOString(), worktreeState: 'present', baseCommit: HEAD_B });
+
+    const response = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { worktreePath: created.path }));
+    expect(response.status).toBe(409);
+    expect(response.body.message).toBe('An open workflow run is using this worktree.');
+  });
+
+  it('replays the same request and conflicts when the worktree choice differs', async () => {
+    const ctx = await setupWorktrees();
+    const { workflow } = await seedReady(ctx);
+    const body = startBody(workflow);
+    const first = await request(ctx.app).post(`${base}/runs`).send(body);
+    const replay = await request(ctx.app).post(`${base}/runs`).send(body);
+    expect(replay.status).toBe(200);
+    expect(replay.body.id).toBe(first.body.id);
+    expect(ctx.runStore.list()).toHaveLength(1);
+
+    const { worktreePath, ...withoutPath } = body;
+    expect((await request(ctx.app).post(`${base}/runs`).send(withoutPath)).status).toBe(409);
+    expect((await request(ctx.app).post(`${base}/runs`).send({ ...body, worktreePath: PROJECT.path })).status).toBe(409);
+
+    const fresh = await request(ctx.app).post(`${base}/runs`).send({ ...withoutPath, requestId: 'run-fresh' });
+    expect(fresh.status).toBe(201);
+    expect((await request(ctx.app).post(`${base}/runs`).send({ ...body, requestId: 'run-fresh' })).status).toBe(409);
+  });
+
+  it.each([
+    ['null', null],
+    ['a number', 7],
+    ['an empty string', ''],
+    ['a relative path', 'demo-git-feature'],
+    ['a newline', '/tmp/a\nb'],
+    ['4097 characters', `/${'a'.repeat(4096)}`],
+  ])('rejects a worktreePath that is %s with a 400 on that field', async (_label, worktreePath) => {
+    const ctx = await setupWorktrees();
+    const { workflow } = await seedReady(ctx);
+    const response = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { worktreePath }));
+    expect(response.status).toBe(400);
+    expect(response.body.errors.map(error => error.field)).toEqual(['worktreePath']);
+    expect(ctx.runStore.list()).toEqual([]);
+  });
+});
+

@@ -135,6 +135,10 @@ export function createRunEngine({
     if (run.worktreeState === 'not_created') {
       return runStore.update(runId, { worktreeState: 'removed', worktreeDetail: null });
     }
+    // A worktree that existed before the run belongs to the owner: the run lets go of it, git is not called.
+    if (run.worktreeState === 'external') {
+      return runStore.update(runId, { worktreeState: 'released', worktreeDetail: null });
+    }
     if (!['present', 'removal_blocked'].includes(run.worktreeState)) {
       return run;
     }
@@ -518,7 +522,7 @@ export function createRunEngine({
       loadActionRun(runId, 'resume');
       return enqueue(runId, async () => {
         const run = loadActionRun(runId, 'resume');
-        if (run.worktreeState === 'present') {
+        if (['present', 'external'].includes(run.worktreeState)) {
           const exists = await pathExists(run.worktreePath);
           if (!exists) {
             const err = new Error('The worktree directory is missing');

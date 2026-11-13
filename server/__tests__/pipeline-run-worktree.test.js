@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { create, listDirtyPaths, planNames, preflight, remove } from '../pipelines/run-worktree.js';
+import { create, listDirtyPaths, listWorktrees, planNames, preflight, remove } from '../pipelines/run-worktree.js';
 
 const RUN_ID = '0d9e4b1a-1111-4111-8111-111111111111';
 const HOME = '/Users/me/git/codedeck';
@@ -379,5 +379,69 @@ describe('listDirtyPaths', () => {
     });
     await expect(listDirtyPaths({ worktreePath: '/wt', execFile }))
       .resolves.toEqual(['tracked.js', 'new.txt', 'staged.md']);
+  });
+});
+
+describe('listWorktrees', () => {
+  const HEAD_A = 'a'.repeat(40);
+  const HEAD_B = 'b'.repeat(40);
+  const HEAD_C = 'c'.repeat(40);
+  const listing = stdout => fakeExecFile([{ match: args => args.join(' ') === `-C ${HOME} worktree list --porcelain`, stdout }]);
+
+  it('lists the home checkout and linked worktrees from git, with argv arrays', async () => {
+    const execFile = listing([
+      `worktree ${HOME}`, `HEAD ${HEAD_A}`, 'branch refs/heads/main', '',
+      'worktree /Users/me/git/worktrees/codedeck-feature', `HEAD ${HEAD_B}`, 'branch refs/heads/feature/pipelines', '',
+      '',
+    ].join('\n'));
+
+    expect(await listWorktrees({ projectPath: HOME, execFile })).toEqual([
+      { path: HOME, head: HEAD_A, branch: 'main', missing: false },
+      { path: '/Users/me/git/worktrees/codedeck-feature', head: HEAD_B, branch: 'feature/pipelines', missing: false },
+    ]);
+    expect(execFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a detached worktree with a null branch and a prunable one as missing', async () => {
+    const execFile = listing([
+      `worktree ${HOME}`, `HEAD ${HEAD_A}`, 'branch refs/heads/main', '',
+      'worktree /w/detached', `HEAD ${HEAD_B}`, 'detached', '',
+      'worktree /w/gone', `HEAD ${HEAD_C}`, 'branch refs/heads/gone', 'prunable gitdir file points to non-existent location', '',
+      'worktree /w/locked', `HEAD ${HEAD_C}`, 'branch refs/heads/locked', 'locked on a removable drive', '',
+    ].join('\n'));
+
+    expect(await listWorktrees({ projectPath: HOME, execFile })).toEqual([
+      { path: HOME, head: HEAD_A, branch: 'main', missing: false },
+      { path: '/w/detached', head: HEAD_B, branch: null, missing: false },
+      { path: '/w/gone', head: HEAD_C, branch: 'gone', missing: true },
+      { path: '/w/locked', head: HEAD_C, branch: 'locked', missing: false },
+    ]);
+  });
+
+  it('leaves out a bare repository entry, which has no working tree', async () => {
+    const execFile = listing([
+      'worktree /repos/codedeck.git', 'bare', '',
+      'worktree /repos/worktrees/codedeck-main', `HEAD ${HEAD_A}`, 'branch refs/heads/main', '',
+    ].join('\n'));
+
+    expect(await listWorktrees({ projectPath: HOME, execFile })).toEqual([
+      { path: '/repos/worktrees/codedeck-main', head: HEAD_A, branch: 'main', missing: false },
+    ]);
+  });
+
+  it.each([
+    ['an entry without a path', [`HEAD ${HEAD_A}`, 'branch refs/heads/main', ''], /worktree list: entry 0 has no path/],
+    ['a relative path', ['worktree relative/dir', `HEAD ${HEAD_A}`, 'branch refs/heads/main', ''], /worktree list: entry 0 path is not absolute/],
+    ['a missing HEAD', [`worktree ${HOME}`, 'branch refs/heads/main', ''], /worktree list: entry 0 HEAD is not a commit id/],
+    ['a malformed HEAD', [`worktree ${HOME}`, 'HEAD abc', 'branch refs/heads/main', ''], /worktree list: entry 0 HEAD is not a commit id/],
+    ['neither a branch nor detached', [`worktree ${HOME}`, `HEAD ${HEAD_A}`, ''], /worktree list: entry 0 has neither a branch nor detached/],
+    ['a branch outside refs/heads', [`worktree ${HOME}`, `HEAD ${HEAD_A}`, 'branch refs/remotes/origin/main', ''], /worktree list: entry 0 branch is not a local branch/],
+  ])('fails loudly on %s', async (_label, lines, message) => {
+    await expect(listWorktrees({ projectPath: HOME, execFile: listing(lines.join('\n')) })).rejects.toThrow(message);
+  });
+
+  it('surfaces a git failure', async () => {
+    const execFile = fakeExecFile([{ match: () => true, error: { message: 'fatal: not a git repository' } }]);
+    await expect(listWorktrees({ projectPath: HOME, execFile })).rejects.toThrow(/not a git repository/);
   });
 });

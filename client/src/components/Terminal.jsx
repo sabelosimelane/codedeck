@@ -3,7 +3,6 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { createTerminalSelection } from '../utils/terminalSelection';
-import TerminalWorkflow from './TerminalWorkflow';
 import { useTerminalWorkflow } from '../hooks/useTerminalWorkflow';
 import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
@@ -91,7 +90,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   // resumeInFlight stays true and blocks all typing until remount.
   const sessionReadyRef = useRef(false);
   const controlRef = useRef(null);
-  const workflow = useTerminalWorkflow({ wsRef, sessionReadyRef, controlRef });
+  const workflow = useTerminalWorkflow({ wsRef });
   const pendingOutputRef = useRef([]);
   const pendingSnapshotRef = useRef(null);
   const [controlState, setControlState] = useState(null);
@@ -137,7 +136,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
   // Upload files and inject quoted paths into the focused PTY
   async function handleFilesDrop(files) {
     if (workflow.lockedRef.current) {
-      showToast({ type: 'warning', message: 'Stop the workflow before pasting files.' });
+      showToast({ type: 'warning', message: 'A workflow run is using this terminal. Stop the run before pasting files.' });
       return;
     }
     // Directory detection — File API: directories have no type and size 0,
@@ -859,7 +858,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
           } else if (msg.type === 'control_error' || msg.type === 'protocol_error') {
             controlRef.current.reject(msg.message);
             if (msg.type === 'protocol_error') { spawnFailed = true; setFailureMessage(msg.message); setConnectionStatus('failed'); }
-          } else if (msg.type === 'workflow_state' || msg.type === 'workflow_error') {
+          } else if (msg.type === 'workflow_state') {
             workflow.handleMessage(msg);
           } else if (msg.type === 'snapshot') {
             if (msg.historyGuaranteed !== false) {
@@ -1111,7 +1110,6 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {!mobile && <TerminalWorkflow key={sessionId} sessionId={sessionId} state={workflow.state} pending={workflow.pending} connected={connectionStatus === 'connected'} onStart={workflow.start} onStop={workflow.stop} />}
       {controlState && <div role="status" className="terminal-control-status">{controlState.isController ? 'You control this terminal' : 'Viewing · tap or type to take control'}</div>}
       {selectionState !== 'idle' && (
         <div role="status" style={{ position: 'absolute', bottom: 8, right: 12, zIndex: 5, pointerEvents: 'none', background: 'var(--bg-base)', color: 'var(--text-primary)', padding: '4px 8px', fontSize: 12 }}>

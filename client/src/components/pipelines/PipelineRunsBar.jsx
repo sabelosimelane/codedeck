@@ -113,7 +113,10 @@ export default function PipelineRunsBar({
                 </button>
               )}
               {run.actions?.cleanup && (
-                <button type="button" onClick={() => onCleanup(run.id)}>Clean up worktree</button>
+                <button type="button" onClick={() => onCleanup(run.id)}>
+                  {/* A worktree the owner chose is never removed; the run only lets go of it. */}
+                  {run.worktree?.state === 'external' ? 'Dismiss run' : 'Clean up worktree'}
+                </button>
               )}
             </div>
           </div>

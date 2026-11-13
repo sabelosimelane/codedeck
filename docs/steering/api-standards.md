@@ -102,12 +102,13 @@ stable identity tiebreaker; unknown filters and sorts are rejected.
 | GET/POST `/workflows`, GET/PUT/DELETE `/workflows/:id` | Named ordered nodes, agent references, prompt and repeat rules; PUT requires revision |
 | GET/PUT `/settings` | Setup agent selection with revision |
 | GET `/preflight?project=...` | Eligibility reasons and dirty-checkout warning for a local Git repository root |
-| POST `/runs` | Request UUID, workflow, project and input; snapshots definitions; requestId replay is idempotent and conflicting reuse is 409 |
+| GET `/worktrees?project=...` | Paginated working trees of the project's repository (sort `path,asc\|desc`); each says whether a run may use it and why not |
+| POST `/runs` | Request UUID, workflow, project and input; optional `worktreePath` of an existing worktree (404 unknown, 409 detached, missing or in use) instead of a new one; snapshots definitions; requestId replay is idempotent and conflicting reuse is 409 |
 | GET `/runs`, GET `/runs/:id` | Persisted progress, steps, worktree state and allowed actions |
 | POST `/runs/:id/stop` | Stop automation; repeated Stop is idempotent |
 | POST `/runs/:id/resume` | Fresh attempt; refuses a missing worktree |
 | POST `/runs/:id/continue` | Advance from a pass-limit pause |
-| POST `/runs/:id/cleanup` | Remove a clean worktree without force; retain branch |
+| POST `/runs/:id/cleanup` | Remove a clean worktree without force; retain branch. For a run in an existing worktree it only releases the worktree |
 
 Agents/workflows filter by exact `name`, and runs by `status`, `project`,
 `workflowId`, or `open=true|false`. The runs bar filters by project; sidebar counts

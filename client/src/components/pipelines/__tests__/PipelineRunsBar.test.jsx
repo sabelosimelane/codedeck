@@ -124,6 +124,28 @@ describe('PipelineRunsBar', () => {
     expect(screen.getByRole('button', { name: 'Clean up worktree' })).toBeTruthy();
   });
 
+  it('offers Dismiss run, not worktree cleanup, for a run in an existing worktree', () => {
+    const onCleanup = vi.fn();
+    render(
+      <PipelineRunsBar
+        runs={[runView({
+          status: 'stopped',
+          actions: { stop: false, resume: true, continue: false, cleanup: true },
+          worktree: { branch: 'feature/x', state: 'external', detail: null },
+        })]}
+        onStop={vi.fn()}
+        onResume={vi.fn()}
+        onContinue={vi.fn()}
+        onCleanup={onCleanup}
+        onActivateStep={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Clean up worktree' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss run' }));
+    expect(onCleanup).toHaveBeenCalledWith('r1');
+  });
+
   it('hides actions the backend does not allow', () => {
     render(
       <PipelineRunsBar

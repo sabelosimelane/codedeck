@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   create,
+  listDirtyPaths,
+  listWorktrees,
   planNames,
   preflight,
   remove,
@@ -270,6 +272,40 @@ describeLive('pipeline run-worktree live', () => {
           execFileSync('git', ['-C', home, 'worktree', 'remove', '--force', names.worktreePath], { stdio: 'pipe' });
         } catch { /* ignore */ }
       }
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('lists the home checkout, a linked worktree, a detached one and a deleted one as real git reports them', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-wt-list-'));
+    const home = path.join(base, 'codedeck');
+    try {
+      const head = initRepo(home);
+      const homeReal = realpathSync(home);
+      const branchName = git(home, ['rev-parse', '--abbrev-ref', 'HEAD']);
+      const linked = path.join(realpathSync(base), 'worktrees', 'codedeck-feature');
+      const detached = path.join(realpathSync(base), 'worktrees', 'codedeck-detached');
+      const gone = path.join(realpathSync(base), 'worktrees', 'codedeck-gone');
+      git(home, ['worktree', 'add', linked, '-b', 'feature/list', head]);
+      git(home, ['worktree', 'add', '--detach', detached, head]);
+      git(home, ['worktree', 'add', gone, '-b', 'gone', head]);
+      rmSync(gone, { recursive: true, force: true });
+      writeFileSync(path.join(linked, 'notes.txt'), 'untracked\n');
+
+      const expected = [
+        { path: homeReal, head, branch: branchName, missing: false },
+        { path: linked, head, branch: 'feature/list', missing: false },
+        { path: detached, head, branch: null, missing: false },
+        { path: gone, head, branch: 'gone', missing: true },
+      ];
+      const byPath = (a, b) => a.path.localeCompare(b.path);
+      // Asking from a linked worktree gives the same list as asking from the home checkout.
+      expect((await listWorktrees({ projectPath: home, execFile })).sort(byPath)).toEqual([...expected].sort(byPath));
+      expect((await listWorktrees({ projectPath: linked, execFile })).sort(byPath)).toEqual([...expected].sort(byPath));
+
+      expect(await listDirtyPaths({ worktreePath: linked, execFile })).toEqual(['notes.txt']);
+      expect(await listDirtyPaths({ worktreePath: detached, execFile })).toEqual([]);
+    } finally {
       rmSync(base, { recursive: true, force: true });
     }
   });

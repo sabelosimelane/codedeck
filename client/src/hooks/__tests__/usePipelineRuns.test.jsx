@@ -303,6 +303,52 @@ describe('usePipelineRuns', () => {
     expect(result.current.locallyStartedRunIds.has('r-a')).toBe(false);
   });
 
+  it('passes the chosen existing worktree when starting a run', async () => {
+    const created = runView({ id: 'r9', status: 'pending', worktree: { ...runView().worktree, path: '/git/worktrees/demo-feature', state: 'external' } });
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).endsWith('/runs')) return okRun(created, 201);
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+
+    await act(async () => {
+      await result.current.startRun({ requestId: 'req-9', workflowId: 'w1', input: 'x', worktreePath: '/git/worktrees/demo-feature' });
+    });
+
+    const post = global.fetch.mock.calls.find(([, options]) => options?.method === 'POST');
+    expect(JSON.parse(post[1].body)).toEqual({
+      requestId: 'req-9', workflowId: 'w1', project: 'Demo', input: 'x', worktreePath: '/git/worktrees/demo-feature',
+    });
+  });
+
+  it('says the run was dismissed, not that a worktree was cleaned up, when an existing worktree is released', async () => {
+    const stopped = runView({
+      status: 'stopped',
+      worktree: { ...runView().worktree, state: 'external' },
+      actions: { stop: false, resume: true, continue: false, cleanup: true },
+    });
+    const released = runView({
+      status: 'stopped',
+      worktree: { ...runView().worktree, state: 'released' },
+      actions: { stop: false, resume: false, continue: false, cleanup: false },
+    });
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).includes('/cleanup')) return okRun(released);
+      if (String(url).includes('/runs?')) return okList([stopped]);
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    await act(async () => {
+      await result.current.cleanupRun('r1');
+    });
+
+    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Feature run dismissed; its worktree was left in place' });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/cleaned up/i) }));
+  });
+
   it('toasts cleanup failure when worktree removal is blocked', async () => {
     const complete = runView({
       status: 'complete',

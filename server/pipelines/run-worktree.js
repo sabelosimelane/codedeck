@@ -213,6 +213,48 @@ export async function resolveHomeRepoPath({ projectPath, execFile } = {}) {
   return path.dirname(stdout.trim());
 }
 
+const COMMIT_ID = /^[0-9a-f]{40}$/;
+const LOCAL_BRANCH_PREFIX = 'refs/heads/';
+
+/**
+ * The working trees of the repository `projectPath` belongs to: the home checkout and every
+ * linked worktree, as git reports them. A bare repository entry has no working tree and is left out.
+ * @returns {Promise<Array<{ path: string, head: string, branch: string | null, missing: boolean }>>}
+ */
+export async function listWorktrees({ projectPath, execFile } = {}) {
+  const { stdout } = await runGit(execFile, ['-C', projectPath, 'worktree', 'list', '--porcelain']);
+  const worktrees = [];
+  const blocks = stdout.split(/\n\n+/).map(block => block.trim()).filter(Boolean);
+  blocks.forEach((block, index) => {
+    const attributes = new Map();
+    for (const line of block.split('\n')) {
+      const space = line.indexOf(' ');
+      attributes.set(space === -1 ? line : line.slice(0, space), space === -1 ? '' : line.slice(space + 1));
+    }
+    const fail = message => { throw new Error(`git worktree list: entry ${index} ${message}`); };
+
+    const worktreePath = attributes.get('worktree');
+    if (!worktreePath) fail('has no path');
+    if (!path.isAbsolute(worktreePath)) fail('path is not absolute');
+    if (attributes.has('bare')) return;
+
+    const head = attributes.get('HEAD');
+    if (typeof head !== 'string' || !COMMIT_ID.test(head)) fail('HEAD is not a commit id');
+
+    let branch = null;
+    if (attributes.has('branch')) {
+      const ref = attributes.get('branch');
+      if (!ref.startsWith(LOCAL_BRANCH_PREFIX) || ref.length === LOCAL_BRANCH_PREFIX.length) fail('branch is not a local branch');
+      branch = ref.slice(LOCAL_BRANCH_PREFIX.length);
+    } else if (!attributes.has('detached')) {
+      fail('has neither a branch nor detached');
+    }
+
+    worktrees.push({ path: worktreePath, head, branch, missing: attributes.has('prunable') });
+  });
+  return worktrees;
+}
+
 /**
  * Parse `git status --porcelain` into path strings only (no statuses, no contents).
  */

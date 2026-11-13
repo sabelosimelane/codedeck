@@ -83,6 +83,56 @@ export function parseSettings(record) {
   return { setupAgentId, revision };
 }
 
+const COMMIT_ID = /^[0-9a-f]{40}$/;
+const WORKTREE_REASON_CODES = ['missing', 'detached', 'in_use'];
+
+function parseWorktreeReason(reason) {
+  if (reason === null) return null;
+  if (!isObject(reason)) throw invalid('worktree', 'reason');
+  if (!WORKTREE_REASON_CODES.includes(reason.code)) throw invalid('worktree', 'reason.code');
+  if (!isText(reason.message)) throw invalid('worktree', 'reason.message');
+  return { code: reason.code, message: reason.message };
+}
+
+/** One entry of GET /worktrees. Failures name the field only, never the path. */
+export function parseWorktree(record) {
+  if (!isObject(record)) throw invalid('worktree', 'worktree');
+  const { path, name, branch, head, current, dirty, selectable } = record;
+  if (typeof path !== 'string' || !path.startsWith('/') || /[\x00-\x1f\x7f]/.test(path)) throw invalid('worktree', 'path');
+  if (!isText(name)) throw invalid('worktree', 'name');
+  if (branch !== null && !isText(branch)) throw invalid('worktree', 'branch');
+  if (typeof head !== 'string' || !COMMIT_ID.test(head)) throw invalid('worktree', 'head');
+  if (typeof current !== 'boolean') throw invalid('worktree', 'current');
+  if (dirty !== null && typeof dirty !== 'boolean') throw invalid('worktree', 'dirty');
+  if (typeof selectable !== 'boolean') throw invalid('worktree', 'selectable');
+  if (record.reason === undefined) throw invalid('worktree', 'reason');
+  const reason = parseWorktreeReason(record.reason);
+  // A worktree is selectable exactly when nothing refuses it.
+  if (selectable !== (reason === null)) throw invalid('worktree', 'selectable');
+  return { path, name, branch, head, current, dirty, selectable, reason };
+}
+
+/** The GET /preflight response for a project. */
+export function parsePreflight(record) {
+  if (!isObject(record)) throw invalid('preflight', 'preflight');
+  const { project, eligible, branch, head, dirty } = record;
+  if (!isText(project)) throw invalid('preflight', 'project');
+  if (typeof eligible !== 'boolean') throw invalid('preflight', 'eligible');
+  if (!Array.isArray(record.reasons)) throw invalid('preflight', 'reasons');
+  const reasons = record.reasons.map((reason, index) => {
+    if (!isObject(reason)) throw invalid('preflight', `reasons[${index}]`);
+    if (!isText(reason.code)) throw invalid('preflight', `reasons[${index}].code`);
+    if (!isText(reason.message)) throw invalid('preflight', `reasons[${index}].message`);
+    return { code: reason.code, message: reason.message };
+  });
+  // A project is eligible exactly when nothing stands in the way.
+  if (eligible !== (reasons.length === 0)) throw invalid('preflight', 'eligible');
+  if (branch !== null && !isText(branch)) throw invalid('preflight', 'branch');
+  if (head !== null && (typeof head !== 'string' || !COMMIT_ID.test(head))) throw invalid('preflight', 'head');
+  if (dirty !== null && typeof dirty !== 'boolean') throw invalid('preflight', 'dirty');
+  return { project, eligible, reasons, branch, head, dirty };
+}
+
 export async function loadDefinitions({ signal } = {}) {
   const [agents, workflows, settings] = await Promise.all([
     listAgents({ signal }),

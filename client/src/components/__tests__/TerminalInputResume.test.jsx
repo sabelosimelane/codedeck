@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, fireEvent } from '@testing-library/react';
 import React from 'react';
 
 /**
@@ -16,6 +16,7 @@ import React from 'react';
 const mocks = vi.hoisted(() => ({
   ws: null,
   term: null,
+  toast: vi.fn(),
 }));
 
 global.ResizeObserver = class { observe() {} disconnect() {} };
@@ -78,7 +79,7 @@ vi.mock('../../utils/terminalAutoScroll', () => ({
 }));
 
 vi.mock('../ToastContext', () => ({
-  useToast: () => ({ showToast: vi.fn() }),
+  useToast: () => ({ showToast: mocks.toast }),
 }));
 
 import Terminal from '../Terminal';
@@ -99,6 +100,7 @@ describe('Terminal input resume after refocus', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    mocks.toast.mockClear();
     mocks.ws = null;
     mocks.term = null;
     wsInstances = [];
@@ -163,7 +165,26 @@ describe('Terminal input resume after refocus', () => {
     );
   });
 
-  it('blocks typing while a workflow resets the terminal and restores it after Stop', () => {
+  it('rejects removed workflow_error messages without changing locks or showing a toast', () => {
+    render(<Terminal sessionId="removed-error" cwd="/tmp" isVisible />);
+    vi.advanceTimersByTime(16);
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_error', requestId: null, message: 'Old control error' }) });
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(mocks.ws.close).not.toHaveBeenCalled();
+  });
+
+  it.each(['paste', 'drop'])('refuses file %s during a pipeline run with run-specific feedback', event => {
+    const { container } = render(<Terminal sessionId="pipeline-files" cwd="/tmp" isVisible />);
+    vi.advanceTimersByTime(16);
+    mocks.ws.onmessage?.({ data: JSON.stringify({ type: 'workflow_state', requestId: null, state: { status: 'running', active: true, error: null, requestId: 'run-1' } }) });
+    const files = [new File(['data'], 'demo.txt', { type: 'text/plain' })];
+    const target = container.querySelector('[title^="Hold Option"]');
+    if (event === 'paste') fireEvent.paste(target, { clipboardData: { files } });
+    else fireEvent.drop(target, { dataTransfer: { files } });
+    expect(mocks.toast).toHaveBeenCalledWith({ type: 'warning', message: 'A workflow run is using this terminal. Stop the run before pasting files.' });
+  });
+
+  it('blocks typing while a workflow resets the terminal and restores it after the run stops', () => {
     render(<Terminal sessionId="workflow-input" cwd="/tmp" isVisible={true} />);
     vi.advanceTimersByTime(16);
     mocks.ws.readyState = 1;

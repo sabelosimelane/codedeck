@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import { listWorkflows, preflightProject } from '../../utils/pipelinesApi';
+import { listWorkflows, listWorktrees, preflightProject } from '../../utils/pipelinesApi';
+import { parsePreflight, parseWorktree } from '../../utils/pipelineRecords';
 import '../session-search.css';
 
 function newRequestId() {
@@ -10,11 +11,31 @@ function newRequestId() {
   return `run-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+const NEW_WORKTREE = '';
+// Setup prepares a worktree CodeDeck creates, so only a new worktree needs a setup agent.
+const SETUP_AGENT_MISSING = 'setup_agent_missing';
+const FIELD_STYLE = {
+  padding: '8px 10px',
+  borderRadius: 6,
+  border: '1px solid var(--border)',
+  background: 'var(--bg-surface)',
+  color: 'var(--text-primary)',
+};
+
+function worktreeLabel(worktree) {
+  const parts = [worktree.name, worktree.branch ?? 'no branch'];
+  if (worktree.current) parts.push('this checkout');
+  if (worktree.dirty) parts.push('uncommitted changes');
+  return worktree.reason ? `${parts.join(' · ')} — ${worktree.reason.message}` : parts.join(' · ');
+}
+
 export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
   const [workflows, setWorkflows] = useState([]);
   const [workflowId, setWorkflowId] = useState('');
   const [input, setInput] = useState('');
   const [preflight, setPreflight] = useState(null);
+  const [worktrees, setWorktrees] = useState([]);
+  const [worktreePath, setWorktreePath] = useState(NEW_WORKTREE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(false);
@@ -25,13 +46,19 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
       setLoading(true);
       setError(null);
       try {
-        const [nextWorkflows, nextPreflight] = await Promise.all([
+        const [nextWorkflows, preflightResponse] = await Promise.all([
           listWorkflows(),
           preflightProject(projectName),
         ]);
+        const nextPreflight = parsePreflight(preflightResponse);
+        // Worktrees exist only for a local git project; a missing setup agent does not change that.
+        const listable = nextPreflight.reasons.every(reason => reason.code === SETUP_AGENT_MISSING);
+        const nextWorktrees = listable ? (await listWorktrees(projectName)).map(parseWorktree) : [];
         if (cancelled) return;
         setWorkflows(nextWorkflows);
         setPreflight(nextPreflight);
+        setWorktrees(nextWorktrees);
+        setWorktreePath(NEW_WORKTREE);
         if (nextWorkflows.length > 0) setWorkflowId(nextWorkflows[0].id);
       } catch (failure) {
         if (!cancelled) setError(failure.message || 'Failed to load workflows');
@@ -50,7 +77,10 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const eligible = preflight?.eligible === true;
+  const chosenWorktree = worktrees.find(worktree => worktree.path === worktreePath) ?? null;
+  const reasons = (preflight?.reasons ?? []).filter(reason => !(chosenWorktree && reason.code === SETUP_AGENT_MISSING));
+  const listable = (preflight?.reasons ?? []).every(reason => reason.code === SETUP_AGENT_MISSING);
+  const eligible = preflight !== null && reasons.length === 0 && (chosenWorktree === null || chosenWorktree.selectable);
   const canStart = !loading && !starting && eligible && Boolean(workflowId);
 
   const handleStart = async () => {
@@ -61,6 +91,7 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
         requestId: newRequestId(),
         workflowId,
         input,
+        ...(chosenWorktree ? { worktreePath: chosenWorktree.path } : {}),
       });
       if (started) onClose();
     } finally {
@@ -91,13 +122,7 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
                   aria-label="Workflow"
                   value={workflowId}
                   onChange={(event) => setWorkflowId(event.target.value)}
-                  style={{
-                    padding: '8px 10px',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-surface)',
-                    color: 'var(--text-primary)',
-                  }}
+                  style={FIELD_STYLE}
                 >
                   {workflows.map((workflow) => (
                     <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
@@ -112,27 +137,49 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
                   maxLength={4096}
-                  style={{
-                    padding: '8px 10px',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-surface)',
-                    color: 'var(--text-primary)',
-                  }}
+                  style={FIELD_STYLE}
                 />
               </label>
 
-              {preflight?.reasons?.length > 0 && (
+              {listable && (
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                  Worktree
+                  <select
+                    aria-label="Worktree"
+                    value={worktreePath}
+                    onChange={(event) => setWorktreePath(event.target.value)}
+                    style={FIELD_STYLE}
+                  >
+                    <option value={NEW_WORKTREE}>
+                      {preflight.branch ? `New worktree (new branch from ${preflight.branch})` : 'New worktree (new branch from the current commit)'}
+                    </option>
+                    {worktrees.map((worktree) => (
+                      <option key={worktree.path} value={worktree.path} disabled={!worktree.selectable}>
+                        {worktreeLabel(worktree)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {reasons.length > 0 && (
                 <div role="alert" style={{ color: 'var(--danger)', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {preflight.reasons.map((reason) => (
+                  {reasons.map((reason) => (
                     <span key={reason.code || reason.message}>{reason.message}</span>
                   ))}
                 </div>
               )}
 
-              {preflight?.dirty && (
+              {chosenWorktree === null && preflight?.dirty && (
                 <div style={{ color: 'var(--warning)', fontSize: 12 }}>
                   Uncommitted changes in this checkout will not be in the run&apos;s worktree
+                </div>
+              )}
+
+              {chosenWorktree && (
+                <div style={{ color: 'var(--text-secondary)', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span>Runs in this worktree as it is: no Setup step, and CodeDeck will not remove it when the run ends.</span>
+                  {chosenWorktree.dirty && <span style={{ color: 'var(--warning)' }}>This worktree has uncommitted changes.</span>}
                 </div>
               )}
 

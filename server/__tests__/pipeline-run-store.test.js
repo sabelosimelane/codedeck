@@ -344,6 +344,17 @@ describe('pipeline run store', () => {
     );
   });
 
+  it.each(['external', 'released'])('stores the %s worktree state of a run in an existing worktree', (worktreeState) => {
+    const { store } = setup();
+    const created = store.create(validRun({ worktreeState, baseCommit: 'a'.repeat(40) }));
+    expect(store.get(created.id).worktreeState).toBe(worktreeState);
+  });
+
+  it('rejects an unknown worktree state', () => {
+    const { store } = setup();
+    expect(() => store.create(validRun({ worktreeState: 'borrowed' }))).toThrow(/worktree_state/);
+  });
+
   it('rejects invalid create payloads', () => {
     const { store } = setup();
     expect(() => store.create(validRun({ requestId: '' }))).toThrow();

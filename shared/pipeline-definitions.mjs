@@ -144,7 +144,7 @@ export function validateSettingsBody(body) {
 
 export function validateRunStartBody(body) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input'])) return errors;
+  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath'])) return errors;
   if (typeof body.requestId !== 'string' || !REQUEST_ID_RE.test(body.requestId)) {
     add(errors, 'requestId', 'Use 1–128 letters, digits, underscores or hyphens');
   }
@@ -158,6 +158,13 @@ export function validateRunStartBody(body) {
     || SINGLE_LINE.test(body.input)
   ) {
     add(errors, 'input', 'Use 0–4096 characters on one line without control characters');
+  }
+  // Left out, the run gets a new worktree. Given, it names an existing worktree of the project.
+  if (body.worktreePath !== undefined) {
+    const value = body.worktreePath;
+    if (typeof value !== 'string' || !value.startsWith('/') || value.length > 4096 || SINGLE_LINE.test(value)) {
+      add(errors, 'worktreePath', 'Use the absolute path of an existing worktree, 1–4096 characters on one line, or leave it out for a new worktree');
+    }
   }
   return errors;
 }
