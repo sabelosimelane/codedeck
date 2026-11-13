@@ -13,8 +13,8 @@ const W1 = '33333333-3333-4333-8333-333333333333';
 const STALE = 'revision does not match the stored revision';
 
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z' };
-const codex = () => ({ id: A1, name: 'codex-high', launchCommand: 'codex --model gpt-6-sol', resetCommand: '/clear', revision: 1, ...STAMPS });
-const cursor = () => ({ id: A2, name: 'cursor-fable', launchCommand: 'agent --model fable', resetCommand: '/new', revision: 4, ...STAMPS });
+const codex = () => ({ id: A1, name: 'codex-high', launchCommand: 'command codex --model gpt-6-sol', resetCommand: '/clear', revision: 1, ...STAMPS });
+const cursor = () => ({ id: A2, name: 'cursor-fable', launchCommand: 'command agent --model fable', resetCommand: '/new', revision: 4, ...STAMPS });
 const feature = () => ({
   id: W1,
   name: 'Feature',
@@ -131,7 +131,7 @@ describe('PipelineSettings loading', () => {
     await renderSettings({ agents: [codex(), cursor()], workflows: [feature()], settings: { setupAgentId: A2, revision: 2 } });
 
     expect(agents().getByText('codex-high')).toBeTruthy();
-    expect(agents().getByText('codex --model gpt-6-sol')).toBeTruthy();
+    expect(agents().getByText('command codex --model gpt-6-sol')).toBeTruthy();
     expect(agents().getByText('cursor-fable')).toBeTruthy();
     expect(screen.getByLabelText('Setup agent').value).toBe(A2);
     expect(workflows().getByText('Feature')).toBeTruthy();
@@ -247,16 +247,16 @@ describe('PipelineSettings agents', () => {
     await renderSettings({ agents: [codex()] });
     click('Edit agent codex-high');
     expect(screen.getByLabelText('Agent name').value).toBe('codex-high');
-    expect(screen.getByLabelText('Launch command').value).toBe('codex --model gpt-6-sol');
+    expect(screen.getByLabelText('Launch command').value).toBe('command codex --model gpt-6-sol');
     type('Model', 'gpt-6.1-sol');
     type('Reset command', '/new');
     click('Save agent');
 
-    expect(await agents().findByText('codex --model gpt-6.1-sol')).toBeTruthy();
+    expect(await agents().findByText('command codex --model gpt-6.1-sol')).toBeTruthy();
     expect(backend.mutations()).toEqual([{
       method: 'PUT',
       path: `/agents/${A1}`,
-      body: { name: 'codex-high', launchCommand: 'codex --model gpt-6.1-sol', resetCommand: '/new', revision: 1 },
+      body: { name: 'codex-high', launchCommand: 'command codex --model gpt-6.1-sol', resetCommand: '/new', revision: 1 },
     }]);
     toast('success', 'Agent "codex-high" saved');
   });
@@ -392,7 +392,7 @@ describe('PipelineSettings agent presets', () => {
     expect(screen.getByLabelText('Model').value).toBe('');
     expect(screen.getByLabelText('Effort').value).toBe('');
     expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
-    expect(command().value).toBe('claude');
+    expect(command().value).toBe('command claude');
     expect(command().readOnly).toBe(true);
     expect(lastDirty()).toBe(false);
   });
@@ -403,14 +403,14 @@ describe('PipelineSettings agent presets', () => {
     type('Agent name', 'opus-high');
     type('Model', 'opus');
     type('Effort', 'high');
-    expect(command().value).toBe('claude --model opus --effort high');
+    expect(command().value).toBe('command claude --model opus --effort high');
     click('Save agent');
 
-    expect(await agents().findByText('claude --model opus --effort high')).toBeTruthy();
+    expect(await agents().findByText('command claude --model opus --effort high')).toBeTruthy();
     expect(backend.mutations()).toEqual([{
       method: 'POST',
       path: '/agents',
-      body: { name: 'opus-high', launchCommand: 'claude --model opus --effort high', resetCommand: '/clear' },
+      body: { name: 'opus-high', launchCommand: 'command claude --model opus --effort high', resetCommand: '/clear' },
     }]);
     toast('success', 'Agent "opus-high" added');
   });
@@ -426,7 +426,7 @@ describe('PipelineSettings agent presets', () => {
     type('Model', 'gpt-6-sol');
     type('Effort', 'xhigh');
     fireEvent.click(screen.getByLabelText('Skip permission prompts'));
-    expect(command().value).toBe('codex --model gpt-6-sol -c model_reasoning_effort="xhigh" --dangerously-bypass-approvals-and-sandbox');
+    expect(command().value).toBe('command codex --model gpt-6-sol -c model_reasoning_effort="xhigh" --dangerously-bypass-approvals-and-sandbox');
   });
 
   it('has no effort choice for Cursor, whose model names carry it', async () => {
@@ -435,7 +435,7 @@ describe('PipelineSettings agent presets', () => {
     type('Provider', 'cursor');
     expect(screen.queryByLabelText('Effort')).toBeNull();
     type('Model', 'gpt-5.6-sol-high');
-    expect(command().value).toBe('agent --model gpt-5.6-sol-high');
+    expect(command().value).toBe('command agent --model gpt-5.6-sol-high');
   });
 
   it('clears the model and effort when the provider changes, keeping the permission choice', async () => {
@@ -448,17 +448,27 @@ describe('PipelineSettings agent presets', () => {
 
     expect(screen.getByLabelText('Model').value).toBe('');
     expect(screen.getByLabelText('Effort').value).toBe('');
-    expect(command().value).toBe('codex --dangerously-bypass-approvals-and-sandbox');
+    expect(command().value).toBe('command codex --dangerously-bypass-approvals-and-sandbox');
   });
 
   it('shows a saved command a preset builds as that provider, model and effort', async () => {
-    await renderSettings({ agents: [{ ...codex(), launchCommand: 'codex --model gpt-6-sol -c model_reasoning_effort="high"' }] });
+    await renderSettings({ agents: [{ ...codex(), launchCommand: 'command codex --model gpt-6-sol -c model_reasoning_effort="high"' }] });
     click('Edit agent codex-high');
 
     expect(screen.getByLabelText('Provider').value).toBe('codex');
     expect(screen.getByLabelText('Model').value).toBe('gpt-6-sol');
     expect(screen.getByLabelText('Effort').value).toBe('high');
     expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
+    expect(lastDirty()).toBe(false);
+  });
+
+  it('shows a saved command that starts the CLI without `command` as a custom command, unchanged', async () => {
+    const saved = 'codex --model gpt-6-sol --dangerously-bypass-approvals-and-sandbox';
+    await renderSettings({ agents: [{ ...codex(), launchCommand: saved }] });
+    click('Edit agent codex-high');
+
+    expect(screen.getByLabelText('Provider').value).toBe('custom');
+    expect(command().value).toBe(saved);
     expect(lastDirty()).toBe(false);
   });
 
@@ -481,7 +491,7 @@ describe('PipelineSettings agent presets', () => {
     type('Agent name', 'opus-chrome');
     type('Model', 'opus');
     type('Provider', 'custom');
-    expect(command().value).toBe('claude --model opus');
+    expect(command().value).toBe('command claude --model opus');
     expect(command().readOnly).toBe(false);
 
     type('Launch command', 'claude --model opus --chrome');

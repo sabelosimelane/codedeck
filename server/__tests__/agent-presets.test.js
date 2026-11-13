@@ -24,21 +24,26 @@ describe('agent presets', () => {
 
 describe('buildLaunchCommand', () => {
   it.each([
-    ['claude', {}, 'claude'],
-    ['claude', { model: 'opus' }, 'claude --model opus'],
-    ['claude', { effort: 'high' }, 'claude --effort high'],
-    ['claude', { model: 'claude-opus-5-5', effort: 'xhigh', skipPermissions: true }, 'claude --model claude-opus-5-5 --effort xhigh --dangerously-skip-permissions'],
-    ['codex', {}, 'codex'],
-    ['codex', { model: 'gpt-6-sol', effort: 'high' }, 'codex --model gpt-6-sol -c model_reasoning_effort="high"'],
-    ['codex', { skipPermissions: true }, 'codex --dangerously-bypass-approvals-and-sandbox'],
-    ['cursor', {}, 'agent'],
-    ['cursor', { model: 'gpt-5.6-sol-high', skipPermissions: true }, 'agent --model gpt-5.6-sol-high --force'],
+    ['claude', {}, 'command claude'],
+    ['claude', { model: 'opus' }, 'command claude --model opus'],
+    ['claude', { effort: 'high' }, 'command claude --effort high'],
+    ['claude', { model: 'claude-opus-5-5', effort: 'xhigh', skipPermissions: true }, 'command claude --model claude-opus-5-5 --effort xhigh --dangerously-skip-permissions'],
+    ['codex', {}, 'command codex'],
+    ['codex', { model: 'gpt-6-sol', effort: 'high' }, 'command codex --model gpt-6-sol -c model_reasoning_effort="high"'],
+    ['codex', { skipPermissions: true }, 'command codex --dangerously-bypass-approvals-and-sandbox'],
+    ['cursor', {}, 'command agent'],
+    ['cursor', { model: 'gpt-5.6-sol-high', skipPermissions: true }, 'command agent --model gpt-5.6-sol-high --force'],
   ])('%s %j builds %s', (provider, fields, command) => {
     expect(build(provider, fields)).toEqual({ command, errors: [] });
   });
 
   it('trims the model', () => {
-    expect(build('claude', { model: '  opus ' }).command).toBe('claude --model opus');
+    expect(build('claude', { model: '  opus ' }).command).toBe('command claude --model opus');
+  });
+
+  // An alias such as codex='codex --yolo' would repeat the bypass flag, which Codex rejects.
+  it.each(['claude', 'codex', 'cursor'])('starts %s with `command`, so a shell alias or function of that name does not change it', (provider) => {
+    expect(build(provider, { skipPermissions: true }).command.startsWith('command ')).toBe(true);
   });
 
   it.each([
@@ -96,12 +101,14 @@ describe('parseLaunchCommand', () => {
 
   it.each([
     ['an alias', 'cc'],
-    ['an extra flag', 'claude --model opus --chrome'],
-    ['a different flag order', 'claude --effort high --model opus'],
-    ['an unknown effort', 'claude --effort extreme'],
-    ['surrounding spaces', ' claude '],
-    ['a prefix match only', 'claudette'],
-    ['a codex effort in another spelling', 'codex -c model_reasoning_effort=high'],
+    ['a CLI started without `command`, which the shell may alias', 'claude --model opus'],
+    ['a bare CLI name', 'codex'],
+    ['an extra flag', 'command claude --model opus --chrome'],
+    ['a different flag order', 'command claude --effort high --model opus'],
+    ['an unknown effort', 'command claude --effort extreme'],
+    ['surrounding spaces', ' command claude '],
+    ['a prefix match only', 'command claudette'],
+    ['a codex effort in another spelling', 'command codex -c model_reasoning_effort=high'],
   ])('returns null for %s, so the command is shown as custom', (_label, command) => {
     expect(parseLaunchCommand(command)).toBeNull();
   });

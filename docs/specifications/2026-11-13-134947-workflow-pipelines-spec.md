@@ -622,7 +622,8 @@ place of `project.path`; its returned `cwd` reflects it.
 **Workflows tab** (`client/src/components/pipelines/`)
 - Agents: list with inline add, edit (name, launch command, reset command) and delete. The form builds the
   launch command from a provider (Claude Code, Codex, Cursor), model, effort and permission choice
-  (`shared/agent-presets.mjs`), or takes a custom command; only the launch command is stored.
+  (`shared/agent-presets.mjs`), or takes a custom command; only the launch command is stored. A built
+  command starts with `command`, so a shell alias or function named like the CLI does not change it.
 - Setup agent: a select over the agents, saved on change.
 - Workflows: list with add, delete, and an editor for name and nodes — add, remove, move up/down,
   agent select, prompt textarea, repeat mode and maximum. Field errors come from the shared validator

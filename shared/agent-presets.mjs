@@ -1,6 +1,10 @@
 // Launch commands for the agent CLIs CodeDeck knows how to start with a model and an effort.
 // A preset only composes the launch command; the saved agent still holds the command itself.
 
+// `command` makes the shell run the CLI itself. Without it an alias or function of the same name
+// (for example codex='codex --yolo') changes the command, and a repeated bypass flag stops Codex.
+const launchPrefix = preset => `command ${preset.executable}`;
+
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const MODEL_MESSAGE = 'Use letters, digits and . _ : / - only, starting with a letter or digit, at most 128 characters';
 
@@ -61,7 +65,7 @@ export function buildLaunchCommand({ provider, model, effort, skipPermissions })
   }
   if (errors.length > 0) return { command: null, errors };
 
-  const parts = [preset.executable];
+  const parts = [launchPrefix(preset)];
   if (modelId !== '') parts.push(`--model ${modelId}`);
   if (effort !== '') parts.push(preset.effortArgs(effort));
   if (skipPermissions) parts.push(preset.skipPermissionsFlag);
@@ -70,13 +74,14 @@ export function buildLaunchCommand({ provider, model, effort, skipPermissions })
 
 /**
  * The preset selection that builds exactly this command, or null when no preset does
- * (an alias, extra flags, another spelling): such a command is a custom one.
+ * (an alias, a CLI started without `command`, extra flags, another spelling): such a command is a custom one.
  */
 export function parseLaunchCommand(command) {
   requireType('command', command, 'string');
   for (const preset of AGENT_PRESETS) {
-    if (command !== preset.executable && !command.startsWith(`${preset.executable} `)) continue;
-    let rest = command.slice(preset.executable.length);
+    const prefix = launchPrefix(preset);
+    if (command !== prefix && !command.startsWith(`${prefix} `)) continue;
+    let rest = command.slice(prefix.length);
     const selection = { provider: preset.id, model: '', effort: '', skipPermissions: false };
 
     const model = /^ --model (\S+)/.exec(rest);

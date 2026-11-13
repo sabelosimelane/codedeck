@@ -91,7 +91,9 @@ pick the provider, type a model ID and choose an effort; CodeDeck builds the lau
 command and shows it. A blank model or effort uses the CLI's default. Cursor model
 names include the effort, so it has no separate effort choice. **Skip permission
 prompts** adds the CLI's own bypass flag; without it a run pauses whenever the agent
-asks for permission. Choose **Custom command** to write the command yourself (aliases,
+asks for permission. A built command starts with `command`, so the shell runs the CLI
+itself: an alias or shell function with the same name (for example `codex='codex --yolo'`)
+does not apply to it. Choose **Custom command** to write the command yourself (aliases,
 extra flags, other CLIs). A model ID is not checked until a run launches the agent.
 
 Select a local Git repository project and click **Run workflow** beside Session

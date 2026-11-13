@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-11-14] - Start preset agents past shell aliases
+
+### Executive Summary
+* A workflow run failed at its first step because the Codex agent's launch command went through a shell alias that already added the permission-bypass flag, and Codex refuses the flag twice. Launch commands built from a provider, model and effort now run the CLI itself, so what the agent form shows is what runs.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** With the alias `codex='codex --yolo'`, the built command `codex … --dangerously-bypass-approvals-and-sandbox` exited with "the argument '--dangerously-bypass-approvals-and-sandbox' cannot be used multiple times", and the run reported "The launch command for agent … exited."
+  * **Solution:** `shared/agent-presets.mjs` — Built commands start with `command` (`command codex …`), which skips aliases and shell functions. A saved command without it no longer matches a preset and opens as a custom command, unchanged.
+* **🛠️ Codebase:**
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — Document that built commands skip aliases.
+* **🧪 Tests:**
+  * `server/__tests__/agent-presets.test.js`, `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx` — Built and parsed commands with the prefix; a saved command without it stays custom. The built Codex command was also run in an interactive shell that has the alias.
+
 ## [2026-11-14] - List a worktree git cannot read instead of failing the worktree list
 
 ### Executive Summary
