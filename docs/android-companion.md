@@ -54,16 +54,17 @@ Do not use Funnel or bind the backend to a public interface. Localhost identity
 header trust depends on the host being trusted and the backend remaining loopback-only.
 See [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve).
 
-Read-only inspection on 2026-11-10 found this host is
-`macbook-pro.tail270b30.ts.net` with owner login `sabside@gmail.com`.
-Port 443 already proxies a different local application on port 18789. The
-8443 listener preserves that mapping. The companion address is
-`https://macbook-pro.tail270b30.ts.net:8443`.
+Read-only inspection on 2026-11-10 found an existing HTTPS Serve mapping on
+port 443 for another local application. The 8443 listener preserves that
+mapping. Use your machine's Tailscale MagicDNS name and owner login, for
+example `https://<your-machine>.ts.net:8443` and `<owner@example.com>`.
 
 The separate managed restart to apply the owner/origin in this launcher is:
 
 ```sh
-CODEDECK_SERVE_ORIGIN=https://macbook-pro.tail270b30.ts.net:8443 CODEDECK_TAILSCALE_OWNER=sabside@gmail.com ./server.sh restart
+CODEDECK_SERVE_ORIGIN=https://<your-machine>.ts.net:8443 \
+  CODEDECK_TAILSCALE_OWNER=<owner@example.com> \
+  ./server.sh restart
 ```
 
 Both operations were approved and executed. The restart script reported
@@ -90,8 +91,8 @@ reports notification readiness independently from terminal connectivity.
 
 Firebase handoff applied on 2026-11-10: the client configuration now targets
 `codedeck-companion` and package `com.codedeck.companion`. The backend credential
-is secured at `/Users/sabside/.codedeck/firebase/service-account.json` (directory
-0700, file0600); its identity matches the handoff and the Downloads duplicate was
+is secured at `$HOME/.codedeck/firebase/service-account.json` (directory
+0700, file 0600); its identity matches the handoff and any Downloads duplicate was
 removed after verifying the secured copy. Provider initialization passed without
 sending a notification. The owner approved the managed restart with
 `CODEDECK_FIREBASE_CREDENTIALS` and the existing Tailscale owner/origin settings.

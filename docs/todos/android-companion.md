@@ -76,10 +76,10 @@ the expected incarnation check. User's specific tab recovery remains unverified.
 
 ### Firebase handoff and release rebuild — 2026-11-10
 
-Read `/Users/sabside/Downloads/codedeck-firebase-handoff.md`. Verified client and
-service-account project `codedeck-companion`, package `com.codedeck.companion`,
-and expected service-account identity. Secured backend key outside checkout at
-`/Users/sabside/.codedeck/firebase/service-account.json` with0700/0600 permissions;
+Read the Firebase handoff doc. Verified client and service-account project
+`codedeck-companion`, package `com.codedeck.companion`, and expected
+service-account identity. Secured backend key outside checkout at
+`$HOME/.codedeck/firebase/service-account.json` with 0700/0600 permissions;
 verified copy before removing Downloads duplicate. Provider initialization passed,
 without sending a push. Client JSON is ignored by Git.
 
