@@ -1,10 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../../../shared/pipeline-definitions.mjs';
 
-const ACCEPT_RECOMMENDATIONS = 'Proceed with your recommendations.';
+const ACCEPT_RECOMMENDATIONS = ACCEPT_RECOMMENDATIONS_ANSWER;
 
 function passLabel(step) {
   if (step?.repeat?.mode === 'until_complete' && typeof step.repeat.max === 'number') {
     return `${step.iteration ?? 0}/${step.repeat.max}`;
+  }
+  // A step that loops back counts rounds of its loop: the ones it sent back, plus the current one.
+  if (step?.repeat?.mode === 'loop_back') {
+    return `round ${step.roundsCompleted + 1}/${step.repeat.max}`;
   }
   return null;
 }
@@ -104,6 +109,78 @@ function InputRequestPanel({ run, onAnswer }) {
   );
 }
 
+/**
+ * The requests this run's agents settled themselves, loaded when the owner opens the list.
+ * `onLoadDecisions(runId, page)` resolves to `{ decisions, hasNextPage }`, or null when the
+ * page could not be loaded (the caller has already told the owner why).
+ */
+function DecisionsPanel({ run, onLoadDecisions }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState({ decisions: [], hasNextPage: false, pages: 0, status: 'idle' });
+  // Only the answer to the latest request is shown; closing the list retires every request.
+  const latest = useRef(0);
+  const count = run.decisionCount;
+  const noun = count === 1 ? 'decision' : 'decisions';
+
+  const load = async (page) => {
+    const request = ++latest.current;
+    setState(current => ({ ...(page === 0 ? { decisions: [], hasNextPage: false, pages: 0 } : current), status: 'loading' }));
+    const loaded = await onLoadDecisions(run.id, page);
+    if (request !== latest.current) return;
+    setState(current => (loaded === null
+      ? { ...current, status: 'failed' }
+      : {
+        decisions: page === 0 ? loaded.decisions : [...current.decisions, ...loaded.decisions],
+        hasNextPage: loaded.hasNextPage,
+        pages: page + 1,
+        status: 'idle',
+      }));
+  };
+
+  // Opening the list loads it; so does a decision made while it is open.
+  useEffect(() => {
+    if (open) load(0);
+    else latest.current += 1;
+    // `load` reads only the run id, which identifies this panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, count, run.id]);
+
+  if (count === 0) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} style={{ alignSelf: 'flex-start' }}>
+        {`${count} ${noun} made by agents`}
+      </button>
+      {open && state.status === 'failed' && (
+        <span style={{ color: 'var(--danger)' }}>
+          The decisions could not be loaded.{' '}
+          <button type="button" onClick={() => load(state.pages)}>Try again</button>
+        </span>
+      )}
+      {open && state.decisions.length > 0 && (
+        <ul
+          aria-label={`Decisions agents made in ${run.workflowName}`}
+          style={{ listStyle: 'none', margin: 0, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)', maxHeight: 260, overflowY: 'auto' }}
+        >
+          {state.decisions.map(decision => (
+            <li key={decision.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <strong style={{ color: 'var(--text-primary)' }}>{`${decision.stepName}, pass ${decision.pass}`}</strong>
+              <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-primary)', lineHeight: 1.5 }}>{decision.questions}</div>
+              {decision.truncated && <span style={{ color: 'var(--warning)' }}>The list was cut here.</span>}
+              <span style={{ color: 'var(--text-muted)' }}>{`Answered: ${decision.answer}`}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {open && state.status !== 'failed' && state.hasNextPage && (
+        <button type="button" disabled={state.status === 'loading'} onClick={() => load(state.pages)} style={{ alignSelf: 'flex-start' }}>
+          Show more decisions
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function PipelineRunsBar({
   runs,
   onStop,
@@ -112,6 +189,7 @@ export default function PipelineRunsBar({
   onCleanup,
   onAnswer,
   onActivateStep,
+  onLoadDecisions,
 }) {
   if (!runs?.length) return null;
 
@@ -143,6 +221,9 @@ export default function PipelineRunsBar({
               </span>
             )}
             <span style={{ color: 'var(--text-muted)' }}>{run.status}</span>
+            {run.agentsDecide && (
+              <span title="Agents in this run go with their own recommendations instead of pausing for you" style={{ color: 'var(--warning)' }}>agents decide</span>
+            )}
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
               {(run.steps || []).map((step) => {
@@ -208,6 +289,7 @@ export default function PipelineRunsBar({
             </div>
           </div>
           {run.status === 'needs_input' && <InputRequestPanel run={run} onAnswer={onAnswer} />}
+          <DecisionsPanel run={run} onLoadDecisions={onLoadDecisions} />
           </div>
         );
       })}

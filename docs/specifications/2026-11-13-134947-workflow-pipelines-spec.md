@@ -32,7 +32,8 @@ only pipeline runs use the loop engine.
 | Agent | Named entry: name + interactive launch command written by the owner (it owns model, effort and permission flags) + reset command |
 | Node | Name + agent + prompt text (may contain `{input}`) + repeat mode |
 | Repeat | `once`, or `until_complete` with a maximum pass count; a repeat clears context with the agent's reset command and re-submits the same prompt in the same terminal |
-| Workflow shape | Straight line. No branching, no jumping back, no repeating a group of nodes |
+| Workflow shape | A line of nodes. A node may loop back to an earlier node, repeating that group of nodes (§8.13, added after v1.0). No branching, no parallel nodes; loops do not nest or overlap |
+| Who decides | Per workflow, `agentsDecide` (off by default): agents go with their own recommendations instead of pausing the run, and each such decision is recorded (§8.14, added after v1.0) |
 | Pass limit | A repeating node that reaches its maximum without COMPLETE pauses the run; the owner chooses Continue or Stop |
 | Persistence | Runs are stored in SQLite. A backend restart marks an unfinished run `interrupted` |
 | Resume | Manual, on any unfinished run (`interrupted`, `stopped`, `error`): re-runs the current step in a fresh tab and carries on |
@@ -44,7 +45,7 @@ only pipeline runs use the loop engine.
 ### 1.2 Out of scope for this version
 
 - Remote projects and projects that are not the top level of a git working tree (§8.1).
-- Branching, back-edges, group repeats, parallel nodes.
+- Branching, parallel nodes, and loops that nest or overlap (one loop back per group of nodes is supported, §8.13).
 - Merging or deleting the run's branch.
 - Automatic recovery of a run after a backend restart by reading the terminal screen.
 - Agent CLIs without a screen profile in `server/agent-profiles/` (§8.4).
@@ -108,6 +109,7 @@ The launch command is the interactive command for the CLI, e.g.
 | `nodes` | TEXT (JSON array) | 1–32 nodes, order is execution order | — |
 | `revision` | INTEGER | ≥ 1 | 1 |
 | `created_at`, `updated_at` | TEXT | ISO-8601 UTC | now |
+| `agents_decide` | INTEGER | 0 or 1; API field `agentsDecide` (boolean, required in request bodies). Added with `ALTER TABLE` to databases created before it; those workflows read as `false` | 0 |
 
 **Node** (element of `nodes`); unknown fields are rejected:
 
@@ -116,7 +118,7 @@ The launch command is the interactive command for the CLI, e.g.
 | `name` | string | 1–64 chars after trim, single-line, unique within the workflow case-insensitively |
 | `agentId` | string | UUID of an existing agent |
 | `prompt` | string | 1–8192 chars, non-blank, multi-line rule. `{input}` may appear zero or more times |
-| `repeat` | object | `{ "mode": "once" }` or `{ "mode": "until_complete", "max": 1–100 }`. `max` is forbidden for `once` and required for `until_complete` |
+| `repeat` | object | `{ "mode": "once" }`, `{ "mode": "until_complete", "max": 1–100 }` or `{ "mode": "loop_back", "to": "<name of an earlier node>", "max": 1–100 }`. `max` is forbidden for `once` and required otherwise; `to` is allowed only for `loop_back`, matches a node name trimmed and case-insensitively, and is stored as that node's name. Two loops may not share a node (§8.13) |
 
 ### 4.3 Pipeline settings — table `pipeline_settings` (single row, `id = 1`)
 
@@ -761,6 +763,71 @@ this repository's test infrastructure. Agent CLIs are external programs; tests r
 stub script that draws a screen one of the existing profiles recognises
 (`server/__tests__/fixtures/agent-screens`).
 
+### 8.13 Looping back to an earlier step (added after v1.0)
+
+A node with `repeat.mode = "loop_back"` closes a loop: the nodes from the one it names up to itself
+run in order, round after round. A run's snapshot stores the target as `repeat.toStepIndex`, the index
+among the run's steps (Setup, when present, is step 0 and is never a target). Each step progress
+object gains `roundsCompleted` (integer ≥ 0; non-zero only on a step that loops back, and always less
+than its `max`). Runs stored before this field existed are given `roundsCompleted: 0` when the run
+store is constructed.
+
+The closing step gets one pass per round (`maxIterations = 1`):
+
+| Closing step's signal | Effect |
+|---|---|
+| COMPLETE | step `complete`; the run advances past the loop (or completes) |
+| CONTINUE, and `roundsCompleted + 1 < max` | `roundsCompleted + 1`; every step of the loop becomes `pending` with `iteration` 0 and keeps its `sessionId`; the run continues at the loop's first step |
+| CONTINUE, and `roundsCompleted + 1 = max` | step `limit_reached`, run `limit_paused`; **Continue** advances past the loop |
+
+The steps inside the loop keep their own repeat (`once` advances on either signal, as before). The
+closing step's agent is the only one that decides whether the loop runs again, so its prompt carries
+one more sentence saying what the loop is and that COMPLETE means no step of it has work left
+(`server/pipelines/step-guidance.js`).
+
+A step that already ran in an earlier round **returns to its own terminal**: no new terminal is
+created and the agent is not launched again. The engine attaches to the step's session, waits until
+the agent is at its prompt, and starts the loop with `resetFirst: true`, so the agent's reset command
+runs before the prompt is submitted. If that terminal is gone, or the agent is no longer running in
+it, the run becomes `error` naming the step; Resume then gives the step a fresh terminal as usual,
+and `roundsCompleted` is kept.
+
+### 8.14 Agents decide (added after v1.0)
+
+A workflow's `agentsDecide` is copied into the run's definition snapshot (`definition.agentsDecide`;
+runs stored before it are given `false`). When it is true, every node step (not Setup):
+
+1. is told in its prompt that the owner is not available: it should choose the option it would
+   recommend, write the decision down where the project keeps such notes, and use NEEDS_INPUT only
+   when it cannot continue at all;
+2. is answered automatically when it signals NEEDS_INPUT **with a list of questions** (§8.7): the
+   engine pastes `Proceed with your recommendations.` into the step's terminal, records the decision
+   and submits it 100 ms later. The run stays `running`; it never enters `needs_input` for that
+   request.
+
+The owner is still asked (run `needs_input`, as in §8.7) when the agent listed no questions, when it
+asks again in the same pass after an automatic answer, when Setup asks, and for a dialog shown while
+an agent launches. If the decision cannot be recorded, the answer is not submitted and the run
+becomes `error`. Stop during the 100 ms before submission submits nothing and records nothing.
+
+Each automatic answer is one row of `pipeline_run_decisions`:
+
+| Field | Type | Constraints |
+|---|---|---|
+| `id` | INTEGER PK | autoincrement; also the order in which decisions were made |
+| `run_id` | TEXT | UUID of the run |
+| `step_index` | INTEGER | 0–32 |
+| `step_name` | TEXT | 1–64 chars, single-line |
+| `pass` | INTEGER | 1–100, the pass of the step in which it asked |
+| `questions` | TEXT | 1–4000 chars, what the agent listed |
+| `truncated` | INTEGER | 0 or 1, whether that list was cut at 4000 characters |
+| `answer` | TEXT | 1–4000 chars; new lines are the only control characters allowed |
+| `created_at` | TEXT | ISO-8601 UTC |
+
+Rows are only ever added. A run view carries `agentsDecide` and `decisionCount`;
+`GET /runs/:id/decisions` returns the rows paginated (`page`, `size` 1–100, default 20; sort
+`createdAt,asc|desc`, default `asc`), 404 for an unknown run.
+
 ## 11. Known Limits
 
 - Only CLIs with a screen profile (Claude, Codex, Cursor, agy, Muse) can run a step.
@@ -773,6 +840,10 @@ stub script that draws a screen one of the existing profiles recognises
 - Stop does not interrupt the agent, and Resume can start a second agent while the first is still
   working in the old terminal.
 - Completion relies on the agent printing the signal; that reliability is inherited from the engine.
+- A loop ends only when the agent of its last step reports COMPLETE; an agent that reports COMPLETE
+  after finishing its own pass, although other steps of the loop have work left, ends the loop early.
+- With `agentsDecide`, an agent's own recommendation is acted on before the owner sees it. The
+  record of decisions is the only check CodeDeck adds.
 - The launch command is typed before the shell prompt is confirmed, and input is not blocked during
   launch (startup dialogs need it), so a keystroke at that moment can garble the command.
 - The backend's `node --watch` restarts on edits to four server files; that interrupts runs, which

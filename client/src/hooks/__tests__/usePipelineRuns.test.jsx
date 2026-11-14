@@ -11,6 +11,8 @@ function runView(overrides = {}) {
     requestId: 'req-1',
     workflowId: 'w1',
     workflowName: 'Feature',
+    agentsDecide: false,
+    decisionCount: 0,
     project: 'Demo',
     input: 'build',
     status: 'running',
@@ -513,6 +515,90 @@ describe('usePipelineRuns — answering an agent', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith({
       type: 'error', message: expect.stringContaining('inputRequest.questions'),
     }));
+    expect(result.current.runs).toEqual([]);
+  });
+});
+
+describe('usePipelineRuns — decisions agents made', () => {
+  const decision = (id) => ({
+    id, stepIndex: 1, stepName: 'Test', pass: 1, questions: '1. Run the slow suite?\nRecommended: yes',
+    truncated: false, answer: 'Proceed with your recommendations.', createdAt: '2026-11-14T10:00:00.000Z',
+  });
+  const page = (data, hasNextPage = false) => ({
+    ok: true, status: 200,
+    json: async () => ({ data, page: { currentPage: 0, size: 50, totalElements: 3, totalPages: 2, hasNextPage } }),
+  });
+  const withDecisions = (response) => {
+    global.fetch = vi.fn(async (url) => {
+      if (String(url).includes('/decisions?')) return typeof response === 'function' ? response(url) : response;
+      if (String(url).includes('/runs?')) return okList([runView({ agentsDecide: true, decisionCount: 3 })]);
+      return okList([]);
+    });
+  };
+
+  it('loads one page of a run\'s decisions', async () => {
+    withDecisions(page([decision(1), decision(2)], true));
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    let loaded;
+    await act(async () => { loaded = await result.current.loadRunDecisions('r1', 1); });
+
+    expect(loaded).toEqual({ decisions: [decision(1), decision(2)], hasNextPage: true, total: 3 });
+    const request = global.fetch.mock.calls.find(([url]) => String(url).includes('/decisions?'));
+    expect(String(request[0])).toBe('/api/pipelines/runs/r1/decisions?page=1&size=50&sort=createdAt%2Casc');
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('reports why and returns nothing when the server refuses', async () => {
+    withDecisions({ ok: false, status: 404, json: async () => ({ message: 'Run not found' }) });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    let loaded;
+    await act(async () => { loaded = await result.current.loadRunDecisions('r1', 0); });
+
+    expect(loaded).toBeNull();
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Run not found' });
+  });
+
+  it('refuses a page with a malformed decision instead of showing it', async () => {
+    withDecisions(page([{ ...decision(1), pass: 0 }]));
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    let loaded;
+    await act(async () => { loaded = await result.current.loadRunDecisions('r1', 0); });
+
+    expect(loaded).toBeNull();
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: expect.stringContaining('pass') });
+  });
+
+  it('says the server is unreachable when the request never completes', async () => {
+    withDecisions(() => { throw new TypeError('Failed to fetch'); });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    let loaded;
+    await act(async () => { loaded = await result.current.loadRunDecisions('r1', 0); });
+
+    expect(loaded).toBeNull();
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Server unreachable' });
+  });
+
+  it.each([
+    ['agentsDecide', { agentsDecide: 'yes' }],
+    ['decisionCount', { decisionCount: -1 }],
+    ['steps[0].roundsCompleted', { steps: [{ index: 0, name: 'Test', status: 'running', repeat: { mode: 'loop_back', toStepIndex: 0, max: 5 }, roundsCompleted: 5 }] }],
+    ['steps[0].repeat.max', { steps: [{ index: 0, name: 'Test', status: 'running', repeat: { mode: 'loop_back', toStepIndex: 0, max: 0 }, roundsCompleted: 0 }] }],
+  ])('refuses a polled run whose %s is malformed instead of showing it', async (field, patch) => {
+    global.fetch = vi.fn(async (url) => {
+      if (String(url).includes('/runs?')) return okList([runView(patch)]);
+      return okList([]);
+    });
+
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: expect.stringContaining(field) }));
     expect(result.current.runs).toEqual([]);
   });
 });

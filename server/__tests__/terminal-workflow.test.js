@@ -393,3 +393,125 @@ describe('terminal workflow — stating what the agent needs', () => {
     expect(workflow.signalIdentifier()).toBeNull();
   });
 });
+
+describe('terminal workflow — starting in a terminal whose agent already worked', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('resets the agent before the first pass when asked to', () => {
+    const { workflow, write, notify } = setup();
+    workflow.start({ ...request, resetFirst: true });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenLastCalledWith('\x1b[200~/clear\x1b[201~');
+    expect(workflow.snapshot()).toMatchObject({ status: 'resetting', active: true, iteration: 0 });
+    expect(workflow.signalIdentifier()).toBeNull();
+    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'resetting' }));
+
+    vi.advanceTimersByTime(100);
+    expect(write).toHaveBeenLastCalledWith('\r');
+    workflow.output('new conversation\r\n> ');
+    vi.advanceTimersByTime(999);
+    expect(write).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1);
+
+    expect(write).toHaveBeenCalledTimes(3);
+    expect(write.mock.calls[2][0]).toMatch(/^\x1b\[200~\/feature-dev docs\/todos\/demo.md\n/);
+    expect(workflow.snapshot()).toMatchObject({ status: 'running', iteration: 1 });
+    workflow.output(signal(token(write), 'COMPLETE'));
+    expect(workflow.snapshot().status).toBe('complete');
+  });
+
+  it('fails when that first reset never settles', () => {
+    const { workflow, write } = setup();
+    workflow.start({ ...request, resetFirst: true });
+    vi.advanceTimersByTime(16000);
+    expect(workflow.snapshot()).toMatchObject({ status: 'error', error: 'Reset did not settle within 15 seconds. Check the terminal before starting again.' });
+    expect(write).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts the pass limit from the first pass after the reset', () => {
+    const { workflow, write } = setup();
+    workflow.start({ ...request, resetFirst: true, maxIterations: 1 });
+    vi.advanceTimersByTime(100);
+    workflow.output('ready');
+    vi.advanceTimersByTime(1000);
+    workflow.output(signal(token(write), 'CONTINUE'));
+    expect(workflow.snapshot()).toMatchObject({ status: 'stopped', limitReached: true, iteration: 1 });
+  });
+
+  it('submits the prompt at once when resetFirst is false, as when it is left out', () => {
+    const { workflow, write } = setup();
+    workflow.start({ ...request, resetFirst: false });
+    expect(write.mock.calls[0][0]).toMatch(/^\x1b\[200~\/feature-dev/);
+  });
+
+  it.each(['yes', 1, null])('rejects resetFirst %s', (resetFirst) => {
+    const { workflow, write } = setup();
+    expect(() => workflow.start({ ...request, resetFirst })).toThrow('Workflow resetFirst must be true or false.');
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('rejects a replayed start that differs in resetFirst', () => {
+    const { workflow } = setup();
+    workflow.start({ ...request, resetFirst: true });
+    expect(() => workflow.start(request)).toThrow(/requestId/);
+    expect(() => workflow.start({ ...request, resetFirst: true })).not.toThrow();
+  });
+});
+
+describe('terminal workflow — guidance for the pass', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  const GUIDANCE = 'The owner is not available during this run.';
+
+  it('puts the guidance after the standard instruction and before the identifier', () => {
+    const { workflow, write } = setup();
+    workflow.start({ ...request, guidance: GUIDANCE });
+    const prompt = write.mock.calls[0][0];
+    expect(prompt).toContain(`while explaining this instruction. ${GUIDANCE}\nIteration identifier: `);
+  });
+
+  it('repeats the guidance on every pass', () => {
+    const { workflow, write } = setup();
+    workflow.start({ ...request, guidance: GUIDANCE });
+    workflow.output(signal(token(write), 'CONTINUE'));
+    vi.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(100);
+    workflow.output('ready');
+    vi.advanceTimersByTime(1000);
+    expect(write.mock.calls.at(-1)[0]).toContain(GUIDANCE);
+  });
+
+  it('leaves the instruction as it was when there is no guidance', () => {
+    const { workflow, write } = setup();
+    workflow.start(request);
+    expect(write.mock.calls[0][0]).toContain('while explaining this instruction.\nIteration identifier: ');
+    expect(write.mock.calls[0][0]).not.toContain('undefined');
+  });
+
+  it.each([
+    ['blank', '   '],
+    ['empty', ''],
+    ['longer than 2000 characters', 'x'.repeat(2001)],
+    ['on two lines', 'one\ntwo'],
+    ['an escape sequence', 'x\x1b[201~'],
+    ['a number', 5],
+    ['null', null],
+  ])('rejects guidance that is %s', (_label, guidance) => {
+    const { workflow, write } = setup();
+    expect(() => workflow.start({ ...request, guidance })).toThrow('Workflow guidance must contain 1–2000 characters on one line without terminal control codes.');
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('accepts guidance of exactly 2000 characters', () => {
+    const { workflow } = setup();
+    expect(() => workflow.start({ ...request, guidance: 'x'.repeat(2000) })).not.toThrow();
+  });
+
+  it('rejects a replayed start that differs in guidance', () => {
+    const { workflow } = setup();
+    workflow.start({ ...request, guidance: GUIDANCE });
+    expect(() => workflow.start({ ...request, guidance: 'Something else.' })).toThrow(/requestId/);
+    expect(() => workflow.start(request)).toThrow(/requestId/);
+  });
+});

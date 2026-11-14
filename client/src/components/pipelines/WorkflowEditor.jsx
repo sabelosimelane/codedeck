@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
-import { validateWorkflowBody } from '../../../../shared/pipeline-definitions.mjs';
+import { loopTargetIndex, validateWorkflowBody } from '../../../../shared/pipeline-definitions.mjs';
 import { createWorkflow, getWorkflow, updateWorkflow } from '../../utils/pipelinesApi';
 import { parseWorkflow } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
@@ -12,45 +12,58 @@ const MAX_NODES = 32;
 let lastNodeKey = 0;
 const nextNodeKey = () => `node-${++lastNodeKey}`;
 
-const blankNode = () => ({ key: nextNodeKey(), name: '', agentId: '', prompt: '', mode: 'once', max: '' });
+// `loopTo` is the key of the node a loop returns to, so the loop follows that node when it is
+// renamed or moved; the name is filled in when the workflow is saved.
+const blankNode = () => ({ key: nextNodeKey(), name: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '' });
 
 function toDraft(workflow) {
-  if (workflow === null) return { id: null, revision: null, name: '', nodes: [blankNode()] };
+  if (workflow === null) return { id: null, revision: null, name: '', agentsDecide: false, nodes: [blankNode()] };
+  const keys = workflow.nodes.map(nextNodeKey);
   return {
     id: workflow.id,
     revision: workflow.revision,
     name: workflow.name,
-    nodes: workflow.nodes.map(node => ({
-      key: nextNodeKey(),
+    agentsDecide: workflow.agentsDecide,
+    nodes: workflow.nodes.map((node, index) => ({
+      key: keys[index],
       name: node.name,
       agentId: node.agentId,
       prompt: node.prompt,
       mode: node.repeat.mode,
-      max: node.repeat.mode === 'until_complete' ? String(node.repeat.max) : '',
+      max: node.repeat.mode === 'once' ? '' : String(node.repeat.max),
+      loopTo: node.repeat.mode === 'loop_back' ? keys[loopTargetIndex(workflow.nodes, index)] : '',
     })),
   };
+}
+
+// An empty maximum is not a number; the validator reports it rather than a 0 being sent.
+const maximum = node => (node.max.trim() === '' ? Number.NaN : Number(node.max));
+
+function toRepeat(nodes, node) {
+  if (node.mode === 'once') return { mode: node.mode };
+  if (node.mode === 'until_complete') return { mode: node.mode, max: maximum(node) };
+  // A node that was removed leaves no name; the validator then asks for an earlier node.
+  return { mode: node.mode, to: nodes.find(candidate => candidate.key === node.loopTo)?.name ?? '', max: maximum(node) };
 }
 
 function toFields(draft) {
   return {
     name: draft.name,
+    agentsDecide: draft.agentsDecide,
     nodes: draft.nodes.map(node => ({
       name: node.name,
       agentId: node.agentId,
       prompt: node.prompt,
-      // An empty maximum is not a number; the validator reports it rather than a 0 being sent.
-      repeat: node.mode === 'until_complete'
-        ? { mode: node.mode, max: node.max.trim() === '' ? Number.NaN : Number(node.max) }
-        : { mode: node.mode },
+      repeat: toRepeat(draft.nodes, node),
     })),
   };
 }
 
 function shownFields(nodeCount) {
-  const fields = ['name'];
+  const fields = ['name', 'agentsDecide'];
   for (let index = 0; index < nodeCount; index++) {
     const prefix = `nodes[${index}]`;
-    fields.push(`${prefix}.name`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`);
+    fields.push(`${prefix}.name`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
   }
   return fields;
 }
@@ -122,11 +135,17 @@ export default function WorkflowEditor({ workflow, agents, onSaved, onChanged, o
     <section className="pipeline-form" aria-label="Workflow editor">
       <h4>{draft.id === null ? 'New workflow' : 'Edit workflow'}</h4>
       <TextField label="Workflow name" caption="Name" value={draft.name} onChange={name => setDraft(current => ({ ...current, name }))} error={errors.name} maxLength={64} placeholder="Feature" />
+      <label className="pipeline-check">
+        <input type="checkbox" aria-label="Let agents decide" checked={draft.agentsDecide} disabled={busy} onChange={event => setDraft(current => ({ ...current, agentsDecide: event.target.checked }))} />
+        <span>Let agents decide — an agent that asks a question is told to go with its own recommendation instead of pausing the run; each one is recorded on the run. Setup still asks you.</span>
+      </label>
+      {errors.agentsDecide && <span className="pipeline-field-error">{errors.agentsDecide}</span>}
 
       <ol className="pipeline-nodes">
         {draft.nodes.map((node, index) => {
           const number = index + 1;
           const prefix = `nodes[${index}]`;
+          const loops = node.mode === 'loop_back';
           return (
             <li key={node.key} className="pipeline-node" aria-label={`Node ${number}`}>
               <div className="pipeline-node-heading">
@@ -155,11 +174,24 @@ export default function WorkflowEditor({ workflow, agents, onSaved, onChanged, o
                 <SelectField label={`Node ${number} repeat`} caption="Repeat" value={node.mode} onChange={setNodeField(index, 'mode')} error={errors[`${prefix}.repeat.mode`]}>
                   <option value="once">Run once</option>
                   <option value="until_complete">Repeat until the agent reports COMPLETE</option>
+                  {/* The first node has nothing before it; a loop left on it by a move or removal still shows. */}
+                  {(index > 0 || loops) && <option value="loop_back">Loop back to an earlier node until the agent reports COMPLETE</option>}
                 </SelectField>
                 {node.mode === 'until_complete' && (
                   <TextField type="number" min="1" max="100" step="1" inputMode="numeric" label={`Node ${number} maximum passes`} caption="Maximum passes, then pause for me" value={node.max} onChange={setNodeField(index, 'max')} error={errors[`${prefix}.repeat.max`]} placeholder="1–100" />
                 )}
               </div>
+              {loops && (
+                <div className="pipeline-node-row">
+                  <SelectField label={`Node ${number} loops back to`} caption="Loop back to — the nodes from there to this one run again" value={draft.nodes.slice(0, index).some(candidate => candidate.key === node.loopTo) ? node.loopTo : ''} onChange={setNodeField(index, 'loopTo')} error={errors[`${prefix}.repeat.to`]}>
+                    <option value="">Choose a node</option>
+                    {draft.nodes.slice(0, index).map((candidate, at) => (
+                      <option key={candidate.key} value={candidate.key}>{`Node ${at + 1}: ${candidate.name.trim() || '(no name yet)'}`}</option>
+                    ))}
+                  </SelectField>
+                  <TextField type="number" min="1" max="100" step="1" inputMode="numeric" label={`Node ${number} maximum rounds`} caption="Maximum rounds, then pause for me" value={node.max} onChange={setNodeField(index, 'max')} error={errors[`${prefix}.repeat.max`]} placeholder="1–100" />
+                </div>
+              )}
             </li>
           );
         })}

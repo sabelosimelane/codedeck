@@ -7,6 +7,7 @@ import { createAgentStore } from '../pipelines/agent-store.js';
 import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
+import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
 
 const base = '/api/pipelines';
@@ -46,6 +47,7 @@ async function setup(overrides = {}) {
   const workflowStore = createWorkflowStore(db);
   const settingsStore = createSettingsStore(db);
   const runStore = createRunStore(db);
+  const decisionStore = createDecisionStore(db);
 
   const engineStarts = [];
   const engine = {
@@ -178,6 +180,7 @@ async function setup(overrides = {}) {
     workflowStore,
     settingsStore,
     runStore,
+    decisionStore,
     findProject,
     engine,
     preflight,
@@ -194,6 +197,7 @@ async function setup(overrides = {}) {
     workflowStore,
     settingsStore,
     runStore,
+    decisionStore,
     engine,
     engineStarts,
     scheduled,
@@ -207,7 +211,7 @@ async function seedReady(ctx, { withInput = true } = {}) {
   const agent = ctx.agentStore.create(agentBody());
   ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
   const workflow = ctx.workflowStore.create({
-    name: 'Feature',
+    name: 'Feature', agentsDecide: false,
     nodes: [node(agent.id, withInput ? {} : { prompt: 'No placeholder' })],
   });
   return { agent, workflow };
@@ -318,7 +322,7 @@ describe('pipelines API — workflows and settings', () => {
     const agent = agentStore.create(agentBody());
 
     const created = await request(app).post(`${base}/workflows`).send({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node(agent.id)],
     });
     expect(created.status).toBe(201);
@@ -339,7 +343,7 @@ describe('pipelines API — workflows and settings', () => {
   it('rejects a workflow node that points at a missing agent', async () => {
     const { app } = await setup();
     const response = await request(app).post(`${base}/workflows`).send({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node('c410a1b2-3456-4789-8abc-def012345678')],
     });
     expect(response.status).toBe(400);
@@ -351,8 +355,8 @@ describe('pipelines API — workflows and settings', () => {
   it('returns 409 for duplicate workflow names and stale settings revision', async () => {
     const { app, agentStore } = await setup();
     const agent = agentStore.create(agentBody());
-    await request(app).post(`${base}/workflows`).send({ name: 'Feature', nodes: [node(agent.id)] });
-    const dup = await request(app).post(`${base}/workflows`).send({ name: 'feature', nodes: [node(agent.id)] });
+    await request(app).post(`${base}/workflows`).send({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
+    const dup = await request(app).post(`${base}/workflows`).send({ name: 'feature', agentsDecide: false, nodes: [node(agent.id)] });
     expect(dup.status).toBe(409);
 
     const stale = await request(app).put(`${base}/settings`).send({ setupAgentId: null, revision: 9 });
@@ -525,7 +529,7 @@ describe('pipelines API — preflight and runs', () => {
 
     const agent = ctx.agentStore.create(agentBody({ name: 'big' }));
     const huge = ctx.workflowStore.create({
-      name: 'Huge',
+      name: 'Huge', agentsDecide: false,
       nodes: [node(agent.id, { name: 'Big', prompt: `prefix-{input}-${'x'.repeat(20)}` })],
     });
     const oversized = await request(ctx.app).post(`${base}/runs`).send({
@@ -542,7 +546,7 @@ describe('pipelines API — preflight and runs', () => {
     const ctx = await setup();
     const { agent } = await seedReady(ctx);
     const multi = ctx.workflowStore.create({
-      name: 'TwoSteps',
+      name: 'TwoSteps', agentsDecide: false,
       nodes: [
         node(agent.id, { name: 'One' }),
         node(agent.id, { name: 'Two' }),
@@ -575,7 +579,7 @@ describe('pipelines API — preflight and runs', () => {
     const runStore = createRunStore(db, { now: () => times[Math.min(i++, times.length - 1)] });
     const agent = agentStore.create(agentBody());
     settingsStore.update({ setupAgentId: agent.id, revision: 1 });
-    const workflow = workflowStore.create({ name: 'Feature', nodes: [node(agent.id)] });
+    const workflow = workflowStore.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
 
     const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'];
     for (const [index, id] of ids.entries()) {
@@ -593,6 +597,7 @@ describe('pipelines API — preflight and runs', () => {
           workflowId: workflow.id,
           workflowName: 'Feature',
           workflowRevision: 1,
+          agentsDecide: false,
           steps: [{
             kind: 'node',
             name: 'Develop',
@@ -607,7 +612,7 @@ describe('pipelines API — preflight and runs', () => {
           }],
         },
         steps: [{
-          status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0,
+          status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0,
           detail: null, startedAt: null, finishedAt: null,
         }],
         homePath: '/Users/me/git/codedeck',
@@ -627,6 +632,7 @@ describe('pipelines API — preflight and runs', () => {
       workflowStore,
       settingsStore,
       runStore,
+      decisionStore: createDecisionStore(db),
       findProject: () => PROJECT,
       engine: { start: () => {} },
       preflight: async () => ({ eligible: true, reasons: [], branch: 'main', head: 'a'.repeat(40), dirty: false }),
@@ -742,8 +748,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       finishedAt: new Date().toISOString(),
       worktreeState: 'present',
       steps: [
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, detail: null, startedAt: null, finishedAt: null },
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, detail: null, startedAt: null, finishedAt: null },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
       ],
     });
     const refused = await request(ctx.app).post(`${base}/runs/${id}/stop`);
@@ -754,8 +760,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       error: 'boom',
       finishedAt: new Date().toISOString(),
       steps: [
-        { status: 'failed', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'failed', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
       ],
     });
     const refusedError = await request(ctx.app).post(`${base}/runs/${id}/stop`);
@@ -769,8 +775,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       worktreeState: 'present',
       currentStepIndex: 1,
       steps: [
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, detail: null, startedAt: null, finishedAt: null },
-        { status: 'limit_reached', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 2, detail: null, startedAt: null, finishedAt: null },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'limit_reached', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 2, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
       ],
     });
     const ok = await request(ctx.app).post(`${base}/runs/${id}/continue`);
@@ -788,8 +794,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       worktreeState: 'present',
       baseCommit: 'a'.repeat(40),
       steps: [
-        { status: 'interrupted', sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'interrupted', sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
       ],
     });
     const resumed = await request(ctx.app).post(`${base}/runs/${id}/resume`);
@@ -819,8 +825,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       worktreeState: 'present',
       baseCommit: 'a'.repeat(40),
       steps: [
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, detail: null, startedAt: null, finishedAt: null },
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, detail: null, startedAt: null, finishedAt: null },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
       ],
     });
     const before = await request(ctx.app).get(`${base}/runs/${id}`);
@@ -840,8 +846,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       worktreeState: 'present',
       baseCommit: 'a'.repeat(40),
       steps: [
-        { status: 'running', sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'running', sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
       ],
     });
 
@@ -855,6 +861,7 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       workflowStore: ctx.workflowStore,
       settingsStore: ctx.settingsStore,
       runStore: reopenedStore,
+      decisionStore: ctx.decisionStore,
       findProject: name => ctx.projects.get(name) ?? null,
       engine: {
         ...ctx.engine,
@@ -1086,7 +1093,7 @@ describe('pipelines API — worktrees', () => {
       })),
     });
     const agent = ctx.agentStore.create(agentBody());
-    const workflow = ctx.workflowStore.create({ name: 'Feature', nodes: [node(agent.id)] });
+    const workflow = ctx.workflowStore.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
 
     const existing = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow));
     expect(existing.status).toBe(201);
@@ -1095,6 +1102,23 @@ describe('pipelines API — worktrees', () => {
     const fresh = await request(ctx.app).post(`${base}/runs`).send(withoutPath);
     expect(fresh.status).toBe(409);
     expect(fresh.body.message).toBe('Choose a setup agent in Settings → Workflows.');
+  });
+
+  it('points a loop at the step it returns to when the run has no Setup step', async () => {
+    const ctx = await setupWorktrees();
+    const agent = ctx.agentStore.create(agentBody());
+    const workflow = ctx.workflowStore.create({
+      name: 'Build',
+      agentsDecide: true,
+      nodes: [
+        node(agent.id, { name: 'Develop' }),
+        node(agent.id, { name: 'Test', prompt: 'test it', repeat: { mode: 'loop_back', to: 'Develop', max: 5 } }),
+      ],
+    });
+    const started = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow));
+    expect(started.status).toBe(201);
+    expect(started.body.steps.map(s => s.kind)).toEqual(['node', 'node']);
+    expect(started.body.steps[1].repeat).toEqual({ mode: 'loop_back', toStepIndex: 0, max: 5 });
   });
 
   it('returns 404 when the path is not one of the project worktrees', async () => {
@@ -1192,9 +1216,9 @@ describe('pipelines API — worktrees', () => {
 describe('pipelines API — what the agent needs, and answering it', () => {
   const ASKED = { questions: '1. Which schema?\nRecommended: the existing one.', truncated: false };
   const stepIn = status => ({
-    status, sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 1, detail: null, startedAt: null, finishedAt: null,
+    status, sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null,
   });
-  const pendingStep = { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null };
+  const pendingStep = { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null };
 
   async function setupWaiting(inputRequest = ASKED) {
     const ctx = await setup();
@@ -1347,5 +1371,296 @@ describe('pipelines API — what the agent needs, and answering it', () => {
     const response = await answer(ctx, id, { answer: 'yes' });
     expect(response.status).toBe(409);
     expect(response.body.message).toBe('The agent is no longer waiting for an answer.');
+  });
+});
+
+describe('pipelines API — loops and who decides', () => {
+  const loop = (to, max = 20) => ({ mode: 'loop_back', to, max });
+
+  async function seedLoop(ctx, { agentsDecide = true } = {}) {
+    const agent = ctx.agentStore.create(agentBody());
+    ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
+    const body = {
+      name: 'Build',
+      agentsDecide,
+      nodes: [
+        node(agent.id, { name: 'Develop' }),
+        node(agent.id, { name: 'Test', prompt: 'test it', repeat: loop('develop') }),
+        node(agent.id, { name: 'Review', prompt: 'review it' }),
+      ],
+    };
+    return { agent, body };
+  }
+
+  it('saves a workflow with a loop and agents that decide, and returns it as stored', async () => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    const created = await request(ctx.app).post(`${base}/workflows`).send(body);
+    expect(created.status).toBe(201);
+    expect(created.body.agentsDecide).toBe(true);
+    expect(created.body.nodes.map(n => n.repeat)).toEqual([{ mode: 'once' }, { mode: 'loop_back', to: 'Develop', max: 20 }, { mode: 'once' }]);
+
+    const read = await request(ctx.app).get(`${base}/workflows/${created.body.id}`);
+    expect(read.body).toEqual(created.body);
+    const list = await request(ctx.app).get(`${base}/workflows`);
+    expect(list.body.data).toEqual([created.body]);
+  });
+
+  it('changes who decides on update and refuses a stale revision', async () => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    const created = await request(ctx.app).post(`${base}/workflows`).send(body);
+    const updated = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...body, agentsDecide: false, revision: 1 });
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({ agentsDecide: false, revision: 2 });
+    const stale = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...body, revision: 1 });
+    expect(stale.status).toBe(409);
+    expect((await request(ctx.app).get(`${base}/workflows/${created.body.id}`)).body.agentsDecide).toBe(false);
+  });
+
+  it.each([
+    ['no agentsDecide', b => { delete b.agentsDecide; }, 'agentsDecide', 'Use true or false'],
+    ['agentsDecide as text', b => { b.agentsDecide = 'true'; }, 'agentsDecide', 'Use true or false'],
+    ['a loop back to a later node', b => { b.nodes[1].repeat = loop('Review'); }, 'nodes[1].repeat.to', 'Choose an earlier node to loop back to'],
+    ['a loop back to an unknown node', b => { b.nodes[1].repeat = loop('Deploy'); }, 'nodes[1].repeat.to', 'Choose an earlier node to loop back to'],
+    ['a loop on the first node', b => { b.nodes[0].repeat = loop('Develop'); }, 'nodes[0].repeat.to', 'Choose an earlier node to loop back to'],
+    ['a loop of 0 rounds', b => { b.nodes[1].repeat = loop('Develop', 0); }, 'nodes[1].repeat.max', 'Use a whole number from 1 to 100'],
+    ['a loop of 101 rounds', b => { b.nodes[1].repeat = loop('Develop', 101); }, 'nodes[1].repeat.max', 'Use a whole number from 1 to 100'],
+    ['loops that share a node', b => { b.nodes[2].repeat = loop('Develop'); }, 'nodes[2].repeat.to', 'Loops cannot share a node; this one overlaps the loop that ends at Test'],
+    ['an index in place of a name', b => { b.nodes[1].repeat = { mode: 'loop_back', toStepIndex: 0, max: 5 }; }, 'nodes[1].repeat.toStepIndex', 'Unknown field'],
+  ])('refuses a workflow with %s on create and on update, storing nothing', async (_label, breakIt, field, message) => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    const created = await request(ctx.app).post(`${base}/workflows`).send(body);
+    const bad = structuredClone(body);
+    breakIt(bad);
+
+    for (const response of [
+      await request(ctx.app).post(`${base}/workflows`).send({ ...bad, name: 'Other' }),
+      await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...bad, revision: 1 }),
+    ]) {
+      expect(response.status).toBe(400);
+      expect(response.headers['content-type']).toMatch(/application\/problem\+json/);
+      expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+      expect(response.body.errors).toContainEqual({ field, message });
+    }
+    expect(ctx.workflowStore.list()).toHaveLength(1);
+    expect(ctx.workflowStore.get(created.body.id).revision).toBe(1);
+  });
+
+  it('accepts loops of 1 and of 100 rounds', async () => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    for (const [name, max] of [['One', 1], ['Hundred', 100]]) {
+      const bounded = structuredClone(body);
+      bounded.name = name;
+      bounded.nodes[1].repeat = loop('Develop', max);
+      const response = await request(ctx.app).post(`${base}/workflows`).send(bounded);
+      expect(response.status).toBe(201);
+      expect(response.body.nodes[1].repeat.max).toBe(max);
+    }
+  });
+
+  it('starts a run whose loop points past Setup at the step it returns to', async () => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    const workflow = ctx.workflowStore.create(body);
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'loop-1', workflowId: workflow.id, project: 'Demo', input: 'x' });
+    expect(started.status).toBe(201);
+    expect(started.body.agentsDecide).toBe(true);
+    expect(started.body.decisionCount).toBe(0);
+    expect(started.body.steps.map(s => s.name)).toEqual(['Setup', 'Develop', 'Test', 'Review']);
+    expect(started.body.steps.map(s => s.repeat)).toEqual([
+      { mode: 'until_complete', max: 3 }, { mode: 'once' }, { mode: 'loop_back', toStepIndex: 1, max: 20 }, { mode: 'once' },
+    ]);
+    expect(started.body.steps.map(s => s.roundsCompleted)).toEqual([0, 0, 0, 0]);
+    expect(ctx.runStore.get(started.body.id).definition.agentsDecide).toBe(true);
+  });
+
+  it('shows the rounds a loop has completed', async () => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx, { agentsDecide: false });
+    const workflow = ctx.workflowStore.create(body);
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'loop-2', workflowId: workflow.id, project: 'Demo', input: 'x' });
+    const run = ctx.runStore.get(started.body.id);
+    ctx.runStore.update(run.id, { steps: run.steps.map((s, i) => (i === 2 ? { ...s, roundsCompleted: 7 } : s)) });
+    const read = await request(ctx.app).get(`${base}/runs/${run.id}`);
+    expect(read.body.steps[2].roundsCompleted).toBe(7);
+    expect(read.body.agentsDecide).toBe(false);
+  });
+
+  it('keeps a run as it started when its workflow is changed afterwards', async () => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    const workflow = ctx.workflowStore.create(body);
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'loop-3', workflowId: workflow.id, project: 'Demo', input: 'x' });
+    await request(ctx.app).put(`${base}/workflows/${workflow.id}`).send({ ...body, agentsDecide: false, nodes: [body.nodes[0]], revision: 1 });
+    const read = await request(ctx.app).get(`${base}/runs/${started.body.id}`);
+    expect(read.body.agentsDecide).toBe(true);
+    expect(read.body.steps[2].repeat).toEqual({ mode: 'loop_back', toStepIndex: 1, max: 20 });
+  });
+});
+
+describe('pipelines API — decisions agents made', () => {
+  const OTHER = 'b3e1c2d3-4567-4890-9bcd-ef0123456789';
+
+  async function setupRun() {
+    const ctx = await setup();
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'dec-1', workflowId: workflow.id, project: 'Demo', input: 'x' });
+    expect(started.status).toBe(201);
+    return { ctx, id: started.body.id };
+  }
+  const record = (ctx, runId, pass, patch = {}) => ctx.decisionStore.add({
+    runId, stepIndex: 1, stepName: 'Develop', pass, questions: `1. Question ${pass}?\nRecommended: yes`, truncated: false,
+    answer: 'Proceed with your recommendations.', ...patch,
+  });
+  const decisions = (ctx, id, query = {}) => request(ctx.app).get(`${base}/runs/${id}/decisions`).query(query);
+
+  it('lists the decisions of a run, oldest first, with every field and the page envelope', async () => {
+    const { ctx, id } = await setupRun();
+    const first = record(ctx, id, 1);
+    const second = record(ctx, id, 2, { truncated: true });
+    const response = await decisions(ctx, id);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: [first, second].map(d => ({
+        id: d.id, stepIndex: 1, stepName: 'Develop', pass: d.pass, questions: d.questions,
+        truncated: d.truncated, answer: 'Proceed with your recommendations.', createdAt: d.createdAt,
+      })),
+      page: { currentPage: 0, size: 20, totalElements: 2, totalPages: 1, hasNextPage: false },
+    });
+  });
+
+  it('returns an empty page for a run whose agents decided nothing', async () => {
+    const { ctx, id } = await setupRun();
+    const response = await decisions(ctx, id);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ data: [], page: { currentPage: 0, size: 20, totalElements: 0, totalPages: 0, hasNextPage: false } });
+  });
+
+  it('counts the decisions on the run and in the run list', async () => {
+    const { ctx, id } = await setupRun();
+    record(ctx, id, 1);
+    record(ctx, id, 2);
+    record(ctx, OTHER, 1);
+    expect((await request(ctx.app).get(`${base}/runs/${id}`)).body.decisionCount).toBe(2);
+    expect((await request(ctx.app).get(`${base}/runs`)).body.data.map(run => run.decisionCount)).toEqual([2]);
+  });
+
+  it('never returns another run\'s decisions', async () => {
+    const { ctx, id } = await setupRun();
+    record(ctx, OTHER, 1);
+    const mine = record(ctx, id, 1);
+    const response = await decisions(ctx, id);
+    expect(response.body.data.map(d => d.id)).toEqual([mine.id]);
+    expect(response.body.page.totalElements).toBe(1);
+  });
+
+  it('pages through decisions and reports whether more follow', async () => {
+    const { ctx, id } = await setupRun();
+    const ids = [1, 2, 3].map(pass => record(ctx, id, pass).id);
+    const first = await decisions(ctx, id, { size: 2 });
+    expect(first.body.data.map(d => d.id)).toEqual(ids.slice(0, 2));
+    expect(first.body.page).toEqual({ currentPage: 0, size: 2, totalElements: 3, totalPages: 2, hasNextPage: true });
+    const last = await decisions(ctx, id, { size: 2, page: 1 });
+    expect(last.body.data.map(d => d.id)).toEqual(ids.slice(2));
+    expect(last.body.page).toEqual({ currentPage: 1, size: 2, totalElements: 3, totalPages: 2, hasNextPage: false });
+    const beyond = await decisions(ctx, id, { size: 2, page: 9 });
+    expect(beyond.status).toBe(200);
+    expect(beyond.body.data).toEqual([]);
+    expect(beyond.body.page).toEqual({ currentPage: 9, size: 2, totalElements: 3, totalPages: 2, hasNextPage: false });
+  });
+
+  it('sorts by createdAt in either direction and by nothing else', async () => {
+    const { ctx, id } = await setupRun();
+    const ids = [1, 2, 3].map(pass => record(ctx, id, pass).id);
+    expect((await decisions(ctx, id, { sort: 'createdAt,asc' })).body.data.map(d => d.id)).toEqual(ids);
+    expect((await decisions(ctx, id, { sort: 'createdAt,desc' })).body.data.map(d => d.id)).toEqual([...ids].reverse());
+    for (const sort of ['answer,asc', 'createdAt', 'createdAt,up', 'createdAt,asc,extra', '']) {
+      const response = await decisions(ctx, id, { sort });
+      expect(response.status).toBe(400);
+      expect(response.body.errors).toEqual([{ field: 'sort', message: 'Sort by createdAt with asc or desc' }]);
+    }
+  });
+
+  it.each([
+    ['size', { size: 0 }],
+    ['size', { size: 101 }],
+    ['size', { size: '1e9' }],
+    ['size', { size: 'ten' }],
+    ['page', { page: -1 }],
+    ['page', { page: 1.5 }],
+    ['page', { page: 100001 }],
+    ['page', { page: 'abc' }],
+    ['project', { project: 'Demo' }],
+    ['q', { q: "'; DROP TABLE pipeline_run_decisions; --" }],
+  ])('answers 400 naming %s for the query %j', async (field, query) => {
+    const { ctx, id } = await setupRun();
+    record(ctx, id, 1);
+    const response = await decisions(ctx, id, query);
+    expect(response.status).toBe(400);
+    expect(response.headers['content-type']).toMatch(/application\/problem\+json/);
+    expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+    expect(response.body.errors.map(error => error.field)).toEqual([field]);
+    expect(ctx.decisionStore.count(id)).toBe(1);
+  });
+
+  it('accepts the largest page size and the largest page number', async () => {
+    const { ctx, id } = await setupRun();
+    record(ctx, id, 1);
+    expect((await decisions(ctx, id, { size: 100 })).status).toBe(200);
+    expect((await decisions(ctx, id, { size: 1, page: 100000 })).body.data).toEqual([]);
+  });
+
+  it.each([
+    'c4f2d3e4-5678-4901-8cde-f01234567890',
+    'not-a-uuid',
+    '../../etc/passwd',
+    '%00',
+  ])('answers 404 for the unknown or malformed run %s', async (runId) => {
+    const { ctx, id } = await setupRun();
+    record(ctx, id, 1);
+    const response = await request(ctx.app).get(`${base}/runs/${encodeURIComponent(runId)}/decisions`);
+    expect(response.status).toBe(404);
+    expect(response.headers['content-type']).toMatch(/application\/problem\+json/);
+    expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+    expect(response.body.message).toBe('Run not found');
+  });
+
+  it('gives the same answer to repeated and to simultaneous reads, and changes nothing', async () => {
+    const { ctx, id } = await setupRun();
+    [1, 2, 3].forEach(pass => record(ctx, id, pass));
+    const before = ctx.runStore.get(id);
+    const responses = await Promise.all(Array.from({ length: 8 }, () => decisions(ctx, id, { size: 2 })));
+    expect(new Set(responses.map(response => JSON.stringify(response.body))).size).toBe(1);
+    expect(responses.every(response => response.status === 200)).toBe(true);
+    expect(ctx.decisionStore.count(id)).toBe(3);
+    expect(ctx.runStore.get(id)).toEqual(before);
+  });
+
+  it('refuses to write through the collection', async () => {
+    const { ctx, id } = await setupRun();
+    for (const method of ['post', 'put', 'delete']) {
+      const response = await request(ctx.app)[method](`${base}/runs/${id}/decisions`).set('Content-Length', '2').send({});
+      expect(response.status).toBe(404);
+    }
+    expect(ctx.decisionStore.count(id)).toBe(0);
+  });
+
+  it('answers 500 with a trace id, not the stored text, when a stored decision is corrupt', async () => {
+    const { ctx, id } = await setupRun();
+    const added = record(ctx, id, 1, { questions: '1. A private question?' });
+    ctx.db.prepare('UPDATE pipeline_run_decisions SET pass = 0 WHERE id = ?').run(added.id);
+    const response = await decisions(ctx, id);
+    expect(response.status).toBe(500);
+    expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+    expect(JSON.stringify(response.body)).not.toContain('private question');
+  });
+
+  it('requires the decision store', () => {
+    expect(() => createPipelinesRouter({
+      agentStore: {}, workflowStore: {}, settingsStore: {}, runStore: {}, findProject: () => null,
+    })).toThrow('pipelines router: decisionStore is required');
   });
 });

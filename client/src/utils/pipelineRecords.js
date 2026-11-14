@@ -1,4 +1,4 @@
-import { isUuid } from '../../../shared/pipeline-definitions.mjs';
+import { isUuid, loopTargetIndex } from '../../../shared/pipeline-definitions.mjs';
 import { PipelineApiError, getPipelineSettings, listAgents, listWorkflows } from './pipelinesApi';
 
 // Responses are an edge: every field of an agent, workflow and settings response is checked before use.
@@ -39,40 +39,46 @@ export function parseAgent(record) {
   return { id, name, launchCommand, resetCommand, revision, createdAt, updatedAt };
 }
 
-function parseRepeat(repeat, path, id) {
+function parseRepeat(nodes, index, id) {
+  const path = `nodes[${index}]`;
+  const { repeat } = nodes[index];
   if (!isObject(repeat)) throw invalid('workflow', `${path}.repeat`, id);
+  if (!['once', 'until_complete', 'loop_back'].includes(repeat.mode)) throw invalid('workflow', `${path}.repeat.mode`, id);
+  const loops = repeat.mode === 'loop_back';
+  // A loop names an earlier node of the workflow; no other repeat has a target.
+  if (loops ? loopTargetIndex(nodes, index) < 0 : repeat.to !== undefined) throw invalid('workflow', `${path}.repeat.to`, id);
   if (repeat.mode === 'once') {
     if (repeat.max !== undefined) throw invalid('workflow', `${path}.repeat.max`, id);
     return { mode: 'once' };
   }
-  if (repeat.mode === 'until_complete') {
-    if (!Number.isInteger(repeat.max) || repeat.max < 1 || repeat.max > 100) {
-      throw invalid('workflow', `${path}.repeat.max`, id);
-    }
-    return { mode: 'until_complete', max: repeat.max };
+  if (!Number.isInteger(repeat.max) || repeat.max < 1 || repeat.max > 100) {
+    throw invalid('workflow', `${path}.repeat.max`, id);
   }
-  throw invalid('workflow', `${path}.repeat.mode`, id);
+  return loops ? { mode: 'loop_back', to: repeat.to, max: repeat.max } : { mode: 'until_complete', max: repeat.max };
 }
 
-function parseNode(node, index, id) {
+function parseNode(nodes, index, id) {
+  const node = nodes[index];
   const path = `nodes[${index}]`;
   if (!isObject(node)) throw invalid('workflow', path, id);
   if (!isText(node.name)) throw invalid('workflow', `${path}.name`, id);
   if (!isUuid(node.agentId)) throw invalid('workflow', `${path}.agentId`, id);
   if (!isText(node.prompt)) throw invalid('workflow', `${path}.prompt`, id);
-  return { name: node.name, agentId: node.agentId, prompt: node.prompt, repeat: parseRepeat(node.repeat, path, id) };
+  return { name: node.name, agentId: node.agentId, prompt: node.prompt, repeat: parseRepeat(nodes, index, id) };
 }
 
 export function parseWorkflow(record) {
   if (!isObject(record)) throw invalid('workflow', 'workflow');
-  const { id, name, revision, nodes, createdAt, updatedAt } = record;
+  const { id, name, agentsDecide, revision, nodes, createdAt, updatedAt } = record;
   if (!isUuid(id)) throw invalid('workflow', 'id');
   if (!isText(name)) throw invalid('workflow', 'name', id);
+  // Whether the workflow's agents settle their own questions instead of pausing for the owner.
+  if (typeof agentsDecide !== 'boolean') throw invalid('workflow', 'agentsDecide', id);
   if (!isRevision(revision)) throw invalid('workflow', 'revision', id);
   if (!isTimestamp(createdAt)) throw invalid('workflow', 'createdAt', id);
   if (!isTimestamp(updatedAt)) throw invalid('workflow', 'updatedAt', id);
   if (!Array.isArray(nodes) || nodes.length < 1) throw invalid('workflow', 'nodes', id);
-  return { id, name, revision, nodes: nodes.map((node, index) => parseNode(node, index, id)), createdAt, updatedAt };
+  return { id, name, agentsDecide, revision, nodes: nodes.map((_node, index) => parseNode(nodes, index, id)), createdAt, updatedAt };
 }
 
 export function parseSettings(record) {

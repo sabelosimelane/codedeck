@@ -82,8 +82,9 @@ appear as a toast. Resizing or reconnecting ends selection with a notice.
 ## Workflow pipelines
 
 Open **Settings → Workflows** to add agents, choose a
-Setup agent, and save an ordered workflow. Each node has a prompt, an agent and
-either a single pass or repetition until completion with a maximum pass count.
+Setup agent, and save an ordered workflow. Each node has a prompt, an agent and a
+repeat rule: a single pass, repetition until completion with a maximum pass count,
+or a loop back to an earlier node (see below).
 `{input}` in prompts is replaced once with the input supplied when starting a run.
 Write a skill as `/name` at the start of a prompt (for example `/feature-dev {input}`).
 Codex invokes skills with `$`, so when the CLI running the step is Codex, CodeDeck sends
@@ -124,7 +125,28 @@ terminal. A dialog the agent shows while starting (trust or permission) is answe
 in the terminal only. The sidebar count for a project turns to the warning colour
 while one of its runs waits for you, and the phone gets an "Input requested" push.
 
-The runs bar shows steps, passes, branch and available controls. **Stop** stops
+**Looping a group of nodes.** Set a node's repeat to **Loop back to an earlier node**,
+choose that node and a maximum number of rounds. The nodes from there to the looping
+node then run in order, round after round: for example Develop → Test with Test
+looping back to Develop builds and tests one phase per round. The looping node's agent
+decides: when it reports work left the loop runs again, when it reports COMPLETE the
+run moves on to the next node. Each node keeps its own terminal tab across rounds; its
+agent's context is cleared with the reset command before each new round. At the
+maximum number of rounds the run pauses and **Continue** moves past the loop. Loops
+cannot share a node, and the first node cannot loop.
+
+**Let agents decide.** Tick this on a workflow to keep its runs going without you.
+Each agent is told to go with the option it would recommend instead of asking, and to
+write the decision down. If an agent pauses anyway and lists its questions, CodeDeck
+answers "Proceed with your recommendations." for it and the run carries on. The runs
+bar marks such a run **agents decide** and shows **N decisions made by agents**; open
+it to read what was asked and answered. You are still asked when an agent pauses
+without listing what it needs, when it asks again in the same pass, when the Setup
+step asks, and for a dialog an agent shows while starting. With this on, an agent's
+own choice is acted on before you see it: agents that skip permission prompts will
+build, commit and push on those choices.
+
+The runs bar shows steps, passes, loop rounds, branch and available controls. **Stop** stops
 automation; the agent may still be working. **Resume** warns about that terminal
 and creates a fresh attempt. At the pass limit, **Continue** advances to the next
 step. Runs survive browser disconnects. A backend restart marks active runs

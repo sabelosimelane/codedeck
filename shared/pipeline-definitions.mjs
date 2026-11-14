@@ -64,34 +64,78 @@ export function validateAgentBody(body, { revisionRequired = false } = {}) {
   return errors;
 }
 
+// Which fields each repeat mode takes. `loop_back` sends the run back to an earlier node.
+const REPEAT_FIELDS = {
+  once: ['mode'],
+  until_complete: ['mode', 'max'],
+  loop_back: ['mode', 'to', 'max'],
+};
+const REPEAT_KNOWN = ['mode', 'to', 'max'];
+
 function validateRepeat(errors, prefix, repeat) {
   if (!isPlainObject(repeat)) {
     add(errors, `${prefix}.repeat`, 'A repeat object is required');
     return;
   }
+  const allowed = REPEAT_FIELDS[repeat.mode];
+  if (!allowed) {
+    add(errors, `${prefix}.repeat.mode`, 'Choose once, until_complete or loop_back');
+    return;
+  }
   for (const field of Object.keys(repeat)) {
-    if (!['mode', 'max'].includes(field)) add(errors, `${prefix}.repeat.${field}`, 'Unknown field');
+    if (allowed.includes(field)) continue;
+    add(errors, `${prefix}.repeat.${field}`, REPEAT_KNOWN.includes(field)
+      ? `${field} is not allowed when mode is ${repeat.mode}`
+      : 'Unknown field');
   }
-  if (repeat.mode === 'once') {
-    if (repeat.max !== undefined) {
-      add(errors, `${prefix}.repeat.max`, 'max is not allowed when mode is once');
+  if (allowed.includes('max') && (!Number.isInteger(repeat.max) || repeat.max < 1 || repeat.max > 100)) {
+    add(errors, `${prefix}.repeat.max`, 'Use a whole number from 1 to 100');
+  }
+}
+
+const nodeNameKey = node => (isPlainObject(node) && typeof node.name === 'string' ? node.name.trim().toLowerCase() : '');
+
+/**
+ * The index of the node that node `index` loops back to, or -1 when its repeat names no
+ * earlier node. Names match as node names are compared for uniqueness: trimmed, any case.
+ */
+export function loopTargetIndex(nodes, index) {
+  const repeat = nodes[index]?.repeat;
+  if (!isPlainObject(repeat) || repeat.mode !== 'loop_back' || typeof repeat.to !== 'string') return -1;
+  const wanted = repeat.to.trim().toLowerCase();
+  if (wanted === '') return -1;
+  const target = nodes.findIndex(node => nodeNameKey(node) === wanted);
+  return target >= 0 && target < index ? target : -1;
+}
+
+/** A loop runs its nodes in order, round after round; two loops may not share a node. */
+function validateLoops(errors, nodes) {
+  const loops = [];
+  nodes.forEach((node, index) => {
+    if (!isPlainObject(node) || !isPlainObject(node.repeat) || node.repeat.mode !== 'loop_back') return;
+    const field = `nodes[${index}].repeat.to`;
+    const target = loopTargetIndex(nodes, index);
+    if (target < 0) {
+      add(errors, field, 'Choose an earlier node to loop back to');
+      return;
     }
-    return;
-  }
-  if (repeat.mode === 'until_complete') {
-    if (!Number.isInteger(repeat.max) || repeat.max < 1 || repeat.max > 100) {
-      add(errors, `${prefix}.repeat.max`, 'Use a whole number from 1 to 100');
+    // Every loop found so far ends before this node, so they overlap when this one starts inside it.
+    const clash = loops.find(loop => target <= loop.end);
+    if (clash) {
+      add(errors, field, `Loops cannot share a node; this one overlaps the loop that ends at ${nodes[clash.end].name.trim()}`);
+      return;
     }
-    return;
-  }
-  add(errors, `${prefix}.repeat.mode`, 'Choose once or until_complete');
+    loops.push({ start: target, end: index });
+  });
 }
 
 export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['name', 'nodes', 'revision'])) return errors;
+  if (!rejectUnknown(errors, body, ['name', 'agentsDecide', 'nodes', 'revision'])) return errors;
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
   requireRevision(errors, body.revision, revisionRequired);
+  // Whether agents settle their own questions during a run instead of pausing for the owner.
+  if (typeof body.agentsDecide !== 'boolean') add(errors, 'agentsDecide', 'Use true or false');
 
   if (!Array.isArray(body.nodes) || body.nodes.length < 1 || body.nodes.length > 32) {
     add(errors, 'nodes', 'Configure 1–32 nodes');
@@ -128,6 +172,7 @@ export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
     }
     validateRepeat(errors, prefix, node.repeat);
   });
+  validateLoops(errors, body.nodes);
 
   return errors;
 }
@@ -168,6 +213,9 @@ export function validateRunStartBody(body) {
   }
   return errors;
 }
+
+/** The answer that accepts every recommendation an agent listed with its questions. */
+export const ACCEPT_RECOMMENDATIONS_ANSWER = 'Proceed with your recommendations.';
 
 // An answer is pasted into the agent's terminal: new lines are text, any other control
 // character (an escape sequence could end the paste) is refused.

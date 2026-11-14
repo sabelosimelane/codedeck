@@ -7,14 +7,21 @@
 import { applyEvent, computeActions } from './run-machine.js';
 import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
+import { buildStepGuidance } from './step-guidance.js';
+import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../shared/pipeline-definitions.mjs';
 
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
 
+// A step that loops back does one pass per round; its `max` counts rounds, not passes.
 function maxIterationsFor(repeat) {
   if (repeat?.mode === 'until_complete') return repeat.max;
   return 1;
+}
+
+function terminalGoneMessage(stepName) {
+  return `The terminal of step ${stepName} is no longer available. Resume the run to continue in a new terminal.`;
 }
 
 function delay(ms, setTimeoutFn) {
@@ -44,6 +51,7 @@ export function createRunEngine({
   classifyReadiness,
   readExecutionState,
   readScreen,
+  decisionStore,
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
   pathExists = async () => true,
@@ -61,6 +69,7 @@ export function createRunEngine({
   if (typeof classifyReadiness !== 'function') throw new Error('createRunEngine: classifyReadiness is required');
   if (typeof readExecutionState !== 'function') throw new Error('createRunEngine: readExecutionState is required');
   if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
+  if (typeof decisionStore?.add !== 'function') throw new Error('createRunEngine: decisionStore is required');
 
   const handles = new Map();
 
@@ -157,7 +166,11 @@ export function createRunEngine({
     });
   }
 
-  async function waitUntilReady(runId, sessionId, agentName) {
+  /**
+   * `returningStep` names the step when it returns to a terminal it used in an earlier round
+   * of a loop: nothing was launched, so an absent agent or terminal is reported as such.
+   */
+  async function waitUntilReady(runId, sessionId, agentName, returningStep = null) {
     let waitedMs = 0;
     let lastState = null;
 
@@ -177,12 +190,16 @@ export function createRunEngine({
       }
 
       if (result === 'exited') {
-        failRun(runId, `The launch command for agent ${agentName} exited.`);
+        failRun(runId, returningStep === null
+          ? `The launch command for agent ${agentName} exited.`
+          : `Agent ${agentName} is no longer running in the terminal of step ${returningStep}. Resume the run to continue in a new terminal.`);
         return { ok: false, reason: 'exited' };
       }
 
       if (result === 'closed') {
-        failRun(runId, `The terminal closed while launching agent ${agentName}.`);
+        failRun(runId, returningStep === null
+          ? `The terminal closed while launching agent ${agentName}.`
+          : terminalGoneMessage(returningStep));
         return { ok: false, reason: 'closed' };
       }
 
@@ -220,6 +237,45 @@ export function createRunEngine({
     return extractQuestions(await readScreen(sessionId), identifier);
   }
 
+  /**
+   * In a workflow whose agents decide, answer a listed request with the agent's own
+   * recommendations instead of pausing the run, once per pass, and record what was decided.
+   * @returns {Promise<boolean>} false when the request is the owner's to answer
+   */
+  async function decideForOwner(runId, run, inputRequest, snapshot) {
+    const stepIndex = run.currentStepIndex;
+    const defStep = run.definition.steps[stepIndex];
+    // Setup follows CodeDeck's own rules; a request without a list has no recommendation to accept.
+    if (!run.definition.agentsDecide || defStep.kind !== 'node' || inputRequest.questions === null) return false;
+    const handle = getHandle(runId);
+    const { workflow, attachment } = handle;
+    const identifier = workflow.signalIdentifier();
+    // An agent that asks again in the same pass was not helped by the first answer.
+    if (handle.decidedIdentifier === identifier) return false;
+
+    attachment.write(`\x1b[200~${ACCEPT_RECOMMENDATIONS_ANSWER}\x1b[201~`);
+    await delay(launchEnterDelayMs, setTimeoutFn);
+    // Stop, a closed terminal or the agent moving on ends the wait; nothing is submitted then.
+    if (handle.stopped || handle.workflow !== workflow || workflow.snapshot().status !== 'needs_input'
+      || runStore.get(runId)?.status !== 'running') {
+      return true;
+    }
+    // Recorded before it is submitted: an answer is never sent without its record.
+    decisionStore.add({
+      runId,
+      stepIndex,
+      stepName: defStep.name,
+      pass: snapshot.iteration,
+      questions: inputRequest.questions,
+      truncated: inputRequest.truncated,
+      answer: ACCEPT_RECOMMENDATIONS_ANSWER,
+    });
+    handle.decidedIdentifier = identifier;
+    attachment.write('\r');
+    workflow.input(ACCEPT_RECOMMENDATIONS_ANSWER);
+    return true;
+  }
+
   async function applyWorkflowSnapshot(runId, snapshot) {
     const current = runStore.get(runId);
     if (!current) return { terminal: true };
@@ -247,9 +303,13 @@ export function createRunEngine({
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received' });
       }
-      const defStep = current.definition.steps[current.currentStepIndex];
-      if (defStep?.repeat?.mode === 'once') {
+      const repeat = current.definition.steps[current.currentStepIndex]?.repeat;
+      if (repeat?.mode === 'once') {
         persistTransition(runId, { type: 'step_complete', at: now() });
+      } else if (repeat?.mode === 'loop_back'
+        && current.steps[current.currentStepIndex].roundsCompleted + 1 < repeat.max) {
+        // Work is left and another round is allowed: the loop starts again at its first step.
+        persistTransition(runId, { type: 'loop_back', toStepIndex: repeat.toStepIndex, at: now() });
       } else {
         persistTransition(runId, { type: 'limit_reached', at: now() });
       }
@@ -270,9 +330,9 @@ export function createRunEngine({
       if (current.status === 'running') {
         const inputRequest = await readInputRequest(runId, current);
         // Stop, or the terminal closing, may have ended the run while the screen was read.
-        if (runStore.get(runId)?.status === 'running') {
-          persistTransition(runId, { type: 'needs_input', inputRequest });
-        }
+        if (runStore.get(runId)?.status !== 'running') return { terminal: false };
+        if (await decideForOwner(runId, current, inputRequest, snapshot)) return { terminal: false };
+        persistTransition(runId, { type: 'needs_input', inputRequest });
       }
       return { terminal: false };
     }
@@ -337,28 +397,42 @@ export function createRunEngine({
 
       if (handle.stopped) return;
 
-      const sessionId = await startSession({
-        project: run.project,
-        cwd: run.worktreePath,
-      });
-      if (handle.stopped) return;
+      // A step that ran in an earlier round of a loop returns to its terminal, where its agent
+      // is still running. Any other step gets a new terminal and its agent is launched there.
+      let { sessionId } = step;
+      const returning = sessionId !== null;
+      if (!returning) {
+        sessionId = await startSession({
+          project: run.project,
+          cwd: run.worktreePath,
+        });
+        if (handle.stopped) return;
 
-      const stepsWithSession = run.steps.map((s, i) => (
-        i === stepIndex ? { ...s, sessionId } : s
-      ));
-      run = runStore.update(runId, { steps: stepsWithSession });
+        const stepsWithSession = run.steps.map((s, i) => (
+          i === stepIndex ? { ...s, sessionId } : s
+        ));
+        run = runStore.update(runId, { steps: stepsWithSession });
+      }
 
-      attachment = attachBackground(sessionId, { cwd: run.worktreePath });
+      try {
+        attachment = attachBackground(sessionId, { cwd: run.worktreePath });
+      } catch (err) {
+        if (!returning) throw err;
+        console.warn(`[pipeline-run] returning to ${sessionId} failed for ${runId}: ${err?.message || err}`);
+        throw new Error(terminalGoneMessage(defStep.name));
+      }
       handle.attachment = attachment;
 
       if (handle.stopped) return;
 
-      attachment.write(agent.launchCommand);
-      await delay(launchEnterDelayMs, setTimeoutFn);
-      if (handle.stopped) return;
-      attachment.write('\r');
+      if (!returning) {
+        attachment.write(agent.launchCommand);
+        await delay(launchEnterDelayMs, setTimeoutFn);
+        if (handle.stopped) return;
+        attachment.write('\r');
+      }
 
-      const ready = await waitUntilReady(runId, sessionId, agent.name);
+      const ready = await waitUntilReady(runId, sessionId, agent.name, returning ? defStep.name : null);
       if (!ready.ok) return;
 
       let current = runStore.get(runId);
@@ -373,6 +447,7 @@ export function createRunEngine({
       const command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
       const maxIterations = maxIterationsFor(defStep.repeat);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
+      const guidance = buildStepGuidance(current.definition, stepIndex);
 
       let settled = false;
       const settleWorkflow = () => {
@@ -427,6 +502,9 @@ export function createRunEngine({
         command,
         resetCommand: agent.resetCommand,
         maxIterations,
+        // The agent of a returning step still holds the previous round's context.
+        resetFirst: returning,
+        ...(guidance === undefined ? {} : { guidance }),
       });
 
       await workflowFinished;

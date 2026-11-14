@@ -1,5 +1,38 @@
 # Changelog
 
+## [2026-11-14] - Loop a group of workflow steps and let agents decide
+
+### Executive Summary
+* A workflow run kept stopping for the owner. A step could only repeat by itself, so a build step that needs a test step after every phase stopped once per phase; and every question an agent raised paused the run. A step can now loop back to an earlier step, so a group such as Develop → Test runs round after round in the same terminals until the work is done. A workflow can also be set to **Let agents decide**: its agents are told to go with their own recommendations, CodeDeck answers "Proceed with your recommendations." when one pauses with a list of questions anyway, and every such decision is kept on the run for the owner to read afterwards. Both are off unless the owner sets them on a workflow.
+
+### Technical Details
+* **✨ New Feature:**
+  * `shared/pipeline-definitions.mjs` — Repeat mode `loop_back` (`to`: the name of an earlier node, `max` rounds); loops may not share a node; required workflow field `agentsDecide`; `loopTargetIndex`; the shared `ACCEPT_RECOMMENDATIONS_ANSWER` text.
+  * `server/pipelines/run-machine.js` — Event `loop_back`: counts the finished round on the looping step, makes the loop's steps pending again with their terminals kept, and continues at the loop's first step.
+  * `server/pipelines/run-engine.js` — A looping step runs one pass per round and loops back while rounds remain, otherwise pauses at the limit; a step returning to a terminal from an earlier round attaches to it, checks the agent is at its prompt and resets it before the prompt; `decideForOwner` answers a listed request once per pass for workflows whose agents decide, recording it before submitting.
+  * `server/pipelines/step-guidance.js` (new) — What a step is told beyond the standard instruction: what the loop is (looping step) and to decide for itself (node steps when agents decide).
+  * `server/pipelines/decision-store.js` (new) — Append-only table `pipeline_run_decisions` with per-field checks on write and read, count and paged listing per run.
+  * `server/terminal-workflow.js` — `start` accepts `resetFirst` (reset the agent before the first pass) and `guidance` (one more line of instruction on every pass).
+* **🔌 API/Interface:**
+  * `server/routes/pipelines.js` — Workflows carry `agentsDecide` and `loop_back` repeats; a run's snapshot resolves a loop to `toStepIndex` (past Setup when there is one); run views add `agentsDecide`, `decisionCount` and each step's `roundsCompleted`; new `GET /runs/:id/decisions` (paginated, sort `createdAt`, RFC 9457 errors).
+  * `docs/steering/api-standards.md` — The workflow and run rows and the new decisions endpoint.
+* **🗄️ Database:**
+  * `server/pipelines/workflow-store.js` — Column `agents_decide` (added to existing databases; existing workflows read as off); a loop is stored under the name of the node it returns to.
+  * `server/pipelines/run-store.js` — Run snapshots validate `agentsDecide`, `loop_back` with `toStepIndex`, non-overlapping loops and `roundsCompleted`; runs stored before these fields are given `agentsDecide: false` and `roundsCompleted: 0` once, when the store is constructed.
+  * `server/index.js` — Creates the decision store and passes it to the run engine and the router.
+* **🛠️ Codebase:**
+  * `client/src/components/pipelines/WorkflowEditor.jsx` — Repeat choice "Loop back to an earlier node" with its node and maximum rounds (the loop follows its node when that node is renamed or moved); the **Let agents decide** checkbox.
+  * `client/src/components/pipelines/WorkflowList.jsx` — The summary shows a loop (`Test ↺ Develop`) and "agents decide".
+  * `client/src/components/pipelines/PipelineRunsBar.jsx` — A looping step shows `round k/max`; a run whose agents decide is marked; **N decisions made by agents** opens a paged list of what was asked and answered, reloaded when another decision is made.
+  * `client/src/hooks/usePipelineRuns.js` — `loadRunDecisions`; polled and returned runs are checked for the new fields before they are shown.
+  * `client/src/utils/pipelineRecords.js`, `client/src/utils/pipelineRunRecords.js`, `client/src/utils/pipelinesApi.js` — Parsers for `agentsDecide`, `loop_back`, `roundsCompleted`, decisions and their page; `listRunDecisions`.
+  * `client/src/App.jsx`, `client/src/components/TerminalArea.jsx` — Pass the decisions loader to the runs bar.
+  * `README.md`, `docs/steering/product.md`, `docs/steering/structure.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — Describe loops (§8.13) and agents deciding (§8.14), including what the owner is still asked.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-decision-store.test.js`, `server/__tests__/pipeline-step-guidance.test.js` (new); `pipeline-definitions`, `pipeline-definition-store`, `pipeline-run-store`, `pipeline-run-machine`, `terminal-workflow`, `pipeline-run-engine` and `pipelines-api` tests extended.
+  * `server/__tests__/pipeline-run-live.test.js` — A real-tmux run of Develop → Test over two rounds in two terminals, with an automatic answer and its record; its stub agent reads the terminal raw, as agent CLIs do.
+  * `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx`, `PipelineRunsBar.test.jsx`, `client/src/hooks/__tests__/usePipelineRuns.test.jsx`, `client/src/utils/__tests__/pipelineRecords.test.js`, `pipelineRunRecords.test.js`, `pipelinesApi.test.js`, `pipelineRunFixture.js` — The editor, runs bar, hook and parsers for both features.
+
 ## [2026-11-14] - See what a paused agent needs and answer it from the runs bar
 
 ### Executive Summary

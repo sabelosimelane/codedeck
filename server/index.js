@@ -23,6 +23,7 @@ import { createAgentStore } from './pipelines/agent-store.js';
 import { createWorkflowStore } from './pipelines/workflow-store.js';
 import { createSettingsStore } from './pipelines/settings-store.js';
 import { createRunStore } from './pipelines/run-store.js';
+import { createDecisionStore } from './pipelines/decision-store.js';
 import {
   create as createPipelineWorktree,
   remove as removePipelineWorktree,
@@ -840,8 +841,10 @@ const pipelineAgentStore = createAgentStore(db);
 const pipelineWorkflowStore = createWorkflowStore(db);
 const pipelineSettingsStore = createSettingsStore(db);
 const pipelineRunStore = createRunStore(db);
+const pipelineDecisionStore = createDecisionStore(db);
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
+  decisionStore: pipelineDecisionStore,
   createWorktree: async (run) => {
     const project = loadProjects().find(candidate => candidate.name === run.project);
     if (!project?.path) throw new Error(`Project ${run.project} not found for worktree create`);
@@ -931,6 +934,7 @@ app.use(createPipelinesRouter({
   workflowStore: pipelineWorkflowStore,
   settingsStore: pipelineSettingsStore,
   runStore: pipelineRunStore,
+  decisionStore: pipelineDecisionStore,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   engine: pipelineRunEngine,
   execFile,

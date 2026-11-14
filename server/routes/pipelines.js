@@ -11,6 +11,7 @@ import {
   validateRunAnswerBody,
   composePrompt,
   isUuid,
+  loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions } from '../pipelines/run-machine.js';
 import {
@@ -38,6 +39,7 @@ const WORKTREE_REASONS = {
 const AGENT_SORT = ['name', 'updatedAt'];
 const WORKFLOW_SORT = ['name', 'updatedAt'];
 const RUN_SORT = ['createdAt', 'updatedAt', 'status'];
+const DECISION_SORT = ['createdAt'];
 
 class PipelineError extends Error {
   constructor(message, status, errors, extra = {}) {
@@ -120,12 +122,16 @@ function isOpenRun(run) {
   return OPEN_WORKTREE.has(run.worktreeState);
 }
 
-function asRunView(run) {
+/** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
+function buildRunView(run, decisionCount) {
   return {
     id: run.id,
     requestId: run.requestId,
     workflowId: run.workflowId,
     workflowName: run.definition.workflowName,
+    // Whether this run's agents settle their own questions, as the workflow said when it started.
+    agentsDecide: run.definition.agentsDecide,
+    decisionCount,
     project: run.project,
     input: run.input,
     status: run.status,
@@ -145,6 +151,7 @@ function asRunView(run) {
         priorSessionIds: progress.priorSessionIds,
         attempt: progress.attempt,
         iteration: progress.iteration,
+        roundsCompleted: progress.roundsCompleted,
         detail: progress.detail,
         startedAt: progress.startedAt,
         finishedAt: progress.finishedAt,
@@ -176,9 +183,23 @@ function pendingStep() {
     priorSessionIds: [],
     attempt: 0,
     iteration: 0,
+    roundsCompleted: 0,
     detail: null,
     startedAt: null,
     finishedAt: null,
+  };
+}
+
+function decisionView(decision) {
+  return {
+    id: decision.id,
+    stepIndex: decision.stepIndex,
+    stepName: decision.stepName,
+    pass: decision.pass,
+    questions: decision.questions,
+    truncated: decision.truncated,
+    answer: decision.answer,
+    createdAt: decision.createdAt,
   };
 }
 
@@ -264,7 +285,16 @@ function buildDefinitionSnapshot({
     errors.push({ field: 'setupAgentId', message: 'Choose a setup agent in Settings → Workflows.' });
   }
 
-  const nodeSteps = workflow.nodes.map(node => {
+  // Setup, when the run has one, is step 0; a loop names the step it returns to by its index.
+  const firstNodeStep = withSetup ? 1 : 0;
+  const repeatSnapshot = (index) => {
+    const { repeat } = workflow.nodes[index];
+    if (repeat.mode === 'once') return { mode: 'once' };
+    if (repeat.mode === 'until_complete') return { mode: 'until_complete', max: repeat.max };
+    return { mode: 'loop_back', toStepIndex: firstNodeStep + loopTargetIndex(workflow.nodes, index), max: repeat.max };
+  };
+
+  const nodeSteps = workflow.nodes.map((node, index) => {
     const agent = agentStore.get(node.agentId);
     if (!agent) {
       errors.push({ field: 'workflowId', message: 'Workflow references a missing agent' });
@@ -275,9 +305,7 @@ function buildDefinitionSnapshot({
       kind: 'node',
       name: node.name,
       prompt,
-      repeat: node.repeat.mode === 'once'
-        ? { mode: 'once' }
-        : { mode: 'until_complete', max: node.repeat.max },
+      repeat: repeatSnapshot(index),
       agent: agentSnapshot(agent),
     };
   });
@@ -296,6 +324,7 @@ function buildDefinitionSnapshot({
     workflowId: workflow.id,
     workflowName: workflow.name,
     workflowRevision: workflow.revision,
+    agentsDecide: workflow.agentsDecide,
     steps: [...setupSteps, ...nodeSteps],
   };
 }
@@ -334,6 +363,7 @@ export function createPipelinesRouter(deps) {
     workflowStore,
     settingsStore,
     runStore,
+    decisionStore,
     findProject,
     engine,
     preflight = defaultPreflight,
@@ -350,7 +380,10 @@ export function createPipelinesRouter(deps) {
   if (!workflowStore) throw new Error('pipelines router: workflowStore is required');
   if (!settingsStore) throw new Error('pipelines router: settingsStore is required');
   if (!runStore) throw new Error('pipelines router: runStore is required');
+  if (!decisionStore) throw new Error('pipelines router: decisionStore is required');
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
+
+  const asRunView = run => buildRunView(run, decisionStore.count(run.id));
 
   const router = express.Router();
   const route = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch(next);
@@ -643,7 +676,7 @@ export function createPipelinesRouter(deps) {
 
     const page = paginate(records, query);
     res.json({
-      data: page.data.map(asRunView),
+      data: page.data.map(run => asRunView(run)),
       page: page.page,
     });
   }));
@@ -809,6 +842,28 @@ export function createPipelinesRouter(deps) {
 
   router.post(`${BASE}/runs/:id/cleanup`, route(async (req, res) => {
     await runOwnerAction(req, res, 'cleanup');
+  }));
+
+  // What the run's agents were asked to settle themselves, in the order it happened.
+  router.get(`${BASE}/runs/:id/decisions`, route((req, res) => {
+    const run = loadRun(req.params.id);
+    const query = parseCollectionQuery(req.query, { sortFields: DECISION_SORT, defaultSort: 'createdAt,asc' });
+    const total = decisionStore.count(run.id);
+    const records = decisionStore.list(run.id, {
+      offset: query.page * query.size,
+      limit: query.size,
+      direction: query.direction,
+    });
+    res.json({
+      data: records.map(decisionView),
+      page: {
+        currentPage: query.page,
+        size: query.size,
+        totalElements: total,
+        totalPages: Math.ceil(total / query.size),
+        hasNextPage: (query.page + 1) * query.size < total,
+      },
+    });
   }));
 
   router.use(BASE, (_req, _res, next) => next(new PipelineError('Pipelines endpoint not found', 404)));

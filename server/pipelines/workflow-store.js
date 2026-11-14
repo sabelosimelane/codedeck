@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { validateWorkflowBody, isUuid } from '../../shared/pipeline-definitions.mjs';
+import { validateWorkflowBody, isUuid, loopTargetIndex } from '../../shared/pipeline-definitions.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
@@ -31,6 +31,11 @@ function requireRevision(id, value) {
   return value;
 }
 
+function requireFlag(id, field, value) {
+  if (value !== 0 && value !== 1) fieldError(id, field, 'must be 0 or 1');
+  return value === 1;
+}
+
 function parseNodes(id, raw) {
   let nodes;
   try {
@@ -38,7 +43,7 @@ function parseNodes(id, raw) {
   } catch {
     fieldError(id, 'nodes', 'must be valid JSON');
   }
-  const errors = validateWorkflowBody({ name: 'x', nodes });
+  const errors = validateWorkflowBody({ name: 'x', agentsDecide: false, nodes });
   const nodeErrors = errors.filter(e => e.field === 'nodes' || e.field.startsWith('nodes['));
   if (nodeErrors.length) {
     fieldError(id, 'nodes', nodeErrors[0].message);
@@ -60,6 +65,7 @@ function hydrate(row) {
   return {
     id,
     name: requireName(id, row.name),
+    agentsDecide: requireFlag(id, 'agents_decide', row.agents_decide),
     nodes: parseNodes(id, row.nodes),
     revision: requireRevision(id, row.revision),
     createdAt: requireIso(id, 'created_at', row.created_at),
@@ -71,14 +77,20 @@ function isUniqueConflict(err) {
   return err && (err.code === 'SQLITE_CONSTRAINT_UNIQUE' || /UNIQUE constraint failed/i.test(err.message));
 }
 
+function normalizeRepeat(nodes, index) {
+  const { repeat } = nodes[index];
+  if (repeat.mode === 'once') return { mode: 'once' };
+  if (repeat.mode === 'until_complete') return { mode: 'until_complete', max: repeat.max };
+  // A loop is stored under the name of the node it returns to, as that node is stored.
+  return { mode: 'loop_back', to: nodes[loopTargetIndex(nodes, index)].name.trim(), max: repeat.max };
+}
+
 function normalizeNodes(nodes) {
-  return nodes.map(node => ({
+  return nodes.map((node, index) => ({
     name: node.name.trim(),
     agentId: node.agentId,
     prompt: node.prompt,
-    repeat: node.repeat.mode === 'once'
-      ? { mode: 'once' }
-      : { mode: 'until_complete', max: node.repeat.max },
+    repeat: normalizeRepeat(nodes, index),
   }));
 }
 
@@ -91,22 +103,27 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       nodes TEXT NOT NULL,
       revision INTEGER NOT NULL,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      agents_decide INTEGER NOT NULL DEFAULT 0
     );
     CREATE UNIQUE INDEX IF NOT EXISTS pipeline_workflows_name_ci
       ON pipeline_workflows (lower(name));
   `);
+  // Workflows saved before agents could decide for themselves left every decision to the owner.
+  if (!db.prepare('PRAGMA table_info(pipeline_workflows)').all().some(column => column.name === 'agents_decide')) {
+    db.exec('ALTER TABLE pipeline_workflows ADD COLUMN agents_decide INTEGER NOT NULL DEFAULT 0');
+  }
 
   const read = db.prepare('SELECT * FROM pipeline_workflows WHERE id = ?');
   const readAll = db.prepare('SELECT * FROM pipeline_workflows ORDER BY lower(name), id');
   const insert = db.prepare(`
     INSERT INTO pipeline_workflows
-      (id, name, nodes, revision, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+      (id, name, nodes, revision, created_at, updated_at, agents_decide)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_workflows
-    SET name = ?, nodes = ?, revision = ?, updated_at = ?
+    SET name = ?, nodes = ?, revision = ?, updated_at = ?, agents_decide = ?
     WHERE id = ? AND revision = ?
   `);
   const removeStmt = db.prepare('DELETE FROM pipeline_workflows WHERE id = ?');
@@ -134,7 +151,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       const name = body.name.trim();
       const nodes = normalizeNodes(body.nodes);
       try {
-        insert.run(id, name, JSON.stringify(nodes), 1, stamp, stamp);
+        insert.run(id, name, JSON.stringify(nodes), 1, stamp, stamp, body.agentsDecide ? 1 : 0);
       } catch (err) {
         if (isUniqueConflict(err)) {
           throw new Error('pipeline_workflows: name already exists');
@@ -156,7 +173,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       const stamp = now();
       let result;
       try {
-        result = updateStmt.run(name, JSON.stringify(nodes), current.revision + 1, stamp, id, body.revision);
+        result = updateStmt.run(name, JSON.stringify(nodes), current.revision + 1, stamp, body.agentsDecide ? 1 : 0, id, body.revision);
       } catch (err) {
         if (isUniqueConflict(err)) {
           throw new Error('pipeline_workflows: name already exists');

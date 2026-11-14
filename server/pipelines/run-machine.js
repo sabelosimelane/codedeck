@@ -98,6 +98,30 @@ function applyStepComplete(run, event) {
   return run;
 }
 
+/**
+ * The current step finished a pass with work left and sends the run back to an earlier
+ * step: one round of the loop is done. Every step of the loop becomes pending again and
+ * keeps its terminal; the caller decides whether another round is allowed.
+ */
+function applyLoopBack(run, event) {
+  if (run.status !== 'running') illegal(run.status, event.type);
+  const step = currentStep(run);
+  if (step.status !== 'running') illegal(`step:${step.status}`, event.type);
+  const { toStepIndex } = event;
+  if (!Number.isInteger(toStepIndex) || toStepIndex < 0 || toStepIndex >= run.currentStepIndex) {
+    throw new Error('loop_back event: toStepIndex must be the index of an earlier step');
+  }
+  step.roundsCompleted += 1;
+  for (let index = toStepIndex; index <= run.currentStepIndex; index += 1) {
+    const looped = run.steps[index];
+    looped.status = 'pending';
+    looped.iteration = 0;
+    looped.finishedAt = null;
+  }
+  run.currentStepIndex = toStepIndex;
+  return run;
+}
+
 function applyLimitReached(run, event) {
   if (run.status !== 'running') illegal(run.status, event.type);
   const step = currentStep(run);
@@ -183,6 +207,7 @@ const HANDLERS = {
   needs_input: applyNeedsInput,
   input_received: applyInputReceived,
   step_complete: applyStepComplete,
+  loop_back: applyLoopBack,
   limit_reached: applyLimitReached,
   error: applyError,
   stop: applyStop,

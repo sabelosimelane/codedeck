@@ -11,7 +11,7 @@ const agent = (patch = {}) => ({
 });
 const node = (patch = {}) => ({ name: 'Develop', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, ...patch });
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T12:30:00.000Z' };
-const workflow = (patch = {}) => ({ id: W1, name: 'Feature', revision: 2, nodes: [node()], ...STAMPS, ...patch });
+const workflow = (patch = {}) => ({ id: W1, name: 'Feature', agentsDecide: false, revision: 2, nodes: [node()], ...STAMPS, ...patch });
 
 function rejects(parse, record, field) {
   let failure;
@@ -80,8 +80,29 @@ describe('parseWorkflow', () => {
     ['nodes[0].repeat.max', { nodes: [node({ repeat: { mode: 'until_complete', max: 101 } })] }],
     ['nodes[0].repeat.max', { nodes: [node({ repeat: { mode: 'until_complete' } })] }],
     ['nodes[0].repeat.max', { nodes: [node({ repeat: { mode: 'once', max: 3 } })] }],
+    ['agentsDecide', { agentsDecide: undefined }],
+    ['agentsDecide', { agentsDecide: 'true' }],
+    ['agentsDecide', { agentsDecide: 1 }],
+    ['nodes[1].repeat.to', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', max: 5 } })] }],
+    ['nodes[1].repeat.to', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: '  ', max: 5 } })] }],
+    ['nodes[1].repeat.to', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 7, max: 5 } })] }],
+    ['nodes[1].repeat.to', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Test', max: 5 } })] }],
+    ['nodes[1].repeat.to', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Deploy', max: 5 } })] }],
+    ['nodes[0].repeat.to', { nodes: [node({ repeat: { mode: 'once', to: 'Develop' } })] }],
+    ['nodes[0].repeat.to', { nodes: [node({ repeat: { mode: 'until_complete', max: 3, to: 'Develop' } })] }],
+    ['nodes[1].repeat.max', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Develop' } })] }],
+    ['nodes[1].repeat.max', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Develop', max: 0 } })] }],
+    ['nodes[1].repeat.max', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Develop', max: 101 } })] }],
   ])('rejects a workflow with a bad %s', (field, patch) => {
     rejects(parseWorkflow, workflow(patch), field);
+  });
+
+  it('keeps who decides and a loop back to an earlier node', () => {
+    const record = workflow({
+      agentsDecide: true,
+      nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Develop', max: 20 } }), node({ name: 'Review' })],
+    });
+    expect(parseWorkflow(record)).toEqual(record);
   });
 });
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
+import { createDecisionStore } from '../pipelines/decision-store.js';
 
 const WORKFLOW_ID = 'a2d0b1c2-3456-4789-8abc-def012345678';
 const AGENT_ID = 'c410a1b2-3456-4789-8abc-def012345678';
@@ -13,6 +14,7 @@ function definition(overrides = {}) {
     workflowId: WORKFLOW_ID,
     workflowName: 'Feature',
     workflowRevision: 1,
+    agentsDecide: false,
     steps: [
       {
         kind: 'node',
@@ -39,6 +41,7 @@ function step(overrides = {}) {
     priorSessionIds: [],
     attempt: 0,
     iteration: 0,
+    roundsCompleted: 0,
     detail: null,
     startedAt: null,
     finishedAt: null,
@@ -141,6 +144,7 @@ function setupEngine(overrides = {}) {
   const listDirtyPaths = overrides.listDirtyPaths ?? vi.fn(async () => []);
   const pathExists = overrides.pathExists ?? vi.fn(async () => true);
   const readScreen = overrides.readScreen ?? vi.fn(async () => []);
+  const decisionStore = overrides.decisionStore ?? createDecisionStore(db);
 
   const engine = createRunEngine({
     runStore,
@@ -151,6 +155,7 @@ function setupEngine(overrides = {}) {
     classifyReadiness,
     readExecutionState,
     readScreen,
+    decisionStore,
     removeWorktree,
     listDirtyPaths,
     pathExists,
@@ -176,6 +181,7 @@ function setupEngine(overrides = {}) {
     listDirtyPaths,
     pathExists,
     readScreen,
+    decisionStore,
     writes,
     releases,
     getWorkflowNotify: () => workflowNotify,
@@ -268,6 +274,8 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
       command: 'Implement ship it',
       resetCommand: '/clear',
       maxIterations: 1,
+      // A step in a new terminal starts on a fresh agent; nothing to reset.
+      resetFirst: false,
     });
     expect(ctx.releases).toEqual([true]);
     expect(ctx.removeWorktree).toHaveBeenCalledWith(expect.objectContaining({ id: run.id }));
@@ -1326,5 +1334,339 @@ describe('createRunEngine — what the agent needs, and answering it', () => {
   it('fails the run when the screen cannot be read', async () => {
     const { ctx, run } = await startWaiting({ readScreen: vi.fn(async () => { throw new Error('tmux capture failed'); }) });
     expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'tmux capture failed' });
+  });
+});
+
+describe('createRunEngine — a loop of steps', () => {
+  const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+  const defStep = (name, repeat = { mode: 'once' }) => ({ kind: 'node', name, prompt: `do ${name}`, repeat, agent });
+  // Develop → Test (back to Develop) → Review
+  const looping = (max = 3) => definition({
+    steps: [defStep('Develop'), defStep('Test', { mode: 'loop_back', toStepIndex: 0, max }), defStep('Review')],
+  });
+  const LOOP_GUIDANCE = 'This step closes a loop: CodeDeck repeats the steps from "Develop" to "Test" in order, round after round. Use COMPLETE only when the whole task is finished and no step of the loop has work left; use CONTINUE when another round is needed.';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  /** Each loop started ends at once with the next scripted outcome: 'complete', or 'continue' (one pass, work left). */
+  function scriptedWorkflow(outcomes) {
+    const starts = [];
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start(args) {
+        starts.push(args);
+        const outcome = outcomes.shift();
+        if (outcome === undefined) throw new Error('scripted workflow: no outcome left');
+        queueMicrotask(() => notify({
+          status: outcome === 'complete' ? 'complete' : 'stopped',
+          active: false,
+          error: null,
+          requestId: args.requestId,
+          iteration: 1,
+          limitReached: outcome !== 'complete',
+        }));
+      },
+      stop() {},
+      snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+    }));
+    return { createWorkflow, starts };
+  }
+
+  async function runLoop(outcomes, { max = 3, overrides = {} } = {}) {
+    const script = scriptedWorkflow([...outcomes]);
+    const sessions = [];
+    const ctx = setupEngine({
+      createWorkflow: script.createWorkflow,
+      attachBackground: vi.fn((sessionId) => {
+        sessions.push(sessionId);
+        return { write: (data) => { ctx.writes.push(data); }, release: () => {} };
+      }),
+      ...overrides,
+    });
+    const run = ctx.runStore.create(validRun({ definition: looping(max) }));
+    const done = ctx.engine.start(run.id);
+    // Each step needs at most the launch Enter (100 ms) and one readiness poll (1 s).
+    for (let i = 0; i < outcomes.length + 1; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    await done;
+    return { ctx, script, sessions, run: ctx.runStore.get(run.id), done };
+  }
+
+  it('runs the loop again when its last step reports work left, then moves on when it reports COMPLETE', async () => {
+    const { ctx, script, run } = await runLoop(['continue', 'continue', 'complete', 'complete', 'complete']);
+    expect(run.status).toBe('complete');
+    expect(run.steps.map(s => s.status)).toEqual(['complete', 'complete', 'complete']);
+    expect(script.starts).toHaveLength(5);
+    expect(run.steps.map(s => s.roundsCompleted)).toEqual([0, 1, 0]);
+    expect(ctx.runStore.get(run.id).currentStepIndex).toBe(2);
+  });
+
+  it('keeps each step in its own terminal: no new terminal and no second launch in a later round', async () => {
+    const { ctx, sessions, run } = await runLoop(['continue', 'continue', 'complete', 'complete', 'complete']);
+    expect(ctx.startSession).toHaveBeenCalledTimes(3);
+    expect(sessions).toEqual(['Demo-1', 'Demo-2', 'Demo-1', 'Demo-2', 'Demo-3']);
+    expect(ctx.writes.filter(data => data === 'codex')).toHaveLength(3);
+    expect(run.steps.map(s => s.sessionId)).toEqual(['Demo-1', 'Demo-2', 'Demo-3']);
+    expect(run.steps.every(s => s.priorSessionIds.length === 0)).toBe(true);
+  });
+
+  it('resets the agent before it works in a terminal it used in an earlier round', async () => {
+    const { script } = await runLoop(['continue', 'continue', 'complete', 'complete', 'complete']);
+    expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, true, true, false]);
+    expect(new Set(script.starts.map(start => start.requestId)).size).toBe(5);
+  });
+
+  it('gives the step that closes the loop one pass per round and tells it what the loop is', async () => {
+    const { script } = await runLoop(['continue', 'continue', 'complete', 'complete', 'complete']);
+    const [develop, test, , , review] = script.starts;
+    expect(test).toMatchObject({ command: 'do Test', maxIterations: 1, guidance: LOOP_GUIDANCE });
+    expect(develop).not.toHaveProperty('guidance');
+    expect(review).not.toHaveProperty('guidance');
+  });
+
+  it('pauses at the round limit; Continue moves past the loop', async () => {
+    const { ctx, script, run } = await runLoop(['continue', 'continue', 'continue', 'continue'], { max: 2 });
+    expect(run.status).toBe('limit_paused');
+    expect(run.currentStepIndex).toBe(1);
+    expect(run.steps.map(s => s.status)).toEqual(['complete', 'limit_reached', 'pending']);
+    expect(run.steps[1].roundsCompleted).toBe(1);
+    expect(script.starts).toHaveLength(4);
+
+    script.createWorkflow.mockClear();
+    const scriptAfter = scriptedWorkflow(['complete']);
+    // The engine keeps its own createWorkflow; feed the remaining outcome through the same mock.
+    script.createWorkflow.mockImplementation(scriptAfter.createWorkflow);
+    await ctx.engine.continue(run.id);
+    for (let i = 0; i < 2; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    await vi.advanceTimersByTimeAsync(0);
+    const after = ctx.runStore.get(run.id);
+    expect(after.status).toBe('complete');
+    expect(after.steps.map(s => s.status)).toEqual(['complete', 'limit_reached', 'complete']);
+  });
+
+  it('never loops when the limit is one round', async () => {
+    const { script, run } = await runLoop(['continue', 'continue'], { max: 1 });
+    expect(run.status).toBe('limit_paused');
+    expect(run.steps[1]).toMatchObject({ status: 'limit_reached', roundsCompleted: 0 });
+    expect(script.starts).toHaveLength(2);
+  });
+
+  it('fails the run when the terminal a step should return to is gone', async () => {
+    let attaches = 0;
+    const { ctx, run } = await runLoop(['continue', 'continue', 'complete'], {
+      overrides: {
+        attachBackground: vi.fn(() => {
+          attaches += 1;
+          if (attaches === 3) throw new Error('Background attach refused: session is deleted.');
+          return { write: () => {}, release: () => {} };
+        }),
+      },
+    });
+    expect(run.status).toBe('error');
+    expect(run.error).toBe('The terminal of step Develop is no longer available. Resume the run to continue in a new terminal.');
+    expect(run.steps[0].status).toBe('failed');
+    expect(ctx.startSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails the run when the agent is no longer running in the terminal a step returns to', async () => {
+    const states = [executionState(), executionState(), executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh' })];
+    const { run } = await runLoop(['continue', 'continue', 'complete'], {
+      overrides: { readExecutionState: vi.fn(async () => states.shift() ?? executionState()) },
+    });
+    expect(run.status).toBe('error');
+    expect(run.error).toBe('Agent codex is no longer running in the terminal of step Develop. Resume the run to continue in a new terminal.');
+  });
+
+  it('Resume gives the failed step a new terminal and launches its agent there', async () => {
+    let attaches = 0;
+    const outcomes = ['continue', 'continue', 'complete', 'complete', 'complete'];
+    const script = scriptedWorkflow(outcomes);
+    const ctx = setupEngine({
+      createWorkflow: script.createWorkflow,
+      attachBackground: vi.fn(() => {
+        attaches += 1;
+        if (attaches === 3) throw new Error('Background attach refused: session is deleted.');
+        return { write: (data) => { ctx.writes.push(data); }, release: () => {} };
+      }),
+    });
+    const created = ctx.runStore.create(validRun({ definition: looping(), worktreeState: 'external', baseCommit: BASE_COMMIT }));
+    const done = ctx.engine.start(created.id);
+    for (let i = 0; i < 4; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    await done;
+    expect(ctx.runStore.get(created.id).status).toBe('error');
+
+    await ctx.engine.resume(created.id);
+    for (let i = 0; i < 5; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    await vi.advanceTimersByTimeAsync(0);
+    const resumed = ctx.runStore.get(created.id);
+    expect(resumed.status).toBe('complete');
+    expect(resumed.steps[0]).toMatchObject({ sessionId: 'Demo-3', priorSessionIds: ['Demo-1'] });
+    expect(resumed.steps[1]).toMatchObject({ sessionId: 'Demo-2', roundsCompleted: 1 });
+    // Develop round 2 runs in a fresh terminal (no reset); Test returns to its own (reset).
+    expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, false, true, false]);
+  });
+});
+
+describe('createRunEngine — agents decide', () => {
+  const ID = 'fd4ed49c-1';
+  const QUESTIONS = '1. Which schema should the migration target?\nRecommended: the existing guardian schema.';
+  const SCREEN = [
+    `• [[CDW:${ID}:QUESTIONS]]`,
+    '  1. Which schema should the migration target?',
+    '     Recommended: the existing guardian schema.',
+    `• [[CDW:${ID}:NEEDS_INPUT]]`,
+  ];
+  const ANSWER = 'Proceed with your recommendations.';
+  const DECIDE = 'The owner is not available during this run. Do not stop for a decision you can make yourself: choose the option you would recommend, write down the decision and your reason where this project keeps such notes, and continue. Use NEEDS_INPUT only when you cannot continue at all.';
+  const all = { offset: 0, limit: 100, direction: 'asc' };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  // A loop that signals NEEDS_INPUT on start, returns to running on an answer and completes on demand.
+  function askingWorkflow() {
+    const state = { status: 'stopped', inputs: [], notify: null, identifier: ID, starts: [] };
+    const snap = status => ({ status, active: !['complete', 'stopped'].includes(status), error: null, requestId: 'r', iteration: 1, limitReached: false });
+    const publish = (status) => { state.status = status; state.notify(snap(status)); };
+    const createWorkflow = vi.fn(({ notify }) => {
+      state.notify = notify;
+      return {
+        start(args) { state.starts.push(args); queueMicrotask(() => publish('needs_input')); },
+        stop() { state.status = 'stopped'; },
+        snapshot: () => snap(state.status),
+        input(data) { state.inputs.push(data); publish('running'); },
+        signalIdentifier: () => state.identifier,
+      };
+    });
+    return { createWorkflow, state, ask: () => publish('needs_input'), complete: () => publish('complete') };
+  }
+
+  async function startAsking({ agentsDecide = true, overrides = {}, kind = 'node' } = {}) {
+    const loop = askingWorkflow();
+    const ctx = setupEngine({
+      createWorkflow: loop.createWorkflow,
+      readScreen: vi.fn(async () => SCREEN),
+      ...overrides,
+    });
+    const def = definition({ agentsDecide });
+    def.steps[0].kind = kind;
+    const run = ctx.runStore.create(validRun({ definition: def, worktreeState: 'external', baseCommit: BASE_COMMIT }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100); // launch Enter
+    await vi.advanceTimersByTimeAsync(1000); // ready → loop starts → NEEDS_INPUT → screen read
+    await vi.advanceTimersByTimeAsync(0);
+    return { ctx, loop, run, done };
+  }
+
+  it('requires somewhere to record decisions', () => {
+    expect(() => setupEngine({ engineExtras: { decisionStore: undefined } })).toThrow('createRunEngine: decisionStore is required');
+  });
+
+  it('answers a listed request with the recommendations, without pausing the run', async () => {
+    const { ctx, loop, run, done } = await startAsking();
+    expect(ctx.writes.at(-1)).toBe(`\x1b[200~${ANSWER}\x1b[201~`);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.writes.at(-1)).toBe('\r');
+    expect(loop.state.inputs).toEqual([ANSWER]);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'running', inputRequest: null });
+
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+
+  it('records what was asked and what was answered', async () => {
+    const { ctx, run } = await startAsking();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.decisionStore.list(run.id, all)).toEqual([expect.objectContaining({
+      runId: run.id, stepIndex: 0, stepName: 'Develop', pass: 1, questions: QUESTIONS, truncated: false, answer: ANSWER,
+    })]);
+  });
+
+  it('tells the agent to decide for itself', async () => {
+    const { loop } = await startAsking();
+    expect(loop.state.starts[0].guidance).toBe(DECIDE);
+  });
+
+  it('pauses for the owner when the agent asks again in the same pass', async () => {
+    const { ctx, loop, run } = await startAsking();
+    await vi.advanceTimersByTimeAsync(100);
+    loop.ask();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: { questions: QUESTIONS, truncated: false } });
+    expect(ctx.decisionStore.count(run.id)).toBe(1);
+    expect(loop.state.inputs).toEqual([ANSWER]);
+  });
+
+  it('answers again in a later pass', async () => {
+    const second = 'fd4ed49c-2';
+    const readScreen = vi.fn()
+      .mockResolvedValueOnce(SCREEN)
+      .mockResolvedValueOnce([`[[CDW:${second}:QUESTIONS]]`, '1. And the index name?', 'Recommended: idx_guardian', `[[CDW:${second}:NEEDS_INPUT]]`]);
+    const { ctx, loop, run } = await startAsking({ overrides: { readScreen } });
+    await vi.advanceTimersByTimeAsync(100);
+    loop.state.identifier = second;
+    loop.ask();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+    expect(ctx.decisionStore.list(run.id, all).map(d => d.questions)).toEqual([QUESTIONS, '1. And the index name?\nRecommended: idx_guardian']);
+    expect(loop.state.inputs).toEqual([ANSWER, ANSWER]);
+  });
+
+  it('pauses for the owner when the agent did not list what it needs', async () => {
+    const { ctx, loop, run } = await startAsking({ overrides: { readScreen: vi.fn(async () => ['I am blocked.', `[[CDW:${ID}:NEEDS_INPUT]]`]) } });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: { questions: null, truncated: false } });
+    expect(ctx.decisionStore.count(run.id)).toBe(0);
+    expect(loop.state.inputs).toEqual([]);
+  });
+
+  it('pauses for the owner when the workflow leaves decisions to the owner', async () => {
+    const { ctx, loop, run } = await startAsking({ agentsDecide: false });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.runStore.get(run.id).status).toBe('needs_input');
+    expect(ctx.decisionStore.count(run.id)).toBe(0);
+    expect(loop.state.starts[0]).not.toHaveProperty('guidance');
+  });
+
+  it('pauses for the owner when Setup asks, even when agents decide', async () => {
+    const { ctx, loop, run } = await startAsking({ kind: 'setup' });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.runStore.get(run.id).status).toBe('needs_input');
+    expect(ctx.decisionStore.count(run.id)).toBe(0);
+    expect(loop.state.starts[0]).not.toHaveProperty('guidance');
+  });
+
+  it('records that the list was cut when it was too long to keep whole', async () => {
+    const long = [`[[CDW:${ID}:QUESTIONS]]`, `1. ${'x'.repeat(4100)}`, `[[CDW:${ID}:NEEDS_INPUT]]`];
+    const { ctx, run } = await startAsking({ overrides: { readScreen: vi.fn(async () => long) } });
+    await vi.advanceTimersByTimeAsync(100);
+    const [decision] = ctx.decisionStore.list(run.id, all);
+    expect(decision.truncated).toBe(true);
+    expect(decision.questions).toHaveLength(4000);
+  });
+
+  it('sends no Enter and records nothing when the run is stopped while the answer is being typed', async () => {
+    const { ctx, loop, run } = await startAsking();
+    const before = ctx.writes.length;
+    await ctx.engine.stop(run.id);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.writes.slice(before)).toEqual([]);
+    expect(ctx.decisionStore.count(run.id)).toBe(0);
+    expect(loop.state.inputs).toEqual([]);
+    expect(ctx.runStore.get(run.id).status).toBe('stopped');
+  });
+
+  it('fails the run, without submitting the answer, when the decision cannot be recorded', async () => {
+    const decisionStore = { add: vi.fn(() => { throw new Error('disk full'); }), count: () => 0, list: () => [] };
+    const { ctx, loop, run } = await startAsking({ overrides: { decisionStore } });
+    const before = ctx.writes.length;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.writes.slice(before)).toEqual([]);
+    expect(loop.state.inputs).toEqual([]);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'disk full' });
   });
 });

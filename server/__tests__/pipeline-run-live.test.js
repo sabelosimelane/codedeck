@@ -14,6 +14,7 @@ import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
+import { createDecisionStore } from '../pipelines/decision-store.js';
 import {
   create as createWorktree,
   remove as removeWorktree,
@@ -193,6 +194,7 @@ describeLive('pipeline run live (Phase 3)', () => {
     settings.update({ setupAgentId: setupAgent.id, revision: 1 });
     const workflow = workflows.create({
       name: 'Live',
+      agentsDecide: false,
       nodes: [{
         name: 'Echo',
         agentId: nodeAgent.id,
@@ -227,6 +229,7 @@ describeLive('pipeline run live (Phase 3)', () => {
         workflowId: workflow.id,
         workflowName: workflow.name,
         workflowRevision: workflow.revision,
+        agentsDecide: false,
         steps: [
           {
             kind: 'setup',
@@ -245,8 +248,8 @@ describeLive('pipeline run live (Phase 3)', () => {
         ],
       },
       steps: [
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
       ],
       homePath: homeRepoPath,
       worktreePath: names.worktreePath,
@@ -260,6 +263,7 @@ describeLive('pipeline run live (Phase 3)', () => {
 
     const engine = createRunEngine({
       runStore: runs,
+      decisionStore: createDecisionStore(db),
       readScreen: async () => [],
       createWorktree: async (run) => createWorktree({
         homePath: run.homePath,
@@ -375,6 +379,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         workflowId,
         workflowName: 'Ask',
         workflowRevision: 1,
+        agentsDecide: false,
         steps: [{
           kind: 'node',
           name: 'Develop',
@@ -384,7 +389,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         }],
       },
       steps: [
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
       ],
       homePath: homeRepoPath,
       worktreePath: homeRepoPath,
@@ -405,6 +410,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
 
     const engine = createRunEngine({
       runStore: runs,
+      decisionStore: createDecisionStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
@@ -463,6 +469,217 @@ describeLive('pipeline run live — an agent that needs input', () => {
       db.close();
     }
   }, 90000);
+});
+
+/**
+ * A stub agent for a loop. It answers the reset command, and for each prompt it either
+ * reports work left (`continue`), or — `ask-then-complete` — lists a question in the first
+ * round, reports work left once it is told to proceed, and reports COMPLETE in the next round.
+ */
+function writeLoopAgent(dir, mode) {
+  const script = path.join(dir, `stub-agent-loop-${mode}`);
+  writeFileSync(script, `#!/usr/bin/env node
+const mode = ${JSON.stringify(mode)};
+let buf = '';
+let prompts = 0;
+let waitingOn = null;
+process.stdin.setEncoding('utf8');
+// Like a real agent CLI, read the terminal raw and draw what arrives: the terminal's own
+// line mode cuts a line at 1024 characters, and a prompt is one longer line.
+process.stdin.setRawMode(true);
+process.stdout.write('>_ OpenAI Codex (stub)\\n› \\n');
+const say = text => setTimeout(() => process.stdout.write(text), 200);
+process.stdin.on('data', chunk => {
+  process.stdout.write(chunk.replace(/\\x1b\\[20[01]~/g, '').replace(/\\r\\n|\\r|\\n/g, '\\r\\n'));
+  buf += chunk;
+  if (waitingOn !== null) {
+    if (!/Proceed with your recommendations\\./.test(buf)) return;
+    const id = waitingOn;
+    waitingOn = null;
+    buf = '';
+    say('\\naccepted recommendations\\n[[CDW:' + id + ':CONTINUE]]\\n');
+    return;
+  }
+  if (/\\/clear/.test(buf)) {
+    buf = '';
+    say('\\ncontext cleared\\n› \\n');
+    return;
+  }
+  const match = buf.match(/Iteration identifier: ([\\w-]+)\\n/);
+  if (!match) return;
+  const id = match[1];
+  buf = '';
+  prompts += 1;
+  if (mode === 'continue') {
+    say('\\ndeveloped round ' + prompts + '\\n[[CDW:' + id + ':CONTINUE]]\\n');
+  } else if (prompts === 1) {
+    waitingOn = id;
+    say([
+      '',
+      '• [[CDW:' + id + ':QUESTIONS]]',
+      '  1. Should the slow suite run too? Recommended: yes.',
+      '• [[CDW:' + id + ':NEEDS_INPUT]]',
+      '',
+    ].join('\\n'));
+  } else {
+    say('\\ntested round ' + prompts + '\\n[[CDW:' + id + ':COMPLETE]]\\n');
+  }
+});
+`);
+  chmodSync(script, 0o755);
+  return script;
+}
+
+describeLive('pipeline run live — a loop of steps whose agents decide', () => {
+  it('runs Develop and Test twice in their own two terminals and answers the question itself', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-loop-'));
+    temps.push(base);
+    const tmuxDir = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-tmux-'));
+    temps.push(tmuxDir);
+    const home = path.join(base, 'codedeck');
+    initRepo(home);
+    const developStub = writeLoopAgent(base, 'continue');
+    const testStub = writeLoopAgent(base, 'ask-then-complete');
+
+    const previousTmp = process.env.TMUX_TMPDIR;
+    const previousTmux = process.env.TMUX;
+    process.env.TMUX_TMPDIR = tmuxDir;
+    delete process.env.TMUX;
+
+    const db = new Database(':memory:');
+    const runs = createRunStore(db);
+    const decisions = createDecisionStore(db);
+    const sessions = new Map();
+    const deletedSessionIds = new Set();
+    const runtime = createTerminalRuntime('tmux');
+    const runId = '0d9e4b1a-6666-4666-8666-666666666666';
+    const workflowId = '0d9e4b1a-7777-4777-8777-777777777777';
+    const homeRepoPath = await resolveHomeRepoPath({ projectPath: home, execFile });
+    const stubAgent = (id, name, launchCommand) => ({ id, name, launchCommand, resetCommand: '/clear' });
+    const pending = () => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null });
+
+    runs.create({
+      id: runId,
+      requestId: 'live-loop-1',
+      workflowId,
+      project: 'codedeck',
+      input: '',
+      status: 'pending',
+      stopReason: null,
+      currentStepIndex: 0,
+      error: null,
+      definition: {
+        workflowId,
+        workflowName: 'Loop',
+        workflowRevision: 1,
+        agentsDecide: true,
+        steps: [
+          { kind: 'node', name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
+          { kind: 'node', name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 3 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
+        ],
+      },
+      steps: [pending(), pending()],
+      homePath: homeRepoPath,
+      worktreePath: homeRepoPath,
+      worktreeBranch: git(home, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      baseCommit: git(home, ['rev-parse', 'HEAD']),
+      worktreeState: 'external',
+      worktreeDetail: null,
+      inputRequest: null,
+      finishedAt: null,
+    });
+
+    const readScreen = async (sessionId) => {
+      const snapshot = runtime.captureSessionSnapshot(sessionId, 400);
+      if (snapshot.historyGuaranteed !== true) throw new Error('screen capture failed');
+      return snapshot.data.replace(/\r/g, '').split('\n');
+    };
+    let sessionSeq = 0;
+
+    const engine = createRunEngine({
+      runStore: runs,
+      decisionStore: decisions,
+      readScreen,
+      createWorktree: async () => { throw new Error('an existing worktree is never created'); },
+      removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
+      listDirtyPaths: async ({ worktreePath }) => listDirtyPaths({ worktreePath, execFile }),
+      startSession: async ({ cwd }) => {
+        sessionSeq += 1;
+        const sessionId = `codedeck-${sessionSeq}`;
+        runtime.createDetachedSession({ cwd, cols: INITIAL_COLS, rows: INITIAL_ROWS, sessionId });
+        return sessionId;
+      },
+      attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
+        sessionId, sessions, runtime, deletedSessionIds, { cwd },
+      ),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      classifyReadiness: () => 'ready',
+      readExecutionState: async () => ({
+        executionReason: 'agent_prompt_idle',
+        foregroundCommand: 'node',
+        lines: ['› '],
+        profile: { promptVisible: () => true, skillPrefix: '/' },
+        isAlive: true,
+        entryExists: true,
+      }),
+      readinessPollMs: 50,
+      launchEnterDelayMs: 50,
+    });
+
+    try {
+      const done = engine.start(runId);
+      const settled = () => {
+        const run = runs.get(runId);
+        return ['complete', 'error', 'needs_input', 'limit_paused', 'stopped'].includes(run.status) ? run : null;
+      };
+      try {
+        await waitFor(settled, 60000, 'the looping run to settle');
+      } catch (err) {
+        // Say where the run stood and what each terminal showed; a bare timeout explains nothing.
+        const run = runs.get(runId);
+        const screens = await Promise.all(run.steps.filter(s => s.sessionId).map(async s => `--- ${s.sessionId} ---\n${(await readScreen(s.sessionId)).join('\n')}`));
+        throw new Error(`${err.message}: status=${run.status} step=${run.currentStepIndex} steps=${JSON.stringify(run.steps.map(s => [s.status, s.iteration, s.roundsCompleted]))}\n${screens.join('\n')}`);
+      }
+      const finished = runs.get(runId);
+      if (finished.status === 'complete') await done;
+
+      expect(finished.error).toBeNull();
+      expect(finished.status).toBe('complete');
+      expect(finished.steps.map(s => s.status)).toEqual(['complete', 'complete']);
+      expect(finished.steps[1].roundsCompleted).toBe(1);
+      // Two rounds, two terminals: each step went back to its own.
+      expect(sessionSeq).toBe(2);
+      expect(finished.steps.map(s => s.sessionId)).toEqual(['codedeck-1', 'codedeck-2']);
+
+      const developScreen = (await readScreen('codedeck-1')).join('\n');
+      expect(developScreen).toContain('developed round 1');
+      expect(developScreen).toContain('context cleared');
+      expect(developScreen).toContain('developed round 2');
+      const testScreen = (await readScreen('codedeck-2')).join('\n');
+      expect(testScreen).toContain('accepted recommendations');
+      expect(testScreen).toContain('context cleared');
+      expect(testScreen).toContain('tested round 2');
+      // The step that closes the loop was told what the loop is; both were told to decide.
+      expect(testScreen.replace(/\s+/g, ' ')).toContain('This step closes a loop');
+      expect(developScreen.replace(/\s+/g, ' ')).toContain('The owner is not available during this run.');
+
+      expect(decisions.list(runId, { offset: 0, limit: 10, direction: 'asc' })).toEqual([expect.objectContaining({
+        stepIndex: 1,
+        stepName: 'Test',
+        pass: 1,
+        questions: '1. Should the slow suite run too? Recommended: yes.',
+        truncated: false,
+        answer: 'Proceed with your recommendations.',
+      })]);
+    } finally {
+      // A run that never settled is still being driven; end it before its database closes.
+      if (runs.get(runId).status === 'running') await engine.stop(runId);
+      try { execFileSync('tmux', ['kill-server'], { stdio: 'pipe' }); } catch { /* ignore */ }
+      if (previousTmp === undefined) delete process.env.TMUX_TMPDIR; else process.env.TMUX_TMPDIR = previousTmp;
+      if (previousTmux === undefined) delete process.env.TMUX; else process.env.TMUX = previousTmux;
+      db.close();
+    }
+  }, 120000);
 });
 
 describe('pipeline run live gate', () => {

@@ -71,7 +71,7 @@ describe('validateWorkflowBody', () => {
     repeat: { mode: 'once' },
     ...overrides,
   });
-  const valid = { name: 'Feature', nodes: [node()] };
+  const valid = { name: 'Feature', agentsDecide: false, nodes: [node()] };
 
   it('accepts a valid workflow', () => {
     expect(validateWorkflowBody(valid)).toEqual([]);
@@ -80,85 +80,85 @@ describe('validateWorkflowBody', () => {
   it('rejects unknown top-level and node fields', () => {
     expect(fields(validateWorkflowBody({ ...valid, extra: 1 }))).toContain('extra');
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [{ ...node(), extra: true }],
     }))).toContain('nodes[0].extra');
   });
 
   it('requires 1–32 nodes', () => {
-    expect(fields(validateWorkflowBody({ name: 'Feature', nodes: [] }))).toContain('nodes');
-    expect(fields(validateWorkflowBody({ name: 'Feature', nodes: null }))).toContain('nodes');
+    expect(fields(validateWorkflowBody({ name: 'Feature', agentsDecide: false, nodes: [] }))).toContain('nodes');
+    expect(fields(validateWorkflowBody({ name: 'Feature', agentsDecide: false, nodes: null }))).toContain('nodes');
     const thirtyTwo = Array.from({ length: 32 }, (_, i) => node({ name: `N${i}` }));
-    expect(validateWorkflowBody({ name: 'Feature', nodes: thirtyTwo })).toEqual([]);
+    expect(validateWorkflowBody({ name: 'Feature', agentsDecide: false, nodes: thirtyTwo })).toEqual([]);
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [...thirtyTwo, node({ name: 'N32' })],
     }))).toContain('nodes');
   });
 
   it('rejects duplicate node names case-insensitively', () => {
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ name: 'Dev' }), node({ name: 'dev', agentId: UUID2 })],
     }))).toContain('nodes[1].name');
   });
 
   it('rejects invalid agentId', () => {
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ agentId: 'not-a-uuid' })],
     }))).toContain('nodes[0].agentId');
   });
 
   it('rejects prompt outside 1–8192 or with forbidden controls', () => {
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ prompt: '' })],
     }))).toContain('nodes[0].prompt');
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ prompt: 'x'.repeat(8193) })],
     }))).toContain('nodes[0].prompt');
     expect(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ prompt: 'line1\nline2\tok' })],
     })).toEqual([]);
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ prompt: 'bad\x00' })],
     }))).toContain('nodes[0].prompt');
   });
 
   it('rejects max with once and missing max with until_complete', () => {
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ repeat: { mode: 'once', max: 1 } })],
     }))).toContain('nodes[0].repeat.max');
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ repeat: { mode: 'until_complete' } })],
     }))).toContain('nodes[0].repeat.max');
   });
 
   it('accepts until_complete max at 1 and 100; rejects 0 and 101 and non-integers', () => {
     expect(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ repeat: { mode: 'until_complete', max: 1 } })],
     })).toEqual([]);
     expect(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ repeat: { mode: 'until_complete', max: 100 } })],
     })).toEqual([]);
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ repeat: { mode: 'until_complete', max: 0 } })],
     }))).toContain('nodes[0].repeat.max');
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ repeat: { mode: 'until_complete', max: 101 } })],
     }))).toContain('nodes[0].repeat.max');
     expect(fields(validateWorkflowBody({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node({ repeat: { mode: 'until_complete', max: 1.5 } })],
     }))).toContain('nodes[0].repeat.max');
   });
@@ -249,5 +249,83 @@ describe('composePrompt', () => {
     const composed = composePrompt('{input}', 'y'.repeat(16385), errors, 'input');
     expect(composed.length).toBe(16385);
     expect(fields(errors)).toContain('input');
+  });
+});
+
+describe('validateWorkflowBody: who decides', () => {
+  const node = { name: 'Develop', agentId: UUID, prompt: 'do {input}', repeat: { mode: 'once' } };
+
+  it.each([true, false])('accepts agentsDecide %s', (agentsDecide) => {
+    expect(validateWorkflowBody({ name: 'Feature', agentsDecide, nodes: [node] })).toEqual([]);
+  });
+
+  it.each([undefined, null, 'true', 1, 0])('rejects agentsDecide %s', (agentsDecide) => {
+    expect(validateWorkflowBody({ name: 'Feature', agentsDecide, nodes: [node] })).toEqual([
+      { field: 'agentsDecide', message: 'Use true or false' },
+    ]);
+  });
+});
+
+describe('validateWorkflowBody: looping back to an earlier node', () => {
+  const node = (name, repeat = { mode: 'once' }) => ({ name, agentId: UUID, prompt: 'do {input}', repeat });
+  const loop = (to, max = 20) => ({ mode: 'loop_back', to, max });
+  const workflow = (...nodes) => ({ name: 'Feature', agentsDecide: false, nodes });
+
+  it('accepts a loop back to an earlier node, matched by name whatever its case or padding', () => {
+    expect(validateWorkflowBody(workflow(node('Develop'), node('Test', loop('Develop')), node('Review')))).toEqual([]);
+    expect(validateWorkflowBody(workflow(node('Develop'), node('Review'), node('Test', loop(' develop '))))).toEqual([]);
+  });
+
+  it('accepts a repeating node inside a loop and two loops that share no node', () => {
+    expect(validateWorkflowBody(workflow(
+      node('Develop', { mode: 'until_complete', max: 3 }), node('Test', loop('Develop')),
+      node('Review'), node('Fix', loop('Review')),
+    ))).toEqual([]);
+  });
+
+  it.each([1, 100])('accepts a maximum of %i rounds', (max) => {
+    expect(validateWorkflowBody(workflow(node('Develop'), node('Test', loop('Develop', max))))).toEqual([]);
+  });
+
+  it.each([0, 101, 1.5, '5', undefined, null])('rejects a maximum of %s rounds', (max) => {
+    expect(validateWorkflowBody(workflow(node('Develop'), node('Test', { mode: 'loop_back', to: 'Develop', max })))).toEqual([
+      { field: 'nodes[1].repeat.max', message: 'Use a whole number from 1 to 100' },
+    ]);
+  });
+
+  it.each([
+    ['itself', 'Test'],
+    ['a later node', 'Review'],
+    ['a node that does not exist', 'Deploy'],
+    ['a blank name', '  '],
+    ['a number', 7],
+    ['nothing', undefined],
+  ])('rejects a loop back to %s', (_label, to) => {
+    expect(validateWorkflowBody(workflow(node('Develop'), node('Test', { mode: 'loop_back', to, max: 5 }), node('Review')))).toEqual([
+      { field: 'nodes[1].repeat.to', message: 'Choose an earlier node to loop back to' },
+    ]);
+  });
+
+  it('rejects a loop on the first node, which has no earlier node', () => {
+    expect(fields(validateWorkflowBody(workflow(node('Develop', loop('Develop')))))).toEqual(['nodes[0].repeat.to']);
+  });
+
+  it('rejects loops that share a node, nested or crossing', () => {
+    const message = 'Loops cannot share a node; this one overlaps the loop that ends at Test';
+    expect(validateWorkflowBody(workflow(
+      node('Plan'), node('Develop'), node('Test', loop('Develop')), node('Review', loop('Plan')),
+    ))).toEqual([{ field: 'nodes[3].repeat.to', message }]);
+    expect(validateWorkflowBody(workflow(
+      node('Plan'), node('Develop'), node('Test', loop('Plan')), node('Review', loop('Develop')),
+    ))).toEqual([{ field: 'nodes[3].repeat.to', message }]);
+  });
+
+  it('rejects unknown repeat fields and names the three modes', () => {
+    expect(fields(validateWorkflowBody(workflow(node('Develop'), node('Test', { ...loop('Develop'), extra: 1 }))))).toEqual(['nodes[1].repeat.extra']);
+    expect(fields(validateWorkflowBody(workflow(node('Develop', { mode: 'once', to: 'Develop' }))))).toEqual(['nodes[0].repeat.to']);
+    expect(fields(validateWorkflowBody(workflow(node('Develop', { mode: 'until_complete', max: 2, to: 'Develop' }))))).toEqual(['nodes[0].repeat.to']);
+    expect(validateWorkflowBody(workflow(node('Develop', { mode: 'forever' })))).toEqual([
+      { field: 'nodes[0].repeat.mode', message: 'Choose once, until_complete or loop_back' },
+    ]);
   });
 });

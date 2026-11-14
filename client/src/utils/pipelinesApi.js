@@ -153,6 +153,15 @@ export function answerRun(runId, answer, { signal } = {}) {
   return request(`/runs/${encodeURIComponent(runId)}/answer`, { method: 'POST', body: { answer }, signal });
 }
 
+const DECISIONS_PAGE_SIZE = 50;
+
+/** One page of the requests a run's agents settled themselves, in the order they were settled. */
+export function listRunDecisions(runId, page, { signal } = {}) {
+  if (!Number.isSafeInteger(page) || page < 0) throw new PipelineApiError('page must be a whole number of 0 or more');
+  const params = new URLSearchParams({ page: String(page), size: String(DECISIONS_PAGE_SIZE), sort: 'createdAt,asc' });
+  return request(`/runs/${encodeURIComponent(runId)}/decisions?${params}`, { signal });
+}
+
 export function cleanupRun(runId, options) {
   return postAction(runId, 'cleanup', options);
 }

@@ -162,6 +162,9 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 - `shared/pipeline-definitions.mjs`: shared definition validation and prompt composition.
 - `server/pipelines/`: revisioned SQLite stores, Git worktree operations, readiness
   classification, pure run state transitions and serialized background execution.
+  `step-guidance.js` builds what a looping or self-deciding step is told beyond the
+  standard instruction; `decision-store.js` keeps the append-only record of requests
+  agents settled themselves (`pipeline_run_decisions`).
 - `server/routes/pipelines.js`: definitions, settings, preflight and owner actions;
   transport validation and RFC 9457 errors. See `api-standards.md` for the contract.
 - `client/src/components/pipelines/`: definition editors, Run dialog and runs bar.

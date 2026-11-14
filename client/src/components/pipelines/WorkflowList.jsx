@@ -7,7 +7,9 @@ import { failureMessage } from './definitionForm';
 
 function summary(workflow) {
   const count = workflow.nodes.length;
-  return `${count} ${count === 1 ? 'node' : 'nodes'}: ${workflow.nodes.map(node => node.name).join(' → ')}`;
+  // A node that loops back is followed by the node its loop returns to.
+  const names = workflow.nodes.map(node => (node.repeat.mode === 'loop_back' ? `${node.name} ↺ ${node.repeat.to}` : node.name));
+  return `${count} ${count === 1 ? 'node' : 'nodes'}: ${names.join(' → ')}${workflow.agentsDecide ? ' · agents decide' : ''}`;
 }
 
 /** Workflows list; one workflow at a time is open in the editor. */

@@ -451,3 +451,87 @@ describe('input request (what the agent is waiting for)', () => {
     expect(computeActions(run({ status: 'limit_paused', steps: [step({ status: 'limit_reached' })] })).answer).toBe(false);
   });
 });
+
+describe('loop back (a step sends the run back to an earlier step)', () => {
+  const done = (overrides = {}) => step({ status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1, startedAt: AT, finishedAt: AT, roundsCompleted: 0, ...overrides });
+  // Setup, Develop, Test (loops back to Develop), Review — Test has just finished a pass.
+  const looping = (overrides = {}) => run({
+    status: 'running',
+    currentStepIndex: 2,
+    steps: [
+      done({ sessionId: 'Demo-1' }),
+      done({ sessionId: 'Demo-2', priorSessionIds: ['Demo-9'] }),
+      step({ status: 'running', sessionId: 'Demo-3', attempt: 1, iteration: 1, startedAt: AT, roundsCompleted: 0 }),
+      step({ roundsCompleted: 0 }),
+    ],
+    ...overrides,
+  });
+  const LATER = '2026-11-13T12:30:00.000Z';
+
+  it('makes the steps of the loop pending again and continues at its first step', () => {
+    const next = applyEvent(looping(), { type: 'loop_back', toStepIndex: 1, at: LATER });
+    expect(next.status).toBe('running');
+    expect(next.currentStepIndex).toBe(1);
+    expect(next.steps.map(s => s.status)).toEqual(['complete', 'pending', 'pending', 'pending']);
+    expect(next.finishedAt).toBeNull();
+  });
+
+  it('counts the finished round on the step that loops back, and only there', () => {
+    const next = applyEvent(looping(), { type: 'loop_back', toStepIndex: 1, at: LATER });
+    expect(next.steps.map(s => s.roundsCompleted)).toEqual([0, 0, 1, 0]);
+    const again = applyEvent(
+      { ...next, currentStepIndex: 2, steps: next.steps.map((s, i) => (i === 2 ? { ...s, status: 'running' } : i === 1 ? { ...s, status: 'complete' } : s)) },
+      { type: 'loop_back', toStepIndex: 1, at: LATER },
+    );
+    expect(again.steps[2].roundsCompleted).toBe(2);
+  });
+
+  it('keeps each step in its terminal: sessions, earlier sessions and attempts stay, passes start over', () => {
+    const next = applyEvent(looping(), { type: 'loop_back', toStepIndex: 1, at: LATER });
+    expect(next.steps[1]).toMatchObject({ sessionId: 'Demo-2', priorSessionIds: ['Demo-9'], attempt: 1, iteration: 0, finishedAt: null });
+    expect(next.steps[2]).toMatchObject({ sessionId: 'Demo-3', attempt: 1, iteration: 0, finishedAt: null });
+    // A step before the loop is not touched.
+    expect(next.steps[0]).toEqual(looping().steps[0]);
+  });
+
+  it('lets the first step of the loop start again', () => {
+    const back = applyEvent(looping(), { type: 'loop_back', toStepIndex: 1, at: LATER });
+    const started = applyEvent(back, { type: 'start', at: LATER });
+    expect(started.steps[1]).toMatchObject({ status: 'launching', attempt: 2, sessionId: 'Demo-2', startedAt: LATER });
+  });
+
+  it('does not mutate the input state', () => {
+    const state = looping();
+    const frozen = structuredClone(state);
+    applyEvent(state, { type: 'loop_back', toStepIndex: 1, at: LATER });
+    expect(state).toEqual(frozen);
+  });
+
+  it.each([
+    ['its own index', 2],
+    ['a later index', 3],
+    ['a negative index', -1],
+    ['a fractional index', 0.5],
+    ['no index', undefined],
+    ['a string', '1'],
+  ])('throws on %s', (_label, toStepIndex) => {
+    expect(() => applyEvent(looping(), { type: 'loop_back', toStepIndex })).toThrow('loop_back event: toStepIndex must be the index of an earlier step');
+  });
+
+  it.each(['pending', 'needs_input', 'limit_paused', 'interrupted', 'stopped', 'error', 'complete'])('is illegal while the run is %s', (status) => {
+    expect(() => applyEvent(looping({ status }), { type: 'loop_back', toStepIndex: 1 })).toThrow(`illegal transition: ${status} + loop_back`);
+  });
+
+  it.each(['pending', 'launching', 'needs_input', 'complete', 'limit_reached'])('is illegal while the current step is %s', (status) => {
+    const state = looping();
+    state.steps[2] = { ...state.steps[2], status };
+    expect(() => applyEvent(state, { type: 'loop_back', toStepIndex: 1 })).toThrow(`illegal transition: step:${status} + loop_back`);
+  });
+
+  it('keeps the completed rounds when the run is resumed', () => {
+    const state = looping({ status: 'interrupted', worktreeState: 'present' });
+    state.steps[2] = { ...state.steps[2], status: 'interrupted', roundsCompleted: 4 };
+    const resumed = applyEvent(state, { type: 'resume', at: LATER });
+    expect(resumed.steps[2]).toMatchObject({ status: 'launching', roundsCompleted: 4, iteration: 0, sessionId: null });
+  });
+});

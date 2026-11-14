@@ -170,7 +170,7 @@ describe('pipeline workflow store', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);
     const created = workflows.create({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [node(agent.id)],
     });
     expect(created).toMatchObject({
@@ -185,17 +185,17 @@ describe('pipeline workflow store', () => {
   it('lists workflows ordered by name case-insensitively', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);
-    workflows.create({ name: 'Zebra', nodes: [node(agent.id)] });
-    workflows.create({ name: 'alpha', nodes: [{ ...node(agent.id), name: 'A' }] });
+    workflows.create({ name: 'Zebra', agentsDecide: false, nodes: [node(agent.id)] });
+    workflows.create({ name: 'alpha', agentsDecide: false, nodes: [{ ...node(agent.id), name: 'A' }] });
     expect(workflows.list().map(w => w.name)).toEqual(['alpha', 'Zebra']);
   });
 
   it('updates a workflow when the revision matches', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);
-    const created = workflows.create({ name: 'Feature', nodes: [node(agent.id)] });
+    const created = workflows.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
     const updated = workflows.update(created.id, {
-      name: 'Feature v2',
+      name: 'Feature v2', agentsDecide: false,
       nodes: [{ ...node(agent.id), name: 'Ship', prompt: 'Ship it' }],
       revision: 1,
     });
@@ -209,10 +209,10 @@ describe('pipeline workflow store', () => {
   it('throws a revision conflict when the revision is stale', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);
-    const created = workflows.create({ name: 'Feature', nodes: [node(agent.id)] });
-    workflows.update(created.id, { name: 'once', nodes: [node(agent.id)], revision: 1 });
+    const created = workflows.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
+    workflows.update(created.id, { name: 'once', agentsDecide: false, nodes: [node(agent.id)], revision: 1 });
     expect(() => workflows.update(created.id, {
-      name: 'twice',
+      name: 'twice', agentsDecide: false,
       nodes: [node(agent.id)],
       revision: 1,
     })).toThrow(/revision/i);
@@ -221,9 +221,9 @@ describe('pipeline workflow store', () => {
   it('rejects duplicate workflow names case-insensitively', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);
-    workflows.create({ name: 'Feature', nodes: [node(agent.id)] });
+    workflows.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
     expect(() => workflows.create({
-      name: 'feature',
+      name: 'feature', agentsDecide: false,
       nodes: [{ ...node(agent.id), name: 'Other' }],
     })).toThrow(/name/i);
   });
@@ -231,7 +231,7 @@ describe('pipeline workflow store', () => {
   it('removes a workflow', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);
-    const created = workflows.create({ name: 'Feature', nodes: [node(agent.id)] });
+    const created = workflows.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
     workflows.remove(created.id);
     expect(workflows.get(created.id)).toBeNull();
   });
@@ -239,17 +239,78 @@ describe('pipeline workflow store', () => {
   it('rejects invalid nodes on write', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);
-    expect(() => workflows.create({ name: 'Feature', nodes: [] })).toThrow();
+    expect(() => workflows.create({ name: 'Feature', agentsDecide: false, nodes: [] })).toThrow();
     expect(() => workflows.create({
-      name: 'Feature',
+      name: 'Feature', agentsDecide: false,
       nodes: [{ ...node(agent.id), agentId: 'not-a-uuid' }],
     })).toThrow();
+  });
+
+  it('keeps who decides, and changes it on update', () => {
+    const { agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const created = workflows.create({ name: 'Feature', agentsDecide: true, nodes: [node(agent.id)] });
+    expect(created.agentsDecide).toBe(true);
+    expect(workflows.get(created.id).agentsDecide).toBe(true);
+    const updated = workflows.update(created.id, { name: 'Feature', agentsDecide: false, nodes: [node(agent.id)], revision: 1 });
+    expect(updated.agentsDecide).toBe(false);
+    expect(workflows.list().map(workflow => workflow.agentsDecide)).toEqual([false]);
+  });
+
+  it('stores a loop back under the name of the node it returns to', () => {
+    const { agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const created = workflows.create({
+      name: 'Feature',
+      agentsDecide: false,
+      nodes: [
+        node(agent.id),
+        { ...node(agent.id), name: 'Test', repeat: { mode: 'loop_back', to: ' develop ', max: 20 } },
+      ],
+    });
+    expect(created.nodes[1].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 20 });
+    expect(workflows.get(created.id).nodes[1].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 20 });
+  });
+
+  it('adds the column to a database created before it; those workflows left decisions to the owner', () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    db.exec(`
+      CREATE TABLE pipeline_workflows (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, nodes TEXT NOT NULL,
+        revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+    `);
+    const id = 'd5207c2e-0000-4000-8000-000000000001';
+    db.prepare('INSERT INTO pipeline_workflows VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, 'Feature', JSON.stringify([node()]), 3, '2026-11-13T10:00:00.000Z', '2026-11-13T10:00:00.000Z');
+    const workflows = createWorkflowStore(db);
+    expect(workflows.get(id)).toMatchObject({ name: 'Feature', revision: 3, agentsDecide: false });
+    // Constructing the store again finds the column already there.
+    expect(createWorkflowStore(db).get(id).agentsDecide).toBe(false);
+  });
+
+  it.each([2, -1, null, 'true'])('throws naming table/row/field when the stored agents_decide is %s', (stored) => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const created = workflows.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
+    try {
+      db.prepare('UPDATE pipeline_workflows SET agents_decide = ? WHERE id = ?').run(stored, created.id);
+    } catch (err) {
+      // NOT NULL refuses the null case at write time; the read guard is then not reachable.
+      expect(stored).toBeNull();
+      expect(String(err.message)).toMatch(/NOT NULL/);
+      return;
+    }
+    expect(() => workflows.get(created.id)).toThrow(
+      new RegExp(`pipeline_workflows row ${created.id} field agents_decide: must be 0 or 1`),
+    );
   });
 
   it('throws naming table/row/field when nodes JSON is corrupt', () => {
     const { db, agents, workflows } = setup();
     const agent = agents.create(validAgent);
-    const created = workflows.create({ name: 'Feature', nodes: [node(agent.id)] });
+    const created = workflows.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
     db.prepare('UPDATE pipeline_workflows SET nodes = ? WHERE id = ?').run('[]', created.id);
     expect(() => workflows.get(created.id)).toThrow(
       new RegExp(`pipeline_workflows.*${created.id}.*nodes`, 'i'),

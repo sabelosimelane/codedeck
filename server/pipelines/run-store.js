@@ -59,22 +59,45 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function validateRepeat(id, prefix, repeat) {
+// A run's snapshot names the step a loop returns to by its index among the run's steps.
+const REPEAT_FIELDS = {
+  once: ['mode'],
+  until_complete: ['mode', 'max'],
+  loop_back: ['mode', 'toStepIndex', 'max'],
+};
+const REPEAT_KNOWN = ['mode', 'toStepIndex', 'max'];
+
+function validateRepeat(id, prefix, repeat, index) {
   if (!isPlainObject(repeat)) fieldError(id, prefix, 'must be an object');
+  const allowed = REPEAT_FIELDS[repeat.mode];
+  if (!allowed) fieldError(id, `${prefix}.mode`, 'invalid');
   for (const key of Object.keys(repeat)) {
-    if (!['mode', 'max'].includes(key)) fieldError(id, `${prefix}.${key}`, 'unknown field');
+    if (allowed.includes(key)) continue;
+    fieldError(id, `${prefix}.${key}`, REPEAT_KNOWN.includes(key) ? `forbidden for ${repeat.mode}` : 'unknown field');
   }
-  if (repeat.mode === 'once') {
-    if (repeat.max !== undefined) fieldError(id, `${prefix}.max`, 'forbidden for once');
-    return { mode: 'once' };
+  if (repeat.mode === 'once') return { mode: 'once' };
+  if (repeat.mode === 'loop_back'
+    && (!Number.isInteger(repeat.toStepIndex) || repeat.toStepIndex < 0 || repeat.toStepIndex >= index)) {
+    fieldError(id, `${prefix}.toStepIndex`, 'must be the index of an earlier step');
   }
-  if (repeat.mode === 'until_complete') {
-    if (!Number.isInteger(repeat.max) || repeat.max < 1 || repeat.max > 100) {
-      fieldError(id, `${prefix}.max`, 'must be 1–100');
-    }
-    return { mode: 'until_complete', max: repeat.max };
+  if (!Number.isInteger(repeat.max) || repeat.max < 1 || repeat.max > 100) {
+    fieldError(id, `${prefix}.max`, 'must be 1–100');
   }
-  fieldError(id, `${prefix}.mode`, 'invalid');
+  return repeat.mode === 'loop_back'
+    ? { mode: 'loop_back', toStepIndex: repeat.toStepIndex, max: repeat.max }
+    : { mode: 'until_complete', max: repeat.max };
+}
+
+/** A loop never starts at Setup, and two loops never share a step. */
+function validateLoops(id, steps) {
+  let lastLoopEnd = -1;
+  steps.forEach((step, index) => {
+    if (step.repeat.mode !== 'loop_back') return;
+    const field = `definition.steps[${index}].repeat.toStepIndex`;
+    if (steps[step.repeat.toStepIndex].kind === 'setup') fieldError(id, field, 'must not be the Setup step');
+    if (step.repeat.toStepIndex <= lastLoopEnd) fieldError(id, field, `overlaps the loop that ends at step ${lastLoopEnd}`);
+    lastLoopEnd = index;
+  });
 }
 
 function validateDefinitionAgent(id, prefix, agent) {
@@ -111,7 +134,7 @@ function validateDefinitionStep(id, index, step) {
     kind: step.kind,
     name: requireString(id, `${prefix}.name`, step.name, { max: 64 }).trim(),
     prompt: requireString(id, `${prefix}.prompt`, step.prompt, { max: 16384, singleLine: false }),
-    repeat: validateRepeat(id, `${prefix}.repeat`, step.repeat),
+    repeat: validateRepeat(id, `${prefix}.repeat`, step.repeat, index),
     agent: validateDefinitionAgent(id, `${prefix}.agent`, step.agent),
   };
 }
@@ -119,10 +142,12 @@ function validateDefinitionStep(id, index, step) {
 function validateDefinition(id, definition) {
   if (!isPlainObject(definition)) fieldError(id, 'definition', 'must be an object');
   for (const key of Object.keys(definition)) {
-    if (!['workflowId', 'workflowName', 'workflowRevision', 'steps'].includes(key)) {
+    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'steps'].includes(key)) {
       fieldError(id, `definition.${key}`, 'unknown field');
     }
   }
+  // Whether the workflow's agents settle their own questions instead of pausing for the owner.
+  if (typeof definition.agentsDecide !== 'boolean') fieldError(id, 'definition.agentsDecide', 'must be true or false');
   if (!isUuid(definition.workflowId)) fieldError(id, 'definition.workflowId', 'must be a UUID');
   requireString(id, 'definition.workflowName', definition.workflowName, { max: 64 });
   if (!Number.isInteger(definition.workflowRevision) || definition.workflowRevision < 1) {
@@ -131,11 +156,14 @@ function validateDefinition(id, definition) {
   if (!Array.isArray(definition.steps) || definition.steps.length < 1 || definition.steps.length > 33) {
     fieldError(id, 'definition.steps', 'must contain 1–33 steps');
   }
+  const steps = definition.steps.map((step, index) => validateDefinitionStep(id, index, step));
+  validateLoops(id, steps);
   return {
     workflowId: definition.workflowId,
     workflowName: definition.workflowName.trim(),
     workflowRevision: definition.workflowRevision,
-    steps: definition.steps.map((step, index) => validateDefinitionStep(id, index, step)),
+    agentsDecide: definition.agentsDecide,
+    steps,
   };
 }
 
@@ -155,7 +183,7 @@ function validateStepProgress(id, index, step, project) {
   const prefix = `steps[${index}]`;
   if (!isPlainObject(step)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(step)) {
-    if (!['status', 'sessionId', 'priorSessionIds', 'attempt', 'iteration', 'detail', 'startedAt', 'finishedAt'].includes(key)) {
+    if (!['status', 'sessionId', 'priorSessionIds', 'attempt', 'iteration', 'roundsCompleted', 'detail', 'startedAt', 'finishedAt'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
@@ -173,6 +201,10 @@ function validateStepProgress(id, index, step, project) {
   if (!Number.isInteger(step.iteration) || step.iteration < 0) {
     fieldError(id, `${prefix}.iteration`, 'must be ≥ 0');
   }
+  // How many rounds of its loop a step that loops back has finished and sent back to the start.
+  if (!Number.isInteger(step.roundsCompleted) || step.roundsCompleted < 0) {
+    fieldError(id, `${prefix}.roundsCompleted`, 'must be an integer ≥ 0');
+  }
   let detail = step.detail;
   if (detail !== null) {
     detail = requireString(id, `${prefix}.detail`, detail, { max: 2000, singleLine: false, min: 0, allowEmpty: false });
@@ -183,6 +215,7 @@ function validateStepProgress(id, index, step, project) {
     priorSessionIds,
     attempt: step.attempt,
     iteration: step.iteration,
+    roundsCompleted: step.roundsCompleted,
     detail,
     startedAt: requireIso(id, `${prefix}.startedAt`, step.startedAt, { allowNull: true }),
     finishedAt: requireIso(id, `${prefix}.finishedAt`, step.finishedAt, { allowNull: true }),
@@ -228,6 +261,14 @@ function validateRunRecord(id, record) {
   }
 
   const steps = record.steps.map((step, index) => validateStepProgress(id, index, step, record.project));
+  steps.forEach((step, index) => {
+    const { repeat } = definition.steps[index];
+    if (repeat.mode !== 'loop_back') {
+      if (step.roundsCompleted !== 0) fieldError(id, `steps[${index}].roundsCompleted`, 'must be 0 for a step that does not loop back');
+    } else if (step.roundsCompleted >= repeat.max) {
+      fieldError(id, `steps[${index}].roundsCompleted`, `must be less than the maximum of ${repeat.max} rounds`);
+    }
+  });
   requireAbsPath(id, 'home_path', record.homePath);
   requireAbsPath(id, 'worktree_path', record.worktreePath);
   requireString(id, 'worktree_branch', record.worktreeBranch, { max: 256 });
@@ -397,6 +438,37 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
   if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'input_request')) {
     db.exec('ALTER TABLE pipeline_runs ADD COLUMN input_request TEXT');
   }
+
+  // Runs stored before step loops and agent decisions existed: the owner decided, and no loop
+  // round had run. Their snapshots gain both facts once; nothing else about them changes.
+  const upgradeStored = db.transaction(() => {
+    const save = db.prepare('UPDATE pipeline_runs SET definition = ?, steps = ? WHERE id = ?');
+    for (const row of db.prepare('SELECT id, definition, steps FROM pipeline_runs').all()) {
+      let definition;
+      let steps;
+      try {
+        definition = JSON.parse(row.definition);
+      } catch {
+        fieldError(row.id, 'definition', 'must be valid JSON');
+      }
+      try {
+        steps = JSON.parse(row.steps);
+      } catch {
+        fieldError(row.id, 'steps', 'must be valid JSON');
+      }
+      if (!isPlainObject(definition)) fieldError(row.id, 'definition', 'must be an object');
+      if (!Array.isArray(steps)) fieldError(row.id, 'steps', 'must be an array');
+      const lacksRounds = step => isPlainObject(step) && !Object.hasOwn(step, 'roundsCompleted');
+      const lacksDecide = !Object.hasOwn(definition, 'agentsDecide');
+      if (!lacksDecide && !steps.some(lacksRounds)) continue;
+      save.run(
+        JSON.stringify(lacksDecide ? { ...definition, agentsDecide: false } : definition),
+        JSON.stringify(steps.map(step => (lacksRounds(step) ? { ...step, roundsCompleted: 0 } : step))),
+        row.id,
+      );
+    }
+  });
+  upgradeStored();
 
   const read = db.prepare('SELECT * FROM pipeline_runs WHERE id = ?');
   const readByRequest = db.prepare('SELECT * FROM pipeline_runs WHERE request_id = ?');

@@ -7,6 +7,8 @@ function runView(overrides = {}) {
   return {
     id: 'r1',
     workflowName: 'Feature',
+    agentsDecide: false,
+    decisionCount: 0,
     status: 'running',
     error: null,
     steps: [
@@ -16,6 +18,7 @@ function runView(overrides = {}) {
         status: 'complete',
         sessionId: 'Demo-1',
         iteration: 1,
+        roundsCompleted: 0,
         repeat: { mode: 'until_complete', max: 3 },
       },
       {
@@ -24,6 +27,7 @@ function runView(overrides = {}) {
         status: 'running',
         sessionId: 'Demo-2',
         iteration: 2,
+        roundsCompleted: 0,
         repeat: { mode: 'until_complete', max: 5 },
       },
     ],
@@ -257,5 +261,139 @@ describe('PipelineRunsBar — what the agent needs', () => {
     expect(within(panel()).getByText('The agent is showing a dialog in its terminal. Answer it there.')).toBeTruthy();
     expect(screen.queryByLabelText('Answer for Feature')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Send answer' })).toBeNull();
+  });
+});
+
+describe('PipelineRunsBar — loops and decisions agents made', () => {
+  const decision = (id, patch = {}) => ({
+    id, stepIndex: 1, stepName: 'Test', pass: 1, questions: `1. Question ${id}?\nRecommended: yes`,
+    truncated: false, answer: 'Proceed with your recommendations.', createdAt: '2026-11-14T10:00:00.000Z', ...patch,
+  });
+  const loopRun = (overrides = {}) => runView({
+    agentsDecide: true,
+    steps: [
+      { index: 0, name: 'Develop', status: 'complete', sessionId: 'Demo-1', iteration: 1, roundsCompleted: 0, repeat: { mode: 'once' } },
+      { index: 1, name: 'Test', status: 'running', sessionId: 'Demo-2', iteration: 1, roundsCompleted: 2, repeat: { mode: 'loop_back', toStepIndex: 0, max: 20 } },
+    ],
+    ...overrides,
+  });
+
+  function renderBar(run, onLoadDecisions = vi.fn(async () => ({ decisions: [decision(1), decision(2)], hasNextPage: false, total: 2 }))) {
+    const props = { onStop: vi.fn(), onResume: vi.fn(), onContinue: vi.fn(), onCleanup: vi.fn(), onAnswer: vi.fn(), onActivateStep: vi.fn(), onLoadDecisions };
+    const view = render(<PipelineRunsBar runs={[run]} {...props} />);
+    return { onLoadDecisions, rerender: next => view.rerender(<PipelineRunsBar runs={[next]} {...props} />) };
+  }
+  const toggle = count => screen.getByRole('button', { name: `${count} ${count === 1 ? 'decision' : 'decisions'} made by agents` });
+  const list = () => screen.getByRole('list', { name: 'Decisions agents made in Feature' });
+  const open = async (count) => { await act(async () => { fireEvent.click(toggle(count)); }); };
+
+  it('shows which round a loop is on, on the step that loops back', () => {
+    renderBar(loopRun());
+    expect(screen.getByRole('button', { name: 'Test running round 3/20' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Develop complete' })).toBeTruthy();
+  });
+
+  it('shows round 1 before the loop has gone round', () => {
+    const run = loopRun();
+    run.steps[1] = { ...run.steps[1], status: 'pending', roundsCompleted: 0 };
+    renderBar(run);
+    expect(screen.getByRole('button', { name: 'Test pending round 1/20' })).toBeTruthy();
+  });
+
+  it('marks a run whose agents decide, and only such a run', () => {
+    renderBar(loopRun());
+    expect(screen.getByText('agents decide')).toBeTruthy();
+    cleanup();
+    renderBar(loopRun({ agentsDecide: false }));
+    expect(screen.queryByText('agents decide')).toBeNull();
+  });
+
+  it('offers no decisions for a run whose agents decided nothing', () => {
+    const { onLoadDecisions } = renderBar(loopRun({ decisionCount: 0 }));
+    expect(screen.queryByRole('button', { name: /made by agents/ })).toBeNull();
+    expect(onLoadDecisions).not.toHaveBeenCalled();
+  });
+
+  it('counts one decision in the singular', () => {
+    renderBar(loopRun({ decisionCount: 1 }));
+    expect(toggle(1)).toBeTruthy();
+  });
+
+  it('loads and lists the decisions when asked, then hides them again', async () => {
+    const { onLoadDecisions } = renderBar(loopRun({ decisionCount: 2 }));
+    expect(onLoadDecisions).not.toHaveBeenCalled();
+    await open(2);
+    expect(onLoadDecisions).toHaveBeenCalledWith('r1', 0);
+    const items = within(list()).getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(within(items[0]).getByText('Test, pass 1')).toBeTruthy();
+    expect(within(items[0]).getByText(/1\. Question 1\?/)).toBeTruthy();
+    expect(within(items[0]).getByText(/Recommended: yes/)).toBeTruthy();
+    expect(within(items[0]).getByText('Answered: Proceed with your recommendations.')).toBeTruthy();
+    expect(toggle(2).getAttribute('aria-expanded')).toBe('true');
+
+    await open(2);
+    expect(screen.queryByRole('list', { name: 'Decisions agents made in Feature' })).toBeNull();
+    expect(toggle(2).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('notes a list of questions that was cut', async () => {
+    renderBar(loopRun({ decisionCount: 1 }), vi.fn(async () => ({ decisions: [decision(1, { truncated: true })], hasNextPage: false, total: 1 })));
+    await open(1);
+    expect(within(list()).getByText('The list was cut here.')).toBeTruthy();
+  });
+
+  it('loads further pages on request and appends them', async () => {
+    const onLoadDecisions = vi.fn()
+      .mockResolvedValueOnce({ decisions: [decision(1), decision(2)], hasNextPage: true, total: 3 })
+      .mockResolvedValueOnce({ decisions: [decision(3)], hasNextPage: false, total: 3 });
+    renderBar(loopRun({ decisionCount: 3 }), onLoadDecisions);
+    await open(3);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Show more decisions' })); });
+    expect(onLoadDecisions).toHaveBeenLastCalledWith('r1', 1);
+    expect(within(list()).getAllByRole('listitem')).toHaveLength(3);
+    expect(screen.queryByRole('button', { name: 'Show more decisions' })).toBeNull();
+  });
+
+  it('says so when the decisions could not be loaded, and loads them on Try again', async () => {
+    const onLoadDecisions = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ decisions: [decision(1)], hasNextPage: false, total: 1 });
+    renderBar(loopRun({ decisionCount: 1 }), onLoadDecisions);
+    await open(1);
+    expect(screen.getByText('The decisions could not be loaded.')).toBeTruthy();
+    expect(screen.queryByRole('list', { name: 'Decisions agents made in Feature' })).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Try again' })); });
+    expect(within(list()).getAllByRole('listitem')).toHaveLength(1);
+    expect(screen.queryByText('The decisions could not be loaded.')).toBeNull();
+  });
+
+  it('loads the list again when another decision is made while it is open', async () => {
+    const onLoadDecisions = vi.fn()
+      .mockResolvedValueOnce({ decisions: [decision(1)], hasNextPage: false, total: 1 })
+      .mockResolvedValueOnce({ decisions: [decision(1), decision(2)], hasNextPage: false, total: 2 });
+    const { rerender } = renderBar(loopRun({ decisionCount: 1 }), onLoadDecisions);
+    await open(1);
+    await act(async () => { rerender(loopRun({ decisionCount: 2 })); });
+    expect(onLoadDecisions).toHaveBeenCalledTimes(2);
+    expect(onLoadDecisions).toHaveBeenLastCalledWith('r1', 0);
+    expect(within(list()).getAllByRole('listitem')).toHaveLength(2);
+  });
+
+  it('does not load again for a poll that changes nothing', async () => {
+    const { onLoadDecisions, rerender } = renderBar(loopRun({ decisionCount: 2 }));
+    await open(2);
+    await act(async () => { rerender(loopRun({ decisionCount: 2, status: 'running' })); });
+    expect(onLoadDecisions).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a page that arrives after the list was closed', async () => {
+    let release;
+    const onLoadDecisions = vi.fn(() => new Promise((resolve) => { release = resolve; }));
+    renderBar(loopRun({ decisionCount: 1 }), onLoadDecisions);
+    await open(1);
+    await open(1);
+    await act(async () => { release({ decisions: [decision(1)], hasNextPage: false, total: 1 }); });
+    expect(screen.queryByRole('list', { name: 'Decisions agents made in Feature' })).toBeNull();
   });
 });

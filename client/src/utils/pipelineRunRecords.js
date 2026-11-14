@@ -31,6 +31,29 @@ export function parseInputRequest(run, index = 0) {
   return { questions: request.questions, truncated: request.truncated };
 }
 
+/**
+ * The fields the runs bar reads about loops and decisions: whether the run's agents decide,
+ * how many requests they settled, and for each step its repeat and completed rounds.
+ * Throws naming the field; returns nothing.
+ */
+export function parseRunAutonomy(run, index = 0) {
+  const identity = isUuid(run?.id) ? run.id : `index ${index}`;
+  const guard = (condition, field) => {
+    if (!condition) throw new PipelineApiError(`Invalid run ${identity} field ${field}`);
+  };
+  guard(object(run), 'run');
+  guard(typeof run.agentsDecide === 'boolean', 'agentsDecide');
+  guard(integer(run.decisionCount), 'decisionCount');
+  guard(Array.isArray(run.steps), 'steps');
+  run.steps.forEach((step, i) => {
+    guard(object(step), `steps[${i}]`);
+    guard(object(step.repeat), `steps[${i}].repeat`);
+    const loops = step.repeat.mode === 'loop_back';
+    if (loops) guard(integer(step.repeat.max) && step.repeat.max >= 1 && step.repeat.max <= 100, `steps[${i}].repeat.max`);
+    guard(integer(step.roundsCompleted) && (loops ? step.roundsCompleted < step.repeat.max : step.roundsCompleted === 0), `steps[${i}].roundsCompleted`);
+  });
+}
+
 export function parseRun(run, index = 0) {
   const identity = isUuid(run?.id) ? run.id : `index ${index}`;
   const guard = (condition, field) => {
@@ -41,6 +64,9 @@ export function parseRun(run, index = 0) {
   guard(typeof run.requestId === 'string' && /^[\w-]{1,128}$/.test(run.requestId), 'requestId');
   guard(isUuid(run.workflowId), 'workflowId');
   guard(text(run.workflowName) && run.workflowName.length <= 64, 'workflowName');
+  // Whether this run's agents settle their own questions, and how many they have settled.
+  guard(typeof run.agentsDecide === 'boolean', 'agentsDecide');
+  guard(integer(run.decisionCount), 'decisionCount');
   guard(text(run.project) && run.project.length <= 256 && !/[\x00-\x1f\x7f]/.test(run.project), 'project');
   guard(typeof run.input === 'string' && run.input.length <= 4096 && !/[\x00-\x1f\x7f]/.test(run.input), 'input');
   guard(RUN_STATUSES.includes(run.status), 'status');
@@ -57,8 +83,12 @@ export function parseRun(run, index = 0) {
     guard(text(step.name) && step.name.length <= 64, field('name'));
     guard(text(step.agentName) && step.agentName.length <= 64, field('agentName'));
     guard(object(step.repeat), field('repeat'));
-    guard(['once', 'until_complete'].includes(step.repeat.mode), field('repeat.mode'));
+    guard(['once', 'until_complete', 'loop_back'].includes(step.repeat.mode), field('repeat.mode'));
+    const loops = step.repeat.mode === 'loop_back';
+    // A loop names the earlier step it returns to; no other repeat has a target.
+    guard(loops ? integer(step.repeat.toStepIndex) && step.repeat.toStepIndex < i : step.repeat.toStepIndex === undefined, field('repeat.toStepIndex'));
     guard(step.repeat.mode === 'once' ? step.repeat.max === undefined : integer(step.repeat.max) && step.repeat.max >= 1 && step.repeat.max <= 100, field('repeat.max'));
+    guard(integer(step.roundsCompleted) && (loops ? step.roundsCompleted < step.repeat.max : step.roundsCompleted === 0), field('roundsCompleted'));
     guard(STEP_STATUSES.includes(step.status), field('status'));
     guard(nullable(step.sessionId, session), field('sessionId'));
     guard(Array.isArray(step.priorSessionIds) && step.priorSessionIds.every(session), field('priorSessionIds'));
@@ -83,4 +113,45 @@ export function parseRun(run, index = 0) {
   guard(stamp(run.updatedAt), 'updatedAt');
   guard(nullable(run.finishedAt, stamp) && (!['complete', 'stopped', 'error'].includes(run.status) || run.finishedAt !== null), 'finishedAt');
   return run;
+}
+
+const DECISION_TEXT_MAX = 4000;
+
+/**
+ * One request an agent settled itself: what it listed and the answer typed for it.
+ * A failure names the record and field, never what was asked or answered.
+ */
+export function parseDecision(decision) {
+  const identity = Number.isSafeInteger(decision?.id) ? ` ${decision.id}` : '';
+  const guard = (condition, field) => {
+    if (!condition) throw new PipelineApiError(`Invalid decision${identity} field ${field}`);
+  };
+  guard(object(decision), 'decision');
+  const { id, stepIndex, stepName, pass, questions, truncated, answer, createdAt } = decision;
+  guard(Number.isSafeInteger(id) && id >= 1, 'id');
+  guard(integer(stepIndex) && stepIndex <= 32, 'stepIndex');
+  guard(text(stepName) && stepName.length <= 64, 'stepName');
+  guard(integer(pass) && pass >= 1 && pass <= 100, 'pass');
+  guard(text(questions) && questions.length <= DECISION_TEXT_MAX, 'questions');
+  guard(typeof truncated === 'boolean', 'truncated');
+  guard(text(answer) && answer.length <= DECISION_TEXT_MAX, 'answer');
+  guard(stamp(createdAt), 'createdAt');
+  return { id, stepIndex, stepName, pass, questions, truncated, answer, createdAt };
+}
+
+/** A page of GET /runs/:id/decisions: its decisions, whether more follow, and how many there are in all. */
+export function parseDecisionPage(body) {
+  const guard = (condition, field) => {
+    if (!condition) throw new PipelineApiError(`Invalid decisions response field ${field}`);
+  };
+  guard(object(body), 'body');
+  guard(Array.isArray(body.data), 'data');
+  guard(object(body.page), 'page');
+  const { currentPage, size, totalElements, totalPages, hasNextPage } = body.page;
+  guard(integer(currentPage), 'page.currentPage');
+  guard(integer(size) && size >= 1, 'page.size');
+  guard(integer(totalElements), 'page.totalElements');
+  guard(integer(totalPages), 'page.totalPages');
+  guard(typeof hasNextPage === 'boolean', 'page.hasNextPage');
+  return { decisions: body.data.map(parseDecision), hasNextPage, total: totalElements };
 }

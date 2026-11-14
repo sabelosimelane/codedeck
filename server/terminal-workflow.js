@@ -7,13 +7,20 @@ const QUIET_MS = 1000;
 const SUBMIT_DELAY_MS = 100;
 const RESET_TIMEOUT_MS = 15000;
 const MAX_OUTPUT = 65536;
+// `resetFirst` clears the agent's context before the first pass, for a terminal whose agent
+// already worked. `guidance` is one more sentence or two of instruction for every pass.
+const START_FIELDS = ['requestId', 'command', 'resetCommand', 'maxIterations', 'resetFirst', 'guidance'];
 
 function validateStart(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Workflow start requires an object.');
   for (const field of Object.keys(request)) {
-    if (!['requestId', 'command', 'resetCommand', 'maxIterations'].includes(field)) throw new Error('Workflow start contains an unknown field.');
+    if (!START_FIELDS.includes(field)) throw new Error('Workflow start contains an unknown field.');
   }
-  const { requestId, command, resetCommand, maxIterations } = request;
+  const { requestId, command, resetCommand, maxIterations, resetFirst, guidance } = request;
+  if (resetFirst !== undefined && typeof resetFirst !== 'boolean') throw new Error('Workflow resetFirst must be true or false.');
+  if (guidance !== undefined && (typeof guidance !== 'string' || !guidance.trim() || guidance.length > 2000 || /[\x00-\x1f\x7f]/.test(guidance))) {
+    throw new Error('Workflow guidance must contain 1–2000 characters on one line without terminal control codes.');
+  }
   if (typeof requestId !== 'string' || !/^[\w-]{1,128}$/.test(requestId)) throw new Error('Workflow requestId must contain 1–128 letters, digits, underscores or hyphens.');
   if (typeof command !== 'string' || !command.trim() || command.length > 16384 || /[\x00-\x08\x0b-\x1f\x7f]/.test(command)) throw new Error('Workflow command must contain 1–16384 characters without terminal control codes.');
   if (typeof resetCommand !== 'string' || !resetCommand.trim() || resetCommand.length > 256 || /[\x00-\x1f\x7f]/.test(resetCommand)) throw new Error('Workflow resetCommand must contain 1–256 characters on one line without terminal control codes.');
@@ -27,9 +34,9 @@ function isAnswer(data) {
   return /[^\x00-\x1f\x7f]|\r/.test(data.replace(/\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O.|.)/gs, ''));
 }
 
-function buildPrompt(command, identifier) {
+function buildPrompt(command, identifier, guidance) {
   // Never include an assembled marker: terminal echo must not match a result.
-  return `${command}\n\nCodeDeck workflow instruction: perform one pass of the command above. As your final output, emit exactly one signal, only after all work and tools for this pass have finished. Use CONTINUE if this pass finished and the overall requested task still has work remaining. Use COMPLETE only if the entire requested task is finished. Use NEEDS_INPUT if you need an answer, permission, or encounter a problem that prevents continuation. Before a NEEDS_INPUT signal, state what you need: print the questions marker on a line of its own, then a numbered list with one short question per item, each followed by Recommended: and the answer you recommend; write nothing else between the questions marker and the signal. Do not reset context yourself. Do not print a signal as an example or while explaining this instruction.\nIteration identifier: ${identifier}\nCopy the iteration identifier verbatim; do not reconstruct or invent it. Construct the signal by joining these parts without spaces: opening [[CDW: ; the iteration identifier ; a colon ; the chosen uppercase status ; closing ]] . Construct the questions marker the same way, with QUESTIONS in place of the status.`;
+  return `${command}\n\nCodeDeck workflow instruction: perform one pass of the command above. As your final output, emit exactly one signal, only after all work and tools for this pass have finished. Use CONTINUE if this pass finished and the overall requested task still has work remaining. Use COMPLETE only if the entire requested task is finished. Use NEEDS_INPUT if you need an answer, permission, or encounter a problem that prevents continuation. Before a NEEDS_INPUT signal, state what you need: print the questions marker on a line of its own, then a numbered list with one short question per item, each followed by Recommended: and the answer you recommend; write nothing else between the questions marker and the signal. Do not reset context yourself. Do not print a signal as an example or while explaining this instruction.${guidance === undefined ? '' : ` ${guidance}`}\nIteration identifier: ${identifier}\nCopy the iteration identifier verbatim; do not reconstruct or invent it. Construct the signal by joining these parts without spaces: opening [[CDW: ; the iteration identifier ; a colon ; the chosen uppercase status ; closing ]] . Construct the questions marker the same way, with QUESTIONS in place of the status.`;
 }
 
 /** A terminal session owns a loop in backend memory, independently of its browser socket. */
@@ -98,7 +105,7 @@ export function createTerminalWorkflow({ write, notify }) {
     issuedIdentifiers.add(identifier);
     rawOutput = '';
     publish();
-    pasteAndSubmit(buildPrompt(request.command, identifier));
+    pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance));
   }
   function reset() {
     phase = 'reset_output';
@@ -125,6 +132,8 @@ export function createTerminalWorkflow({ write, notify }) {
           previous.command !== input.command
           || previous.resetCommand !== input.resetCommand
           || previous.maxIterations !== input.maxIterations
+          || (previous.resetFirst ?? false) !== (input.resetFirst ?? false)
+          || previous.guidance !== input.guidance
         ) throw new Error('Workflow requestId was already used with different commands.');
         publish();
         return;
@@ -137,7 +146,16 @@ export function createTerminalWorkflow({ write, notify }) {
       error = null;
       limitReached = false;
       pass = 0;
-      iteration();
+      if (request.resetFirst === true) {
+        // The agent in this terminal has context from earlier work: clear it, then start pass 1.
+        cancelTimers();
+        status = 'resetting';
+        identifier = null;
+        publish();
+        reset();
+      } else {
+        iteration();
+      }
     },
     stop() { finish('stopped'); },
     input(data) {

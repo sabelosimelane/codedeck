@@ -18,6 +18,7 @@ const cursor = () => ({ id: A2, name: 'cursor-fable', launchCommand: 'command ag
 const feature = () => ({
   id: W1,
   name: 'Feature',
+  agentsDecide: false,
   revision: 3,
   ...STAMPS,
   nodes: [
@@ -587,6 +588,7 @@ describe('PipelineSettings workflows', () => {
       path: '/workflows',
       body: {
         name: 'Release',
+        agentsDecide: false,
         nodes: [
           { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 } },
           { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' } },
@@ -669,6 +671,7 @@ describe('PipelineSettings workflows', () => {
       path: `/workflows/${W1}`,
       body: {
         name: 'Feature',
+        agentsDecide: false,
         revision: 3,
         nodes: [
           { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' } },
@@ -804,5 +807,143 @@ describe('PipelineSettings workflows', () => {
     click('Cancel');
     expect(lastDirty()).toBe(false);
     expect(screen.queryByLabelText('Workflow name')).toBeNull();
+  });
+});
+
+describe('PipelineSettings workflows — loops and who decides', () => {
+  const looping = () => ({
+    ...feature(),
+    agentsDecide: true,
+    nodes: [
+      { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' } },
+      { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 } },
+      { name: 'Review', agentId: A1, prompt: '/review', repeat: { mode: 'once' } },
+    ],
+  });
+  const options = label => [...screen.getByLabelText(label).options].map(option => option.textContent);
+  const decide = () => screen.getByRole('checkbox', { name: 'Let agents decide' });
+  const savedBody = () => backend.mutations().at(-1).body;
+
+  it('adds a workflow whose second node loops back to the first, with agents deciding', async () => {
+    await renderSettings({ agents: [codex(), cursor()] });
+    click('Add workflow');
+    expect(decide().checked).toBe(false);
+    type('Workflow name', 'Build');
+    fillNode(1, { name: 'Develop', agent: A1, prompt: '/feature-dev {input}' });
+    click('Add node');
+    fillNode(2, { name: 'Test', agent: A2, prompt: '/feature-test {input}', repeat: 'loop_back' });
+    expect(options('Node 2 loops back to')).toEqual(['Choose a node', 'Node 1: Develop']);
+    fireEvent.change(screen.getByLabelText('Node 2 loops back to'), { target: { value: screen.getByLabelText('Node 2 loops back to').options[1].value } });
+    type('Node 2 maximum rounds', '20');
+    fireEvent.click(decide());
+    click('Save workflow');
+
+    await waitFor(() => toast('success', 'Workflow "Build" added'));
+    expect(savedBody()).toEqual({
+      name: 'Build',
+      agentsDecide: true,
+      nodes: [
+        { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' } },
+        { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 } },
+      ],
+    });
+  });
+
+  it('does not offer a loop on the first node, and offers only earlier nodes to loop back to', async () => {
+    await renderSettings({ agents: [codex()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    expect(options('Node 1 repeat')).toEqual(['Run once', 'Repeat until the agent reports COMPLETE']);
+    expect(options('Node 2 repeat')).toHaveLength(3);
+    type('Node 3 repeat', 'loop_back');
+    expect(options('Node 3 loops back to')).toEqual(['Choose a node', 'Node 1: Develop', 'Node 2: Test']);
+  });
+
+  it('opens a saved loop on its node and rounds, and the saved choice of who decides', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    expect(screen.getByLabelText('Node 2 repeat').value).toBe('loop_back');
+    const target = screen.getByLabelText('Node 2 loops back to');
+    expect(target.options[target.selectedIndex].textContent).toBe('Node 1: Develop');
+    expect(screen.getByLabelText('Node 2 maximum rounds').value).toBe('20');
+    expect(screen.queryByLabelText('Node 2 maximum passes')).toBeNull();
+    expect(decide().checked).toBe(true);
+    expect(lastDirty()).toBe(false);
+  });
+
+  it('keeps a loop on the same node when that node is renamed', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    type('Node 1 name', 'Build');
+    click('Save workflow');
+    await waitFor(() => toast('success', 'Workflow "Feature" saved'));
+    expect(savedBody().nodes[1].repeat).toEqual({ mode: 'loop_back', to: 'Build', max: 20 });
+  });
+
+  it('refuses a loop whose node was moved after it, naming the field, and sends nothing', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    click('Move node 1 down');
+    expect(nodeNames()).toEqual(['Test', 'Develop', 'Review']);
+    click('Save workflow');
+    expect(screen.getByText('Choose an earlier node to loop back to')).toBeTruthy();
+    expect(screen.getByLabelText('Node 1 loops back to').getAttribute('aria-invalid')).toBe('true');
+    expect(backend.mutations()).toEqual([]);
+  });
+
+  it('refuses a loop whose node was removed', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    click('Remove node 1');
+    click('Save workflow');
+    expect(screen.getByLabelText('Node 1 loops back to').value).toBe('');
+    expect(screen.getByText('Choose an earlier node to loop back to')).toBeTruthy();
+    expect(backend.mutations()).toEqual([]);
+  });
+
+  it.each(['', '0', '101', '2.5'])('rejects a maximum of "%s" rounds', async (max) => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    type('Node 2 maximum rounds', max);
+    click('Save workflow');
+    expect(screen.getByText('Use a whole number from 1 to 100')).toBeTruthy();
+    expect(screen.getByLabelText('Node 2 maximum rounds').getAttribute('aria-invalid')).toBe('true');
+    expect(backend.mutations()).toEqual([]);
+  });
+
+  it('turns a loop back into a single pass, dropping its node and rounds', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    type('Node 2 repeat', 'once');
+    expect(screen.queryByLabelText('Node 2 loops back to')).toBeNull();
+    click('Save workflow');
+    await waitFor(() => toast('success', 'Workflow "Feature" saved'));
+    expect(savedBody().nodes[1].repeat).toEqual({ mode: 'once' });
+  });
+
+  it('saves a changed choice of who decides and reports it as unsaved until then', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    fireEvent.click(decide());
+    expect(lastDirty()).toBe(true);
+    click('Save workflow');
+    await waitFor(() => toast('success', 'Workflow "Feature" saved'));
+    expect(savedBody().agentsDecide).toBe(false);
+  });
+
+  it('shows a loop and who decides in the workflow list', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    expect(workflows().getByText('3 nodes: Develop → Test ↺ Develop → Review · agents decide')).toBeTruthy();
+  });
+
+  it('renders an API error on the loop field', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [looping()] });
+    click('Edit workflow Feature');
+    backend.failNext('PUT', 'workflows', {
+      status: 400, message: 'One or more fields failed validation.',
+      errors: [{ field: 'nodes[1].repeat.to', message: 'Loops cannot share a node; this one overlaps the loop that ends at Test' }, { field: 'agentsDecide', message: 'Use true or false' }],
+    });
+    click('Save workflow');
+    expect(await screen.findByText('Loops cannot share a node; this one overlaps the loop that ends at Test')).toBeTruthy();
+    expect(screen.getByText('Use true or false')).toBeTruthy();
   });
 });

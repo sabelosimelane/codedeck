@@ -5,11 +5,18 @@ import {
   continueRun as apiContinueRun,
   getRun as apiGetRun,
   listOpenRuns,
+  listRunDecisions as apiListRunDecisions,
   resumeRun as apiResumeRun,
   startRun as apiStartRun,
   stopRun as apiStopRun,
 } from '../utils/pipelinesApi';
-import { parseInputRequest } from '../utils/pipelineRunRecords';
+import { parseDecisionPage, parseInputRequest, parseRunAutonomy } from '../utils/pipelineRunRecords';
+
+// What the runs bar shows of a run is checked before the run is shown.
+function checkRun(run, index) {
+  parseInputRequest(run, index);
+  parseRunAutonomy(run, index);
+}
 
 function failureMessage(failure) {
   if (failure instanceof TypeError || failure?.message === 'network down') return 'Server unreachable';
@@ -88,7 +95,7 @@ export function usePipelineRuns({ projectName, showToast }) {
       const next = await listOpenRuns({ project });
       if (!mountedRef.current || projectNameRef.current !== project) return;
       // The runs bar shows what an agent asked; a malformed request is refused, not rendered.
-      next.forEach(parseInputRequest);
+      next.forEach(checkRun);
 
       // Completed runs drop out of open=true; fetch finals so completion toasts still fire.
       const openIds = new Set(next.map((run) => run.id));
@@ -153,7 +160,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     try {
       const next = await action(runId);
       if (!mountedRef.current || projectNameRef.current !== project) return next;
-      parseInputRequest(next);
+      checkRun(next, 0);
       setRuns((current) => mergeRun(current, next));
       previousStatusRef.current.set(next.id, next.status);
       // The request can succeed while the run it returns has already failed (a Setup guard, a
@@ -219,6 +226,15 @@ export function usePipelineRuns({ projectName, showToast }) {
     ),
     [runAction],
   );
+  /** One page of the requests a run's agents settled themselves, or null when it could not be loaded. */
+  const loadRunDecisions = useCallback(async (runId, page) => {
+    try {
+      return parseDecisionPage(await apiListRunDecisions(runId, page));
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+      return null;
+    }
+  }, [showToast]);
   const cleanupRun = useCallback(async (runId) => {
     const project = projectNameRef.current;
     try {
@@ -259,6 +275,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     resumeRun,
     continueRun,
     answerRun,
+    loadRunDecisions,
     cleanupRun,
   };
 }

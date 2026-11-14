@@ -21,6 +21,7 @@ function definition(overrides = {}) {
     workflowId: WORKFLOW_ID,
     workflowName: 'Feature',
     workflowRevision: 1,
+    agentsDecide: false,
     steps: [
       {
         kind: 'node',
@@ -46,6 +47,7 @@ function step(overrides = {}) {
     priorSessionIds: [],
     attempt: 0,
     iteration: 0,
+    roundsCompleted: 0,
     detail: null,
     startedAt: null,
     finishedAt: null,
@@ -430,5 +432,113 @@ describe('pipeline run store — input request', () => {
     const created = store.create(waiting());
     const reopened = createRunStore(db);
     expect(reopened.get(created.id)).toMatchObject({ status: 'interrupted', inputRequest: null });
+  });
+});
+
+describe('pipeline run store — loops and who decides', () => {
+  const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+  const defStep = (name, repeat = { mode: 'once' }, kind = 'node') => ({ kind, name, prompt: `do ${name}`, repeat, agent });
+  const loop = (toStepIndex, max = 20) => ({ mode: 'loop_back', toStepIndex, max });
+  const looping = (overrides = {}) => {
+    const def = definition({
+      agentsDecide: true,
+      steps: [defStep('Setup', { mode: 'until_complete', max: 3 }, 'setup'), defStep('Develop'), defStep('Test', loop(1))],
+      ...overrides,
+    });
+    return validRun({ definition: def, steps: def.steps.map(() => step()) });
+  };
+
+  it('persists who decides, a loop back to an earlier step and the rounds it has completed', () => {
+    const { store } = setup();
+    const created = store.create(looping());
+    expect(created.definition.agentsDecide).toBe(true);
+    expect(created.definition.steps[2].repeat).toEqual({ mode: 'loop_back', toStepIndex: 1, max: 20 });
+    expect(created.steps.map(s => s.roundsCompleted)).toEqual([0, 0, 0]);
+
+    const steps = created.steps.map((s, index) => (index === 2 ? { ...s, roundsCompleted: 19 } : s));
+    expect(store.update(created.id, { steps }).steps[2].roundsCompleted).toBe(19);
+  });
+
+  it.each([undefined, null, 'yes', 1])('rejects a definition whose agentsDecide is %s', (agentsDecide) => {
+    const { store } = setup();
+    expect(() => store.create(looping({ agentsDecide }))).toThrow('field definition.agentsDecide: must be true or false');
+  });
+
+  it.each([
+    ['its own index', loop(2), 'definition.steps[2].repeat.toStepIndex'],
+    ['a later index', loop(3), 'definition.steps[2].repeat.toStepIndex'],
+    ['a negative index', loop(-1), 'definition.steps[2].repeat.toStepIndex'],
+    ['a fractional index', loop(0.5), 'definition.steps[2].repeat.toStepIndex'],
+    ['no index', { mode: 'loop_back', max: 5 }, 'definition.steps[2].repeat.toStepIndex'],
+    ['the Setup step', loop(0), 'definition.steps[2].repeat.toStepIndex'],
+    ['no maximum', { mode: 'loop_back', toStepIndex: 1 }, 'definition.steps[2].repeat.max'],
+    ['a maximum of 0', loop(1, 0), 'definition.steps[2].repeat.max'],
+    ['a maximum of 101', loop(1, 101), 'definition.steps[2].repeat.max'],
+    ['a node name instead of an index', { mode: 'loop_back', to: 'Develop', toStepIndex: 1, max: 5 }, 'definition.steps[2].repeat.to'],
+  ])('rejects a loop back with %s', (_label, repeat, field) => {
+    const { store } = setup();
+    const steps = [defStep('Setup', { mode: 'until_complete', max: 3 }, 'setup'), defStep('Develop'), defStep('Test', repeat)];
+    expect(() => store.create(looping({ steps }))).toThrow(`field ${field}`);
+  });
+
+  it.each([
+    [{ mode: 'once', toStepIndex: 0 }],
+    [{ mode: 'until_complete', max: 3, toStepIndex: 0 }],
+  ])('rejects toStepIndex on %o', (repeat) => {
+    const { store } = setup();
+    const steps = [defStep('Develop'), defStep('Test', repeat)];
+    expect(() => store.create(looping({ steps }))).toThrow('field definition.steps[1].repeat.toStepIndex');
+  });
+
+  it('rejects loops that share a step', () => {
+    const { store } = setup();
+    const steps = [defStep('Plan'), defStep('Develop'), defStep('Test', loop(1)), defStep('Review', loop(0))];
+    expect(() => store.create(looping({ steps }))).toThrow('field definition.steps[3].repeat.toStepIndex: overlaps the loop that ends at step 2');
+  });
+
+  it.each([undefined, null, -1, 1.5, '0'])('rejects a step whose roundsCompleted is %s', (roundsCompleted) => {
+    const { store } = setup();
+    const run = looping();
+    run.steps[2] = { ...step(), roundsCompleted };
+    expect(() => store.create(run)).toThrow('field steps[2].roundsCompleted: must be an integer ≥ 0');
+  });
+
+  it('accepts completed rounds only on a step that loops back, and fewer than its maximum', () => {
+    const { store } = setup();
+    const onPlainStep = looping();
+    onPlainStep.steps[1] = step({ roundsCompleted: 1 });
+    expect(() => store.create(onPlainStep)).toThrow('field steps[1].roundsCompleted: must be 0 for a step that does not loop back');
+
+    const atMaximum = looping();
+    atMaximum.steps[2] = step({ roundsCompleted: 20 });
+    expect(() => store.create(atMaximum)).toThrow('field steps[2].roundsCompleted: must be less than the maximum of 20 rounds');
+  });
+
+  it('upgrades runs stored before loops and agent decisions: the owner decided and no round was completed', () => {
+    const { db, store } = setup();
+    const created = store.create(validRun());
+    const { agentsDecide: _dropped, ...oldDefinition } = created.definition;
+    const oldSteps = created.steps.map(({ roundsCompleted: _rounds, ...rest }) => rest);
+    db.prepare('UPDATE pipeline_runs SET definition = ?, steps = ?, status = ?, finished_at = ?, stop_reason = ? WHERE id = ?')
+      .run(JSON.stringify(oldDefinition), JSON.stringify(oldSteps), 'stopped', '2026-11-14T08:00:00.000Z', 'user', created.id);
+    expect(() => store.get(created.id)).toThrow('definition.agentsDecide');
+
+    const reopened = createRunStore(db);
+    const upgraded = reopened.get(created.id);
+    expect(upgraded.definition.agentsDecide).toBe(false);
+    expect(upgraded.steps.map(s => s.roundsCompleted)).toEqual([0]);
+    expect(upgraded.updatedAt).toBe(created.updatedAt);
+    const stored = db.prepare('SELECT definition, steps FROM pipeline_runs WHERE id = ?').get(created.id);
+    expect(JSON.parse(stored.definition).agentsDecide).toBe(false);
+    expect(JSON.parse(stored.steps)[0].roundsCompleted).toBe(0);
+  });
+
+  it('leaves a run that already has both fields exactly as stored', () => {
+    const { db, store } = setup();
+    // A stopped run is not touched by the restart that marks unfinished runs interrupted.
+    const created = store.create({ ...looping(), status: 'stopped', stopReason: 'user', finishedAt: '2026-11-14T08:00:00.000Z' });
+    const before = db.prepare('SELECT definition, steps FROM pipeline_runs WHERE id = ?').get(created.id);
+    createRunStore(db);
+    expect(db.prepare('SELECT definition, steps FROM pipeline_runs WHERE id = ?').get(created.id)).toEqual(before);
   });
 });

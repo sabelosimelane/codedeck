@@ -23,6 +23,7 @@ import {
   startRun,
   stopRun,
   answerRun,
+  listRunDecisions,
 } from '../pipelinesApi';
 
 let originalFetch;
@@ -148,6 +149,27 @@ describe('pipelinesApi', () => {
     expect(url).toBe('/api/pipelines/runs/r1/answer');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ answer: '1. yes\n2. no' });
+  });
+
+  it('listRunDecisions fetches one page of a run\'s decisions, oldest first', async () => {
+    const body = { data: [], page: { currentPage: 2, size: 50, totalElements: 0, totalPages: 0, hasNextPage: false } };
+    global.fetch = vi.fn(async () => jsonResponse(body));
+
+    await expect(listRunDecisions('r 1', 2)).resolves.toEqual(body);
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe('/api/pipelines/runs/r%201/decisions?page=2&size=50&sort=createdAt%2Casc');
+    expect(init.method).toBeUndefined();
+  });
+
+  it.each([undefined, null, -1, 1.5, '0'])('listRunDecisions refuses the page %j before any request', async (page) => {
+    global.fetch = vi.fn();
+    expect(() => listRunDecisions('r1', page)).toThrow('page must be a whole number of 0 or more');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('listRunDecisions carries the server\'s refusal', async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ message: 'Run not found' }, { ok: false, status: 404 }));
+    await expect(listRunDecisions('r1', 0)).rejects.toMatchObject({ name: 'PipelineApiError', status: 404, message: 'Run not found' });
   });
 
   it.each([undefined, null, '', '   ', 5])('answerRun refuses the answer %j before any request', async (answer) => {
