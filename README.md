@@ -114,6 +114,16 @@ or is stopped, **Dismiss run** closes it and leaves the worktree in place. A
 worktree with no branch checked out, a missing directory, a directory git cannot
 read, or an open run already using it cannot be chosen.
 
+When an agent needs something from you it pauses the run. CodeDeck asks every agent
+to list its questions, each with the answer it recommends, before it pauses. The runs
+bar shows that list under the run, with a box to type your answer and **Accept
+recommendations** to tell the agent to go with its own suggestions. Your answer is
+typed into the agent's terminal for you; answering in the terminal yourself works
+too. If the agent did not list its questions, the runs bar says so and you read its
+terminal. A dialog the agent shows while starting (trust or permission) is answered
+in the terminal only. The sidebar count for a project turns to the warning colour
+while one of its runs waits for you, and the phone gets an "Input requested" push.
+
 The runs bar shows steps, passes, branch and available controls. **Stop** stops
 automation; the agent may still be working. **Resume** warns about that terminal
 and creates a fresh attempt. At the pass limit, **Continue** advances to the next

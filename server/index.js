@@ -835,6 +835,7 @@ const mobileSessionStarter = createMobileSessionStarter({
   releaseReservation: sessionId => reservedSessionIds.delete(sessionId),
 });
 
+const PIPELINE_QUESTION_SCREEN_LINES = 400;
 const pipelineAgentStore = createAgentStore(db);
 const pipelineWorkflowStore = createWorkflowStore(db);
 const pipelineSettingsStore = createSettingsStore(db);
@@ -875,6 +876,15 @@ const pipelineRunEngine = createRunEngine({
   ),
   createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
   classifyReadiness: classifyAgentReadiness,
+  // The end of the terminal's screen and scrollback, where an agent prints what it needs
+  // before a NEEDS_INPUT signal. Pipeline runs use local projects only.
+  readScreen: async (sessionId) => {
+    const snapshot = terminalRuntime.captureSessionSnapshot(sessionId, PIPELINE_QUESTION_SCREEN_LINES);
+    if (snapshot.historyGuaranteed !== true || typeof snapshot.data !== 'string') {
+      throw new Error(`The terminal screen of ${sessionId} could not be read.`);
+    }
+    return snapshot.data.replace(/\r/g, '').split('\n');
+  },
   readExecutionState: async (sessionId) => {
     const entry = sessions.get(sessionId);
     const entryExists = !deletedSessionIds.has(sessionId)

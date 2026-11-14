@@ -65,6 +65,7 @@ function validRun(overrides = {}) {
     baseCommit: null,
     worktreeState: 'not_created',
     worktreeDetail: null,
+    inputRequest: null,
     finishedAt: null,
     ...overrides,
   };
@@ -139,6 +140,7 @@ function setupEngine(overrides = {}) {
   const removeWorktree = overrides.removeWorktree ?? vi.fn(async () => ({ ok: true }));
   const listDirtyPaths = overrides.listDirtyPaths ?? vi.fn(async () => []);
   const pathExists = overrides.pathExists ?? vi.fn(async () => true);
+  const readScreen = overrides.readScreen ?? vi.fn(async () => []);
 
   const engine = createRunEngine({
     runStore,
@@ -148,6 +150,7 @@ function setupEngine(overrides = {}) {
     createWorkflow,
     classifyReadiness,
     readExecutionState,
+    readScreen,
     removeWorktree,
     listDirtyPaths,
     pathExists,
@@ -172,6 +175,7 @@ function setupEngine(overrides = {}) {
     removeWorktree,
     listDirtyPaths,
     pathExists,
+    readScreen,
     writes,
     releases,
     getWorkflowNotify: () => workflowNotify,
@@ -415,6 +419,10 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     await vi.advanceTimersByTimeAsync(100);
     await vi.advanceTimersByTimeAsync(1000);
     expect(ctx.runStore.get(run.id).status).toBe('needs_input');
+    // A launch dialog is not a request the agent signalled: nothing to show, nothing to answer.
+    expect(ctx.runStore.get(run.id).inputRequest).toBeNull();
+    expect(ctx.readScreen).not.toHaveBeenCalled();
+    await expect(ctx.engine.answer(run.id, 'yes')).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
     await vi.advanceTimersByTimeAsync(1000);
     await vi.advanceTimersByTimeAsync(1000);
     await vi.advanceTimersByTimeAsync(1000);
@@ -1161,3 +1169,162 @@ describe('createRunEngine with an existing worktree', () => {
   });
 });
 
+
+describe('createRunEngine — what the agent needs, and answering it', () => {
+  const ID = 'fd4ed49c-1';
+  const SCREEN = [
+    '• Phase 0 is complete.',
+    `• [[CDW:${ID}:QUESTIONS]]`,
+    '  1. Which schema should the migration target?',
+    '     Recommended: the existing guardian schema.',
+    `• [[CDW:${ID}:NEEDS_INPUT]]`,
+    '› Ask Codex to do anything',
+  ];
+  const ASKED = {
+    questions: '1. Which schema should the migration target?\nRecommended: the existing guardian schema.',
+    truncated: false,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  // A loop that signals NEEDS_INPUT on start, returns to running on an answer and completes on demand.
+  function askingWorkflow({ signalIdentifier = () => ID } = {}) {
+    const state = { status: 'stopped', inputs: [], notify: null };
+    const snap = status => ({ status, active: !['complete', 'stopped'].includes(status), error: null, requestId: 'r', iteration: 1, limitReached: false });
+    const publish = (status) => { state.status = status; state.notify(snap(status)); };
+    const createWorkflow = vi.fn(({ notify }) => {
+      state.notify = notify;
+      const workflow = {
+        start() { queueMicrotask(() => publish('needs_input')); },
+        stop() { state.status = 'stopped'; },
+        snapshot: () => snap(state.status),
+        input(data) { state.inputs.push(data); publish('running'); },
+      };
+      if (signalIdentifier !== undefined) workflow.signalIdentifier = signalIdentifier;
+      return workflow;
+    });
+    return { createWorkflow, state, ask: () => publish('needs_input'), complete: () => publish('complete') };
+  }
+
+  async function startWaiting(overrides = {}, workflowOptions) {
+    const loop = askingWorkflow(workflowOptions);
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      createWorkflow: loop.createWorkflow,
+      readScreen: vi.fn(async () => SCREEN),
+      ...overrides,
+    });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100); // launch Enter
+    await vi.advanceTimersByTimeAsync(1000); // ready → loop starts → NEEDS_INPUT
+    await vi.advanceTimersByTimeAsync(0);
+    return { ctx, loop, run, done };
+  }
+
+  it('requires a way to read the terminal screen', () => {
+    expect(() => setupEngine({ engineExtras: { readScreen: undefined } })).toThrow('createRunEngine: readScreen is required');
+  });
+
+  it('stores the questions the agent printed before its NEEDS_INPUT signal', async () => {
+    const { ctx, loop, run, done } = await startWaiting();
+    const waiting = ctx.runStore.get(run.id);
+    expect(waiting.status).toBe('needs_input');
+    expect(waiting.inputRequest).toEqual(ASKED);
+    expect(ctx.readScreen).toHaveBeenCalledWith('Demo-1');
+
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'complete', inputRequest: null });
+  });
+
+  it('stores a request without questions when the agent did not state any', async () => {
+    const { ctx, run } = await startWaiting({ readScreen: vi.fn(async () => ['I am blocked.', `[[CDW:${ID}:NEEDS_INPUT]]`]) });
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: { questions: null, truncated: false } });
+  });
+
+  it('types the answer into the agent terminal as one paste, submits it and returns the run to running', async () => {
+    const { ctx, loop, run, done } = await startWaiting();
+    const before = ctx.writes.length;
+
+    const answering = ctx.engine.answer(run.id, '1. the existing schema\n2. yes');
+    expect(ctx.writes.slice(before)).toEqual(['\x1b[200~1. the existing schema\n2. yes\x1b[201~']);
+    await vi.advanceTimersByTimeAsync(100);
+    const answered = await answering;
+
+    expect(ctx.writes.slice(before)).toEqual(['\x1b[200~1. the existing schema\n2. yes\x1b[201~', '\r']);
+    expect(loop.state.inputs).toEqual(['1. the existing schema\n2. yes']);
+    expect(answered).toMatchObject({ status: 'running', inputRequest: null });
+    expect(ctx.runStore.get(run.id).steps[0].status).toBe('running');
+
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+
+  it('stores a second request when the agent asks again after an answer', async () => {
+    const second = [`[[CDW:${ID}:QUESTIONS]]`, '1. And the index name?', `[[CDW:${ID}:NEEDS_INPUT]]`];
+    const readScreen = vi.fn().mockResolvedValueOnce(SCREEN).mockResolvedValueOnce(second);
+    const { ctx, loop, run } = await startWaiting({ readScreen });
+    const answering = ctx.engine.answer(run.id, 'the existing schema');
+    await vi.advanceTimersByTimeAsync(100);
+    await answering;
+
+    loop.ask();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.runStore.get(run.id)).toMatchObject({
+      status: 'needs_input', inputRequest: { questions: '1. And the index name?', truncated: false },
+    });
+  });
+
+  it('refuses a second answer while the first is still being typed', async () => {
+    const { ctx, loop, run } = await startWaiting();
+    const before = ctx.writes.length;
+    const first = ctx.engine.answer(run.id, 'yes');
+    await expect(ctx.engine.answer(run.id, 'yes')).rejects.toMatchObject({
+      code: 'ANSWER_UNAVAILABLE', message: 'An answer is already being sent to this agent.',
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    await first;
+    expect(ctx.writes.slice(before)).toEqual(['\x1b[200~yes\x1b[201~', '\r']);
+    expect(loop.state.inputs).toEqual(['yes']);
+    // Once answered the run is running again, so the same answer is refused rather than typed twice.
+    await expect(ctx.engine.answer(run.id, 'yes')).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+  });
+
+  it('refuses an answer for a run that is not waiting, and for a run this backend is not driving', async () => {
+    const ctx = setupEngine();
+    const idle = ctx.runStore.create(validRun());
+    await expect(ctx.engine.answer(idle.id, 'yes')).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+    await expect(ctx.engine.answer('0d9e4b1a-9999-4999-8999-999999999999', 'yes')).rejects.toThrow('not found');
+
+    const orphan = ctx.runStore.create(validRun({
+      requestId: 'orphan',
+      status: 'needs_input',
+      inputRequest: ASKED,
+      steps: validRun().steps.map(step => ({ ...step, status: 'needs_input', sessionId: 'Demo-9', attempt: 1 })),
+    }));
+    await expect(ctx.engine.answer(orphan.id, 'yes')).rejects.toMatchObject({
+      code: 'ANSWER_UNAVAILABLE', message: 'The agent is no longer waiting for an answer.',
+    });
+    expect(ctx.writes).toEqual([]);
+  });
+
+  it.each([undefined, null, '', 7])('fails loudly when the answer is %j', async (answer) => {
+    const { ctx, run } = await startWaiting();
+    await expect(ctx.engine.answer(run.id, answer)).rejects.toThrow('pipeline run: answer must be a non-empty string');
+  });
+
+  it('fails the run when the loop cannot say which iteration it is waiting on', async () => {
+    const { ctx, run } = await startWaiting({}, { signalIdentifier: () => null });
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error' });
+    expect(ctx.runStore.get(run.id).error).toContain('signal identifier');
+  });
+
+  it('fails the run when the screen cannot be read', async () => {
+    const { ctx, run } = await startWaiting({ readScreen: vi.fn(async () => { throw new Error('tmux capture failed'); }) });
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'tmux capture failed' });
+  });
+});

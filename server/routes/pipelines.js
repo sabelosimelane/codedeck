@@ -8,6 +8,7 @@ import {
   validateWorkflowBody,
   validateSettingsBody,
   validateRunStartBody,
+  validateRunAnswerBody,
   composePrompt,
   isUuid,
 } from '../../shared/pipeline-definitions.mjs';
@@ -156,6 +157,11 @@ function asRunView(run) {
       state: run.worktreeState,
       detail: run.worktreeDetail,
     },
+    // What an agent that signalled NEEDS_INPUT asked for; null when the run is not waiting on one.
+    inputRequest: run.inputRequest === null ? null : {
+      questions: run.inputRequest.questions,
+      truncated: run.inputRequest.truncated,
+    },
     actions: computeActions(run),
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
@@ -297,6 +303,9 @@ function buildDefinitionSnapshot({
 function mapEngineActionError(err) {
   if (err?.code === 'ACTION_REFUSED') {
     throw new PipelineError(err.message || 'Action not allowed', 409);
+  }
+  if (err?.code === 'ANSWER_UNAVAILABLE') {
+    throw new PipelineError(err.message || 'The agent is no longer waiting for an answer', 409);
   }
   if (err?.code === 'WORKTREE_MISSING') {
     throw new PipelineError(err.message || 'The worktree directory is missing', 409);
@@ -723,6 +732,7 @@ export function createPipelinesRouter(deps) {
         baseCommit: worktree ? worktree.head : null,
         worktreeState: worktree ? 'external' : 'not_created',
         worktreeDetail: null,
+        inputRequest: null,
         finishedAt: null,
       });
     } catch (err) {
@@ -763,13 +773,13 @@ export function createPipelinesRouter(deps) {
     return run;
   }
 
-  async function runOwnerAction(req, res, action) {
+  async function runOwnerAction(req, res, action, ...args) {
     loadRun(req.params.id);
     if (!engine || typeof engine[action] !== 'function') {
       throw new PipelineError(`Run ${action} is not available`, 500);
     }
     try {
-      await engine[action](req.params.id);
+      await engine[action](req.params.id, ...args);
     } catch (err) {
       mapEngineActionError(err);
     }
@@ -788,6 +798,13 @@ export function createPipelinesRouter(deps) {
 
   router.post(`${BASE}/runs/:id/continue`, route(async (req, res) => {
     await runOwnerAction(req, res, 'continue');
+  }));
+
+  router.post(`${BASE}/runs/:id/answer`, route(async (req, res) => {
+    loadRun(req.params.id);
+    const errors = validateRunAnswerBody(req.body);
+    if (errors.length > 0) throw fieldErrors(errors);
+    await runOwnerAction(req, res, 'answer', req.body.answer);
   }));
 
   router.post(`${BASE}/runs/:id/cleanup`, route(async (req, res) => {

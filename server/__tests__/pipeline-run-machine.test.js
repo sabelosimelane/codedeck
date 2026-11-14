@@ -25,6 +25,7 @@ function run(overrides = {}) {
     currentStepIndex: 0,
     finishedAt: null,
     worktreeState: 'not_created',
+    inputRequest: null,
     steps: [step()],
     ...overrides,
   };
@@ -91,7 +92,7 @@ describe('applyEvent — single-step run (Spec §5)', () => {
   it('running → needs_input → running round trip', () => {
     let state = applyEvent(run(), { type: 'start', at: AT });
     state = applyEvent(state, { type: 'step_running' });
-    state = applyEvent(state, { type: 'needs_input' });
+    state = applyEvent(state, { type: 'needs_input', inputRequest: null });
     expect(state.status).toBe('needs_input');
     expect(state.steps[0].status).toBe('needs_input');
 
@@ -103,7 +104,7 @@ describe('applyEvent — single-step run (Spec §5)', () => {
   it('needs_input → error', () => {
     let state = applyEvent(run(), { type: 'start', at: AT });
     state = applyEvent(state, { type: 'step_running' });
-    state = applyEvent(state, { type: 'needs_input' });
+    state = applyEvent(state, { type: 'needs_input', inputRequest: null });
     const next = applyEvent(state, { type: 'error', error: 'terminal closed', at: AT });
     expect(next.status).toBe('error');
     expect(next.error).toBe('terminal closed');
@@ -148,14 +149,14 @@ describe('applyEvent — single-step run (Spec §5)', () => {
 
 describe('computeActions (Spec §8.8)', () => {
   it.each([
-    ['pending', { stop: true, resume: false, continue: false, cleanup: false }],
-    ['running', { stop: true, resume: false, continue: false, cleanup: false }],
-    ['needs_input', { stop: true, resume: false, continue: false, cleanup: false }],
-    ['limit_paused', { stop: true, resume: false, continue: true, cleanup: false }],
-    ['interrupted', { stop: true, resume: true, continue: false, cleanup: true }],
-    ['stopped', { stop: false, resume: true, continue: false, cleanup: true }],
-    ['error', { stop: false, resume: true, continue: false, cleanup: true }],
-    ['complete', { stop: false, resume: false, continue: false, cleanup: true }],
+    ['pending', { stop: true, resume: false, continue: false, cleanup: false, answer: false }],
+    ['running', { stop: true, resume: false, continue: false, cleanup: false, answer: false }],
+    ['needs_input', { stop: true, resume: false, continue: false, cleanup: false, answer: false }],
+    ['limit_paused', { stop: true, resume: false, continue: true, cleanup: false, answer: false }],
+    ['interrupted', { stop: true, resume: true, continue: false, cleanup: true, answer: false }],
+    ['stopped', { stop: false, resume: true, continue: false, cleanup: true, answer: false }],
+    ['error', { stop: false, resume: true, continue: false, cleanup: true, answer: false }],
+    ['complete', { stop: false, resume: false, continue: false, cleanup: true, answer: false }],
   ])('status %s → %j when worktree is present', (status, expected) => {
     expect(computeActions(run({
       status,
@@ -183,15 +184,15 @@ describe('computeActions (Spec §8.8)', () => {
   });
 
   it('an existing worktree the owner chose can be resumed, and the run released, but is never removable state', () => {
-    expect(computeActions(run({ status: 'running', worktreeState: 'external' }))).toEqual({ stop: true, resume: false, continue: false, cleanup: false });
-    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'external', finishedAt: AT }))).toEqual({ stop: false, resume: true, continue: false, cleanup: true });
-    expect(computeActions(run({ status: 'error', error: 'x', worktreeState: 'external', finishedAt: AT }))).toEqual({ stop: false, resume: true, continue: false, cleanup: true });
-    expect(computeActions(run({ status: 'interrupted', worktreeState: 'external' }))).toEqual({ stop: true, resume: true, continue: false, cleanup: true });
+    expect(computeActions(run({ status: 'running', worktreeState: 'external' }))).toEqual({ stop: true, resume: false, continue: false, cleanup: false, answer: false });
+    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'external', finishedAt: AT }))).toEqual({ stop: false, resume: true, continue: false, cleanup: true, answer: false });
+    expect(computeActions(run({ status: 'error', error: 'x', worktreeState: 'external', finishedAt: AT }))).toEqual({ stop: false, resume: true, continue: false, cleanup: true, answer: false });
+    expect(computeActions(run({ status: 'interrupted', worktreeState: 'external' }))).toEqual({ stop: true, resume: true, continue: false, cleanup: true, answer: false });
   });
 
   it('a released run offers neither resume nor cleanup', () => {
-    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'released', finishedAt: AT }))).toEqual({ stop: false, resume: false, continue: false, cleanup: false });
-    expect(computeActions(run({ status: 'complete', worktreeState: 'released', finishedAt: AT }))).toEqual({ stop: false, resume: false, continue: false, cleanup: false });
+    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'released', finishedAt: AT }))).toEqual({ stop: false, resume: false, continue: false, cleanup: false, answer: false });
+    expect(computeActions(run({ status: 'complete', worktreeState: 'released', finishedAt: AT }))).toEqual({ stop: false, resume: false, continue: false, cleanup: false, answer: false });
   });
 
   it('resumes a stopped run in an existing worktree', () => {
@@ -410,5 +411,43 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
     expect(next.status).toBe('stopped');
     expect(next.stopReason).toBe('user');
     expect(next.steps[0].status).toBe('limit_reached');
+  });
+});
+
+describe('input request (what the agent is waiting for)', () => {
+  const running = () => run({ status: 'running', steps: [step({ status: 'running', attempt: 1 })] });
+  const asked = { questions: '1. Which schema?\nRecommended: the existing one.', truncated: false };
+
+  it('keeps the request of a needs_input event on the run', () => {
+    const next = applyEvent(running(), { type: 'needs_input', inputRequest: asked });
+    expect(next.status).toBe('needs_input');
+    expect(next.inputRequest).toEqual(asked);
+  });
+
+  it('keeps a null request for a dialog the agent shows while launching', () => {
+    const launching = run({ status: 'running', steps: [step({ status: 'launching', attempt: 1 })] });
+    expect(applyEvent(launching, { type: 'needs_input', inputRequest: null }).inputRequest).toBeNull();
+  });
+
+  it('refuses a needs_input event that does not say whether the agent asked', () => {
+    expect(() => applyEvent(running(), { type: 'needs_input' })).toThrow('needs_input event: inputRequest is required');
+  });
+
+  it.each([
+    ['input_received', { type: 'input_received' }],
+    ['stop', { type: 'stop', reason: 'user', at: AT }],
+    ['error', { type: 'error', error: 'boom', at: AT }],
+  ])('drops the request on %s', (_label, event) => {
+    const waiting = applyEvent(running(), { type: 'needs_input', inputRequest: asked });
+    expect(applyEvent(waiting, event).inputRequest).toBeNull();
+  });
+
+  it('allows an answer only while the run waits on a request the agent signalled', () => {
+    const waiting = applyEvent(running(), { type: 'needs_input', inputRequest: asked });
+    expect(computeActions(waiting).answer).toBe(true);
+    expect(computeActions(applyEvent(running(), { type: 'needs_input', inputRequest: { questions: null, truncated: false } })).answer).toBe(true);
+    expect(computeActions(applyEvent(running(), { type: 'needs_input', inputRequest: null })).answer).toBe(false);
+    expect(computeActions(running()).answer).toBe(false);
+    expect(computeActions(run({ status: 'limit_paused', steps: [step({ status: 'limit_reached' })] })).answer).toBe(false);
   });
 });

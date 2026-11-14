@@ -79,6 +79,7 @@ function AppContent() {
     stopRun,
     resumeRun,
     continueRun,
+    answerRun,
     cleanupRun,
   } = usePipelineRuns({ projectName: activeProject?.name || null, showToast });
   const openRunCounts = usePipelineRunCounts(showToast);
@@ -486,6 +487,7 @@ function AppContent() {
             onResumePipelineRun={resumeRun}
             onContinuePipelineRun={continueRun}
             onCleanupPipelineRun={cleanupRun}
+            onAnswerPipelineRun={answerRun}
           />
         ) : (
           <div style={{

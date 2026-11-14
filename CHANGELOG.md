@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026-11-14] - See what a paused agent needs and answer it from the runs bar
+
+### Executive Summary
+* When an agent paused a workflow run for input, the run only said `needs_input`; what it needed was buried in the terminal. Agents are now told to list their questions with a recommended answer each before pausing. The runs bar shows that list under the run, with a box to answer and an **Accept recommendations** button, and the answer is typed into the agent's terminal. The sidebar count for a project changes colour while one of its runs waits for the owner.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/terminal-workflow.js` — The loop instruction asks for a questions marker and a numbered list with `Recommended:` answers before a NEEDS_INPUT signal; `signalIdentifier()` names the pass the loop waits on.
+  * `server/pipelines/input-request.js` (new) — Reads the questions from the terminal screen between the marker and the signal; validates the stored request.
+  * `server/pipelines/run-engine.js` — Stores the request when a step signals NEEDS_INPUT; `answer` pastes the owner's answer into the step's terminal, submits it and resumes the loop, refusing a second answer while one is being typed.
+  * `client/src/components/pipelines/PipelineRunsBar.jsx` — Panel under a waiting run: the questions, a reply box, Send answer and Accept recommendations; a note when the agent stated nothing, when the list was cut, or when a launch dialog must be answered in the terminal.
+  * `client/src/components/Sidebar.jsx`, `client/src/hooks/usePipelineRunCounts.js` — Per-project counts carry how many runs wait for the owner (agent input or a pass limit); the count turns to the warning colour.
+* **🔌 API/Interface:**
+  * `server/routes/pipelines.js` — Runs carry `inputRequest` and `actions.answer`; `POST /api/pipelines/runs/:id/answer` with `{ answer }` (400 with field errors, 404, 409).
+  * `shared/pipeline-definitions.mjs` — `validateRunAnswerBody`: 1–4000 characters, new lines allowed, other control characters refused.
+* **🗄️ Database:**
+  * `server/pipelines/run-store.js` — Nullable `pipeline_runs.input_request` (JSON), added with `ALTER TABLE` to existing databases; cleared when a waiting run is interrupted by a restart.
+* **🐛 Bug Fix:**
+  * `server/pipelines/run-engine.js` — A running snapshot that also changed the pass number could write a step's stale status back after the run left `needs_input`; the step is now read again after the transition.
+* **🛠️ Codebase:**
+  * `server/pipelines/run-machine.js` — `needs_input` events carry the request; leaving `needs_input` clears it; `answer` action flag.
+  * `server/index.js` — `readScreen` gives the engine the last 400 lines of a step's terminal.
+  * `client/src/utils/pipelineRunRecords.js`, `pipelinesApi.js`, `client/src/hooks/usePipelineRuns.js`, `client/src/App.jsx`, `client/src/components/TerminalArea.jsx` — Guards for the request, `answerRun`, and wiring to the runs bar.
+  * `README.md`, `docs/steering/api-standards.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — Document input requests and Answer.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-input-request.test.js` (new), `terminal-workflow.test.js`, `pipeline-run-machine.test.js`, `pipeline-run-store.test.js`, `pipeline-run-engine.test.js`, `pipelines-api.test.js` — Extraction, validation, instruction, transitions, column migration, engine capture and answer, and the endpoint across happy, invalid, boundary, empty, hostile and repeated requests.
+  * `server/__tests__/pipeline-run-live.test.js` — With real tmux, a stub agent asks two questions; they are read off the screen, the answer is typed in and the run completes.
+  * `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx`, `client/src/components/__tests__/SidebarPipelineRuns.test.jsx`, `client/src/hooks/__tests__/usePipelineRuns.test.jsx`, `usePipelineRunCounts.test.jsx`, `client/src/utils/__tests__/pipelineRunRecords.test.js`, `pipelinesApi.test.js`, `pipelineRunFixture.js` — Panel, sidebar mark, answer action and guards.
+
 ## [2026-11-14] - Send a workflow step's skill to Codex with $
 
 ### Executive Summary

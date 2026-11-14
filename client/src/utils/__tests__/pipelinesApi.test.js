@@ -22,6 +22,7 @@ import {
   resumeRun,
   startRun,
   stopRun,
+  answerRun,
 } from '../pipelinesApi';
 
 let originalFetch;
@@ -136,6 +137,23 @@ describe('pipelinesApi', () => {
 
     await expect(action('r1')).resolves.toEqual(run);
     expect(global.fetch).toHaveBeenCalledWith(url, expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('answerRun posts the answer as the JSON body of the answer endpoint', async () => {
+    const run = { id: 'r1', status: 'running' };
+    global.fetch = vi.fn(async () => jsonResponse(run));
+
+    await expect(answerRun('r1', '1. yes\n2. no')).resolves.toEqual(run);
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe('/api/pipelines/runs/r1/answer');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ answer: '1. yes\n2. no' });
+  });
+
+  it.each([undefined, null, '', '   ', 5])('answerRun refuses the answer %j before any request', async (answer) => {
+    global.fetch = vi.fn();
+    expect(() => answerRun('r1', answer)).toThrow('answer must be a non-empty string');
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('throws PipelineApiError with message and errors when the response is not ok', async () => {

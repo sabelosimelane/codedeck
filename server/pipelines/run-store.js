@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
+import { validateInputRequest } from './input-request.js';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
@@ -246,6 +247,18 @@ function validateRunRecord(id, record) {
     });
   }
 
+  // What the agent asked for; present only while the run waits on that request.
+  if (record.inputRequest === undefined) fieldError(id, 'input_request', 'is required (null when the run is not waiting on a request)');
+  let inputRequest;
+  try {
+    inputRequest = validateInputRequest(record.inputRequest);
+  } catch (err) {
+    fieldError(id, 'input_request', err.message);
+  }
+  if (inputRequest !== null && record.status !== 'needs_input') {
+    fieldError(id, 'input_request', 'must be null unless status is needs_input');
+  }
+
   const finishedAt = requireIso(id, 'finished_at', record.finishedAt, { allowNull: true });
   if (['complete', 'stopped', 'error'].includes(record.status)) {
     if (finishedAt === null) fieldError(id, 'finished_at', 'required for terminal statuses');
@@ -269,6 +282,7 @@ function validateRunRecord(id, record) {
     baseCommit,
     worktreeState: record.worktreeState,
     worktreeDetail,
+    inputRequest,
     createdAt: requireIso(id, 'created_at', record.createdAt),
     updatedAt: requireIso(id, 'updated_at', record.updatedAt),
     finishedAt,
@@ -288,6 +302,16 @@ function rowToRecord(row) {
   } catch {
     fieldError(row.id, 'steps', 'must be valid JSON');
   }
+  let inputRequest = null;
+  if (row.input_request !== null) {
+    try {
+      inputRequest = JSON.parse(row.input_request);
+    } catch {
+      fieldError(row.id, 'input_request', 'must be valid JSON');
+    }
+    // A stored JSON null would read as "not asked" without ever having been written that way.
+    if (inputRequest === null) fieldError(row.id, 'input_request', 'must be SQL NULL or a JSON object');
+  }
   return validateRunRecord(row.id, {
     requestId: row.request_id,
     workflowId: row.workflow_id,
@@ -305,6 +329,7 @@ function rowToRecord(row) {
     baseCommit: row.base_commit,
     worktreeState: row.worktree_state,
     worktreeDetail: row.worktree_detail,
+    inputRequest,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at,
@@ -333,6 +358,7 @@ function persistValues(record) {
     record.createdAt,
     record.updatedAt,
     record.finishedAt,
+    record.inputRequest === null ? null : JSON.stringify(record.inputRequest),
   ];
 }
 
@@ -363,9 +389,14 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       worktree_detail TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      finished_at TEXT
+      finished_at TEXT,
+      input_request TEXT
     );
   `);
+  // Databases created before input requests have no such column; their runs were not waiting on one.
+  if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'input_request')) {
+    db.exec('ALTER TABLE pipeline_runs ADD COLUMN input_request TEXT');
+  }
 
   const read = db.prepare('SELECT * FROM pipeline_runs WHERE id = ?');
   const readByRequest = db.prepare('SELECT * FROM pipeline_runs WHERE request_id = ?');
@@ -374,15 +405,15 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
     INSERT INTO pipeline_runs (
       id, request_id, workflow_id, project, input, status, stop_reason, current_step_index,
       error, definition, steps, home_path, worktree_path, worktree_branch, base_commit,
-      worktree_state, worktree_detail, created_at, updated_at, finished_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      worktree_state, worktree_detail, created_at, updated_at, finished_at, input_request
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_runs SET
       request_id = ?, workflow_id = ?, project = ?, input = ?, status = ?, stop_reason = ?,
       current_step_index = ?, error = ?, definition = ?, steps = ?, home_path = ?,
       worktree_path = ?, worktree_branch = ?, base_commit = ?, worktree_state = ?,
-      worktree_detail = ?, created_at = ?, updated_at = ?, finished_at = ?
+      worktree_detail = ?, created_at = ?, updated_at = ?, finished_at = ?, input_request = ?
     WHERE id = ?
   `);
 
@@ -422,7 +453,7 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       ));
       db.prepare(`
         UPDATE pipeline_runs
-        SET status = 'interrupted', steps = ?, updated_at = ?
+        SET status = 'interrupted', steps = ?, updated_at = ?, input_request = NULL
         WHERE id = ?
       `).run(JSON.stringify(nextSteps), stamp, row.id);
     }

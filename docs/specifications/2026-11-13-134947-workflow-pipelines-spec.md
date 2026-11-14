@@ -397,7 +397,8 @@ git reason. `dirty` is a warning, never a reason.
   ],
   "worktree": { "path": "/Users/me/git/worktrees/codedeck-feature-0d9e4b1a",
     "branch": "workflow/feature-0d9e4b1a", "baseCommit": "15b9b47…", "state": "present", "detail": null },
-  "actions": { "stop": true, "resume": false, "continue": false, "cleanup": false },
+  "inputRequest": null,
+  "actions": { "stop": true, "resume": false, "continue": false, "cleanup": false, "answer": false },
   "createdAt": "…", "updatedAt": "…", "finishedAt": null }
 ```
 
@@ -577,6 +578,33 @@ last step); **Stop** stops the run. The paused step is recorded as `limit_reache
 Session delete (`server/routes/terminal-delete.js`) and session GC (`onPruned` in `server/index.js`)
 each notify the run engine with the session id.
 
+**Input requests (added after v1.0).** The loop instruction tells the agent to print, before a
+NEEDS_INPUT signal, a questions marker (`[[CDW:<identifier>:QUESTIONS]]`, built like the signal), then
+a numbered list of questions, each with `Recommended:` and its recommended answer. When the loop
+reports `needs_input`, the engine reads the last 400 lines of the step's terminal and takes the lines
+between that marker and the signal of the same iteration (`server/pipelines/input-request.js`): leading
+bullets and indentation are dropped, a wrapped line joins the one above, and the text is cut at 4000
+characters. The run stores it as `inputRequest`:
+
+| `inputRequest` | Meaning |
+|---|---|
+| `null` | The run is not waiting on a signalled request (also while a launch dialog is shown) |
+| `{ questions: null, truncated: false }` | The agent signalled NEEDS_INPUT without a questions marker or list |
+| `{ questions: "<text>", truncated: <boolean> }` | What the agent asked; `truncated` when it was cut |
+
+`inputRequest` is non-null only while the run is `needs_input`; every transition out of that status
+and a backend restart clear it. It is persisted in the nullable column `pipeline_runs.input_request`
+(JSON), added with `ALTER TABLE` to databases created before it. A failure to read the screen, or a
+loop that cannot name the iteration it waits on, fails the run.
+
+**Answer.** `POST /runs/:id/answer` with `{ "answer": "<text>" }` is allowed when
+`actions.answer` is true (run `needs_input` and `inputRequest` non-null). The engine pastes the answer
+into the step's terminal as one bracketed paste, sends Enter 100 ms later and tells the loop it was
+answered, which returns the run to `running`. It answers 409 when the run is not waiting on a
+signalled request, when this backend no longer drives the step's loop, or while another answer is
+being typed, so the same answer sent twice is typed once. Typing the answer in the terminal has the
+same effect.
+
 ### 8.8 Owner actions
 
 | Action | Allowed when | Effect | Otherwise |
@@ -584,6 +612,7 @@ each notify the run engine with the session id.
 | Stop | `pending`, `running`, `needs_input`, `limit_paused`, `interrupted` | run `stopped`, `stop_reason = user`; aborts the readiness poll and stops the loop engine; does **not** interrupt the agent | already `stopped` → 200 unchanged; `complete` or `error` → 409 |
 | Resume | `interrupted`, `stopped`, `error`, with `worktree_state` `not_created` or `present` | the current step gets `attempt + 1`, its session id moves to `priorSessionIds`, and the run continues from that step in a fresh terminal (creating the worktree first when `not_created`) | 409 |
 | Continue | `limit_paused` | §8.6 | 409 |
+| Answer | `needs_input` with a non-null `inputRequest` | §8.7 Input requests | 409 |
 | Cleanup | status `complete`, `stopped`, `error` or `interrupted`, with `worktree_state` `not_created`, `present` or `removal_blocked` | §8.2 | 409 |
 
 Resume returns 409 when `worktree_state` is `present` but the directory no longer exists. Resume does

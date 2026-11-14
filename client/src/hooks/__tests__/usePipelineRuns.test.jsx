@@ -19,6 +19,7 @@ function runView(overrides = {}) {
     currentStepIndex: 1,
     steps: [],
     worktree: { path: '/tmp/wt', branch: 'workflow/feature', baseCommit: 'abc', state: 'present', detail: null },
+    inputRequest: null,
     actions: { stop: true, resume: false, continue: false, cleanup: false },
     createdAt: '2026-11-13T10:00:00.000Z',
     updatedAt: '2026-11-13T10:00:00.000Z',
@@ -446,5 +447,72 @@ describe('usePipelineRuns', () => {
       message: expect.stringMatching(/complete/i),
     }));
     expect(global.fetch.mock.calls.some(([url]) => String(url).includes('/runs/r1'))).toBe(true);
+  });
+});
+
+describe('usePipelineRuns — answering an agent', () => {
+  const ASKED = { questions: '1. Which schema?\nRecommended: the existing one.', truncated: false };
+  const waiting = () => runView({ status: 'needs_input', inputRequest: ASKED });
+
+  it('sends the answer, shows the run the backend returns and confirms it', async () => {
+    const answered = runView({ status: 'running' });
+    let isAnswered = false;
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).endsWith('/runs/r1/answer')) {
+        isAnswered = true;
+        return okRun(answered);
+      }
+      if (String(url).includes('/runs?')) return okList([isAnswered ? answered : waiting()]);
+      return okList([]);
+    });
+
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs[0]?.inputRequest).toEqual(ASKED));
+
+    let returned;
+    await act(async () => {
+      returned = await result.current.answerRun('r1', 'the existing schema');
+    });
+
+    const post = global.fetch.mock.calls.find(([url]) => String(url).endsWith('/runs/r1/answer'));
+    expect(JSON.parse(post[1].body)).toEqual({ answer: 'the existing schema' });
+    expect(returned).toEqual(answered);
+    expect(result.current.runs[0]).toMatchObject({ status: 'running', inputRequest: null });
+    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Answer sent to Feature' });
+  });
+
+  it('keeps the run waiting and reports why when the answer is refused', async () => {
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).endsWith('/runs/r1/answer')) {
+        return { ok: false, status: 409, json: async () => ({ message: 'The agent is no longer waiting for an answer.' }) };
+      }
+      if (String(url).includes('/runs?')) return okList([waiting()]);
+      return okList([]);
+    });
+
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    let returned;
+    await act(async () => {
+      returned = await result.current.answerRun('r1', 'yes');
+    });
+
+    expect(returned).toBeNull();
+    expect(result.current.runs[0].status).toBe('needs_input');
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'The agent is no longer waiting for an answer.' });
+  });
+
+  it('refuses a polled run whose input request is malformed instead of showing it', async () => {
+    global.fetch = vi.fn(async (url) => {
+      if (String(url).includes('/runs?')) return okList([runView({ status: 'needs_input', inputRequest: { questions: 7, truncated: false } })]);
+      return okList([]);
+    });
+
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({
+      type: 'error', message: expect.stringContaining('inputRequest.questions'),
+    }));
+    expect(result.current.runs).toEqual([]);
   });
 });

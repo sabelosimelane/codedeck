@@ -145,14 +145,21 @@ function renderWaitingCount(projectName, waitingSessionIds) {
 }
 
 function renderOpenRunCount(projectName, counts) {
-  const count = counts.get(projectName) || 0;
-  if (count === 0) return null;
-  const label = `${count} open ${count === 1 ? 'run' : 'runs'}`;
-  return <span title={label} aria-label={label} style={{
+  if (!counts.has(projectName)) return null;
+  const { open, awaitingOwner } = counts.get(projectName) ?? {};
+  if (!Number.isSafeInteger(open) || open < 1 || !Number.isSafeInteger(awaitingOwner) || awaitingOwner < 0 || awaitingOwner > open) {
+    throw new Error(`open run counts for ${projectName} must be { open ≥ 1, awaitingOwner 0–open }`);
+  }
+  const waiting = awaitingOwner > 0;
+  const label = `${open} open ${open === 1 ? 'run' : 'runs'}${waiting ? `, ${awaitingOwner} waiting for you` : ''}`;
+  // A run waiting for the owner turns the count to the warning colour.
+  return <span title={label} aria-label={label} data-awaiting-owner={String(waiting)} style={{
     flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10,
-    padding: '2px 5px', borderRadius: 999, color: 'var(--accent)',
-    background: 'var(--accent-dim)',
-  }}>{count}</span>;
+    padding: '2px 5px', borderRadius: 999,
+    color: waiting ? 'var(--bg-base)' : 'var(--accent)',
+    background: waiting ? 'var(--warning)' : 'var(--accent-dim)',
+    fontWeight: waiting ? 700 : 400,
+  }}>{open}</span>;
 }
 
 const STATUS_COLORS = {

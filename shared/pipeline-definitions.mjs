@@ -169,6 +169,21 @@ export function validateRunStartBody(body) {
   return errors;
 }
 
+// An answer is pasted into the agent's terminal: new lines are text, any other control
+// character (an escape sequence could end the paste) is refused.
+const ANSWER_CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/;
+
+/** Body of POST /runs/:id/answer: what the owner tells an agent that signalled NEEDS_INPUT. */
+export function validateRunAnswerBody(body) {
+  const errors = [];
+  if (!rejectUnknown(errors, body, ['answer'])) return errors;
+  const { answer } = body;
+  if (typeof answer !== 'string' || !answer.trim() || answer.length > 4000 || ANSWER_CONTROL.test(answer)) {
+    add(errors, 'answer', 'Use 1–4000 characters; new lines are allowed, other control characters are not');
+  }
+  return errors;
+}
+
 /** Single-pass `{input}` replacement; optionally records a field error when over the engine limit. */
 export function composePrompt(prompt, input, errors, field = 'input') {
   // Callback form inserts literally — a string replacement would interpret $&, $$, etc.

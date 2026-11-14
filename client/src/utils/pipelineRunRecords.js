@@ -9,6 +9,28 @@ const stamp = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T.*Z$/.te
 const nullable = (value, check) => value === null || check(value);
 const integer = value => Number.isSafeInteger(value) && value >= 0;
 
+const QUESTIONS_MAX = 4000;
+
+/**
+ * What an agent that signalled NEEDS_INPUT asked for: null when the run is not waiting on such a
+ * request (also for a dialog the agent shows in its terminal), otherwise the stated questions
+ * (null when it stated none) and whether they were cut.
+ */
+export function parseInputRequest(run, index = 0) {
+  const identity = isUuid(run?.id) ? run.id : `index ${index}`;
+  const guard = (condition, field) => {
+    if (!condition) throw new PipelineApiError(`Invalid run ${identity} field ${field}`);
+  };
+  guard(object(run), 'run');
+  const request = run.inputRequest;
+  guard(request === null || object(request), 'inputRequest');
+  if (request === null) return null;
+  guard(run.status === 'needs_input', 'inputRequest');
+  guard(nullable(request.questions, value => text(value) && value.length <= QUESTIONS_MAX), 'inputRequest.questions');
+  guard(typeof request.truncated === 'boolean' && !(request.truncated && request.questions === null), 'inputRequest.truncated');
+  return { questions: request.questions, truncated: request.truncated };
+}
+
 export function parseRun(run, index = 0) {
   const identity = isUuid(run?.id) ? run.id : `index ${index}`;
   const guard = (condition, field) => {
@@ -53,7 +75,10 @@ export function parseRun(run, index = 0) {
   guard(['not_created', 'present', 'removed', 'removal_blocked', 'external', 'released'].includes(run.worktree.state), 'worktree.state');
   guard(nullable(run.worktree.detail, value => text(value) && value.length <= 2000), 'worktree.detail');
   guard(object(run.actions), 'actions');
-  for (const action of ['stop', 'resume', 'continue', 'cleanup']) guard(typeof run.actions[action] === 'boolean', `actions.${action}`);
+  for (const action of ['stop', 'resume', 'continue', 'cleanup', 'answer']) guard(typeof run.actions[action] === 'boolean', `actions.${action}`);
+  const inputRequest = parseInputRequest(run, index);
+  // Only a request the agent signalled can be answered from here.
+  guard(run.actions.answer === (run.status === 'needs_input' && inputRequest !== null), 'actions.answer');
   guard(stamp(run.createdAt), 'createdAt');
   guard(stamp(run.updatedAt), 'updatedAt');
   guard(nullable(run.finishedAt, stamp) && (!['complete', 'stopped', 'error'].includes(run.status) || run.finishedAt !== null), 'finishedAt');

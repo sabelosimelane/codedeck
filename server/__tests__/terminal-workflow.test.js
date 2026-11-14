@@ -357,3 +357,39 @@ describe('terminal workflow', () => {
     });
   });
 });
+
+describe('terminal workflow — stating what the agent needs', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('tells the agent to list its questions with a recommendation each before a NEEDS_INPUT signal', () => {
+    const { workflow, write } = setup();
+    workflow.start(request);
+    const prompt = write.mock.calls[0][0];
+    expect(prompt).toContain('Before a NEEDS_INPUT signal');
+    expect(prompt).toContain('numbered list');
+    expect(prompt).toContain('Recommended:');
+    expect(prompt).toContain('QUESTIONS');
+    // An assembled marker in the instruction would be echoed and read back as the agent's own.
+    expect(prompt.replace(/\s/g, '')).not.toContain(signal(token(write), 'QUESTIONS'));
+  });
+
+  it('does not take a questions marker for a signal', () => {
+    const { workflow, write } = setup();
+    workflow.start(request);
+    workflow.output(`${signal(token(write), 'QUESTIONS')}\n1. Which schema?\n`);
+    expect(workflow.snapshot().status).toBe('running');
+  });
+
+  it('exposes the identifier of the iteration it is waiting on, and none once the loop has ended', () => {
+    const { workflow, write } = setup();
+    expect(workflow.signalIdentifier()).toBeNull();
+    workflow.start(request);
+    const id = token(write);
+    expect(workflow.signalIdentifier()).toBe(id);
+    workflow.output(signal(id, 'NEEDS_INPUT'));
+    expect(workflow.signalIdentifier()).toBe(id);
+    workflow.stop();
+    expect(workflow.signalIdentifier()).toBeNull();
+  });
+});

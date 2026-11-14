@@ -147,6 +147,12 @@ export function continueRun(runId, options) {
   return postAction(runId, 'continue', options);
 }
 
+/** Types the owner's answer into the terminal of an agent that signalled NEEDS_INPUT. */
+export function answerRun(runId, answer, { signal } = {}) {
+  if (typeof answer !== 'string' || !answer.trim()) throw new PipelineApiError('answer must be a non-empty string');
+  return request(`/runs/${encodeURIComponent(runId)}/answer`, { method: 'POST', body: { answer }, signal });
+}
+
 export function cleanupRun(runId, options) {
   return postAction(runId, 'cleanup', options);
 }

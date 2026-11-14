@@ -137,6 +137,7 @@ async function setup(overrides = {}) {
       return runStore.update(runId, {
         worktreeState: 'removed',
         worktreeDetail: null,
+    inputRequest: null,
       });
     }),
   };
@@ -615,6 +616,7 @@ describe('pipelines API — preflight and runs', () => {
         baseCommit: null,
         worktreeState: 'not_created',
         worktreeDetail: null,
+    inputRequest: null,
         finishedAt: null,
       });
     }
@@ -1064,7 +1066,7 @@ describe('pipelines API — worktrees', () => {
       path: FEATURE_WT.path, branch: 'feature/x', baseCommit: HEAD_B, state: 'external', detail: null,
     });
     expect(started.body.steps.map(item => [item.kind, item.name])).toEqual([['node', 'Develop']]);
-    expect(started.body.actions).toEqual({ stop: true, resume: false, continue: false, cleanup: false });
+    expect(started.body.actions).toEqual({ stop: true, resume: false, continue: false, cleanup: false, answer: false });
     const stored = ctx.runStore.get(started.body.id);
     expect(stored.definition.steps.map(item => item.kind)).toEqual(['node']);
     expect(stored.worktreeState).toBe('external');
@@ -1186,3 +1188,164 @@ describe('pipelines API — worktrees', () => {
   });
 });
 
+
+describe('pipelines API — what the agent needs, and answering it', () => {
+  const ASKED = { questions: '1. Which schema?\nRecommended: the existing one.', truncated: false };
+  const stepIn = status => ({
+    status, sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 1, detail: null, startedAt: null, finishedAt: null,
+  });
+  const pendingStep = { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null };
+
+  async function setupWaiting(inputRequest = ASKED) {
+    const ctx = await setup();
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'ask-1', workflowId: workflow.id, project: 'Demo', input: 'docs/todos/feature.md',
+    });
+    expect(started.status).toBe(201);
+    const id = started.body.id;
+    ctx.runStore.update(id, { status: 'needs_input', inputRequest, steps: [stepIn('needs_input'), pendingStep] });
+    // The engine double answers the way the real one does: it returns the run to running.
+    ctx.engine.answer = vi.fn(async (runId) => {
+      const run = ctx.runStore.get(runId);
+      if (run.status !== 'needs_input' || run.inputRequest === null) {
+        throw Object.assign(new Error(`Action answer is not allowed in status ${run.status}`), { code: 'ACTION_REFUSED' });
+      }
+      return ctx.runStore.update(runId, { status: 'running', inputRequest: null, steps: [stepIn('running'), pendingStep] });
+    });
+    return { ctx, id };
+  }
+  const answer = (ctx, id, body) => request(ctx.app).post(`${base}/runs/${id}/answer`).send(body);
+
+  it('starts a run that is not waiting on anything', async () => {
+    const ctx = await setup();
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'fresh-1', workflowId: workflow.id, project: 'Demo', input: 'docs/todos/feature.md',
+    });
+    expect(started.status).toBe(201);
+    expect(started.body.inputRequest).toBeNull();
+    expect(started.body.actions.answer).toBe(false);
+  });
+
+  it('shows what the agent asked on the run and in the run list, and offers Answer', async () => {
+    const { ctx, id } = await setupWaiting();
+    const one = await request(ctx.app).get(`${base}/runs/${id}`);
+    expect(one.status).toBe(200);
+    expect(one.body.status).toBe('needs_input');
+    expect(one.body.inputRequest).toEqual(ASKED);
+    expect(one.body.actions).toMatchObject({ answer: true, stop: true });
+
+    const list = await request(ctx.app).get(`${base}/runs`).query({ project: 'Demo' });
+    expect(list.body.data[0].inputRequest).toEqual(ASKED);
+  });
+
+  it('does not offer Answer for a dialog the agent shows in its terminal', async () => {
+    const { ctx, id } = await setupWaiting(null);
+    const one = await request(ctx.app).get(`${base}/runs/${id}`);
+    expect(one.body.inputRequest).toBeNull();
+    expect(one.body.actions.answer).toBe(false);
+    const refused = await answer(ctx, id, { answer: 'yes' });
+    expect(refused.status).toBe(409);
+    expect(refused.type).toBe('application/problem+json');
+  });
+
+  it('sends the answer to the engine and returns the run, no longer waiting', async () => {
+    const { ctx, id } = await setupWaiting();
+    const response = await answer(ctx, id, { answer: '1. the existing schema\n2. yes' });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ id, status: 'running', inputRequest: null });
+    expect(response.body.actions.answer).toBe(false);
+    expect(ctx.engine.answer).toHaveBeenCalledTimes(1);
+    expect(ctx.engine.answer).toHaveBeenCalledWith(id, '1. the existing schema\n2. yes');
+  });
+
+  it('accepts the boundary lengths 1 and 4000 and refuses 4001', async () => {
+    for (const text of ['y', 'x'.repeat(4000)]) {
+      const { ctx, id } = await setupWaiting();
+      expect((await answer(ctx, id, { answer: text })).status).toBe(200);
+    }
+    const { ctx, id } = await setupWaiting();
+    const tooLong = await answer(ctx, id, { answer: 'x'.repeat(4001) });
+    expect(tooLong.status).toBe(400);
+    expect(ctx.engine.answer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no body', undefined, 'answer'],
+    ['an empty object', {}, 'answer'],
+    ['a null answer', { answer: null }, 'answer'],
+    ['an empty answer', { answer: '' }, 'answer'],
+    ['a blank answer', { answer: '  \n ' }, 'answer'],
+    ['a number', { answer: 42 }, 'answer'],
+    ['an array', { answer: [] }, 'answer'],
+    ['an escape sequence that would end the paste', { answer: 'ok\x1b[201~\rrm -rf /' }, 'answer'],
+    ['a carriage return', { answer: 'ok\rnext' }, 'answer'],
+    ['an unknown field', { answer: 'ok', runId: 'other' }, 'runId'],
+  ])('returns 400 with the field for %s and sends nothing', async (_label, body, field) => {
+    const { ctx, id } = await setupWaiting();
+    const response = await answer(ctx, id, body);
+    expect(response.status).toBe(400);
+    expect(response.type).toBe('application/problem+json');
+    expect(response.body.errors.map(error => error.field)).toContain(field);
+    expect(response.body.traceId).toEqual(expect.any(String));
+    expect(response.headers['x-trace-id']).toBe(response.body.traceId);
+    expect(ctx.engine.answer).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for malformed JSON and a body that is not an object', async () => {
+    const { ctx, id } = await setupWaiting();
+    const malformed = await request(ctx.app).post(`${base}/runs/${id}/answer`).type('application/json').send('{"answer":');
+    expect(malformed.status).toBe(400);
+    expect(malformed.type).toBe('application/problem+json');
+    const array = await request(ctx.app).post(`${base}/runs/${id}/answer`).type('application/json').send('["yes"]');
+    expect(array.status).toBe(400);
+    expect(array.body.errors).toEqual([{ field: 'body', message: 'A JSON object is required' }]);
+    expect(ctx.engine.answer).not.toHaveBeenCalled();
+  });
+
+  it('passes hostile text through as plain answer text and never echoes it in an error', async () => {
+    const { ctx, id } = await setupWaiting();
+    const hostile = "'; DROP TABLE pipeline_runs; -- <script>alert(1)</script> $(rm -rf ~)";
+    const accepted = await answer(ctx, id, { answer: hostile });
+    expect(accepted.status).toBe(200);
+    expect(ctx.engine.answer).toHaveBeenCalledWith(id, hostile);
+    expect(ctx.runStore.get(id)).not.toBeNull();
+
+    const refused = await answer(ctx, id, { answer: '<script>alert(1)</script>\x07' });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).not.toContain('<script>');
+  });
+
+  it('returns 413 for an oversized body', async () => {
+    const { ctx, id } = await setupWaiting();
+    const response = await answer(ctx, id, { answer: 'x'.repeat(600 * 1024) });
+    expect(response.status).toBe(413);
+    expect(ctx.engine.answer).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown run and for an id that is not a UUID', async () => {
+    const { ctx } = await setupWaiting();
+    expect((await answer(ctx, '0d9e4b1a-9999-4999-8999-999999999999', { answer: 'yes' })).status).toBe(404);
+    const invalid = await answer(ctx, 'not-a-uuid', { answer: 'yes' });
+    expect(invalid.status).toBe(404);
+    expect(invalid.type).toBe('application/problem+json');
+  });
+
+  it('answers once: the same answer sent again is refused with 409, not typed twice', async () => {
+    const { ctx, id } = await setupWaiting();
+    const [first, second] = await Promise.all([answer(ctx, id, { answer: 'yes' }), answer(ctx, id, { answer: 'yes' })]);
+    expect([first.status, second.status].sort()).toEqual([200, 409]);
+    expect(ctx.runStore.get(id).status).toBe('running');
+  });
+
+  it('returns 409 when the engine can no longer deliver the answer', async () => {
+    const { ctx, id } = await setupWaiting();
+    ctx.engine.answer = vi.fn(async () => {
+      throw Object.assign(new Error('The agent is no longer waiting for an answer.'), { code: 'ANSWER_UNAVAILABLE' });
+    });
+    const response = await answer(ctx, id, { answer: 'yes' });
+    expect(response.status).toBe(409);
+    expect(response.body.message).toBe('The agent is no longer waiting for an answer.');
+  });
+});

@@ -6,6 +6,7 @@
 
 import { applyEvent, computeActions } from './run-machine.js';
 import { applySkillPrefix } from './skill-prefix.js';
+import { extractQuestions } from './input-request.js';
 
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -42,6 +43,7 @@ export function createRunEngine({
   createWorkflow,
   classifyReadiness,
   readExecutionState,
+  readScreen,
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
   pathExists = async () => true,
@@ -58,6 +60,7 @@ export function createRunEngine({
   if (typeof createWorkflow !== 'function') throw new Error('createRunEngine: createWorkflow is required');
   if (typeof classifyReadiness !== 'function') throw new Error('createRunEngine: classifyReadiness is required');
   if (typeof readExecutionState !== 'function') throw new Error('createRunEngine: readExecutionState is required');
+  if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
 
   const handles = new Map();
 
@@ -103,6 +106,7 @@ export function createRunEngine({
       currentStepIndex: next.currentStepIndex,
       finishedAt: next.finishedAt,
       steps: next.steps,
+      inputRequest: next.inputRequest,
     });
   }
 
@@ -185,7 +189,8 @@ export function createRunEngine({
       if (result === 'needs_input') {
         const current = runStore.get(runId);
         if (current?.status === 'running') {
-          persistTransition(runId, { type: 'needs_input' });
+          // A dialog shown while launching is answered in the terminal; the agent signalled nothing.
+          persistTransition(runId, { type: 'needs_input', inputRequest: null });
         }
         // Clock pauses while needs_input.
         continue;
@@ -203,6 +208,16 @@ export function createRunEngine({
         return { ok: false, reason: 'timeout' };
       }
     }
+  }
+
+  /** What the agent printed before the NEEDS_INPUT signal of the pass its loop is waiting on. */
+  async function readInputRequest(runId, run) {
+    const identifier = getHandle(runId).workflow?.signalIdentifier?.();
+    if (typeof identifier !== 'string') {
+      throw new Error('pipeline run: the loop has no signal identifier while it waits for input');
+    }
+    const sessionId = run.steps[run.currentStepIndex].sessionId;
+    return extractQuestions(await readScreen(sessionId), identifier);
   }
 
   async function applyWorkflowSnapshot(runId, snapshot) {
@@ -253,7 +268,11 @@ export function createRunEngine({
 
     if (snapshot.status === 'needs_input') {
       if (current.status === 'running') {
-        persistTransition(runId, { type: 'needs_input' });
+        const inputRequest = await readInputRequest(runId, current);
+        // Stop, or the terminal closing, may have ended the run while the screen was read.
+        if (runStore.get(runId)?.status === 'running') {
+          persistTransition(runId, { type: 'needs_input', inputRequest });
+        }
       }
       return { terminal: false };
     }
@@ -262,10 +281,12 @@ export function createRunEngine({
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received' });
       }
-      const step = current.steps[current.currentStepIndex];
+      // Read again: the transition above changed the step's status.
+      const latest = runStore.get(runId);
+      const step = latest.steps[latest.currentStepIndex];
       if (typeof snapshot.iteration === 'number' && step && snapshot.iteration !== step.iteration) {
-        const steps = current.steps.map((s, i) => (
-          i === current.currentStepIndex ? { ...s, iteration: snapshot.iteration } : s
+        const steps = latest.steps.map((s, i) => (
+          i === latest.currentStepIndex ? { ...s, iteration: snapshot.iteration } : s
         ));
         runStore.update(runId, { steps });
       }
@@ -543,6 +564,42 @@ export function createRunEngine({
         });
         return updated;
       });
+    },
+
+    /**
+     * Type the owner's answer into the terminal of an agent that signalled NEEDS_INPUT.
+     * Never enqueued behind runStep, which is awaiting that same loop.
+     */
+    async answer(runId, answer) {
+      if (typeof answer !== 'string' || !answer.trim()) {
+        throw new Error('pipeline run: answer must be a non-empty string');
+      }
+      loadActionRun(runId, 'answer');
+      const handle = getHandle(runId);
+      const unavailable = (message) => Object.assign(new Error(message), { code: 'ANSWER_UNAVAILABLE' });
+      if (handle.answering) throw unavailable('An answer is already being sent to this agent.');
+      const { workflow, attachment } = handle;
+      // A run read back after a restart, or one whose loop already moved on, has no one to answer.
+      if (!workflow || !attachment || workflow.snapshot().status !== 'needs_input') {
+        throw unavailable('The agent is no longer waiting for an answer.');
+      }
+
+      handle.answering = true;
+      try {
+        // One bracketed paste, then a separate Enter, as the loop submits its own prompts.
+        attachment.write(`\x1b[200~${answer}\x1b[201~`);
+        await delay(launchEnterDelayMs, setTimeoutFn);
+        if (handle.workflow !== workflow || workflow.snapshot().status !== 'needs_input') {
+          throw unavailable('The agent stopped waiting while the answer was being sent.');
+        }
+        attachment.write('\r');
+        // The loop resumes on an answer; its running snapshot moves the run out of needs_input.
+        workflow.input(answer);
+        await handle.transitions;
+      } finally {
+        handle.answering = false;
+      }
+      return runStore.get(runId);
     },
 
     async cleanup(runId) {

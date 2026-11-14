@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  answerRun as apiAnswerRun,
   cleanupRun as apiCleanupRun,
   continueRun as apiContinueRun,
   getRun as apiGetRun,
@@ -8,6 +9,7 @@ import {
   startRun as apiStartRun,
   stopRun as apiStopRun,
 } from '../utils/pipelinesApi';
+import { parseInputRequest } from '../utils/pipelineRunRecords';
 
 function failureMessage(failure) {
   if (failure instanceof TypeError || failure?.message === 'network down') return 'Server unreachable';
@@ -85,6 +87,8 @@ export function usePipelineRuns({ projectName, showToast }) {
     try {
       const next = await listOpenRuns({ project });
       if (!mountedRef.current || projectNameRef.current !== project) return;
+      // The runs bar shows what an agent asked; a malformed request is refused, not rendered.
+      next.forEach(parseInputRequest);
 
       // Completed runs drop out of open=true; fetch finals so completion toasts still fire.
       const openIds = new Set(next.map((run) => run.id));
@@ -149,6 +153,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     try {
       const next = await action(runId);
       if (!mountedRef.current || projectNameRef.current !== project) return next;
+      parseInputRequest(next);
       setRuns((current) => mergeRun(current, next));
       previousStatusRef.current.set(next.id, next.status);
       // The request can succeed while the run it returns has already failed (a Setup guard, a
@@ -206,6 +211,14 @@ export function usePipelineRuns({ projectName, showToast }) {
     (runId) => runAction((run) => `${run.workflowName || 'Workflow'} continued`, apiContinueRun, runId),
     [runAction],
   );
+  const answerRun = useCallback(
+    (runId, answer) => runAction(
+      (run) => `Answer sent to ${run.workflowName || 'the agent'}`,
+      (id) => apiAnswerRun(id, answer),
+      runId,
+    ),
+    [runAction],
+  );
   const cleanupRun = useCallback(async (runId) => {
     const project = projectNameRef.current;
     try {
@@ -245,6 +258,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     stopRun,
     resumeRun,
     continueRun,
+    answerRun,
     cleanupRun,
   };
 }

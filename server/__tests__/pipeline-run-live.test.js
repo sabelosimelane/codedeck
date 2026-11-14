@@ -95,6 +95,47 @@ process.stdin.on('data', chunk => {
   return script;
 }
 
+function writeAskingAgent(dir) {
+  // Asks two questions the way the loop instruction requires, then completes once it is answered.
+  const script = path.join(dir, 'stub-agent-asking');
+  writeFileSync(script, `#!/usr/bin/env node
+let buf = '';
+let id = null;
+process.stdin.setEncoding('utf8');
+process.stdout.write('>_ OpenAI Codex (stub)\\n› \\n');
+process.stdin.on('data', chunk => {
+  buf += chunk;
+  if (id === null) {
+    const match = buf.match(/Iteration identifier: ([\\w-]+)/);
+    if (!match) return;
+    id = match[1];
+    buf = '';
+    setTimeout(() => {
+      process.stdout.write([
+        '',
+        '• Phase 0 is complete.',
+        '',
+        '• [[CDW:' + id + ':QUESTIONS]]',
+        '  1. Which schema should the migration target?',
+        '     Recommended: the existing guardian schema.',
+        '  2. May I delete the old index? Recommended: no.',
+        '• [[CDW:' + id + ':NEEDS_INPUT]]',
+        '',
+      ].join('\\n'));
+    }, 200);
+    return;
+  }
+  if (!/Use the existing schema\\./.test(buf)) return;
+  buf = '';
+  setTimeout(() => {
+    process.stdout.write('\\nstub agent was answered\\n[[CDW:' + id + ':COMPLETE]]\\n');
+  }, 200);
+});
+`);
+  chmodSync(script, 0o755);
+  return script;
+}
+
 async function waitFor(predicate, timeoutMs = 30000, label = 'condition') {
   const deadline = Date.now() + timeoutMs;
   let last;
@@ -213,11 +254,13 @@ describeLive('pipeline run live (Phase 3)', () => {
       baseCommit: null,
       worktreeState: 'not_created',
       worktreeDetail: null,
+      inputRequest: null,
       finishedAt: null,
     });
 
     const engine = createRunEngine({
       runStore: runs,
+      readScreen: async () => [],
       createWorktree: async (run) => createWorktree({
         homePath: run.homePath,
         worktreePath: run.worktreePath,
@@ -288,6 +331,135 @@ describeLive('pipeline run live (Phase 3)', () => {
       try {
         execFileSync('git', ['-C', home, 'worktree', 'remove', '--force', names.worktreePath], { stdio: 'pipe' });
       } catch { /* cleanup */ }
+      db.close();
+    }
+  }, 90000);
+});
+
+describeLive('pipeline run live — an agent that needs input', () => {
+  it('reads the questions off the real terminal screen, types the answer in and completes', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-ask-'));
+    temps.push(base);
+    const tmuxDir = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-tmux-'));
+    temps.push(tmuxDir);
+    const home = path.join(base, 'codedeck');
+    initRepo(home);
+    const askingStub = writeAskingAgent(base);
+
+    const previousTmp = process.env.TMUX_TMPDIR;
+    const previousTmux = process.env.TMUX;
+    process.env.TMUX_TMPDIR = tmuxDir;
+    delete process.env.TMUX;
+
+    const db = new Database(':memory:');
+    const runs = createRunStore(db);
+    const sessions = new Map();
+    const deletedSessionIds = new Set();
+    const runtime = createTerminalRuntime('tmux');
+    const runId = '0d9e4b1a-3333-4333-8333-333333333333';
+    const workflowId = '0d9e4b1a-4444-4444-8444-444444444444';
+    const homeRepoPath = await resolveHomeRepoPath({ projectPath: home, execFile });
+
+    // The run uses the home checkout as an existing worktree, so nothing is created or removed.
+    runs.create({
+      id: runId,
+      requestId: 'live-ask-1',
+      workflowId,
+      project: 'codedeck',
+      input: '',
+      status: 'pending',
+      stopReason: null,
+      currentStepIndex: 0,
+      error: null,
+      definition: {
+        workflowId,
+        workflowName: 'Ask',
+        workflowRevision: 1,
+        steps: [{
+          kind: 'node',
+          name: 'Develop',
+          prompt: 'migrate the schema',
+          repeat: { mode: 'once' },
+          agent: { id: '0d9e4b1a-5555-4555-8555-555555555555', name: 'asking-stub', launchCommand: askingStub, resetCommand: '/clear' },
+        }],
+      },
+      steps: [
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, detail: null, startedAt: null, finishedAt: null },
+      ],
+      homePath: homeRepoPath,
+      worktreePath: homeRepoPath,
+      worktreeBranch: git(home, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      baseCommit: git(home, ['rev-parse', 'HEAD']),
+      worktreeState: 'external',
+      worktreeDetail: null,
+      inputRequest: null,
+      finishedAt: null,
+    });
+
+    // The same capture the live backend uses for readScreen (server/index.js).
+    const readScreen = async (sessionId) => {
+      const snapshot = runtime.captureSessionSnapshot(sessionId, 400);
+      if (snapshot.historyGuaranteed !== true) throw new Error('screen capture failed');
+      return snapshot.data.replace(/\r/g, '').split('\n');
+    };
+
+    const engine = createRunEngine({
+      runStore: runs,
+      readScreen,
+      createWorktree: async () => { throw new Error('an existing worktree is never created'); },
+      removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
+      listDirtyPaths: async ({ worktreePath }) => listDirtyPaths({ worktreePath, execFile }),
+      startSession: async ({ cwd }) => {
+        runtime.createDetachedSession({ cwd, cols: INITIAL_COLS, rows: INITIAL_ROWS, sessionId: 'codedeck-1' });
+        return 'codedeck-1';
+      },
+      attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
+        sessionId, sessions, runtime, deletedSessionIds, { cwd },
+      ),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      classifyReadiness: () => 'ready',
+      readExecutionState: async () => ({
+        executionReason: 'agent_prompt_idle',
+        foregroundCommand: 'node',
+        lines: ['› '],
+        profile: { promptVisible: () => true, skillPrefix: '/' },
+        isAlive: true,
+        entryExists: true,
+      }),
+      readinessPollMs: 50,
+      launchEnterDelayMs: 50,
+    });
+
+    try {
+      const done = engine.start(runId);
+      const waiting = await waitFor(() => {
+        const run = runs.get(runId);
+        return run.status === 'needs_input' || run.status === 'error' ? run : null;
+      }, 30000, 'run needs input or error');
+
+      expect(waiting.status).toBe('needs_input');
+      expect(waiting.inputRequest).toEqual({
+        questions: [
+          '1. Which schema should the migration target?',
+          'Recommended: the existing guardian schema.',
+          '2. May I delete the old index? Recommended: no.',
+        ].join('\n'),
+        truncated: false,
+      });
+
+      const answered = await engine.answer(runId, 'Use the existing schema.');
+      expect(answered.inputRequest).toBeNull();
+      expect(['running', 'complete']).toContain(answered.status);
+
+      await done;
+      const finished = runs.get(runId);
+      expect(finished).toMatchObject({ status: 'complete', inputRequest: null, worktreeState: 'released' });
+      // The agent received the answer through its terminal.
+      expect((await readScreen('codedeck-1')).join('\n')).toContain('stub agent was answered');
+    } finally {
+      try { execFileSync('tmux', ['kill-server'], { stdio: 'pipe' }); } catch { /* ignore */ }
+      if (previousTmp === undefined) delete process.env.TMUX_TMPDIR; else process.env.TMUX_TMPDIR = previousTmp;
+      if (previousTmux === undefined) delete process.env.TMUX; else process.env.TMUX = previousTmux;
       db.close();
     }
   }, 90000);

@@ -108,6 +108,7 @@ stable identity tiebreaker; unknown filters and sorts are rejected.
 | POST `/runs/:id/stop` | Stop automation; repeated Stop is idempotent |
 | POST `/runs/:id/resume` | Fresh attempt; refuses a missing worktree |
 | POST `/runs/:id/continue` | Advance from a pass-limit pause |
+| POST `/runs/:id/answer` | Body `{ answer }` (1–4000 characters; new lines allowed, other control characters refused). Types the answer into the terminal of an agent that signalled NEEDS_INPUT and returns the run; 409 when the run is not waiting on such a request, the agent has stopped waiting, or another answer is being sent |
 | POST `/runs/:id/cleanup` | Remove a clean worktree without force; retain branch. For a run in an existing worktree it only releases the worktree |
 
 Agents/workflows filter by exact `name`, and runs by `status`, `project`,

@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
+
+const ACCEPT_RECOMMENDATIONS = 'Proceed with your recommendations.';
 
 function passLabel(step) {
   if (step?.repeat?.mode === 'until_complete' && typeof step.repeat.max === 'number') {
@@ -18,12 +20,97 @@ function chipLabel(step) {
   return pass ? `${step.name} ${step.status} ${pass}` : `${step.name} ${step.status}`;
 }
 
+/**
+ * What a run is waiting for and, when the agent signalled it, a way to answer without
+ * opening the terminal. The answer is typed into the agent's terminal by the backend.
+ */
+function InputRequestPanel({ run, onAnswer }) {
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const request = run.inputRequest;
+  const name = run.workflowName;
+
+  const send = async (text) => {
+    if (sending) return;
+    setSending(true);
+    // `onAnswer` resolves to the updated run, or null when the answer was not delivered.
+    const delivered = await onAnswer(run.id, text);
+    setSending(false);
+    if (delivered) setDraft('');
+  };
+
+  return (
+    <div
+      role="group"
+      aria-label={`${name} needs your input`}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        padding: '8px 10px',
+        border: '1px solid var(--warning)',
+        borderRadius: 6,
+        background: 'var(--bg-base)',
+      }}
+    >
+      {request === null && (
+        <span>The agent is showing a dialog in its terminal. Answer it there.</span>
+      )}
+      {request !== null && request.questions === null && (
+        <span>The agent did not say what it needs. Read its terminal, then answer here or there.</span>
+      )}
+      {request !== null && request.questions !== null && (
+        <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-primary)', lineHeight: 1.5, maxHeight: 220, overflowY: 'auto' }}>
+          {request.questions}
+        </div>
+      )}
+      {request?.truncated && (
+        <span style={{ color: 'var(--warning)' }}>The list was cut here. Read the rest in the agent's terminal.</span>
+      )}
+      {run.actions?.answer && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+          <textarea
+            aria-label={`Answer for ${name}`}
+            rows={2}
+            maxLength={4000}
+            value={draft}
+            disabled={sending}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="Type your answer; it is sent to the agent's terminal"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              resize: 'vertical',
+              padding: '6px 8px',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              background: 'var(--bg-surface)',
+              color: 'var(--text-primary)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 12,
+            }}
+          />
+          <button type="button" disabled={sending || draft.trim() === ''} onClick={() => send(draft)}>
+            Send answer
+          </button>
+          {request?.questions != null && (
+            <button type="button" disabled={sending} onClick={() => send(ACCEPT_RECOMMENDATIONS)}>
+              Accept recommendations
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PipelineRunsBar({
   runs,
   onStop,
   onResume,
   onContinue,
   onCleanup,
+  onAnswer,
   onActivateStep,
 }) {
   if (!runs?.length) return null;
@@ -45,8 +132,8 @@ export default function PipelineRunsBar({
       {runs.map((run) => {
         const currentStep = run.steps?.[run.currentStepIndex] || run.steps?.find((step) => step.sessionId) || run.steps?.[0];
         return (
+          <div key={run.id} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div
-            key={run.id}
             style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}
           >
             <strong style={{ color: 'var(--text-primary)' }}>{run.workflowName}</strong>
@@ -119,6 +206,8 @@ export default function PipelineRunsBar({
                 </button>
               )}
             </div>
+          </div>
+          {run.status === 'needs_input' && <InputRequestPanel run={run} onAnswer={onAnswer} />}
           </div>
         );
       })}

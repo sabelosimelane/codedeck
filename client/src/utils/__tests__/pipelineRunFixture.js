@@ -7,7 +7,8 @@ export function validRun(project = 'Alpha') {
       status: 'running', sessionId: `${project}-1`, priorSessionIds: [], attempt: 1, iteration: 1,
       detail: null, startedAt: '2026-11-13T12:00:00.000Z', finishedAt: null }],
     worktree: { path: '/tmp/worktree', branch: 'workflow/feature', baseCommit: 'a'.repeat(40), state: 'present', detail: null },
-    actions: { stop: true, resume: false, continue: false, cleanup: false },
+    inputRequest: null,
+    actions: { stop: true, resume: false, continue: false, cleanup: false, answer: false },
     createdAt: '2026-11-13T12:00:00.000Z', updatedAt: '2026-11-13T12:00:00.000Z', finishedAt: null,
   };
 }

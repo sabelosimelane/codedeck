@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { parseRun } from '../pipelineRunRecords';
+import { parseInputRequest, parseRun } from '../pipelineRunRecords';
 import { validRun } from './pipelineRunFixture';
 it('accepts the complete run response', () => { expect(parseRun(validRun())).toEqual(validRun()); });
 const paths = [
@@ -42,4 +42,49 @@ it('supports once steps and nullable pending metadata', () => {
  expect(parseRun(row)).toEqual(row);
  row.steps[0].repeat.max = 1;
  expect(() => parseRun(row)).toThrow('max');
+});
+
+const waiting = (inputRequest, answer = inputRequest !== null) => {
+  const row = validRun();
+  row.status = 'needs_input'; row.steps[0].status = 'needs_input';
+  row.inputRequest = inputRequest; row.actions.answer = answer;
+  return row;
+};
+const ASKED = { questions: '1. Which schema?\nRecommended: the existing one.', truncated: false };
+it.each([
+  ['questions the agent stated', ASKED],
+  ['a request without stated questions', { questions: null, truncated: false }],
+  ['questions that were cut', { questions: 'q'.repeat(4000), truncated: true }],
+  ['a dialog in the terminal', null],
+])('accepts a waiting run with %s', (_label, inputRequest) => {
+  expect(parseRun(waiting(inputRequest)).inputRequest).toEqual(inputRequest);
+  expect(parseInputRequest(waiting(inputRequest))).toEqual(inputRequest);
+});
+it.each([
+  ['inputRequest', 'text'],
+  ['inputRequest', []],
+  ['inputRequest.questions', { truncated: false }],
+  ['inputRequest.questions', { questions: '', truncated: false }],
+  ['inputRequest.questions', { questions: 7, truncated: false }],
+  ['inputRequest.questions', { questions: 'q'.repeat(4001), truncated: false }],
+  ['inputRequest.truncated', { questions: 'One?' }],
+  ['inputRequest.truncated', { questions: 'One?', truncated: 'yes' }],
+  ['inputRequest.truncated', { questions: null, truncated: true }],
+])('rejects a malformed %s', (field, inputRequest) => {
+  expect(() => parseRun(waiting(inputRequest))).toThrow(field);
+  expect(() => parseInputRequest(waiting(inputRequest))).toThrow(field);
+});
+it('rejects a request on a run that is not waiting, and a missing one', () => {
+  const running = validRun(); running.inputRequest = ASKED;
+  expect(() => parseRun(running)).toThrow('inputRequest');
+  expect(() => parseInputRequest(running)).toThrow('inputRequest');
+  const missing = validRun(); delete missing.inputRequest;
+  expect(() => parseInputRequest(missing)).toThrow('inputRequest');
+  expect(() => parseInputRequest(null)).toThrow('run');
+});
+it('requires the answer action to match whether the agent signalled a request', () => {
+  expect(() => parseRun(waiting(ASKED, false))).toThrow('actions.answer');
+  expect(() => parseRun(waiting(null, true))).toThrow('actions.answer');
+  const running = validRun(); running.actions.answer = true;
+  expect(() => parseRun(running)).toThrow('actions.answer');
 });

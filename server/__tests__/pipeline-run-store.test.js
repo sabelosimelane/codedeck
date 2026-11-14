@@ -72,6 +72,7 @@ function validRun(overrides = {}) {
     baseCommit: null,
     worktreeState: 'not_created',
     worktreeDetail: null,
+    inputRequest: null,
     finishedAt: null,
     ...overrides,
   };
@@ -360,5 +361,74 @@ describe('pipeline run store', () => {
     expect(() => store.create(validRun({ requestId: '' }))).toThrow();
     expect(() => store.create(validRun({ homePath: 'relative' }))).toThrow();
     expect(() => store.create(validRun({ baseCommit: 'short' }))).toThrow();
+  });
+});
+
+describe('pipeline run store — input request', () => {
+  const asked = { questions: '1. Which schema?\nRecommended: the existing one.', truncated: false };
+  const waiting = (overrides = {}) => validRun({
+    status: 'needs_input',
+    steps: [step({ status: 'needs_input', sessionId: 'Demo-1', attempt: 1 })],
+    inputRequest: asked,
+    ...overrides,
+  });
+
+  it('persists what the agent asked and reads it back', () => {
+    const { store } = setup();
+    const created = store.create(waiting());
+    expect(created.inputRequest).toEqual(asked);
+    expect(store.get(created.id).inputRequest).toEqual(asked);
+    expect(store.list()[0].inputRequest).toEqual(asked);
+    expect(store.create(waiting({ requestId: 'none', inputRequest: { questions: null, truncated: false } })).inputRequest)
+      .toEqual({ questions: null, truncated: false });
+    expect(store.create(waiting({ requestId: 'dialog', inputRequest: null })).inputRequest).toBeNull();
+  });
+
+  it('clears it through update when the run leaves needs_input', () => {
+    const { store } = setup();
+    const created = store.create(waiting());
+    const answered = store.update(created.id, {
+      status: 'running', inputRequest: null, steps: [step({ status: 'running', sessionId: 'Demo-1', attempt: 1 })],
+    });
+    expect(answered.inputRequest).toBeNull();
+  });
+
+  it.each([
+    ['a missing field', { inputRequest: undefined }, 'input_request'],
+    ['a request on a run that is not waiting', { status: 'running', steps: [step({ status: 'running', sessionId: 'Demo-1', attempt: 1 })] }, 'input_request'],
+    ['an unknown key', { inputRequest: { ...asked, extra: 1 } }, 'inputRequest.extra'],
+    ['blank questions', { inputRequest: { questions: ' ', truncated: false } }, 'inputRequest.questions'],
+    ['a non-boolean truncated', { inputRequest: { questions: 'One?', truncated: 0 } }, 'inputRequest.truncated'],
+  ])('refuses %s', (_label, overrides, field) => {
+    const { store } = setup();
+    expect(() => store.create(waiting(overrides))).toThrow(field);
+  });
+
+  it('refuses a stored value that is not valid JSON', () => {
+    const { db, store } = setup();
+    const created = store.create(waiting());
+    db.prepare('UPDATE pipeline_runs SET input_request = ? WHERE id = ?').run('{not json', created.id);
+    expect(() => store.get(created.id)).toThrow('input_request');
+  });
+
+  it('adds the column to a database created before it existed and reads those runs as not asked', () => {
+    const { db, store } = setup();
+    const old = store.create(validRun());
+    db.exec('ALTER TABLE pipeline_runs DROP COLUMN input_request');
+    expect(db.prepare('PRAGMA table_info(pipeline_runs)').all().map(column => column.name)).not.toContain('input_request');
+
+    const reopened = createRunStore(db);
+    expect(db.prepare('PRAGMA table_info(pipeline_runs)').all().map(column => column.name)).toContain('input_request');
+    // A run that was pending is interrupted on reopen; its request stays null.
+    expect(reopened.get(old.id).inputRequest).toBeNull();
+    // Reopening again does not try to add the column twice.
+    expect(() => createRunStore(db)).not.toThrow();
+  });
+
+  it('drops the request when a waiting run is interrupted by a restart', () => {
+    const { db, store } = setup();
+    const created = store.create(waiting());
+    const reopened = createRunStore(db);
+    expect(reopened.get(created.id)).toMatchObject({ status: 'interrupted', inputRequest: null });
   });
 });

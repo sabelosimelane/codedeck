@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import PipelineRunsBar from '../PipelineRunsBar';
@@ -160,5 +160,102 @@ describe('PipelineRunsBar', () => {
 
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy();
+  });
+});
+
+describe('PipelineRunsBar — what the agent needs', () => {
+  const QUESTIONS = '1. Which schema should the migration target?\nRecommended: the existing guardian schema.';
+  const waitingRun = (overrides = {}) => runView({
+    status: 'needs_input',
+    inputRequest: { questions: QUESTIONS, truncated: false },
+    actions: { stop: true, resume: false, continue: false, cleanup: false, answer: true },
+    ...overrides,
+  });
+
+  function renderBar(run, onAnswer = vi.fn(async () => ({ id: 'r1' }))) {
+    render(
+      <PipelineRunsBar
+        runs={[run]}
+        onStop={vi.fn()}
+        onResume={vi.fn()}
+        onContinue={vi.fn()}
+        onCleanup={vi.fn()}
+        onAnswer={onAnswer}
+        onActivateStep={vi.fn()}
+      />,
+    );
+    return onAnswer;
+  }
+  const panel = () => screen.getByRole('group', { name: 'Feature needs your input' });
+  const reply = () => screen.getByLabelText('Answer for Feature');
+
+  it('shows the questions the agent asked, line by line, with a reply box', () => {
+    renderBar(waitingRun());
+    expect(within(panel()).getByText(/1\. Which schema should the migration target\?/)).toBeTruthy();
+    expect(within(panel()).getByText(/Recommended: the existing guardian schema\./)).toBeTruthy();
+    expect(reply().value).toBe('');
+    expect(screen.getByRole('button', { name: 'Send answer' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Accept recommendations' }).disabled).toBe(false);
+  });
+
+  it('shows no panel for a run that is not waiting', () => {
+    renderBar(runView({ inputRequest: null }));
+    expect(screen.queryByRole('group', { name: 'Feature needs your input' })).toBeNull();
+    expect(screen.queryByLabelText('Answer for Feature')).toBeNull();
+  });
+
+  it('sends the typed answer and clears the box once the backend has taken it', async () => {
+    const onAnswer = renderBar(waitingRun());
+    fireEvent.change(reply(), { target: { value: 'Use the existing schema.' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send answer' })); });
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    expect(onAnswer).toHaveBeenCalledWith('r1', 'Use the existing schema.');
+    await waitFor(() => expect(reply().value).toBe(''));
+  });
+
+  it('keeps the typed answer when sending it failed', async () => {
+    const onAnswer = renderBar(waitingRun(), vi.fn(async () => null));
+    fireEvent.change(reply(), { target: { value: 'Use the existing schema.' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send answer' })); });
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    expect(reply().value).toBe('Use the existing schema.');
+    expect(screen.getByRole('button', { name: 'Send answer' }).disabled).toBe(false);
+  });
+
+  it('accepts the recommendations with one click', async () => {
+    const onAnswer = renderBar(waitingRun());
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Accept recommendations' })); });
+    expect(onAnswer).toHaveBeenCalledWith('r1', 'Proceed with your recommendations.');
+  });
+
+  it('does not send twice while an answer is on its way', async () => {
+    let release;
+    const onAnswer = renderBar(waitingRun(), vi.fn(() => new Promise((resolve) => { release = resolve; })));
+    fireEvent.change(reply(), { target: { value: 'yes' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send answer' }).disabled).toBe(true));
+    expect(screen.getByRole('button', { name: 'Accept recommendations' }).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }));
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    await act(async () => { release({ id: 'r1' }); });
+  });
+
+  it('says so when the agent stated no questions, and offers only a typed answer', () => {
+    renderBar(waitingRun({ inputRequest: { questions: null, truncated: false } }));
+    expect(within(panel()).getByText('The agent did not say what it needs. Read its terminal, then answer here or there.')).toBeTruthy();
+    expect(reply()).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Accept recommendations' })).toBeNull();
+  });
+
+  it('notes when the list of questions was cut', () => {
+    renderBar(waitingRun({ inputRequest: { questions: QUESTIONS, truncated: true } }));
+    expect(within(panel()).getByText("The list was cut here. Read the rest in the agent's terminal.")).toBeTruthy();
+  });
+
+  it('points to the terminal for a dialog the agent shows there, without a reply box', () => {
+    renderBar(waitingRun({ inputRequest: null, actions: { stop: true, resume: false, continue: false, cleanup: false, answer: false } }));
+    expect(within(panel()).getByText('The agent is showing a dialog in its terminal. Answer it there.')).toBeTruthy();
+    expect(screen.queryByLabelText('Answer for Feature')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Send answer' })).toBeNull();
   });
 });

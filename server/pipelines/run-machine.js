@@ -64,8 +64,11 @@ function applyNeedsInput(run, event) {
   if (step.status !== 'running' && step.status !== 'launching') {
     illegal(`step:${step.status}`, event.type);
   }
+  // What the agent asked: an object when it signalled NEEDS_INPUT, null for a launch dialog.
+  if (event.inputRequest === undefined) throw new Error('needs_input event: inputRequest is required');
   run.status = 'needs_input';
   step.status = 'needs_input';
+  run.inputRequest = event.inputRequest;
   return run;
 }
 
@@ -195,12 +198,15 @@ const HANDLERS = {
 export function applyEvent(state, event) {
   const handler = HANDLERS[event?.type];
   if (!handler) throw new Error(`unknown event: ${event?.type}`);
-  return handler(clone(state), event);
+  const next = handler(clone(state), event);
+  // A request belongs to the wait it was made in.
+  if (next.status !== 'needs_input') next.inputRequest = null;
+  return next;
 }
 
 /**
  * Owner-action flags for a run view (Spec §8.8).
- * @returns {{ stop: boolean, resume: boolean, continue: boolean, cleanup: boolean }}
+ * @returns {{ stop: boolean, resume: boolean, continue: boolean, cleanup: boolean, answer: boolean }}
  */
 export function computeActions(run) {
   const status = run.status;
@@ -210,5 +216,7 @@ export function computeActions(run) {
     resume: RESUMABLE.has(status) && RESUME_WORKTREE.has(worktree),
     continue: status === 'limit_paused',
     cleanup: CLEANUP_STATUS.has(status) && CLEANUP_WORKTREE.has(worktree),
+    // Only a request the agent signalled can be answered by typing into its terminal.
+    answer: status === 'needs_input' && run.inputRequest !== null,
   };
 }
