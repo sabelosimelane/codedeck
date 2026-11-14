@@ -27,6 +27,8 @@ import { createTerminalRuntime } from '../terminal-runtime.js';
 import { attachBackgroundSession } from '../ws-handler.js';
 import { createTerminalWorkflow } from '../terminal-workflow.js';
 import { INITIAL_COLS, INITIAL_ROWS } from '../mobile-session-start.js';
+import { classify as classifyAgentReadiness } from '../pipelines/agent-readiness.js';
+import { findAgentProfile } from '../agent-profiles/index.js';
 
 function hasGit() {
   try {
@@ -483,6 +485,8 @@ const mode = ${JSON.stringify(mode)};
 let buf = '';
 let prompts = 0;
 let waitingOn = null;
+let dialogFor = null;
+let dialogShown = false;
 process.stdin.setEncoding('utf8');
 // Like a real agent CLI, read the terminal raw and draw what arrives: the terminal's own
 // line mode cuts a line at 1024 characters, and a prompt is one longer line.
@@ -492,6 +496,16 @@ const say = text => setTimeout(() => process.stdout.write(text), 200);
 process.stdin.on('data', chunk => {
   process.stdout.write(chunk.replace(/\\x1b\\[20[01]~/g, '').replace(/\\r\\n|\\r|\\n/g, '\\r\\n'));
   buf += chunk;
+  if (dialogFor !== null) {
+    // Like a real CLI dialog: nothing happens until it is on screen and Enter is pressed.
+    if (!dialogShown || !/\\r/.test(chunk)) return;
+    const id = dialogFor;
+    dialogFor = null;
+    buf = '';
+    process.stdout.write('\\x1b[2J\\x1b[H');
+    say('dialog answered\\n[[CDW:' + id + ':CONTINUE]]\\n');
+    return;
+  }
   if (waitingOn !== null) {
     if (!/Proceed with your recommendations\\./.test(buf)) return;
     const id = waitingOn;
@@ -510,7 +524,14 @@ process.stdin.on('data', chunk => {
   const id = match[1];
   buf = '';
   prompts += 1;
-  if (mode === 'continue') {
+  if (mode === 'dialog') {
+    // Shown after the prompt was submitted, the way Codex shows "Hooks need review".
+    dialogFor = id;
+    setTimeout(() => {
+      dialogShown = true;
+      process.stdout.write('\\n  Hooks need review\\n› 1. Review hooks\\n  2. Trust all and continue\\n  enter confirm · esc skip\\n');
+    }, 600);
+  } else if (mode === 'continue') {
     say('\\ndeveloped round ' + prompts + '\\n[[CDW:' + id + ':CONTINUE]]\\n');
   } else if (prompts === 1) {
     waitingOn = id;
@@ -674,6 +695,154 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
     } finally {
       // A run that never settled is still being driven; end it before its database closes.
       if (runs.get(runId).status === 'running') await engine.stop(runId);
+      try { execFileSync('tmux', ['kill-server'], { stdio: 'pipe' }); } catch { /* ignore */ }
+      if (previousTmp === undefined) delete process.env.TMUX_TMPDIR; else process.env.TMUX_TMPDIR = previousTmp;
+      if (previousTmux === undefined) delete process.env.TMUX; else process.env.TMUX = previousTmux;
+      db.close();
+    }
+  }, 120000);
+});
+
+describeLive('pipeline run live — a dialog shown after the prompt was sent', () => {
+  it('pauses the run until the dialog is answered in the terminal, also when agents decide', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-dialog-'));
+    temps.push(base);
+    const tmuxDir = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-tmux-'));
+    temps.push(tmuxDir);
+    const home = path.join(base, 'codedeck');
+    initRepo(home);
+    const stub = writeLoopAgent(base, 'dialog');
+
+    const previousTmp = process.env.TMUX_TMPDIR;
+    const previousTmux = process.env.TMUX;
+    process.env.TMUX_TMPDIR = tmuxDir;
+    delete process.env.TMUX;
+
+    const db = new Database(':memory:');
+    const runs = createRunStore(db);
+    const decisions = createDecisionStore(db);
+    const sessions = new Map();
+    const deletedSessionIds = new Set();
+    const runtime = createTerminalRuntime('tmux');
+    const runId = '0d9e4b1a-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const workflowId = '0d9e4b1a-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const homeRepoPath = await resolveHomeRepoPath({ projectPath: home, execFile });
+
+    runs.create({
+      id: runId,
+      requestId: 'live-dialog-1',
+      workflowId,
+      project: 'codedeck',
+      input: '',
+      status: 'pending',
+      stopReason: null,
+      currentStepIndex: 0,
+      error: null,
+      definition: {
+        workflowId,
+        workflowName: 'Dialog',
+        workflowRevision: 1,
+        agentsDecide: true,
+        steps: [
+          { kind: 'node', name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: { id: '0d9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'dialog-stub', launchCommand: stub, resetCommand: '/clear' } },
+        ],
+      },
+      steps: [{ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null }],
+      homePath: homeRepoPath,
+      worktreePath: homeRepoPath,
+      worktreeBranch: git(home, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      baseCommit: git(home, ['rev-parse', 'HEAD']),
+      worktreeState: 'external',
+      worktreeDetail: null,
+      inputRequest: null,
+      finishedAt: null,
+    });
+
+    const readScreen = async (sessionId) => {
+      const snapshot = runtime.captureSessionSnapshot(sessionId, 400);
+      if (snapshot.historyGuaranteed !== true) throw new Error('screen capture failed');
+      return snapshot.data.replace(/\r/g, '').split('\n');
+    };
+    // What the terminal really shows, read and classified the way the server does it.
+    const readExecutionState = async (sessionId) => {
+      let snapshotText;
+      const execution = await runtime.getSessionExecutionStateAsync(sessionId, { onSnapshot: (text) => { snapshotText = text; } });
+      const lines = typeof snapshotText === 'string' ? snapshotText.replace(/\r/g, '').split('\n') : [];
+      return {
+        executionReason: execution.executionReason,
+        foregroundCommand: execution.foregroundCommand,
+        lines,
+        profile: findAgentProfile({ foregroundCommand: execution.foregroundCommand, lines }),
+        isAlive: true,
+        entryExists: true,
+      };
+    };
+
+    const engine = createRunEngine({
+      runStore: runs,
+      decisionStore: decisions,
+      readScreen,
+      createWorktree: async () => { throw new Error('an existing worktree is never created'); },
+      removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
+      listDirtyPaths: async ({ worktreePath }) => listDirtyPaths({ worktreePath, execFile }),
+      startSession: async ({ cwd }) => {
+        runtime.createDetachedSession({ cwd, cols: INITIAL_COLS, rows: INITIAL_ROWS, sessionId: 'codedeck-1' });
+        return 'codedeck-1';
+      },
+      attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
+        sessionId, sessions, runtime, deletedSessionIds, { cwd },
+      ),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      classifyReadiness: classifyAgentReadiness,
+      readExecutionState,
+      readinessPollMs: 50,
+      launchEnterDelayMs: 50,
+      dialogPollMs: 200,
+    });
+
+    const describeRun = async () => {
+      const run = runs.get(runId);
+      const screen = run.steps[0].sessionId ? (await readScreen(run.steps[0].sessionId)).join('\n') : '(no terminal)';
+      return `status=${run.status} error=${run.error} step=${JSON.stringify([run.steps[0].status, run.steps[0].iteration])}\n${screen}`;
+    };
+
+    try {
+      const done = engine.start(runId);
+      try {
+        await waitFor(() => ['needs_input', 'error', 'complete'].includes(runs.get(runId).status), 30000, 'the run to pause for the dialog');
+      } catch (err) {
+        throw new Error(`${err.message}: ${await describeRun()}`);
+      }
+      const paused = runs.get(runId);
+      expect(paused.error).toBeNull();
+      expect(paused.status).toBe('needs_input');
+      // The prompt had been sent, and the agent signalled nothing: there is no request to answer.
+      expect(paused.steps[0].iteration).toBe(1);
+      expect(paused.inputRequest).toBeNull();
+      expect((await readScreen('codedeck-1')).join('\n')).toContain('Hooks need review');
+
+      // Agents decide what they ask, never a dialog of their CLI: it is still on screen later.
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      expect(runs.get(runId).status).toBe('needs_input');
+      expect(decisions.count(runId)).toBe(0);
+      expect((await readScreen('codedeck-1')).join('\n')).not.toContain('dialog answered');
+
+      execFileSync('tmux', ['send-keys', '-t', 'codedeck-1', 'Enter'], { stdio: 'pipe' });
+      try {
+        await waitFor(() => ['complete', 'error', 'stopped'].includes(runs.get(runId).status), 30000, 'the run to finish after the dialog');
+      } catch (err) {
+        throw new Error(`${err.message}: ${await describeRun()}`);
+      }
+      await done;
+
+      const finished = runs.get(runId);
+      expect(finished.error).toBeNull();
+      expect(finished.status).toBe('complete');
+      expect(finished.inputRequest).toBeNull();
+      expect((await readScreen('codedeck-1')).join('\n')).toContain('dialog answered');
+      expect(decisions.count(runId)).toBe(0);
+    } finally {
+      if (['running', 'needs_input'].includes(runs.get(runId).status)) await engine.stop(runId);
       try { execFileSync('tmux', ['kill-server'], { stdio: 'pipe' }); } catch { /* ignore */ }
       if (previousTmp === undefined) delete process.env.TMUX_TMPDIR; else process.env.TMUX_TMPDIR = previousTmp;
       if (previousTmux === undefined) delete process.env.TMUX; else process.env.TMUX = previousTmux;

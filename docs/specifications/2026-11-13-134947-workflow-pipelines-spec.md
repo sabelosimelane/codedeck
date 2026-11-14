@@ -197,7 +197,7 @@ prompt changes, and the snapshot keeps the prompt as written. A ready profile wi
 |---|---|
 | `pending` | Accepted; the worktree is being created or the first terminal is being opened |
 | `running` | A step is launching or working |
-| `needs_input` | The current step's agent is waiting for the owner (a startup dialog or a NEEDS_INPUT signal) |
+| `needs_input` | The current step's agent is waiting for the owner (a dialog of its CLI, at launch or during a pass, or a NEEDS_INPUT signal) |
 | `limit_paused` | A repeating step reached its maximum pass count without COMPLETE; waiting for Continue or Stop |
 | `interrupted` | The backend restarted while the run was `pending`, `running` or `needs_input` |
 | `stopped` | Stopped by the owner (`stop_reason = user`) or from the terminal's own bar / loss of the attachment (`stop_reason = terminal`) |
@@ -208,7 +208,7 @@ prompt changes, and the snapshot keeps the prompt as written. A ready profile wi
 stateDiagram-v2
   [*] --> pending: POST /runs
   pending --> running: worktree created, step 0 terminal attached
-  running --> needs_input: startup dialog or NEEDS_INPUT signal
+  running --> needs_input: CLI dialog or NEEDS_INPUT signal
   needs_input --> running: owner answers in the terminal
   running --> running: step done, next step starts
   running --> limit_paused: repeat maximum reached without COMPLETE
@@ -525,6 +525,14 @@ screen profile, or a dialog the profile does not recognise, always ends in this 
 `promptVisible(lines)` is a new export on each profile in `server/agent-profiles/` because a profile
 matched by its foreground command reports idle before its prompt is drawn.
 
+**Dialogs during a pass.** A CLI can show a dialog after the prompt was sent (Codex shows "Hooks need
+review" a moment after its prompt appears; a permission or question form can appear at any time), and
+no signal follows until it is answered. While a step's loop is running the engine therefore reads the
+same execution state every 2 s: `agent_needs_input` puts the run in `needs_input` with a `null`
+`inputRequest`, and the run returns to `running` when the dialog is gone or the loop reports
+anything. The dialog is answered in the terminal; it is never answered for the owner, also when the
+workflow lets agents decide. A request the agent signalled is left as it is while a dialog is shown.
+
 ### 8.5 The Setup step
 
 Step 0 of every run. It uses the snapshot of the setup agent, `repeat = { until_complete, max 3 }`,
@@ -590,7 +598,7 @@ characters. The run stores it as `inputRequest`:
 
 | `inputRequest` | Meaning |
 |---|---|
-| `null` | The run is not waiting on a signalled request (also while a launch dialog is shown) |
+| `null` | The run is not waiting on a signalled request (also while a dialog of the agent CLI is shown, at launch or during a pass) |
 | `{ questions: null, truncated: false }` | The agent signalled NEEDS_INPUT without a questions marker or list |
 | `{ questions: "<text>", truncated: <boolean> }` | What the agent asked; `truncated` when it was cut |
 
@@ -725,7 +733,7 @@ place of `project.path`; its returned `cwd` reflects it.
   runs every node in its own terminal inside the worktree in order, and reaches `complete`.
 - A `once` step advances after one pass on either signal; an `until_complete` step advances on
   COMPLETE and pauses the run at its maximum; Continue and Stop behave as §8.6.
-- NEEDS_INPUT and a startup dialog put the run in `needs_input`, and it returns to `running` when
+- NEEDS_INPUT and a dialog of the agent CLI (at launch or during a pass) put the run in `needs_input`, and it returns to `running` when
   answered.
 - Readiness never established within 120 s, a launch command that exits, a closed terminal, a failed
   `git worktree add`, and a Setup step that leaves uncommitted changes each put the run in `error`
@@ -806,8 +814,8 @@ runs stored before it are given `false`). When it is true, every node step (not 
    request.
 
 The owner is still asked (run `needs_input`, as in §8.7) when the agent listed no questions, when it
-asks again in the same pass after an automatic answer, when Setup asks, and for a dialog shown while
-an agent launches. If the decision cannot be recorded, the answer is not submitted and the run
+asks again in the same pass after an automatic answer, when Setup asks, and for a dialog an
+agent CLI shows, at launch or during a pass. If the decision cannot be recorded, the answer is not submitted and the run
 becomes `error`. Stop during the 100 ms before submission submits nothing and records nothing.
 
 Each automatic answer is one row of `pipeline_run_decisions`:

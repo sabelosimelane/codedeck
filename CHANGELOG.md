@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-11-14] - Pause a workflow run when an agent shows a dialog mid-pass
+
+### Executive Summary
+* A workflow run could look as if it were working while its agent sat waiting at a dialog. CodeDeck only looked for dialogs before it sent the prompt; Codex shows "Hooks need review" a moment after its prompt appears, so the prompt went in first and the run stayed "running" until someone happened to look at the terminal. The run now watches the agent's terminal while a step is working: a dialog marks the run as waiting for the owner, the same way a launch dialog does, and the run carries on by itself once the dialog is answered in the terminal. "Let agents decide" never answers such a dialog.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** `server/pipelines/run-engine.js` read the terminal's execution state only in the readiness wait before the prompt was sent. A CLI dialog shown afterwards produced no signal, so the run stayed `running` with no pause, no timeout and nothing in the runs bar.
+  * **Solution:** `server/pipelines/run-engine.js` — `watchForDialog` reads the same execution state every 2 s (`dialogPollMs`) while a step's loop is running; `agent_needs_input` puts the run in `needs_input` with a `null` input request, and `endDialogPause` returns it to `running` when the dialog is gone or the loop reports anything. A request the agent signalled is left alone; a failure to record the pause fails the run.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-engine.test.js` — Six tests for a dialog during a pass: pause and continue, a step that completes while paused, a signalled request replacing the pause, a signalled request left alone, the watch ending with the step, and a pause that cannot be recorded.
+  * `server/__tests__/pipeline-run-live.test.js` — A real tmux run whose stub agent shows a Codex-style dialog after the prompt was submitted: read with the real classifier, the run pauses, stays paused with agents deciding, and completes after Enter in the terminal.
+* **🛠️ Codebase:**
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — A dialog of the agent CLI pauses the run at launch or during a pass, and is answered in the terminal only.
+
 ## [2026-11-14] - Loop a group of workflow steps and let agents decide
 
 ### Executive Summary

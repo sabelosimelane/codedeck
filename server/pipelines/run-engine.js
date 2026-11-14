@@ -13,6 +13,7 @@ import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../shared/pipeline-definitions
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
+const DEFAULT_DIALOG_POLL_MS = 2000;
 
 // A step that loops back does one pass per round; its `max` counts rounds, not passes.
 function maxIterationsFor(repeat) {
@@ -60,6 +61,7 @@ export function createRunEngine({
   readinessPollMs = DEFAULT_POLL_MS,
   readinessTimeoutMs = DEFAULT_TIMEOUT_MS,
   launchEnterDelayMs = DEFAULT_ENTER_DELAY_MS,
+  dialogPollMs = DEFAULT_DIALOG_POLL_MS,
 } = {}) {
   if (!runStore) throw new Error('createRunEngine: runStore is required');
   if (typeof createWorktree !== 'function') throw new Error('createRunEngine: createWorktree is required');
@@ -86,6 +88,8 @@ export function createRunEngine({
         settleWorkflow: null,
         stopped: false,
         stopRequested: false,
+        // True while the run waits because the agent's CLI shows a dialog during a pass.
+        dialogPause: false,
       };
       handles.set(runId, handle);
     }
@@ -227,6 +231,42 @@ export function createRunEngine({
     }
   }
 
+  function endDialogPause(runId) {
+    const handle = getHandle(runId);
+    if (!handle.dialogPause) return;
+    handle.dialogPause = false;
+    if (runStore.get(runId)?.status === 'needs_input') {
+      persistTransition(runId, { type: 'input_received' });
+    }
+  }
+
+  /**
+   * A dialog of the agent's CLI (trust, permission, a question form) blocks a pass without any
+   * signal. While one is on screen the run waits for the owner, as it does for a launch dialog;
+   * it is answered in the terminal. `isOver` says the step's loop has ended.
+   */
+  async function watchForDialog(runId, sessionId, workflow, isOver) {
+    const handle = getHandle(runId);
+    const over = () => isOver() || handle.stopped || handle.workflow !== workflow;
+    while (true) {
+      await delay(dialogPollMs, setTimeoutFn);
+      if (over()) return;
+      const showsDialog = classifyReadiness(await readExecutionState(sessionId)) === 'needs_input';
+      await enqueueTransition(runId, async () => {
+        if (over()) return;
+        if (!showsDialog) {
+          endDialogPause(runId);
+          return;
+        }
+        // A request the agent signalled, or one being answered for the owner, is left alone.
+        if (handle.dialogPause || runStore.get(runId)?.status !== 'running'
+          || !['running', 'resetting'].includes(workflow.snapshot().status)) return;
+        persistTransition(runId, { type: 'needs_input', inputRequest: null });
+        handle.dialogPause = true;
+      });
+    }
+  }
+
   /** What the agent printed before the NEEDS_INPUT signal of the pass its loop is waiting on. */
   async function readInputRequest(runId, run) {
     const identifier = getHandle(runId).workflow?.signalIdentifier?.();
@@ -277,8 +317,10 @@ export function createRunEngine({
   }
 
   async function applyWorkflowSnapshot(runId, snapshot) {
+    if (!runStore.get(runId)) return { terminal: true };
+    // The loop moved on, so the agent is past any dialog it was showing.
+    endDialogPause(runId);
     const current = runStore.get(runId);
-    if (!current) return { terminal: true };
     if (['complete', 'error', 'stopped'].includes(current.status)) {
       return { terminal: true };
     }
@@ -507,6 +549,15 @@ export function createRunEngine({
         ...(guidance === undefined ? {} : { guidance }),
       });
 
+      watchForDialog(runId, sessionId, workflow, () => settled).catch((err) => {
+        try {
+          failRun(runId, String(err?.message || err || 'Run failed').slice(0, 2000));
+        } catch (failErr) {
+          console.error(`[pipeline-run] failRun after dialog watch error failed for ${runId}:`, failErr);
+        }
+        settleWorkflow();
+      });
+
       await workflowFinished;
       await handle.transitions;
     } catch (err) {
@@ -521,6 +572,7 @@ export function createRunEngine({
       }
       handle.attachment = null;
       handle.workflow = null;
+      handle.dialogPause = false;
     }
 
     if (handle.stopped) return;

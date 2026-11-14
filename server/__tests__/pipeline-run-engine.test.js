@@ -1670,3 +1670,131 @@ describe('createRunEngine — agents decide', () => {
     expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'disk full' });
   });
 });
+
+describe('createRunEngine — a dialog the agent shows during a pass', () => {
+  const DIALOG = () => executionState({ executionReason: 'agent_needs_input' });
+  const WORKING = () => executionState({ executionReason: 'agent_working', profile: { promptVisible: () => false } });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  // A loop that keeps running until told otherwise.
+  function runningWorkflow() {
+    const state = { status: 'stopped', notify: null };
+    const snap = status => ({ status, active: !['complete', 'stopped'].includes(status), error: null, requestId: 'r', iteration: 1, limitReached: false });
+    const publish = (status) => { state.status = status; state.notify(snap(status)); };
+    const createWorkflow = vi.fn(({ notify }) => {
+      state.notify = notify;
+      return {
+        start() { queueMicrotask(() => publish('running')); },
+        stop() { state.status = 'stopped'; },
+        snapshot: () => snap(state.status),
+        signalIdentifier: () => 'abc-1',
+        input() { publish('running'); },
+      };
+    });
+    return { createWorkflow, ask: () => publish('needs_input'), complete: () => publish('complete') };
+  }
+
+  // The prompt has been sent and the agent is working; `afterReady` is what the terminal shows next.
+  async function startWorking(afterReady, overrides = {}) {
+    const loop = runningWorkflow();
+    const ctx = setupEngine({
+      readinessQueue: [executionState(), ...afterReady],
+      createWorkflow: loop.createWorkflow,
+      engineExtras: { dialogPollMs: 2000 },
+      ...overrides,
+    });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100); // launch Enter
+    await vi.advanceTimersByTimeAsync(1000); // ready → prompt sent
+    await vi.advanceTimersByTimeAsync(0);
+    return { ctx, loop, run, done };
+  }
+
+  it('pauses the run while the dialog is shown and continues once it is answered in the terminal', async () => {
+    const { ctx, loop, run, done } = await startWorking([DIALOG(), DIALOG(), WORKING()]);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+
+    await vi.advanceTimersByTimeAsync(2000);
+    const paused = ctx.runStore.get(run.id);
+    expect(paused).toMatchObject({ status: 'needs_input', inputRequest: null });
+    expect(paused.steps[0].status).toBe('needs_input');
+    // Nothing the agent signalled: the dialog is answered in the terminal, not from the runs bar.
+    await expect(ctx.engine.answer(run.id, 'yes')).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(ctx.runStore.get(run.id).status).toBe('needs_input');
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'running', inputRequest: null });
+
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+
+  it('completes the step when the agent finishes while the run is still marked as showing a dialog', async () => {
+    const { ctx, loop, run, done } = await startWorking([DIALOG()]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(ctx.runStore.get(run.id).status).toBe('needs_input');
+
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+
+  it('replaces the dialog pause with what the agent asks when it signals NEEDS_INPUT', async () => {
+    const screen = ['[[CDW:abc-1:QUESTIONS]]', '1. Which schema?', 'Recommended: guardian.', '[[CDW:abc-1:NEEDS_INPUT]]'];
+    const { ctx, loop, run } = await startWorking([DIALOG()], { readScreen: vi.fn(async () => screen) });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: null });
+
+    loop.ask();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.runStore.get(run.id)).toMatchObject({
+      status: 'needs_input',
+      inputRequest: { questions: '1. Which schema?\nRecommended: guardian.', truncated: false },
+    });
+  });
+
+  it('leaves a request the agent signalled alone, whatever the terminal shows', async () => {
+    const screen = ['[[CDW:abc-1:QUESTIONS]]', '1. Which schema?', 'Recommended: guardian.', '[[CDW:abc-1:NEEDS_INPUT]]'];
+    const { ctx, loop, run } = await startWorking([DIALOG(), WORKING()], { readScreen: vi.fn(async () => screen) });
+    loop.ask();
+    await vi.advanceTimersByTimeAsync(0);
+    const asked = ctx.runStore.get(run.id);
+    expect(asked.inputRequest).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(2000); // terminal shows a dialog
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: asked.inputRequest });
+    await vi.advanceTimersByTimeAsync(2000); // dialog gone
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: asked.inputRequest });
+  });
+
+  it('stops watching the terminal when the step ends', async () => {
+    const { ctx, loop, run, done } = await startWorking([WORKING()]);
+    await vi.advanceTimersByTimeAsync(2000);
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+
+    const reads = ctx.readExecutionState.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ctx.readExecutionState.mock.calls.length).toBe(reads);
+  });
+
+  it('fails the run when the pause cannot be recorded', async () => {
+    const { ctx, run, done } = await startWorking([DIALOG()]);
+    const update = ctx.runStore.update;
+    ctx.runStore.update = vi.fn((id, patch) => {
+      if (patch.status === 'needs_input') throw new Error('disk full');
+      return update(id, patch);
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    await done;
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'disk full' });
+  });
+});

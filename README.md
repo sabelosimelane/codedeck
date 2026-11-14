@@ -121,8 +121,8 @@ bar shows that list under the run, with a box to type your answer and **Accept
 recommendations** to tell the agent to go with its own suggestions. Your answer is
 typed into the agent's terminal for you; answering in the terminal yourself works
 too. If the agent did not list its questions, the runs bar says so and you read its
-terminal. A dialog the agent shows while starting (trust or permission) is answered
-in the terminal only. The sidebar count for a project turns to the warning colour
+terminal. A dialog the agent CLI shows (trust, permission, a question form), while starting
+or in the middle of a pass, also pauses the run and is answered in the terminal only. The sidebar count for a project turns to the warning colour
 while one of its runs waits for you, and the phone gets an "Input requested" push.
 
 **Looping a group of nodes.** Set a node's repeat to **Loop back to an earlier node**,
