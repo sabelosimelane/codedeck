@@ -14,6 +14,7 @@ const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
 const DEFAULT_DIALOG_POLL_MS = 2000;
+const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused']);
 
 // A step that loops back does one pass per round; its `max` counts rounds, not passes.
 function maxIterationsFor(repeat) {
@@ -53,6 +54,7 @@ export function createRunEngine({
   readExecutionState,
   readScreen,
   decisionStore,
+  terminalAvailable,
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
   pathExists = async () => true,
@@ -72,6 +74,7 @@ export function createRunEngine({
   if (typeof readExecutionState !== 'function') throw new Error('createRunEngine: readExecutionState is required');
   if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
   if (typeof decisionStore?.add !== 'function') throw new Error('createRunEngine: decisionStore is required');
+  if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
 
   const handles = new Map();
 
@@ -171,12 +174,15 @@ export function createRunEngine({
   }
 
   /**
-   * `returningStep` names the step when it returns to a terminal it used in an earlier round
-   * of a loop: nothing was launched, so an absent agent or terminal is reported as such.
+   * `returningStep` names the step when it returns to a terminal it already used (a later
+   * round of a loop, or a Resume): nothing was launched. If its agent has exited to the shell
+   * there, `launchAgent` starts it again in that terminal, once; `launched` reports that, since
+   * a newly started agent has no context to clear.
    */
-  async function waitUntilReady(runId, sessionId, agentName, returningStep = null) {
+  async function waitUntilReady(runId, sessionId, agentName, returningStep = null, launchAgent = null) {
     let waitedMs = 0;
     let lastState = null;
+    let launched = false;
 
     while (true) {
       await delay(readinessPollMs, setTimeoutFn);
@@ -190,18 +196,23 @@ export function createRunEngine({
         if (current?.status === 'needs_input') {
           persistTransition(runId, { type: 'input_received' });
         }
-        return { ok: true, state: lastState };
+        return { ok: true, state: lastState, launched };
       }
 
       if (result === 'exited') {
-        failRun(runId, returningStep === null
-          ? `The launch command for agent ${agentName} exited.`
-          : `Agent ${agentName} is no longer running in the terminal of step ${returningStep}. Resume the run to continue in a new terminal.`);
+        if (returningStep !== null && !launched) {
+          // The terminal is still there but its agent is not: start it again in this terminal.
+          launched = true;
+          waitedMs = 0;
+          await launchAgent();
+          continue;
+        }
+        failRun(runId, `The launch command for agent ${agentName} exited.`);
         return { ok: false, reason: 'exited' };
       }
 
       if (result === 'closed') {
-        failRun(runId, returningStep === null
+        failRun(runId, returningStep === null || launched
           ? `The terminal closed while launching agent ${agentName}.`
           : terminalGoneMessage(returningStep));
         return { ok: false, reason: 'closed' };
@@ -229,6 +240,55 @@ export function createRunEngine({
         return { ok: false, reason: 'timeout' };
       }
     }
+  }
+
+  /**
+   * Whether a resumed step can go back to the terminal it had. Only a terminal that no
+   * longer exists is replaced; an agent that exited in it is started again there.
+   */
+  function terminalStillThere(sessionId) {
+    const available = terminalAvailable(sessionId);
+    if (typeof available !== 'boolean') {
+      throw new Error(`pipeline run: terminalAvailable must answer true or false for ${sessionId}`);
+    }
+    return available;
+  }
+
+  /**
+   * The terminal in which the agent of this step already runs in this worktree, or null.
+   * This run's own steps come first (the nearest earlier step, then later ones), then the
+   * runs that ended in the same worktree, most recent first. An agent is the same when its
+   * id and its launch command are: an edited agent starts in a terminal of its own.
+   */
+  function findAgentTerminal(run, stepIndex) {
+    const { agent } = run.definition.steps[stepIndex];
+    const terminalOf = (candidate, index) => {
+      const other = candidate.definition.steps[index].agent;
+      const { sessionId } = candidate.steps[index];
+      if (sessionId === null || other.id !== agent.id || other.launchCommand !== agent.launchCommand) return null;
+      return terminalStillThere(sessionId) ? sessionId : null;
+    };
+
+    const own = [];
+    for (let index = stepIndex - 1; index >= 0; index -= 1) own.push(index);
+    for (let index = stepIndex + 1; index < run.steps.length; index += 1) own.push(index);
+    for (const index of own) {
+      const sessionId = terminalOf(run, index);
+      if (sessionId !== null) return sessionId;
+    }
+
+    // runStore.list() is ordered most recent first.
+    for (const earlier of runStore.list()) {
+      if (earlier.id === run.id) continue;
+      if (earlier.project !== run.project || earlier.worktreePath !== run.worktreePath) continue;
+      // A run that may still be typing into its terminals keeps them.
+      if (ACTIVE_RUN_STATUSES.has(earlier.status)) continue;
+      for (let index = earlier.steps.length - 1; index >= 0; index -= 1) {
+        const sessionId = terminalOf(earlier, index);
+        if (sessionId !== null) return sessionId;
+      }
+    }
+    return null;
   }
 
   function endDialogPause(runId) {
@@ -439,9 +499,12 @@ export function createRunEngine({
 
       if (handle.stopped) return;
 
-      // A step that ran in an earlier round of a loop returns to its terminal, where its agent
-      // is still running. Any other step gets a new terminal and its agent is launched there.
+      // A step works in the terminal of its agent: the one it used before (an earlier round of
+      // a loop, or the attempt being resumed), else one where the same agent already runs in
+      // this worktree. Its agent is cleared there before the prompt is sent. Only a step whose
+      // agent has no terminal gets a new one, with the agent launched in it.
       let { sessionId } = step;
+      if (sessionId === null) sessionId = findAgentTerminal(run, stepIndex);
       const returning = sessionId !== null;
       if (!returning) {
         sessionId = await startSession({
@@ -449,7 +512,8 @@ export function createRunEngine({
           cwd: run.worktreePath,
         });
         if (handle.stopped) return;
-
+      }
+      if (step.sessionId !== sessionId) {
         const stepsWithSession = run.steps.map((s, i) => (
           i === stepIndex ? { ...s, sessionId } : s
         ));
@@ -467,14 +531,18 @@ export function createRunEngine({
 
       if (handle.stopped) return;
 
-      if (!returning) {
+      const launchAgent = async () => {
         attachment.write(agent.launchCommand);
         await delay(launchEnterDelayMs, setTimeoutFn);
         if (handle.stopped) return;
         attachment.write('\r');
+      };
+      if (!returning) {
+        await launchAgent();
+        if (handle.stopped) return;
       }
 
-      const ready = await waitUntilReady(runId, sessionId, agent.name, returning ? defStep.name : null);
+      const ready = await waitUntilReady(runId, sessionId, agent.name, returning ? defStep.name : null, launchAgent);
       if (!ready.ok) return;
 
       let current = runStore.get(runId);
@@ -544,8 +612,9 @@ export function createRunEngine({
         command,
         resetCommand: agent.resetCommand,
         maxIterations,
-        // The agent of a returning step still holds the previous round's context.
-        resetFirst: returning,
+        // The agent of a returning step still holds its earlier context, unless it had exited
+        // and was started again.
+        resetFirst: returning && !ready.launched,
         ...(guidance === undefined ? {} : { guidance }),
       });
 
@@ -683,10 +752,15 @@ export function createRunEngine({
             throw err;
           }
         }
+        // The step returns to its own terminal, where its agent is cleared with the reset
+        // command before the prompt is sent again. It gets a new one only when there is no
+        // terminal to return to.
+        const { sessionId } = run.steps[run.currentStepIndex];
+        const newTerminal = sessionId === null || !terminalStillThere(sessionId);
         const handle = getHandle(runId);
         handle.stopped = false;
         handle.stopRequested = false;
-        persistTransition(runId, { type: 'resume', at: now() });
+        persistTransition(runId, { type: 'resume', newTerminal, at: now() });
         const updated = runStore.get(runId);
         // Acknowledge Resume immediately; keep execution on the same chain.
         enqueue(runId, () => runStep(runId)).catch((err) => {

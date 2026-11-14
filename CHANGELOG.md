@@ -1,5 +1,26 @@
 # Changelog
 
+## [2026-11-14] - Run workflow steps in the terminal of their agent
+
+### Executive Summary
+* Workflow runs filled the tab bar: every node of every run opened its own terminal, and every Resume opened another. The original per-terminal workflow did not work that way; it cleared the agent and reused the terminal. Runs now do the same per agent. A step goes to the terminal where its agent already runs in that worktree, clears it with the agent's reset command and sends its prompt: nodes that use the same agent share one tab, a new run in an existing worktree reuses the tabs an earlier run left, and Resume clears and re-sends in the step's own tab. An agent that has exited is started again in the same tab. A new tab is opened only when the agent has no terminal there, or its terminal was closed. Nodes that use different agents still get different tabs, because a terminal holds one agent CLI.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/pipelines/run-engine.js` — `findAgentTerminal`: a step without a terminal takes one where the same agent (same `id` and `launchCommand`) already runs: this run's other steps first, then runs that are not active in the same project and worktree path, most recent first; only terminals the backend can still attach to. Such a step then behaves as one returning to its terminal (wait for the prompt, reset, submit). `waitUntilReady` launches the agent again, once, in a terminal whose agent has exited to the shell, and the loop then starts without a reset. `resume` keeps the step's terminal unless it is gone. New required dependency `terminalAvailable`.
+  * `server/pipelines/run-machine.js` — The `resume` event requires `newTerminal` (boolean): `false` keeps the step's session id, `true` moves it to `priorSessionIds`; keeping a terminal the step never had is refused.
+  * `server/ws-handler.js` — `backgroundSessionAvailable`: whether `attachBackgroundSession` would find the terminal (a live attachment, or a tmux session that still exists; a released attachment is not a closed terminal).
+  * `server/index.js` — Wires `terminalAvailable` to `backgroundSessionAvailable`.
+  * `client/src/components/pipelines/PipelineRunsBar.jsx` — The Resume confirmation says the agent in the step's terminal is cleared and the step starts again there, or that the step starts in a new terminal when it has none.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-engine.test.js` — Resume in the same terminal (reset first, nothing launched), a new terminal only when the terminal is gone or the step never had one, relaunch of an exited agent (also for a step returning in a loop), waiting for a busy agent; sharing a terminal between steps of one agent, separate terminals for different agents or launch commands, reuse from an earlier run in the same worktree, and no reuse from another worktree, another project or an active run. Steps of the older multi-step and loop tests now have an agent each.
+  * `server/__tests__/pipeline-run-machine.test.js` — `resume` with `newTerminal` true and false, and its preconditions.
+  * `server/__tests__/terminal-background-attach.test.js` — `backgroundSessionAvailable` against what `attachBackgroundSession` does in each case.
+  * `server/__tests__/pipeline-run-live.test.js` — Real tmux with a stub agent: Resume clears and re-sends in the same terminal; a killed agent is started again in the same terminal; a killed terminal is replaced; two steps of one agent and a second run all work in one terminal.
+  * `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx` — The two Resume confirmation texts.
+* **🛠️ Codebase:**
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` (new §8.15), `docs/steering/product.md` — One terminal per agent, what Resume does, and what a reused terminal loses (the agent's conversation) and keeps (scrollback).
+
 ## [2026-11-14] - Pause a workflow run when an agent shows a dialog mid-pass
 
 ### Executive Summary

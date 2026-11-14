@@ -184,10 +184,19 @@ function applyContinue(run, event) {
 function applyResume(run, event) {
   if (!RESUMABLE.has(run.status)) illegal(run.status, event.type);
   if (!RESUME_WORKTREE.has(run.worktreeState)) illegal(`worktree:${run.worktreeState}`, event.type);
+  if (typeof event.newTerminal !== 'boolean') {
+    throw new Error('resume event: newTerminal must be true or false');
+  }
   const step = currentStep(run);
-  if (step.sessionId) {
-    step.priorSessionIds = [...(step.priorSessionIds || []), step.sessionId];
-    step.sessionId = null;
+  // The step goes back to its own terminal, where its agent is cleared before the prompt is
+  // sent again. It gets a new terminal only when the caller found that one unusable.
+  if (event.newTerminal) {
+    if (step.sessionId) {
+      step.priorSessionIds = [...(step.priorSessionIds || []), step.sessionId];
+      step.sessionId = null;
+    }
+  } else if (!step.sessionId) {
+    throw new Error('resume event: a step without a terminal needs a new one');
   }
   step.status = 'launching';
   step.attempt = (step.attempt ?? 0) + 1;

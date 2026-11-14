@@ -143,6 +143,7 @@ function setupEngine(overrides = {}) {
   const removeWorktree = overrides.removeWorktree ?? vi.fn(async () => ({ ok: true }));
   const listDirtyPaths = overrides.listDirtyPaths ?? vi.fn(async () => []);
   const pathExists = overrides.pathExists ?? vi.fn(async () => true);
+  const terminalAvailable = overrides.terminalAvailable ?? vi.fn(() => true);
   const readScreen = overrides.readScreen ?? vi.fn(async () => []);
   const decisionStore = overrides.decisionStore ?? createDecisionStore(db);
 
@@ -159,6 +160,7 @@ function setupEngine(overrides = {}) {
     removeWorktree,
     listDirtyPaths,
     pathExists,
+    terminalAvailable,
     setTimeout: overrides.setTimeout ?? setTimeout,
     clearTimeout: overrides.clearTimeout ?? clearTimeout,
     now: overrides.now ?? (() => new Date().toISOString()),
@@ -180,6 +182,7 @@ function setupEngine(overrides = {}) {
     removeWorktree,
     listDirtyPaths,
     pathExists,
+    terminalAvailable,
     readScreen,
     decisionStore,
     writes,
@@ -538,8 +541,9 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
         name,
         prompt: `Prompt ${name}`,
         repeat: { mode: 'once' },
+        // Each step has an agent of its own, so each works in its own terminal.
         agent: {
-          id: AGENT_ID,
+          id: `c410a1b2-3456-4789-8abc-def01234560${index}`,
           name: 'codex',
           launchCommand: 'codex',
           resetCommand: '/clear',
@@ -548,7 +552,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     });
   }
 
-  it('advances through three steps with a new terminal each', async () => {
+  it('advances through three steps with a new terminal each when each has its own agent', async () => {
     const ctx = setupEngine({ readinessQueue: [executionState(), executionState(), executionState()] });
     const def = multiNodeDefinition();
     const run = ctx.runStore.create(validRun({ definition: def }));
@@ -821,8 +825,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(finished.error).toContain('tmp.out');
   });
 
-  it('Resume increments attempt and moves sessionId to priorSessionIds', async () => {
-    const ctx = setupEngine({ readinessQueue: [executionState()] });
+  function interruptedRun(ctx, stepOverrides = {}) {
     const created = ctx.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
     ctx.runStore.update(created.id, {
       status: 'interrupted',
@@ -831,20 +834,128 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
         sessionId: 'Demo-9',
         priorSessionIds: [],
         attempt: 1,
+        ...stepOverrides,
       })],
     });
+    return created;
+  }
+
+  it('Resume returns the step to its own terminal, clears the agent there and sends the prompt again', async () => {
+    const ctx = setupEngine({ readinessQueue: [executionState()] });
+    const created = interruptedRun(ctx);
 
     const acknowledged = await ctx.engine.resume(created.id);
     expect(acknowledged.status).toBe('running');
-    expect(acknowledged.steps[0].attempt).toBe(2);
-    expect(acknowledged.steps[0].priorSessionIds).toEqual(['Demo-9']);
+    expect(acknowledged.steps[0]).toMatchObject({ sessionId: 'Demo-9', priorSessionIds: [], attempt: 2 });
     await advanceReadiness(1);
 
     const finished = ctx.runStore.get(created.id);
     expect(finished.status).toBe('complete');
-    expect(finished.steps[0].attempt).toBe(2);
-    expect(finished.steps[0].priorSessionIds).toEqual(['Demo-9']);
-    expect(finished.steps[0].sessionId).toBe('Demo-1');
+    expect(finished.steps[0]).toMatchObject({ sessionId: 'Demo-9', priorSessionIds: [], attempt: 2 });
+    expect(ctx.terminalAvailable).toHaveBeenCalledWith('Demo-9');
+    expect(ctx.startSession).not.toHaveBeenCalled();
+    expect(ctx.attachBackground).toHaveBeenCalledWith('Demo-9', { cwd: created.worktreePath });
+    // The agent is still running there: nothing is launched, and its context is cleared first.
+    expect(ctx.writes).not.toContain('codex');
+    expect(ctx.getWorkflowStartArgs()).toMatchObject({
+      command: 'Implement ship it',
+      resetCommand: '/clear',
+      resetFirst: true,
+    });
+  });
+
+  it('Resume opens a new terminal when the terminal of the step is gone', async () => {
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      terminalAvailable: vi.fn(() => false),
+    });
+    const created = interruptedRun(ctx);
+
+    const acknowledged = await ctx.engine.resume(created.id);
+    expect(acknowledged.steps[0]).toMatchObject({ sessionId: null, priorSessionIds: ['Demo-9'], attempt: 2 });
+    await advanceReadiness(1);
+
+    const finished = ctx.runStore.get(created.id);
+    expect(finished.status).toBe('complete');
+    expect(finished.steps[0]).toMatchObject({ sessionId: 'Demo-1', priorSessionIds: ['Demo-9'], attempt: 2 });
+    expect(ctx.writes).toContain('codex');
+    expect(ctx.getWorkflowStartArgs().resetFirst).toBe(false);
+    // A terminal that is gone is not asked what it shows.
+    expect(ctx.readExecutionState).not.toHaveBeenCalledWith('Demo-9');
+  });
+
+  it('Resume starts the agent again in the terminal of the step when it has exited there', async () => {
+    const ctx = setupEngine({
+      readinessQueue: [executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh' }), executionState()],
+    });
+    const created = interruptedRun(ctx);
+
+    const acknowledged = await ctx.engine.resume(created.id);
+    expect(acknowledged.steps[0]).toMatchObject({ sessionId: 'Demo-9', priorSessionIds: [] });
+    await advanceReadiness(2);
+
+    const finished = ctx.runStore.get(created.id);
+    expect(finished.status).toBe('complete');
+    expect(finished.steps[0]).toMatchObject({ sessionId: 'Demo-9', priorSessionIds: [] });
+    expect(ctx.startSession).not.toHaveBeenCalled();
+    // The launch command and its Enter are typed into the same terminal; a new agent has nothing to clear.
+    expect(ctx.writes.slice(0, 2)).toEqual(['codex', '\r']);
+    expect(ctx.getWorkflowStartArgs().resetFirst).toBe(false);
+  });
+
+  it('Resume fails the run when the agent started again in the terminal exits too', async () => {
+    const exited = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh' });
+    const ctx = setupEngine({ readinessQueue: [exited, exited] });
+    const created = interruptedRun(ctx);
+
+    await ctx.engine.resume(created.id);
+    await advanceReadiness(2);
+
+    const finished = ctx.runStore.get(created.id);
+    expect(finished.status).toBe('error');
+    expect(finished.error).toBe('The launch command for agent codex exited.');
+    expect(ctx.writes.filter(data => data === 'codex')).toHaveLength(1);
+  });
+
+  it('Resume opens a terminal for a step that never had one, without asking about a terminal', async () => {
+    const ctx = setupEngine({ readinessQueue: [executionState()] });
+    const created = interruptedRun(ctx, { sessionId: null });
+
+    await ctx.engine.resume(created.id);
+    await advanceReadiness(1);
+
+    const finished = ctx.runStore.get(created.id);
+    expect(finished.status).toBe('complete');
+    expect(finished.steps[0]).toMatchObject({ sessionId: 'Demo-1', priorSessionIds: [] });
+    expect(ctx.terminalAvailable).not.toHaveBeenCalled();
+  });
+
+  it('Resume waits for a busy agent in the terminal, then clears it and sends the prompt', async () => {
+    const busy = executionState({ executionReason: 'agent_working' });
+    const ctx = setupEngine({ readinessQueue: [busy, busy, executionState()] });
+    const created = interruptedRun(ctx);
+
+    await ctx.engine.resume(created.id);
+    await advanceReadiness(2);
+    expect(ctx.getWorkflowStartArgs()).toBeNull();
+    expect(ctx.runStore.get(created.id).status).toBe('running');
+    await advanceReadiness(1);
+
+    expect(ctx.getWorkflowStartArgs()).toMatchObject({ resetFirst: true });
+    expect(ctx.runStore.get(created.id).steps[0].sessionId).toBe('Demo-9');
+  });
+
+  it('Resume fails the run when the availability of the terminal cannot be answered', async () => {
+    const ctx = setupEngine({
+      terminalAvailable: vi.fn(() => 'yes'),
+    });
+    const created = interruptedRun(ctx);
+    await expect(ctx.engine.resume(created.id)).rejects.toThrow('pipeline run: terminalAvailable must answer true or false for Demo-9');
+    expect(ctx.runStore.get(created.id).status).toBe('interrupted');
+  });
+
+  it('requires terminalAvailable', () => {
+    expect(() => setupEngine({ engineExtras: { terminalAvailable: undefined } })).toThrow('createRunEngine: terminalAvailable is required');
   });
 
   it('Resume acknowledges before the agent finishes', async () => {
@@ -1338,8 +1449,19 @@ describe('createRunEngine — what the agent needs, and answering it', () => {
 });
 
 describe('createRunEngine — a loop of steps', () => {
-  const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
-  const defStep = (name, repeat = { mode: 'once' }) => ({ kind: 'node', name, prompt: `do ${name}`, repeat, agent });
+  // Each step has an agent of its own, so each works in its own terminal.
+  const AGENT_IDS = {
+    Develop: 'c410a1b2-3456-4789-8abc-def012345610',
+    Test: 'c410a1b2-3456-4789-8abc-def012345611',
+    Review: 'c410a1b2-3456-4789-8abc-def012345612',
+  };
+  const defStep = (name, repeat = { mode: 'once' }) => ({
+    kind: 'node',
+    name,
+    prompt: `do ${name}`,
+    repeat,
+    agent: { id: AGENT_IDS[name], name: 'codex', launchCommand: 'codex', resetCommand: '/clear' },
+  });
   // Develop → Test (back to Develop) → Review
   const looping = (max = 3) => definition({
     steps: [defStep('Develop'), defStep('Test', { mode: 'loop_back', toStepIndex: 0, max }), defStep('Review')],
@@ -1468,13 +1590,27 @@ describe('createRunEngine — a loop of steps', () => {
     expect(ctx.startSession).toHaveBeenCalledTimes(2);
   });
 
-  it('fails the run when the agent is no longer running in the terminal a step returns to', async () => {
+  it('starts the agent again in the terminal a step returns to when it has exited there', async () => {
     const states = [executionState(), executionState(), executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh' })];
-    const { run } = await runLoop(['continue', 'continue', 'complete'], {
-      overrides: { readExecutionState: vi.fn(async () => states.shift() ?? executionState()) },
+    const script = scriptedWorkflow(['continue', 'continue', 'complete', 'complete', 'complete']);
+    const ctx = setupEngine({
+      createWorkflow: script.createWorkflow,
+      attachBackground: vi.fn(() => ({ write: (data) => { ctx.writes.push(data); }, release: () => {} })),
+      readExecutionState: vi.fn(async () => states.shift() ?? executionState()),
     });
-    expect(run.status).toBe('error');
-    expect(run.error).toBe('Agent codex is no longer running in the terminal of step Develop. Resume the run to continue in a new terminal.');
+    const created = ctx.runStore.create(validRun({ definition: looping() }));
+    const done = ctx.engine.start(created.id);
+    for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    await done;
+
+    const run = ctx.runStore.get(created.id);
+    expect(run.error).toBeNull();
+    expect(run.status).toBe('complete');
+    expect(ctx.startSession).toHaveBeenCalledTimes(3);
+    expect(run.steps.map(s => s.sessionId)).toEqual(['Demo-1', 'Demo-2', 'Demo-3']);
+    // Develop is launched a second time in its own terminal, so round 2 starts without a reset.
+    expect(ctx.writes.filter(data => data === 'codex')).toHaveLength(4);
+    expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, false, true, false]);
   });
 
   it('Resume gives the failed step a new terminal and launches its agent there', async () => {
@@ -1488,6 +1624,8 @@ describe('createRunEngine — a loop of steps', () => {
         if (attaches === 3) throw new Error('Background attach refused: session is deleted.');
         return { write: (data) => { ctx.writes.push(data); }, release: () => {} };
       }),
+      // Once the attach to Develop's terminal has failed, that terminal is gone.
+      terminalAvailable: vi.fn(() => attaches < 3),
     });
     const created = ctx.runStore.create(validRun({ definition: looping(), worktreeState: 'external', baseCommit: BASE_COMMIT }));
     const done = ctx.engine.start(created.id);
@@ -1796,5 +1934,201 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await done;
     expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'disk full' });
+  });
+});
+
+describe('createRunEngine — a step reuses the terminal of its agent', () => {
+  const CODEX = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+  const FABLE = { id: 'c410a1b2-3456-4789-8abc-def0123456f0', name: 'fable', launchCommand: 'claude --model fable', resetCommand: '/clear' };
+  const node = (name, agent) => ({ kind: 'node', name, prompt: `do ${name}`, repeat: { mode: 'once' }, agent });
+  const WORKTREE = '/tmp/worktrees/backend-specs';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  function completing() {
+    const starts = [];
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start(args) {
+        starts.push(args);
+        queueMicrotask(() => notify({ status: 'complete', active: false, error: null, requestId: args.requestId, iteration: 1, limitReached: false }));
+      },
+      stop() {},
+      snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+    }));
+    return { starts, createWorkflow };
+  }
+
+  function engineWith(overrides = {}) {
+    const script = completing();
+    const attached = [];
+    const ctx = setupEngine({
+      createWorkflow: script.createWorkflow,
+      attachBackground: vi.fn((sessionId) => {
+        attached.push(sessionId);
+        return { write: (data) => { ctx.writes.push(data); }, release: () => {} };
+      }),
+      ...overrides,
+    });
+    return { ctx, script, attached };
+  }
+
+  async function runToEnd(ctx, runInput, polls = 6) {
+    const created = ctx.runStore.create(validRun({ worktreeState: 'external', baseCommit: BASE_COMMIT, worktreePath: WORKTREE, ...runInput }));
+    const done = ctx.engine.start(created.id);
+    for (let i = 0; i < polls; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    await done;
+    return ctx.runStore.get(created.id);
+  }
+
+  /** A run that already ended in the same worktree and left `sessionIds` open, one per step. */
+  function earlierRun(ctx, steps, sessionIds, overrides = {}) {
+    const created = ctx.runStore.create(validRun({
+      requestId: `earlier-${sessionIds.join('-')}`,
+      definition: definition({ steps }),
+      worktreeState: 'external',
+      baseCommit: BASE_COMMIT,
+      worktreePath: WORKTREE,
+      ...overrides.create,
+    }));
+    return ctx.runStore.update(created.id, {
+      status: 'stopped',
+      stopReason: 'user',
+      finishedAt: new Date().toISOString(),
+      worktreeState: 'released',
+      steps: sessionIds.map(sessionId => step({ status: 'complete', sessionId, attempt: 1 })),
+      ...overrides.update,
+    });
+  }
+
+  it('runs the next step with the same agent in the same terminal, clearing the agent first', async () => {
+    const { ctx, script, attached } = engineWith();
+    const run = await runToEnd(ctx, { definition: definition({ steps: [node('Review', FABLE), node('Test', FABLE)] }) });
+
+    expect(run.status).toBe('complete');
+    expect(ctx.startSession).toHaveBeenCalledTimes(1);
+    expect(run.steps.map(s => s.sessionId)).toEqual(['Demo-1', 'Demo-1']);
+    expect(attached).toEqual(['Demo-1', 'Demo-1']);
+    // The agent is launched once; the second step clears it and sends its own prompt.
+    expect(ctx.writes.filter(data => data === 'claude --model fable')).toHaveLength(1);
+    expect(script.starts.map(start => [start.command, start.resetFirst])).toEqual([['do Review', false], ['do Test', true]]);
+  });
+
+  it('gives a step that uses another agent its own terminal', async () => {
+    const { ctx, script } = engineWith();
+    const run = await runToEnd(ctx, {
+      definition: definition({ steps: [node('Develop', CODEX), node('Review', FABLE), node('Test', FABLE)] }),
+    });
+
+    expect(run.status).toBe('complete');
+    expect(run.steps.map(s => s.sessionId)).toEqual(['Demo-1', 'Demo-2', 'Demo-2']);
+    expect(ctx.startSession).toHaveBeenCalledTimes(2);
+    expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, true]);
+  });
+
+  it('treats the same agent with another launch command as another agent', async () => {
+    const { ctx } = engineWith();
+    const run = await runToEnd(ctx, {
+      definition: definition({ steps: [node('Review', FABLE), node('Test', { ...FABLE, launchCommand: 'claude --model opus' })] }),
+    });
+    expect(run.steps.map(s => s.sessionId)).toEqual(['Demo-1', 'Demo-2']);
+  });
+
+  it('a new run reuses the terminals an earlier run left in the same worktree', async () => {
+    const { ctx, script } = engineWith();
+    const steps = [node('Develop', CODEX), node('Review', FABLE), node('Test', FABLE)];
+    earlierRun(ctx, steps, ['Demo-18', 'Demo-19', 'Demo-20']);
+
+    const run = await runToEnd(ctx, { definition: definition({ steps }) });
+
+    expect(run.status).toBe('complete');
+    expect(ctx.startSession).not.toHaveBeenCalled();
+    // The terminal that agent used last is taken; Test then shares the one Review took.
+    expect(run.steps.map(s => s.sessionId)).toEqual(['Demo-18', 'Demo-20', 'Demo-20']);
+    expect(ctx.writes).not.toContain('codex');
+    expect(script.starts.map(start => start.resetFirst)).toEqual([true, true, true]);
+  });
+
+  it('takes the terminal of the most recent earlier run', async () => {
+    let clock = Date.parse('2026-11-14T10:00:00.000Z');
+    const { ctx } = engineWith({ now: () => new Date(clock += 1000).toISOString() });
+    earlierRun(ctx, [node('Test', FABLE)], ['Demo-4']);
+    earlierRun(ctx, [node('Test', FABLE)], ['Demo-7']);
+
+    const run = await runToEnd(ctx, { definition: definition({ steps: [node('Test', FABLE)] }) });
+    expect(run.steps[0].sessionId).toBe('Demo-7');
+  });
+
+  it('opens a new terminal when the one an earlier run left is gone', async () => {
+    const { ctx, script } = engineWith({ terminalAvailable: vi.fn(sessionId => sessionId !== 'Demo-20') });
+    earlierRun(ctx, [node('Test', FABLE)], ['Demo-20']);
+
+    const run = await runToEnd(ctx, { definition: definition({ steps: [node('Test', FABLE)] }) });
+    expect(run.steps[0].sessionId).toBe('Demo-1');
+    expect(ctx.startSession).toHaveBeenCalledTimes(1);
+    expect(script.starts[0].resetFirst).toBe(false);
+  });
+
+  it('does not take a terminal from a run in another worktree', async () => {
+    const { ctx } = engineWith();
+    earlierRun(ctx, [node('Test', FABLE)], ['Demo-20'], { create: { worktreePath: '/tmp/worktrees/other' } });
+
+    const run = await runToEnd(ctx, { definition: definition({ steps: [node('Test', FABLE)] }) });
+    expect(run.steps[0].sessionId).toBe('Demo-1');
+  });
+
+  it('does not take a terminal from a run of another project', async () => {
+    const { ctx } = engineWith();
+    earlierRun(ctx, [node('Test', FABLE)], ['Other-3'], { create: { project: 'Other' } });
+
+    const run = await runToEnd(ctx, { definition: definition({ steps: [node('Test', FABLE)] }) });
+    expect(run.steps[0].sessionId).toBe('Demo-1');
+  });
+
+  it.each(['pending', 'running', 'needs_input', 'limit_paused'])('does not take the terminal of a run that is %s', async (status) => {
+    const { ctx } = engineWith();
+    earlierRun(ctx, [node('Test', FABLE)], ['Demo-20'], {
+      update: {
+        status,
+        stopReason: null,
+        finishedAt: null,
+        worktreeState: 'external',
+        steps: [step({ status: status === 'pending' ? 'pending' : status === 'limit_paused' ? 'limit_reached' : status, sessionId: 'Demo-20', attempt: 1 })],
+      },
+    });
+
+    const run = await runToEnd(ctx, { definition: definition({ steps: [node('Test', FABLE)] }) });
+    expect(run.steps[0].sessionId).toBe('Demo-1');
+  });
+
+  it('Resume does not pick a closed shared terminal up again from the other step', async () => {
+    // Review and Test shared Demo-9, which was closed.
+    const { ctx } = engineWith({ terminalAvailable: vi.fn(sessionId => sessionId !== 'Demo-9') });
+    const created = ctx.runStore.create(validRun({
+      definition: definition({ steps: [node('Review', FABLE), node('Test', FABLE)] }),
+      worktreeState: 'external',
+      baseCommit: BASE_COMMIT,
+      worktreePath: WORKTREE,
+    }));
+    ctx.runStore.update(created.id, {
+      status: 'error',
+      error: 'The terminal for step Test was closed.',
+      currentStepIndex: 1,
+      finishedAt: new Date().toISOString(),
+      steps: [
+        step({ status: 'complete', sessionId: 'Demo-9', attempt: 1 }),
+        step({ status: 'failed', sessionId: 'Demo-9', attempt: 1 }),
+      ],
+    });
+
+    await ctx.engine.resume(created.id);
+    for (let i = 0; i < 3; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const run = ctx.runStore.get(created.id);
+    expect(run.status).toBe('complete');
+    expect(ctx.startSession).toHaveBeenCalledTimes(1);
+    expect(run.steps[1]).toMatchObject({ sessionId: 'Demo-1', priorSessionIds: ['Demo-9'] });
   });
 });

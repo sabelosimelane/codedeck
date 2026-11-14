@@ -16,8 +16,9 @@ project. For each run CodeDeck:
 
 1. creates a dedicated git worktree for the run,
 2. prepares it with an automated **Setup** step performed by a small-model agent,
-3. runs each node in its own terminal tab inside that worktree — launching the node's agent CLI,
-   submitting the prompt, and waiting for the agent's completion signal,
+3. runs each node in the terminal tab of its agent inside that worktree — launching the agent CLI
+   when it has no tab there yet, otherwise clearing it — submitting the prompt, and waiting for the
+   agent's completion signal (§8.15),
 4. removes the worktree when the run completes, provided nothing in it is uncommitted.
 
 The existing loop engine (`createTerminalWorkflow`) becomes the per-step building block; the pipeline
@@ -28,7 +29,7 @@ only pipeline runs use the loop engine.
 
 | Topic | Decision |
 |---|---|
-| Where a node runs | Its own new terminal tab in the project, with the node's agent CLI launched in it |
+| Where a node runs | In the terminal tab of its agent in the run's worktree: a new tab with the agent CLI launched in it only when that agent has none there yet, otherwise the existing tab after the agent's reset command (§8.15; v1.0 opened a new tab for every node) |
 | Agent | Named entry: name + interactive launch command written by the owner (it owns model, effort and permission flags) + reset command |
 | Node | Name + agent + prompt text (may contain `{input}`) + repeat mode |
 | Repeat | `once`, or `until_complete` with a maximum pass count; a repeat clears context with the agent's reset command and re-submits the same prompt in the same terminal |
@@ -36,7 +37,7 @@ only pipeline runs use the loop engine.
 | Who decides | Per workflow, `agentsDecide` (off by default): agents go with their own recommendations instead of pausing the run, and each such decision is recorded (§8.14, added after v1.0) |
 | Pass limit | A repeating node that reaches its maximum without COMPLETE pauses the run; the owner chooses Continue or Stop |
 | Persistence | Runs are stored in SQLite. A backend restart marks an unfinished run `interrupted` |
-| Resume | Manual, on any unfinished run (`interrupted`, `stopped`, `error`): re-runs the current step in a fresh tab and carries on |
+| Resume | Manual, on any unfinished run (`interrupted`, `stopped`, `error`): re-runs the current step in its own terminal, after clearing the agent there with its reset command, and carries on. An agent that has exited there is started again in the same terminal. A new tab is opened only when that terminal was closed (changed after v1.0, which always opened a fresh tab) |
 | Worktree | Every run works in its own git worktree. There is no switch to turn this off |
 | Worktree setup | Automated by a small LLM: a built-in Setup step run by the owner's chosen setup agent |
 | Cleanup | On completion the worktree folder is removed only if nothing in it is uncommitted. The branch is always kept |
@@ -620,13 +621,15 @@ same effect.
 | Action | Allowed when | Effect | Otherwise |
 |---|---|---|---|
 | Stop | `pending`, `running`, `needs_input`, `limit_paused`, `interrupted` | run `stopped`, `stop_reason = user`; aborts the readiness poll and stops the loop engine; does **not** interrupt the agent | already `stopped` → 200 unchanged; `complete` or `error` → 409 |
-| Resume | `interrupted`, `stopped`, `error`, with `worktree_state` `not_created` or `present` | the current step gets `attempt + 1`, its session id moves to `priorSessionIds`, and the run continues from that step in a fresh terminal (creating the worktree first when `not_created`) | 409 |
+| Resume | `interrupted`, `stopped`, `error`, with `worktree_state` `not_created` or `present` | the current step gets `attempt + 1` and the run continues from that step (creating the worktree first when `not_created`). The step keeps its session id and returns to that terminal as a step does in a later round of a loop (§8.13): the engine waits until the agent is at its prompt, runs the agent's reset command, then submits the prompt again. If the agent has exited to the shell there, its launch command is typed into that terminal once and no reset is run. Only when the step has no terminal, or its terminal can no longer be attached to, does its session id move to `priorSessionIds` and the step start in a new terminal with the agent launched there | 409 |
 | Continue | `limit_paused` | §8.6 | 409 |
 | Answer | `needs_input` with a non-null `inputRequest` | §8.7 Input requests | 409 |
 | Cleanup | status `complete`, `stopped`, `error` or `interrupted`, with `worktree_state` `not_created`, `present` or `removal_blocked` | §8.2 | 409 |
 
 Resume returns 409 when `worktree_state` is `present` but the directory no longer exists. Resume does
-not check whether the previous terminal's agent is still working; the client warns before resuming.
+not interrupt an agent that is still working in the step's terminal: it waits for the agent to reach
+its prompt, within the readiness timeout of §8.4, before clearing it. If the agent is still busy when
+that time is up the run becomes `error` with the readiness message and can be resumed again.
 
 ### 8.9 Restart
 
@@ -684,8 +687,8 @@ place of `project.path`; its returned `cwd` reflects it.
 - A **runs bar** above the tab bar lists the active project's open runs: workflow name, one chip per
   step with its status and pass `k/N`, the worktree branch, the error or blocked-cleanup detail, and
   the buttons the run's `actions` allow (Stop, Resume, Continue, Clean up worktree). Clicking a step
-  chip activates that step's terminal tab. Resume asks for confirmation and names the previous
-  terminal, warning that its agent may still be working.
+  chip activates that step's terminal tab. Resume asks for confirmation and names the step's
+  terminal, saying that its agent is cleared and the step starts again there.
 - Run state is polled: `GET /api/pipelines/runs?open=true&size=100` every 2 s with the same in-flight
   guard as the session poll in `client/src/App.jsx`, and refetched after each action. Status
   transitions produce toasts.
@@ -730,7 +733,7 @@ place of `project.path`; its returned `cwd` reflects it.
 - `maxIterations` ends the loop engine with `limitReached` on the Nth CONTINUE; existing engine
   tests still pass. Only pipeline runs start the loop engine; the per-terminal bar was removed.
 - A run started through the API on a local git project creates its worktree and branch, runs Setup,
-  runs every node in its own terminal inside the worktree in order, and reaches `complete`.
+  runs every node in the terminal of its agent inside the worktree in order, and reaches `complete`.
 - A `once` step advances after one pass on either signal; an `until_complete` step advances on
   COMPLETE and pauses the run at its maximum; Continue and Stop behave as §8.6.
 - NEEDS_INPUT and a dialog of the agent CLI (at launch or during a pass) put the run in `needs_input`, and it returns to `running` when
@@ -741,8 +744,8 @@ place of `project.path`; its returned `cwd` reflects it.
 - Stop, Resume, Continue and Cleanup are accepted and refused exactly as §8.8, and `actions` in the
   run view matches.
 - After the run store is rebuilt, `pending`, `running` and `needs_input` runs are `interrupted`;
-  `limit_paused` runs are unchanged; Resume continues an interrupted run from its current step in a
-  new terminal.
+  `limit_paused` runs are unchanged; Resume continues an interrupted run from its current step, in
+  that step's terminal when it can still be used (§8.8).
 - A second `POST /runs` with the same `requestId` and body returns the same run with 200 and creates
   no second worktree; with a different body it returns 409.
 - `POST /runs` is refused with 409 for a remote project, a project that is not a git top level, and
@@ -796,9 +799,10 @@ one more sentence saying what the loop is and that COMPLETE means no step of it 
 A step that already ran in an earlier round **returns to its own terminal**: no new terminal is
 created and the agent is not launched again. The engine attaches to the step's session, waits until
 the agent is at its prompt, and starts the loop with `resetFirst: true`, so the agent's reset command
-runs before the prompt is submitted. If that terminal is gone, or the agent is no longer running in
-it, the run becomes `error` naming the step; Resume then gives the step a fresh terminal as usual,
-and `roundsCompleted` is kept.
+runs before the prompt is submitted. If the agent has exited to the shell in that terminal, its launch
+command is typed there once and the loop starts without a reset; if it exits again the run becomes
+`error`. If the terminal itself is gone, the run becomes `error` naming the step; Resume then gives
+the step a new terminal (§8.8), and `roundsCompleted` is kept.
 
 ### 8.14 Agents decide (added after v1.0)
 
@@ -836,6 +840,35 @@ Rows are only ever added. A run view carries `agentsDecide` and `decisionCount`;
 `GET /runs/:id/decisions` returns the rows paginated (`page`, `size` 1–100, default 20; sort
 `createdAt,asc|desc`, default `asc`), 404 for an unknown run.
 
+### 8.15 One terminal per agent (added after v1.0)
+
+The original per-terminal workflow reused one terminal, clearing the agent between passes. Runs do
+the same per agent: a terminal holds one agent CLI, so steps that use the same agent work in the
+same terminal and only a step whose agent has no terminal gets a new one.
+
+When a step is about to run and has no terminal of its own (`sessionId` null), the engine looks for
+a terminal in which the same agent already runs, in this order:
+
+1. the other steps of this run, the nearest earlier step first, then later steps;
+2. the steps of runs in the same project and worktree path that are not `pending`, `running`,
+   `needs_input` or `limit_paused`, most recent run first.
+
+Two agents are the same when their `id` and `launchCommand` are equal in the run snapshots; an
+agent edited between runs therefore starts in a terminal of its own. A candidate is taken only when
+the backend can still attach to it (`backgroundSessionAvailable`). The step records that session id
+and from there behaves as a step returning to its terminal (§8.13): the engine waits for the agent's
+prompt, runs the reset command, and submits the prompt; an agent that exited to the shell is
+launched again there. When no candidate exists a new terminal is started and the agent launched.
+
+Consequences:
+
+- Several steps of a run may carry the same `sessionId`; the client opens one tab for it.
+- A run in a new worktree has no earlier runs to take from, so it opens one tab per distinct agent.
+- The agent's conversation in a reused terminal is cleared, including anything the owner typed
+  there after an earlier run ended. The terminal's scrollback is kept.
+- The engine does not check which CLI is running in a reused terminal. If the owner replaced the
+  agent there with another CLI, the step's prompt is sent to that CLI.
+
 ## 11. Known Limits
 
 - Only CLIs with a screen profile (Claude, Codex, Cursor, agy, Muse) can run a step.
@@ -845,8 +878,9 @@ Rows are only ever added. A run view carries `agentsDecide` and `decisionCount`;
 - Setup quality depends on the chosen model. A wrong or incomplete setup surfaces when a later step's
   build or tests fail. The setup agent's launch command must carry permission flags that let it
   install and copy.
-- Stop does not interrupt the agent, and Resume can start a second agent while the first is still
-  working in the old terminal.
+- Stop does not interrupt the agent. Resume waits for an agent that is still working in the step's
+  terminal and clears it once it is at its prompt; whatever that agent was doing is finished first,
+  and its conversation is then cleared.
 - Completion relies on the agent printing the signal; that reliability is inherited from the engine.
 - A loop ends only when the agent of its last step reports COMPLETE; an agent that reports COMPLETE
   after finishing its own pass, although other steps of the loop have work left, ends the loop early.

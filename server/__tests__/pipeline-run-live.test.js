@@ -24,7 +24,7 @@ import {
   buildSetupPrompt,
 } from '../pipelines/run-worktree.js';
 import { createTerminalRuntime } from '../terminal-runtime.js';
-import { attachBackgroundSession } from '../ws-handler.js';
+import { attachBackgroundSession, backgroundSessionAvailable } from '../ws-handler.js';
 import { createTerminalWorkflow } from '../terminal-workflow.js';
 import { INITIAL_COLS, INITIAL_ROWS } from '../mobile-session-start.js';
 import { classify as classifyAgentReadiness } from '../pipelines/agent-readiness.js';
@@ -294,6 +294,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
         sessionId, sessions, runtime, deletedSessionIds, { cwd },
       ),
+      terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
       createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
       // Live classifier needs a real agent CLI; stub readiness once the process is up.
       classifyReadiness: () => 'ready',
@@ -424,6 +425,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
       attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
         sessionId, sessions, runtime, deletedSessionIds, { cwd },
       ),
+      terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
       createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
       classifyReadiness: () => 'ready',
       readExecutionState: async () => ({
@@ -531,6 +533,10 @@ process.stdin.on('data', chunk => {
       dialogShown = true;
       process.stdout.write('\\n  Hooks need review\\n› 1. Review hooks\\n  2. Trust all and continue\\n  enter confirm · esc skip\\n');
     }, 600);
+  } else if (mode === 'silent-first') {
+    // Ends its first turn without a signal, the way a CLI does on an API error.
+    if (prompts === 1) say('\\nAPI Error: the request was refused\\n› \\n');
+    else say('\\nresumed pass ' + prompts + '\\n[[CDW:' + id + ':COMPLETE]]\\n');
   } else if (mode === 'continue') {
     say('\\ndeveloped round ' + prompts + '\\n[[CDW:' + id + ':CONTINUE]]\\n');
   } else if (prompts === 1) {
@@ -633,6 +639,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
       attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
         sessionId, sessions, runtime, deletedSessionIds, { cwd },
       ),
+      terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
       createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
       classifyReadiness: () => 'ready',
       readExecutionState: async () => ({
@@ -792,6 +799,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
       attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
         sessionId, sessions, runtime, deletedSessionIds, { cwd },
       ),
+      terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
       createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
       classifyReadiness: classifyAgentReadiness,
       readExecutionState,
@@ -847,6 +855,282 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
       if (previousTmp === undefined) delete process.env.TMUX_TMPDIR; else process.env.TMUX_TMPDIR = previousTmp;
       if (previousTmux === undefined) delete process.env.TMUX; else process.env.TMUX = previousTmux;
       db.close();
+    }
+  }, 120000);
+});
+
+describeLive('pipeline run live — Resume', () => {
+  async function liveRun(mode, stepNames = ['Test']) {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-resume-'));
+    temps.push(base);
+    const tmuxDir = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-tmux-'));
+    temps.push(tmuxDir);
+    const home = path.join(base, 'codedeck');
+    initRepo(home);
+    const stub = writeLoopAgent(base, mode);
+
+    const previousTmp = process.env.TMUX_TMPDIR;
+    const previousTmux = process.env.TMUX;
+    process.env.TMUX_TMPDIR = tmuxDir;
+    delete process.env.TMUX;
+
+    const db = new Database(':memory:');
+    const runs = createRunStore(db);
+    const sessions = new Map();
+    const deletedSessionIds = new Set();
+    const runtime = createTerminalRuntime('tmux');
+    const runId = '0e9e4b1a-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const workflowId = '0e9e4b1a-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const homeRepoPath = await resolveHomeRepoPath({ projectPath: home, execFile });
+
+    // Every step uses the same agent. `id` lets a test add a later run in the same worktree.
+    const createRun = (id) => runs.create({
+      id,
+      requestId: `live-resume-${mode}-${id}`,
+      workflowId,
+      project: 'codedeck',
+      input: '',
+      status: 'pending',
+      stopReason: null,
+      currentStepIndex: 0,
+      error: null,
+      definition: {
+        workflowId,
+        workflowName: 'Resume',
+        workflowRevision: 1,
+        agentsDecide: false,
+        steps: stepNames.map(name => (
+          { kind: 'node', name, prompt: `do the ${name} step`, repeat: { mode: 'once' }, agent: { id: '0e9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'resume-stub', launchCommand: stub, resetCommand: '/clear' } }
+        )),
+      },
+      steps: stepNames.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null })),
+      homePath: homeRepoPath,
+      worktreePath: homeRepoPath,
+      worktreeBranch: git(home, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      baseCommit: git(home, ['rev-parse', 'HEAD']),
+      worktreeState: 'external',
+      worktreeDetail: null,
+      inputRequest: null,
+      finishedAt: null,
+    });
+
+    const readScreen = async (sessionId) => {
+      const snapshot = runtime.captureSessionSnapshot(sessionId, 400);
+      if (snapshot.historyGuaranteed !== true) throw new Error('screen capture failed');
+      return snapshot.data.replace(/\r/g, '').split('\n');
+    };
+    const readExecutionState = async (sessionId) => {
+      let snapshotText;
+      const execution = await runtime.getSessionExecutionStateAsync(sessionId, { onSnapshot: (text) => { snapshotText = text; } });
+      const lines = typeof snapshotText === 'string' ? snapshotText.replace(/\r/g, '').split('\n') : [];
+      return {
+        executionReason: execution.executionReason,
+        foregroundCommand: execution.foregroundCommand,
+        lines,
+        profile: findAgentProfile({ foregroundCommand: execution.foregroundCommand, lines }),
+        isAlive: sessions.get(sessionId)?.alive !== false,
+        entryExists: true,
+      };
+    };
+
+    createRun(runId);
+
+    const started = [];
+    const engine = createRunEngine({
+      runStore: runs,
+      decisionStore: createDecisionStore(db),
+      readScreen,
+      createWorktree: async () => { throw new Error('an existing worktree is never created'); },
+      removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
+      listDirtyPaths: async ({ worktreePath }) => listDirtyPaths({ worktreePath, execFile }),
+      startSession: async ({ cwd }) => {
+        const sessionId = `codedeck-${started.length + 1}`;
+        runtime.createDetachedSession({ cwd, cols: INITIAL_COLS, rows: INITIAL_ROWS, sessionId });
+        started.push(sessionId);
+        return sessionId;
+      },
+      attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
+        sessionId, sessions, runtime, deletedSessionIds, { cwd },
+      ),
+      // The server's own check, against the real tmux server.
+      terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      classifyReadiness: classifyAgentReadiness,
+      readExecutionState,
+      readinessPollMs: 50,
+      launchEnterDelayMs: 50,
+      dialogPollMs: 200,
+    });
+
+    const describeRun = async (id) => {
+      const run = runs.get(id);
+      const { sessionId } = run.steps[run.currentStepIndex];
+      let screen = '(no terminal)';
+      if (sessionId) {
+        try { screen = (await readScreen(sessionId)).join('\n'); } catch (err) { screen = `(unreadable: ${err.message})`; }
+      }
+      return `status=${run.status} error=${run.error} steps=${JSON.stringify(run.steps)}\n${screen}`;
+    };
+    const waitForRun = async (statuses, label, id = runId) => {
+      try {
+        await waitFor(() => statuses.includes(runs.get(id).status), 30000, label);
+      } catch (err) {
+        throw new Error(`${err.message}: ${await describeRun(id)}`);
+      }
+    };
+    const waitForScreen = async (sessionId, text) => {
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        // The terminal is created by the run; until then there is no screen to read.
+        if (started.includes(sessionId) && (await readScreen(sessionId)).join('\n').includes(text)) return;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw new Error(`Timed out waiting for "${text}" on ${sessionId}: ${await describeRun(runId)}`);
+    };
+    const tmuxSessions = () => {
+      let listed;
+      try {
+        listed = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (err) {
+        // tmux exits when its last session is closed: no server means no sessions.
+        if (/no server running/.test(String(err.stderr))) return [];
+        throw err;
+      }
+      return listed.split('\n').filter(Boolean).sort();
+    };
+    const cleanup = async () => {
+      for (const run of runs.list()) {
+        if (['running', 'needs_input'].includes(run.status)) await engine.stop(run.id);
+      }
+      try { execFileSync('tmux', ['kill-server'], { stdio: 'pipe' }); } catch { /* ignore */ }
+      if (previousTmp === undefined) delete process.env.TMUX_TMPDIR; else process.env.TMUX_TMPDIR = previousTmp;
+      if (previousTmux === undefined) delete process.env.TMUX; else process.env.TMUX = previousTmux;
+      db.close();
+    };
+
+    return { runs, engine, runId, createRun, started, readScreen, waitForRun, waitForScreen, tmuxSessions, cleanup };
+  }
+
+  it('clears the agent in the terminal of the step and sends the prompt again there', async () => {
+    const live = await liveRun('silent-first');
+    const { runs, engine, runId } = live;
+    try {
+      const done = engine.start(runId);
+      // The agent ends its turn without a signal: the run is still "running" with nothing happening.
+      await live.waitForScreen('codedeck-1', 'API Error: the request was refused');
+      expect(runs.get(runId).status).toBe('running');
+      await engine.stop(runId);
+      await done;
+      expect(runs.get(runId)).toMatchObject({ status: 'stopped', error: null });
+
+      const acknowledged = await engine.resume(runId);
+      expect(acknowledged.steps[0]).toMatchObject({ sessionId: 'codedeck-1', priorSessionIds: [], attempt: 2 });
+      await live.waitForRun(['complete', 'error', 'stopped'], 'the resumed run to finish');
+
+      const finished = runs.get(runId);
+      expect(finished.error).toBeNull();
+      expect(finished.status).toBe('complete');
+      expect(finished.steps[0]).toMatchObject({ sessionId: 'codedeck-1', priorSessionIds: [], attempt: 2 });
+      // One terminal, one agent process: it was cleared, then given the prompt a second time.
+      expect(live.started).toEqual(['codedeck-1']);
+      expect(live.tmuxSessions()).toEqual(['codedeck-1']);
+      const screen = (await live.readScreen('codedeck-1')).join('\n');
+      expect(screen).toContain('context cleared');
+      expect(screen).toContain('resumed pass 2');
+      expect(screen.indexOf('context cleared')).toBeLessThan(screen.indexOf('resumed pass 2'));
+    } finally {
+      await live.cleanup();
+    }
+  }, 120000);
+
+  it('starts the agent again in the terminal of the step when it has exited there', async () => {
+    const live = await liveRun('dialog');
+    const { runs, engine, runId } = live;
+    try {
+      const done = engine.start(runId);
+      await live.waitForRun(['needs_input', 'error', 'complete'], 'the run to pause for the dialog');
+      expect(runs.get(runId).status).toBe('needs_input');
+      await engine.stop(runId);
+      await done;
+      // The agent process is killed; the terminal goes back to a shell in the same tmux session.
+      execFileSync('tmux', ['respawn-pane', '-k', '-t', 'codedeck-1'], { stdio: 'pipe' });
+
+      const acknowledged = await engine.resume(runId);
+      expect(acknowledged.steps[0]).toMatchObject({ sessionId: 'codedeck-1', priorSessionIds: [], attempt: 2 });
+      await live.waitForRun(['needs_input', 'error', 'complete'], 'the resumed run to reach the dialog again');
+      expect(runs.get(runId)).toMatchObject({ status: 'needs_input', error: null });
+      expect(runs.get(runId).steps[0]).toMatchObject({ sessionId: 'codedeck-1', priorSessionIds: [] });
+
+      execFileSync('tmux', ['send-keys', '-t', 'codedeck-1', 'Enter'], { stdio: 'pipe' });
+      await live.waitForRun(['complete', 'error', 'stopped'], 'the resumed run to finish');
+      expect(runs.get(runId)).toMatchObject({ status: 'complete', error: null });
+      expect(live.started).toEqual(['codedeck-1']);
+      expect(live.tmuxSessions()).toEqual(['codedeck-1']);
+    } finally {
+      await live.cleanup();
+    }
+  }, 120000);
+
+  it('runs two steps of the same agent, and then a second run, in one terminal', async () => {
+    const live = await liveRun('continue', ['Review', 'Test']);
+    const { runs, engine, runId } = live;
+    try {
+      await engine.start(runId);
+      const first = runs.get(runId);
+      expect(first.error).toBeNull();
+      expect(first.status).toBe('complete');
+      expect(first.steps.map(step => step.sessionId)).toEqual(['codedeck-1', 'codedeck-1']);
+      expect(live.started).toEqual(['codedeck-1']);
+
+      // The agent was launched once, cleared between the steps, and given each prompt in turn.
+      const afterFirst = (await live.readScreen('codedeck-1')).join('\n');
+      expect(afterFirst.match(/OpenAI Codex \(stub\)/g)).toHaveLength(1);
+      expect(afterFirst.indexOf('developed round 1')).toBeGreaterThan(-1);
+      expect(afterFirst.indexOf('context cleared')).toBeGreaterThan(afterFirst.indexOf('developed round 1'));
+      expect(afterFirst.indexOf('developed round 2')).toBeGreaterThan(afterFirst.indexOf('context cleared'));
+
+      // A later run in the same worktree goes back to that terminal instead of opening tabs.
+      const secondId = '0e9e4b1a-dddd-4ddd-8ddd-dddddddddddd';
+      live.createRun(secondId);
+      await engine.start(secondId);
+      const second = runs.get(secondId);
+      expect(second.error).toBeNull();
+      expect(second.status).toBe('complete');
+      expect(second.steps.map(step => step.sessionId)).toEqual(['codedeck-1', 'codedeck-1']);
+      expect(live.started).toEqual(['codedeck-1']);
+      expect(live.tmuxSessions()).toEqual(['codedeck-1']);
+      const afterSecond = (await live.readScreen('codedeck-1')).join('\n');
+      expect(afterSecond.match(/OpenAI Codex \(stub\)/g)).toHaveLength(1);
+      expect(afterSecond).toContain('developed round 4');
+    } finally {
+      await live.cleanup();
+    }
+  }, 120000);
+
+  it('opens a new terminal when the terminal of the step no longer exists', async () => {
+    const live = await liveRun('dialog');
+    const { runs, engine, runId } = live;
+    try {
+      const done = engine.start(runId);
+      await live.waitForRun(['needs_input', 'error', 'complete'], 'the run to pause for the dialog');
+      expect(runs.get(runId).status).toBe('needs_input');
+      await engine.stop(runId);
+      await done;
+      execFileSync('tmux', ['kill-session', '-t', 'codedeck-1'], { stdio: 'pipe' });
+      await waitFor(() => !live.tmuxSessions().includes('codedeck-1'), 10000, 'the terminal to be gone');
+
+      const acknowledged = await engine.resume(runId);
+      expect(acknowledged.steps[0]).toMatchObject({ sessionId: null, priorSessionIds: ['codedeck-1'], attempt: 2 });
+      await live.waitForRun(['needs_input', 'error', 'complete'], 'the resumed run to reach the dialog again');
+      expect(runs.get(runId)).toMatchObject({ status: 'needs_input', error: null });
+      expect(runs.get(runId).steps[0]).toMatchObject({ sessionId: 'codedeck-2', priorSessionIds: ['codedeck-1'] });
+      expect(live.started).toEqual(['codedeck-1', 'codedeck-2']);
+
+      execFileSync('tmux', ['send-keys', '-t', 'codedeck-2', 'Enter'], { stdio: 'pipe' });
+      await live.waitForRun(['complete', 'error', 'stopped'], 'the resumed run to finish');
+      expect(runs.get(runId)).toMatchObject({ status: 'complete', error: null });
+    } finally {
+      await live.cleanup();
     }
   }, 120000);
 });

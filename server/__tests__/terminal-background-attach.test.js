@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { attachBackgroundSession, handleWsConnection } from '../ws-handler.js';
+import { attachBackgroundSession, backgroundSessionAvailable, handleWsConnection } from '../ws-handler.js';
 
 function createMockPty() {
   const dataListeners = [];
@@ -203,5 +203,82 @@ describe('attachBackgroundSession', () => {
     runtime = createMockRuntime(() => pty, { recoverable: false });
     expect(() => attachBackgroundSession('missing-1', sessions, runtime, deletedSessionIds, { cwd: '/tmp/work' }))
       .toThrow(/not recoverable|does not exist|ended/i);
+  });
+});
+
+describe('backgroundSessionAvailable — whether a background attach would find the terminal', () => {
+  let sessions;
+  let deletedSessionIds;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    sessions = new Map();
+    deletedSessionIds = new Set();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const available = (runtime, sessionId = 'demo-1') => (
+    backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds)
+  );
+  const attaches = (runtime, sessionId = 'demo-1') => {
+    try {
+      attachBackgroundSession(sessionId, sessions, runtime, deletedSessionIds, { cwd: '/tmp/work' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('is true for a terminal with a live attachment', () => {
+    const runtime = createMockRuntime(() => createMockPty(), { recoverable: false });
+    sessions.set('demo-1', { alive: true, runtimeType: 'tmux' });
+    expect(available(runtime)).toBe(true);
+  });
+
+  it('is true for a tmux session the backend has not attached to yet', () => {
+    const runtime = createMockRuntime(() => createMockPty(), { recoverable: true });
+    expect(available(runtime)).toBe(true);
+    expect(attaches(runtime)).toBe(true);
+  });
+
+  it('is true for a terminal whose attachment was released while its tmux session lives on', () => {
+    const runtime = createMockRuntime(() => createMockPty(), { recoverable: true });
+    attachBackgroundSession('demo-1', sessions, runtime, deletedSessionIds, { cwd: '/tmp/work' }).release();
+    expect(sessions.get('demo-1').alive).toBe(false);
+    expect(available(runtime)).toBe(true);
+    expect(attaches(runtime)).toBe(true);
+  });
+
+  it('is false for a deleted terminal', () => {
+    const runtime = createMockRuntime(() => createMockPty(), { recoverable: true });
+    deletedSessionIds.add('demo-1');
+    expect(available(runtime)).toBe(false);
+    expect(attaches(runtime)).toBe(false);
+  });
+
+  it('is false when no tmux session exists and the backend holds nothing', () => {
+    const runtime = createMockRuntime(() => createMockPty(), { recoverable: false });
+    expect(available(runtime)).toBe(false);
+    expect(attaches(runtime)).toBe(false);
+  });
+
+  it('is false for an ended terminal whose tmux session is gone', () => {
+    const runtime = createMockRuntime(() => createMockPty(), { recoverable: true });
+    attachBackgroundSession('demo-1', sessions, runtime, deletedSessionIds, { cwd: '/tmp/work' }).release();
+    runtime.isSessionRecoverable = vi.fn(() => false);
+    expect(available(runtime)).toBe(false);
+    expect(attaches(runtime)).toBe(false);
+  });
+
+  it('is false for a terminal that is not tmux-backed and has no live attachment', () => {
+    const runtime = createMockRuntime(() => createMockPty(), { type: 'pty', recoverable: true });
+    expect(available(runtime)).toBe(false);
+    expect(attaches(runtime)).toBe(false);
+  });
+
+  it.each([undefined, null, '', 7])('refuses a session id that is not a non-empty string (%s)', (sessionId) => {
+    const runtime = createMockRuntime(() => createMockPty(), { recoverable: true });
+    expect(() => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds))
+      .toThrow('backgroundSessionAvailable: sessionId must be a non-empty string');
   });
 });

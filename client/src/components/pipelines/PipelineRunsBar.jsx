@@ -14,10 +14,16 @@ function passLabel(step) {
   return null;
 }
 
-function previousTerminalName(step) {
-  if (step?.sessionId) return step.sessionId;
-  if (step?.priorSessionIds?.length) return step.priorSessionIds[step.priorSessionIds.length - 1];
-  return 'the previous terminal';
+/**
+ * Resume sends a step back to its own terminal: the agent there is cleared with its reset
+ * command and the prompt is sent again; an agent that exited is started again there. The
+ * backend opens a new terminal only when that one was closed; a step that never got a
+ * terminal always starts in a new one.
+ */
+function resumeConfirmation(run, step) {
+  if (!step?.sessionId) return `Resume ${run.workflowName}? ${step.name} starts in a new terminal.`;
+  return `Resume ${run.workflowName}? The agent in ${step.sessionId} is cleared and ${step.name} starts again there. `
+    + 'If its agent has exited, it is started again there. A new terminal is opened only if that one was closed.';
 }
 
 function chipLabel(step) {
@@ -270,11 +276,7 @@ export default function PipelineRunsBar({
                 <button
                   type="button"
                   onClick={() => {
-                    const previous = previousTerminalName(currentStep);
-                    const confirmed = window.confirm(
-                      `Resume ${run.workflowName}? The previous terminal (${previous}) may still be working.`,
-                    );
-                    if (confirmed) onResume(run.id);
+                    if (window.confirm(resumeConfirmation(run, currentStep))) onResume(run.id);
                   }}
                 >
                   Resume

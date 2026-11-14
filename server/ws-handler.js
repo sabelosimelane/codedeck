@@ -696,6 +696,24 @@ function buildBackgroundHandle(entry, sessionId, sessions, deletedSessionIds, op
  * can drive the PTY. Mirrors the browser attach cases: no entry, live entry,
  * dead recoverable entry. Tombstoned ids are rejected.
  */
+/**
+ * Whether attachBackgroundSession would find a terminal to attach to: one with a live
+ * attachment, or a tmux session that is still there (a released attachment leaves its
+ * entry not alive, which is not a closed terminal).
+ */
+export function backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds = new Set()) {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    throw new Error('backgroundSessionAvailable: sessionId must be a non-empty string');
+  }
+  if (deletedSessionIds.has(sessionId)) return false;
+  const entry = sessions.get(sessionId);
+  if (entry?.alive) return true;
+  if (entry && entry.runtimeType !== 'tmux') return false;
+  return runtime?.type === 'tmux'
+    && typeof runtime.isSessionRecoverable === 'function'
+    && runtime.isSessionRecoverable(sessionId) === true;
+}
+
 export function attachBackgroundSession(sessionId, sessions, runtime, deletedSessionIds = new Set(), options = {}) {
   if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256 || /[\x00-\x1f\x7f]/.test(sessionId)) {
     throw new Error('Background attach sessionId must be a valid terminal identity.');

@@ -29,7 +29,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Truthful durable terminals — tmux is required, reconnects reseed from fresh snapshots, and degraded preserved history is warned explicitly instead of silently bluffing
 - Optional sleep prevention — `CODEDECK_CAFFEINATE=1` wraps startup under macOS `caffeinate`
 
-- Workflow pipelines — isolated Git worktree per run, Setup cleanliness guard, ordered agent steps, bounded repeat passes, loops over a group of steps (each step returns to its own terminal each round), an optional per-workflow "let agents decide" with a record of every decision, Stop/Resume/Continue and safe cleanup. The per-terminal Workflow bar was removed; only pipeline runs use the loop engine.
+- Workflow pipelines — isolated Git worktree per run, Setup cleanliness guard, ordered agent steps, bounded repeat passes, one terminal per agent (steps with the same agent share it, a new run reuses the ones an earlier run left in the worktree, and the agent is cleared before each prompt), loops over a group of steps, an optional per-workflow "let agents decide" with a record of every decision, Stop/Resume/Continue and safe cleanup. The per-terminal Workflow bar was removed; only pipeline runs use the loop engine.
 - Pipeline runs bar and sidebar counts — persisted run progress with automatic terminal-tab adoption; backend restarts require explicit Resume
 
 ## Domain Model

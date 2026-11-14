@@ -71,7 +71,7 @@ describe('PipelineRunsBar', () => {
     expect(onActivateStep).toHaveBeenCalledWith('Demo-2');
   });
 
-  it('confirms Resume and names the current step terminal that may still be working', () => {
+  it('confirms Resume and says the step starts again in its own terminal after its agent is cleared', () => {
     const onResume = vi.fn();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(
@@ -98,9 +98,42 @@ describe('PipelineRunsBar', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('Demo-2'));
-    expect(confirmSpy.mock.calls[0][0]).not.toMatch(/Demo-9/);
+    expect(confirmSpy).toHaveBeenCalledWith(
+      'Resume Feature? The agent in Demo-2 is cleared and Implement starts again there. '
+      + 'If its agent has exited, it is started again there. A new terminal is opened only if that one was closed.',
+    );
     expect(onResume).toHaveBeenCalledWith('r1');
+  });
+
+  it('confirms Resume of a step that has no terminal yet', () => {
+    const onResume = vi.fn();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(
+      <PipelineRunsBar
+        runs={[runView({
+          status: 'interrupted',
+          actions: { stop: false, resume: true, continue: false, cleanup: true },
+          steps: [{
+            index: 1,
+            name: 'Implement',
+            status: 'interrupted',
+            sessionId: null,
+            priorSessionIds: ['Demo-9'],
+            iteration: 0,
+            repeat: { mode: 'once' },
+          }],
+        })]}
+        onStop={vi.fn()}
+        onResume={onResume}
+        onContinue={vi.fn()}
+        onCleanup={vi.fn()}
+        onActivateStep={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(confirmSpy).toHaveBeenCalledWith('Resume Feature? Implement starts in a new terminal.');
+    expect(onResume).not.toHaveBeenCalled();
   });
 
   it('shows error and blocked-cleanup detail', () => {

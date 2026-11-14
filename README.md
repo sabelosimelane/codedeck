@@ -103,8 +103,16 @@ extra flags, other CLIs). A model ID is not checked until a run launches the age
 Select a local Git repository project and click **Run workflow** beside Session
 search. Preflight blocks ineligible projects and warns that uncommitted changes
 will not enter the run. CodeDeck creates a branch and a worktree beside the home
-repository, runs Setup first, then opens each step in a new terminal tab. Setup
+repository, runs Setup first, then runs each step in the terminal of its agent. Setup
 must leave the worktree clean before the workflow's nodes can begin.
+
+**One terminal per agent.** A step opens a tab only when its agent has none yet in that
+worktree. Otherwise it goes to the tab where that agent already runs, clears it with
+the agent's reset command and sends its own prompt: two nodes that use the same agent
+share one tab, and a new run in an existing worktree reuses the tabs an earlier run
+left there. Nodes that use different agents get different tabs, because a terminal
+holds one agent CLI. Earlier output of a shared tab stays in its scrollback; the
+agent's conversation is cleared each time, including anything you typed there yourself.
 
 The dialog's **Worktree** list offers a new worktree (the default) and every
 existing working tree of the repository: the project's own checkout and its
@@ -130,7 +138,7 @@ choose that node and a maximum number of rounds. The nodes from there to the loo
 node then run in order, round after round: for example Develop → Test with Test
 looping back to Develop builds and tests one phase per round. The looping node's agent
 decides: when it reports work left the loop runs again, when it reports COMPLETE the
-run moves on to the next node. Each node keeps its own terminal tab across rounds; its
+run moves on to the next node. Each node keeps the terminal tab of its agent across rounds; the
 agent's context is cleared with the reset command before each new round. At the
 maximum number of rounds the run pauses and **Continue** moves past the loop. Loops
 cannot share a node, and the first node cannot loop.
@@ -147,8 +155,11 @@ own choice is acted on before you see it: agents that skip permission prompts wi
 build, commit and push on those choices.
 
 The runs bar shows steps, passes, loop rounds, branch and available controls. **Stop** stops
-automation; the agent may still be working. **Resume** warns about that terminal
-and creates a fresh attempt. At the pass limit, **Continue** advances to the next
+automation; the agent may still be working. **Resume** starts the current step again
+in its own terminal: it waits for the agent there to reach its prompt, clears it with the
+agent's reset command and sends the prompt again. If the agent has exited there, it is
+started again in the same tab. A new tab is opened only when that terminal was closed.
+At the pass limit, **Continue** advances to the next
 step. Runs survive browser disconnects. A backend restart marks active runs
 **interrupted**, ready for an explicit Resume. The sidebar counts each project's
 open runs, including runs that need attention or worktree cleanup.

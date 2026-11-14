@@ -16,6 +16,7 @@ import {
   computeStallReason,
   sanitizePreviewLine,
   attachBackgroundSession,
+  backgroundSessionAvailable,
 } from './ws-handler.js';
 import { createTerminalWorkflow } from './terminal-workflow.js';
 import { findAgentProfile } from './agent-profiles/index.js';
@@ -876,6 +877,10 @@ const pipelineRunEngine = createRunEngine({
   },
   attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
     sessionId, sessions, terminalRuntime, deletedSessionIds, { cwd },
+  ),
+  // Resume returns a step to its own terminal while that terminal can still be attached to.
+  terminalAvailable: (sessionId) => backgroundSessionAvailable(
+    sessionId, sessions, terminalRuntime, deletedSessionIds,
   ),
   createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
   classifyReadiness: classifyAgentReadiness,

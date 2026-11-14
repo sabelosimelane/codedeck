@@ -200,7 +200,7 @@ describe('computeActions (Spec §8.8)', () => {
       status: 'stopped', stopReason: 'user', worktreeState: 'external', finishedAt: AT,
       steps: [{ ...run().steps[0], status: 'stopped', sessionId: 'Demo-1', attempt: 1, startedAt: AT, finishedAt: AT }],
     });
-    expect(applyEvent(stopped, { type: 'resume', at: AT }).status).toBe('running');
+    expect(applyEvent(stopped, { type: 'resume', newTerminal: false, at: AT }).status).toBe('running');
   });
 
   it('cleanup allowed for terminal/interrupted statuses with removable worktree states', () => {
@@ -329,7 +329,52 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
     expect(() => applyEvent(twoStepRunning(), { type: 'continue' })).toThrow(/illegal/i);
   });
 
-  it('resume from interrupted moves sessionId to priorSessionIds and relaunches the step', () => {
+  it('resume keeps the step in its terminal when that terminal can still be used', () => {
+    const next = applyEvent(run({
+      status: 'stopped',
+      stopReason: 'user',
+      finishedAt: AT,
+      worktreeState: 'present',
+      steps: [step({
+        status: 'stopped',
+        sessionId: 'Demo-2',
+        priorSessionIds: ['Demo-1'],
+        attempt: 1,
+        iteration: 3,
+        finishedAt: AT,
+      })],
+    }), { type: 'resume', newTerminal: false, at: AT });
+    expect(next.status).toBe('running');
+    expect(next.stopReason).toBeNull();
+    expect(next.finishedAt).toBeNull();
+    expect(next.steps[0]).toMatchObject({
+      status: 'launching',
+      sessionId: 'Demo-2',
+      priorSessionIds: ['Demo-1'],
+      attempt: 2,
+      iteration: 0,
+      startedAt: AT,
+      finishedAt: null,
+    });
+  });
+
+  it('resume refuses to keep a terminal the step never had', () => {
+    expect(() => applyEvent(run({
+      status: 'interrupted',
+      worktreeState: 'present',
+      steps: [step({ status: 'interrupted', sessionId: null, attempt: 1 })],
+    }), { type: 'resume', newTerminal: false, at: AT })).toThrow('resume event: a step without a terminal needs a new one');
+  });
+
+  it.each([undefined, null, 'yes', 1])('resume requires newTerminal to be a boolean (%s)', (newTerminal) => {
+    expect(() => applyEvent(run({
+      status: 'interrupted',
+      worktreeState: 'present',
+      steps: [step({ status: 'interrupted', sessionId: 'Demo-1', attempt: 1 })],
+    }), { type: 'resume', newTerminal, at: AT })).toThrow('resume event: newTerminal must be true or false');
+  });
+
+  it('resume into a new terminal moves sessionId to priorSessionIds and relaunches the step', () => {
     const next = applyEvent(run({
       status: 'interrupted',
       worktreeState: 'present',
@@ -340,7 +385,7 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
         attempt: 1,
         iteration: 4,
       })],
-    }), { type: 'resume', at: AT });
+    }), { type: 'resume', newTerminal: true, at: AT });
     expect(next.status).toBe('running');
     expect(next.stopReason).toBeNull();
     expect(next.error).toBeNull();
@@ -354,7 +399,7 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
     expect(next.steps[0].finishedAt).toBeNull();
   });
 
-  it.each(['stopped', 'error'])('resume from %s relaunches the current step', (status) => {
+  it.each(['stopped', 'error'])('resume from %s into a new terminal relaunches the current step', (status) => {
     const next = applyEvent(run({
       status,
       stopReason: status === 'stopped' ? 'user' : null,
@@ -368,7 +413,7 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
         attempt: 1,
         finishedAt: AT,
       })],
-    }), { type: 'resume', at: AT });
+    }), { type: 'resume', newTerminal: true, at: AT });
     expect(next.status).toBe('running');
     expect(next.steps[0].status).toBe('launching');
     expect(next.steps[0].attempt).toBe(2);
@@ -531,7 +576,7 @@ describe('loop back (a step sends the run back to an earlier step)', () => {
   it('keeps the completed rounds when the run is resumed', () => {
     const state = looping({ status: 'interrupted', worktreeState: 'present' });
     state.steps[2] = { ...state.steps[2], status: 'interrupted', roundsCompleted: 4 };
-    const resumed = applyEvent(state, { type: 'resume', at: LATER });
+    const resumed = applyEvent(state, { type: 'resume', newTerminal: true, at: LATER });
     expect(resumed.steps[2]).toMatchObject({ status: 'launching', roundsCompleted: 4, iteration: 0, sessionId: null });
   });
 });
