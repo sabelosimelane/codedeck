@@ -46,8 +46,10 @@ codedeck/
 │   ├── agent-profiles/  # Pure live-screen readers for Codex, Claude, Cursor, agy, Muse
 │   ├── agent-history/   # Read-only CLI history readers, merge/search, and resume command/service
 │   ├── terminal-waiting-store.js # SQLite store for per-tab waiting marks
+│   ├── terminal-worktree-service.js # Validates and creates a branch/worktree, then starts its terminal
 │   ├── routes/
 │   │   ├── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)
+│   │   ├── terminal-worktrees.js # POST new worktree terminal with Problem Details errors
 │   │   └── agent-sessions.js     # Paginated local agent conversations + resume API
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
@@ -62,6 +64,7 @@ codedeck/
 │       ├── components/
 │       │   ├── Sidebar.jsx           # Project list, status cockpit, file browse trigger
 │       │   ├── TerminalArea.jsx      # Tab bar, N-pane layout, localStorage persistence
+│       │   ├── NewWorktreeTerminalDialog.jsx # Branch input and worktree creation feedback
 │       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, snapshot hydration, transport replay, visibility recovery
 │       │   ├── TerminalInspector.jsx # Debug inspector: health, timeline, recovery actions, snapshot copy
 │       │   ├── PaneDivider.jsx       # Draggable vertical divider between terminal panes
@@ -75,7 +78,8 @@ codedeck/
 │       ├── hooks/
 │       │   └── useWaitingSessions.js # Backend-confirmed waiting marks (no optimistic dimming) + app-wide auto-clear
 │       ├── utils/
-│       │   └── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules, quiet indicator sets
+│       │   ├── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules, quiet indicator sets
+│       │   └── terminalWorktreesApi.js # Validated POST client for new worktree terminals
 │       └── styles/
 │           └── global.css            # CSS custom properties theme
 ├── docs/

@@ -64,6 +64,8 @@ import { createNamingService } from './session-naming-service.js';
 import { createNamingRouter } from './routes/session-naming.js';
 import { createTerminalWaitingStore } from './terminal-waiting-store.js';
 import { createTerminalWaitingRouter } from './routes/terminal-waiting.js';
+import { createTerminalWorktreeService } from './terminal-worktree-service.js';
+import { createTerminalWorktreesRouter } from './routes/terminal-worktrees.js';
 import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
 import { createSessionAttention } from './session-attention.js';
 import { createSessionStateService } from './session-state-service.js';
@@ -92,7 +94,7 @@ const privateAccess = createPrivateAccess({
 });
 app.use(privateAccess.middleware);
 // Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
-app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/terminal-worktrees') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -836,6 +838,18 @@ const mobileSessionStarter = createMobileSessionStarter({
   },
   releaseReservation: sessionId => reservedSessionIds.delete(sessionId),
 });
+app.use(createTerminalWorktreesRouter({ service: createTerminalWorktreeService({
+  findProject: name => loadProjects().find(project => project.name === name) ?? null,
+  execFile,
+  startSession: (project, options) => mobileSessionStarter.start(project, options),
+  pathExists: async target => {
+    try { await fs.access(target); return true; }
+    catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  },
+}) }));
 
 const PIPELINE_QUESTION_SCREEN_LINES = 400;
 const pipelineAgentStore = createAgentStore(db);

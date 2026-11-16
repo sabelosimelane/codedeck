@@ -24,6 +24,7 @@ vi.mock('lucide-react', () => {
     Search: Icon,
     Pencil: Icon,
     Play: Icon,
+    GitBranchPlus: Icon,
   };
 });
 

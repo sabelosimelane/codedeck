@@ -21,4 +21,10 @@ describe('getTerminalPaneCwd', () => {
       sessionLookup: new Map(),
     })).toBe('/home/user/projects/myapp');
   });
+
+  it('uses the created worktree path until the session list reports its cwd', () => {
+    const input = { sessionId: 'myapp-5', projectPath: '/project', worktreePath: '/worktrees/project-new' };
+    expect(getTerminalPaneCwd({ ...input, sessionLookup: new Map() })).toBe('/worktrees/project-new');
+    expect(getTerminalPaneCwd({ ...input, sessionLookup: new Map([['myapp-5', { cwd: '/actual/cwd' }]]) })).toBe('/actual/cwd');
+  });
 });

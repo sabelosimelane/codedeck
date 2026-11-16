@@ -89,6 +89,30 @@ Coverage: `server/__tests__/terminal-waiting-store.test.js`,
 `client/src/components/__tests__/TerminalAreaWaiting.test.jsx`, and
 `client/src/components/__tests__/SidebarWaitingCount.test.jsx`.
 
+## Terminal worktrees
+
+`POST /api/terminal-worktrees` accepts exactly `{project: string, branch: string}` and
+returns 201 with `{sessionId, project, branch, worktreePath, baseCommit}`. The project
+must be local and its path a Git working tree root. The branch must be new, 1–100
+characters, valid as `refs/heads/<branch>`, without a leading dash, whitespace,
+control characters, `<`, or `>`. The worktree lives beside the home checkout in
+`worktrees/<home-name>-<branch-slug>` and starts from the project's current HEAD.
+The endpoint never removes a created worktree, including when terminal start fails.
+Concurrent requests are serialized; a repeated branch returns 409.
+
+The router owns a 4 KB JSON parser. Its errors use RFC 9457 Problem Details with
+`timestamp`, `status`, `error`, `message`, `path`, `traceId` and a matching
+`X-Trace-Id` header. Every 400 includes all failed fields in `errors`; malformed
+JSON returns 400, oversized input 413, unknown projects and paths 404, and
+conflicts 409. A terminal failure after creation returns 500 or 503 and names the
+retained worktree path.
+
+Coverage: `server/__tests__/terminal-worktree-service.test.js`,
+`server/__tests__/terminal-worktrees-api.test.js`,
+`client/src/utils/__tests__/terminalWorktreesApi.test.js`,
+`client/src/components/__tests__/NewWorktreeTerminalDialog.test.jsx`, and
+`client/src/components/__tests__/TerminalAreaWorktree.test.jsx`.
+
 ## Workflow pipelines
 
 All paths below are under `/api/pipelines`; the router owns a 512 KB JSON parser.

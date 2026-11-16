@@ -49,13 +49,14 @@ Open `http://localhost:43000` in your browser.
 2. Click a project to open a terminal scoped to that directory.
 3. Use **Split right** (columns icon) to add side-by-side terminal panes — drag dividers to resize, double-click to reset.
 4. Use **+** in the tab bar to open new terminal tabs. Each tab has its own set of panes.
-5. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
+5. Use the branch-plus icon beside **+** to create a terminal in a new Git worktree. Enter a new branch name (a string of 1–100 characters, valid Git branch syntax, no leading dash, whitespace, control characters, `<`, or `>`). CodeDeck creates the worktree in `worktrees/` beside the home repository from the current commit; uncommitted changes and ignored files are not copied. CodeDeck never removes this worktree.
+6. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
 
 Agent status comes from the live prompt, status, and footer region of each CLI pane, with 20 seconds of silence vetoing a stale working marker. Input dialogs appear as **Needs input**; working sub-agent panes and background shells keep the session **Running**. An idle agent with a live background shell therefore shows as Running.
-6. Use the pane **eye icon** — or **Cmd/Ctrl+Shift+M** on the active pane — to mute/show status colors without changing the terminal's real running/idle/finished state.
-7. Click the **hourglass** on a tab — beside its close button — or press **Cmd/Ctrl+Shift+U** on the active tab, to mark it waiting when you have handed its work to an agent. Waiting tabs shrink, dim and group to the left of the tab bar, their status indicators stop pulsing everywhere (tab, pane header, and sidebar), and the sidebar shows a count per project. The mark clears itself as soon as the work finishes or the session dies, so the finished styling and completion notification still reach you. Phone pushes are held while the desktop UI has been used in the last two minutes.
-8. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
-9. Toast notifications confirm every action and surface errors.
+7. Use the pane **eye icon** — or **Cmd/Ctrl+Shift+M** on the active pane — to mute/show status colors without changing the terminal's real running/idle/finished state.
+8. Click the **hourglass** on a tab — beside its close button — or press **Cmd/Ctrl+Shift+U** on the active tab, to mark it waiting when you have handed its work to an agent. Waiting tabs shrink, dim and group to the left of the tab bar, their status indicators stop pulsing everywhere (tab, pane header, and sidebar), and the sidebar shows a count per project. The mark clears itself as soon as the work finishes or the session dies, so the finished styling and completion notification still reach you. Phone pushes are held while the desktop UI has been used in the last two minutes.
+9. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
+10. Toast notifications confirm every action and surface errors.
 
 ## Session search
 

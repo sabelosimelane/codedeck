@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play, GitBranchPlus } from 'lucide-react';
+import NewWorktreeTerminalDialog from './NewWorktreeTerminalDialog';
+import { createWorktreeTerminal } from '../utils/terminalWorktreesApi';
 import TerminalInspector from './TerminalInspector';
 import PipelineRunsBar from './pipelines/PipelineRunsBar';
 import { useToast } from './ToastContext';
@@ -330,11 +332,13 @@ export default function TerminalArea({
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
   const [inspectingSessionId, setInspectingSessionId] = useState(null);
+  const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
   const [terminalRuntimeStatus, setTerminalRuntimeStatus] = useState(null);
   const stateRef = useRef(state);
   const containerRef = useRef(null);
   const terminalRefs = useRef(new Map());
   const intentionalOpenIds = useRef(new Set());
+  const createdWorktreePathsRef = useRef(new Map());
   const attachedAdoptRef = useRef(null);
   const prevProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
@@ -352,6 +356,13 @@ export default function TerminalArea({
     getParkedPaneSessionIds(tabs, waitingSessionIds),
   );
   const sessionLookup = new Map(sessionStatus.map(session => [session.sessionId, session]));
+  useEffect(() => {
+    for (const session of sessionStatus) {
+      if (session.cwd) {
+        createdWorktreePathsRef.current.delete(`${project.name}:${session.sessionId}`);
+      }
+    }
+  }, [project.name, sessionStatus]);
   const shouldRenderTerminals = shouldRenderProjectTerminals({
     projectName: project.name,
     prevProjectName: prevProjectRef.current,
@@ -634,6 +645,27 @@ export default function TerminalArea({
     }), { persistImmediately: true });
   }, [requestTerminalSessionId, updateTerminalState]);
 
+  const createWorktreeTab = useCallback(async ({ project: projectName, branch }) => {
+    try {
+      const result = await createWorktreeTerminal({ project: projectName, branch });
+      const sessionId = result.sessionId;
+      createdWorktreePathsRef.current.set(`${project.name}:${sessionId}`, result.worktreePath);
+      const number = getSessionNumber(project.name, sessionId);
+      if (number !== null) sessionCounter = Math.max(sessionCounter, number);
+      unmarkDeletedSessionIds(project.name, [sessionId]);
+      const tab = createTab(sessionId);
+      intentionalOpenIds.current.add(sessionId);
+      setActivePaneId(tab.panes[0].id);
+      updateTerminalState(previous => ({ tabs: [...previous.tabs, tab], activeTabId: tab.id }), { persistImmediately: true });
+      showToast({ type: 'success', message: `Opened ${sessionId} in ${result.worktreePath}` });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Something went wrong. Please try again.';
+      showToast({ type: 'error', message });
+      throw error;
+    }
+  }, [project.name, showToast, updateTerminalState]);
+
   // Backend-confirmed sessions (session search resume + pipeline step tabs)
   // reuse the attach path without calling /api/terminal for a second session ID.
   useEffect(() => {
@@ -699,6 +731,7 @@ export default function TerminalArea({
       unmarkDeletedSessionIds(project.name, [sessionId]);
       return;
     }
+    createdWorktreePathsRef.current.delete(`${project.name}:${sessionId}`);
 
     updateTerminalState(prev => {
       const tab = prev.tabs.find(t => t.id === tabId);
@@ -760,6 +793,9 @@ export default function TerminalArea({
     if (deletedSessionIds.size === 0) {
       unmarkDeletedSessionIds(project.name, requestedSessionIds);
       return;
+    }
+    for (const sessionId of deletedSessionIds) {
+      createdWorktreePathsRef.current.delete(`${project.name}:${sessionId}`);
     }
 
     const failedSessionIds = requestedSessionIds.filter(sessionId => !deletedSessionIds.has(sessionId));
@@ -1193,6 +1229,16 @@ export default function TerminalArea({
             <Plus size={14} />
           </button>
         </ShortcutHint>
+        <ShortcutHint label="New terminal in a new worktree" keys={[]}>
+          <button
+            type="button"
+            onClick={() => setShowWorktreeDialog(true)}
+            aria-label="New terminal in a new worktree"
+            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : project.host && project.host !== 'local' ? 'Worktree terminals are only available for local projects.' : 'New terminal in a new worktree'}
+            disabled={isTerminalRuntimeBlocked || Boolean(project.host && project.host !== 'local')}
+            style={{ padding: 4, borderRadius: 4, color: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 'rgba(138, 146, 166, 0.45)' : 'var(--text-muted)', opacity: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 0.5 : 1, cursor: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 'not-allowed' : 'pointer' }}
+          ><GitBranchPlus size={14} /></button>
+        </ShortcutHint>
       </div>
 
       {isTerminalRuntimeBlocked && (
@@ -1269,6 +1315,7 @@ export default function TerminalArea({
               const paneCwd = getTerminalPaneCwd({
                 sessionId: pane.sessionId,
                 projectPath: project.path,
+                worktreePath: createdWorktreePathsRef.current.get(`${project.name}:${pane.sessionId}`),
                 sessionLookup,
               });
               const paneSession = sessionLookup.get(pane.sessionId);
@@ -1499,6 +1546,8 @@ export default function TerminalArea({
           </div>
         );
       })}
+
+      {showWorktreeDialog && <NewWorktreeTerminalDialog projectName={project.name} onCreate={createWorktreeTab} onClose={() => setShowWorktreeDialog(false)} />}
 
       {inspectingSessionId && (
         <TerminalInspector

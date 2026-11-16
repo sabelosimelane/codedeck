@@ -1,3 +1,3 @@
-export function getTerminalPaneCwd({ sessionId, projectPath, sessionLookup }) {
-  return sessionLookup.get(sessionId)?.cwd || projectPath;
+export function getTerminalPaneCwd({ sessionId, projectPath, worktreePath, sessionLookup }) {
+  return sessionLookup.get(sessionId)?.cwd || worktreePath || projectPath;
 }
