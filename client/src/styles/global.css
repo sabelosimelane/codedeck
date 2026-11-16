@@ -1054,3 +1054,14 @@ input:focus {
   text-overflow: ellipsis;
   min-width: 0;
 }
+.system-resource-bar {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}

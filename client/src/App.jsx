@@ -49,6 +49,7 @@ export default function App() {
 function AppContent() {
   const previewPath = new URLSearchParams(window.location.search).get('preview');
   const [projects, setProjects] = useState([]);
+  const [resourceTitle, setResourceTitle] = useState(null);
   const [activeProject, setActiveProject] = useState(null);
   const [isSidebarCompact, setIsSidebarCompact] = useState(() => {
     return localStorage.getItem('codedeck-sidebar-compact') === 'true';
@@ -113,7 +114,9 @@ function AppContent() {
         const res = await fetch(SYSTEM_RESOURCES_URL);
         if (res.ok) {
           const resources = await res.json();
-          document.title = formatSystemResourceTitle(resources);
+          const title = formatSystemResourceTitle(resources);
+          document.title = title;
+          setResourceTitle(title);
           updateResourceFavicon(hasSystemResourceAlert(resources));
         }
       } catch {
@@ -454,6 +457,15 @@ function AppContent() {
         </>
       )}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        {resourceTitle && (
+          <section
+            className="system-resource-bar"
+            aria-label="Local machine resources"
+            title="Local machine usage: memory · CPU · disk"
+          >
+            {resourceTitle}
+          </section>
+        )}
         {activeProject ? (
           <TerminalArea
             project={activeProject}

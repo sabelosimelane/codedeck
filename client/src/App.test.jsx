@@ -217,7 +217,7 @@ describe('App polling', () => {
     expect(sessionRequestCount).toBe(2);
   });
 
-  it('shows system resources in the browser title and polls every 30 seconds', async () => {
+  it('shows system resources in the visible top bar and browser title and polls every 30 seconds', async () => {
     let resourcesRequestCount = 0;
 
     global.fetch = vi.fn((url) => {
@@ -255,6 +255,7 @@ describe('App polling', () => {
     });
 
     expect(document.title).toBe('💻 81% · ⚡ 9.79% · 💿 89%');
+    expect(screen.getByRole('region', { name: 'Local machine resources' }).textContent).toContain('💻 81% · ⚡ 9.79% · 💿 89%');
     expect(resourcesRequestCount).toBe(1);
 
     await act(async () => {
@@ -271,6 +272,7 @@ describe('App polling', () => {
 
     expect(resourcesRequestCount).toBe(2);
     expect(document.title).toBe('🚨 💻 82% · ⚡ 12.5% · 💿 90%');
+    expect(screen.getByRole('region', { name: 'Local machine resources' }).textContent).toContain('🚨 💻 82% · ⚡ 12.5% · 💿 90%');
     expect(document.querySelector("link[rel~='icon']")?.href).toContain('data:image/svg+xml');
   });
 
