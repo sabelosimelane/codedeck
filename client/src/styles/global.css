@@ -578,6 +578,33 @@ input:focus {
   border-color: rgba(110, 231, 183, 0.38);
 }
 
+.terminal-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.terminal-empty-actions .terminal-empty-cta {
+  margin-top: 0;
+}
+
+.terminal-empty-cta-secondary {
+  background: transparent;
+}
+
+.terminal-empty-cta-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.terminal-empty-cta-secondary:disabled:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: rgba(110, 231, 183, 0.24);
+}
+
 @keyframes terminalOrbFloat {
   0%, 100% { transform: translateY(0px) scale(1); opacity: 0.7; }
   50% { transform: translateY(-14px) scale(1.04); opacity: 1; }

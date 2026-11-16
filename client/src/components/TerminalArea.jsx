@@ -1283,16 +1283,29 @@ export default function TerminalArea({
             </div>
             <div className="terminal-empty-label">No terminals open</div>
             <div className="terminal-empty-copy">
-              This project has no running terminals. Open a new tab when you want to start one.
+              This project has no running terminals. Open one here, or in a new Git worktree on its own branch.
             </div>
-            <button
-              onClick={addTab}
-              className="terminal-empty-cta"
-              title="Open terminal"
-            >
-              <Plus size={14} />
-              <span>Open terminal</span>
-            </button>
+            <div className="terminal-empty-actions">
+              <button
+                onClick={addTab}
+                className="terminal-empty-cta"
+                title="Open terminal"
+              >
+                <Plus size={14} />
+                <span>Open terminal</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowWorktreeDialog(true)}
+                className="terminal-empty-cta terminal-empty-cta-secondary"
+                aria-label="Open in new worktree"
+                title={project.host && project.host !== 'local' ? 'Worktree terminals are only available for local projects.' : 'Open in new worktree'}
+                disabled={Boolean(project.host && project.host !== 'local')}
+              >
+                <GitBranchPlus size={14} />
+                <span>Open in new worktree</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -49,7 +49,7 @@ Open `http://localhost:43000` in your browser.
 2. Click a project to open a terminal scoped to that directory.
 3. Use **Split right** (columns icon) to add side-by-side terminal panes — drag dividers to resize, double-click to reset.
 4. Use **+** in the tab bar to open new terminal tabs. Each tab has its own set of panes.
-5. Use the branch-plus icon beside **+** to create a terminal in a new Git worktree. Enter a new branch name (a string of 1–100 characters, valid Git branch syntax, no leading dash, whitespace, control characters, `<`, or `>`). CodeDeck creates the worktree in `worktrees/` beside the home repository from the current commit; uncommitted changes and ignored files are not copied. CodeDeck never removes this worktree.
+5. Use the branch-plus icon beside **+**, or **Open in new worktree** on the **No terminals open** card, to create a terminal in a new Git worktree. Enter a new branch name (a string of 1–100 characters, valid Git branch syntax, no leading dash, whitespace, control characters, `<`, or `>`). CodeDeck creates the worktree in `worktrees/` beside the home repository from the current commit; uncommitted changes and ignored files are not copied. CodeDeck never removes this worktree.
 6. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
 
 Agent status comes from the live prompt, status, and footer region of each CLI pane, with 20 seconds of silence vetoing a stale working marker. Input dialogs appear as **Needs input**; working sub-agent panes and background shells keep the session **Running**. An idle agent with a live background shell therefore shows as Running.

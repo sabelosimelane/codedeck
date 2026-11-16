@@ -20,6 +20,39 @@ beforeEach(() => {
 afterEach(() => { cleanup(); global.fetch = originalFetch; });
 
 describe('TerminalArea worktree terminal', () => {
+  it('offers both terminal choices when no terminals are open', () => {
+    render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo' }} sessionStatus={[]} />);
+    expect(screen.getByText('No terminals open')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open terminal' })).toBeTruthy();
+    const worktreeButton = screen.getByRole('button', { name: 'Open in new worktree' });
+    expect(worktreeButton.type).toBe('button');
+    expect(worktreeButton.classList.contains('terminal-empty-cta-secondary')).toBe(true);
+    expect(worktreeButton.parentElement.classList.contains('terminal-empty-actions')).toBe(true);
+    expect(worktreeButton.querySelector('.lucide-git-branch-plus')).toBeTruthy();
+  });
+
+  it('creates an active worktree tab from the empty card', async () => {
+    mocks.create.mockResolvedValue({ sessionId: 'Demo-1', project: 'Demo', branch: 'new', worktreePath: '/tmp/worktrees/demo-new', baseCommit: 'a'.repeat(40) });
+    const onSessionStatusRefresh = vi.fn();
+    render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo' }} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />);
+    await waitFor(() => expect(onSessionStatusRefresh).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Open in new worktree' }));
+    expect(screen.getByRole('dialog', { name: 'New terminal in a new worktree' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Branch name' }), { target: { value: 'new' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create worktree' }));
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({ project: 'Demo', branch: 'new' }));
+    await waitFor(() => expect(screen.getByTestId('terminal-tab').getAttribute('data-active')).toBe('true'));
+    expect(screen.queryByText('No terminals open')).toBeNull();
+  });
+
+  it('disables only the worktree choice for a remote project with no terminals', () => {
+    render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo', host: 'other' }} sessionStatus={[]} />);
+    expect(screen.getByRole('button', { name: 'Open terminal' }).disabled).toBe(false);
+    const worktreeButton = screen.getByRole('button', { name: 'Open in new worktree' });
+    expect(worktreeButton.disabled).toBe(true);
+    expect(worktreeButton.title).toBe('Worktree terminals are only available for local projects.');
+  });
+
   it('opens a new active tab and toasts after creation', async () => {
     mocks.create.mockResolvedValue({ sessionId: 'Demo-1', project: 'Demo', branch: 'new', worktreePath: '/tmp/worktrees/demo-new', baseCommit: 'a'.repeat(40) });
     const onSessionStatusRefresh = vi.fn();
