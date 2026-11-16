@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-11-16] - Keep resource usage visible in the CodeDeck top bar
+
+### Executive Summary
+* Memory, CPU, and disk usage now appear directly in CodeDeck's top bar, so the readings remain visible when the installed app shows only its name in the window title. Readings continue to refresh every 30 seconds.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** The installed app's window title did not display the resource readings even though the page title and resource API were working.
+  * **Solution:** Render the existing resource summary inside the application, including its high-usage alert indicator.
+* **🛠️ Codebase:**
+  * `client/src/App.jsx` — Store the formatted polling result and render an accessible local-machine resource region above the workspace.
+  * `client/src/styles/global.css` — Add a compact, right-aligned resource bar with tabular numerals.
+  * `client/src/App.test.jsx` — Verify the visible readings on the first response and after the next 30-second poll, including the alert state. The regression failed before the fix; all 12 targeted tests passed afterwards, and the client build passed.
+
 ## [2026-11-14] - Run workflow steps in the terminal of their agent
 
 ### Executive Summary
