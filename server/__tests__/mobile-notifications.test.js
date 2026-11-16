@@ -17,7 +17,103 @@ function fixture(options = {}) {
 }
 const observation = (executionStatus, workflowStatus = null, changes = {}) => ({ sessionId: 'project-1', incarnationId: 'incarnation', executionStatus, workflowStatus, needsInput: workflowStatus === 'needs_input', observedAt: 100000, reachable: true, ...changes });
 
+function measuredDatabase(db) {
+  const counts = { prepares: 0, reads: 0, writes: 0 };
+  return {
+    counts,
+    reset() { counts.prepares = 0; counts.reads = 0; counts.writes = 0; },
+    exec: sql => db.exec(sql),
+    transaction: callback => db.transaction(callback),
+    prepare(sql) {
+      counts.prepares += 1;
+      const statement = db.prepare(sql);
+      return new Proxy(statement, {
+        get(target, property) {
+          if (['get', 'all', 'run'].includes(property)) return (...args) => {
+            counts[property === 'run' ? 'writes' : 'reads'] += 1;
+            return target[property](...args);
+          };
+          return Reflect.get(target, property);
+        },
+      });
+    },
+  };
+}
+
+function populatedMonitor(absentCount, eventCount, deliveryCount, runningCount = 0) {
+  const db = new Database(':memory:'); databases.push(db);
+  db.exec(`CREATE TABLE mobile_attention_observations (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE mobile_attention_events (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE mobile_attention_deliveries (id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+  const insertObservation = db.prepare('INSERT INTO mobile_attention_observations (id, value) VALUES (?, ?)');
+  const insertEvent = db.prepare('INSERT INTO mobile_attention_events (id, value) VALUES (?, ?)');
+  const insertDelivery = db.prepare('INSERT INTO mobile_attention_deliveries (id, value) VALUES (?, ?)');
+  for (let i = 0; i < absentCount + runningCount; i += 1) {
+    const id = `incarnation-${i}`;
+    insertObservation.run(id, JSON.stringify(observation('idle', null, { incarnationId: id })));
+  }
+  for (let i = 0; i < eventCount; i += 1) {
+    const id = `event-${i}`;
+    insertEvent.run(id, JSON.stringify({ id, instanceId: 'instance', sessionId: 'project-1', incarnationId: `incarnation-${i % absentCount}`, kind: 'idle', status: 'active', createdAt: 100000 }));
+  }
+  for (let i = 0; i < deliveryCount; i += 1) {
+    const id = `delivery-${i}`;
+    insertDelivery.run(id, JSON.stringify({ id, eventId: `event-${i % eventCount}`, installationId: 'phone', status: 'pending', attempts: 0, nextAttemptAt: 100000, expiresAt: 100000 + 900000 }));
+  }
+  const measured = measuredDatabase(db);
+  const f = fixture({ db: measured, isDesktopActive: () => true });
+  f.set(Array.from({ length: runningCount }, (_, i) => observation('running', null, { incarnationId: `incarnation-${absentCount + i}` })));
+  return { ...f, rawDb: db, measured };
+}
+
+function tableValues(db) {
+  return ['observations', 'events', 'deliveries'].map(kind =>
+    db.prepare(`SELECT id, value FROM mobile_attention_${kind} ORDER BY id`).all());
+}
+
 describe('durable mobile notifications', () => {
+  it('stalls_theEventLoop_whenManyObservationsAreAbsent', async () => {
+    const small = populatedMonitor(10, 40, 40);
+    const large = populatedMonitor(120, 600, 600);
+    const results = [];
+    for (const f of [small, large]) {
+      await f.service.tick();
+      f.measured.reset();
+      await f.service.tick();
+      results.push({ ...f.measured.counts });
+    }
+    expect(results[0].prepares).toBe(0);
+    expect(results[1].prepares).toBe(0);
+    expect(results[0].writes).toBe(0);
+    expect(results[1].writes).toBe(0);
+    expect(results[1].reads).toBe(results[0].reads);
+  });
+  it('keeps read executions independent of absent rows with running records present', async () => {
+    const small = populatedMonitor(10, 40, 40, 3);
+    const large = populatedMonitor(120, 600, 600, 3);
+    const results = [];
+    for (const f of [small, large]) {
+      await f.service.tick(); f.measured.reset(); await f.service.tick();
+      results.push({ ...f.measured.counts });
+    }
+    expect(results[1].reads).toBe(results[0].reads);
+  });
+  it.each([false, true])('obsoletes disappeared observation work even when previously unreachable=%s', async wasUnreachable => {
+    const f = populatedMonitor(1, 2, 2);
+    if (wasUnreachable) {
+      const stored = observation('unknown', null, { incarnationId: 'incarnation-0', reachable: false });
+      f.rawDb.prepare('UPDATE mobile_attention_observations SET value = ? WHERE id = ?').run(JSON.stringify(stored), stored.incarnationId);
+    }
+    f.measured.reset(); await f.service.tick();
+    expect(f.measured.counts.writes).toBe(wasUnreachable ? 4 : 5);
+    expect(tableValues(f.rawDb)[0][0]).toMatchObject({ id: 'incarnation-0', value: JSON.stringify(observation('unknown', null, { incarnationId: 'incarnation-0', reachable: false, needsInput: false })) });
+    expect(tableValues(f.rawDb)[1].map(row => JSON.parse(row.value).status)).toEqual(['obsolete', 'obsolete']);
+    expect(tableValues(f.rawDb)[2].map(row => JSON.parse(row.value).status)).toEqual(['obsolete', 'obsolete']);
+    const afterFirst = tableValues(f.rawDb);
+    f.measured.reset(); await f.service.tick();
+    expect(tableValues(f.rawDb)).toEqual(afterFirst);
+    expect(f.measured.counts.writes).toBe(0);
+  });
   it('holds a pending delivery without attempts and sends it after desktop activity lapses', async () => {
     let active = true;
     const isDesktopActive = vi.fn(() => active);

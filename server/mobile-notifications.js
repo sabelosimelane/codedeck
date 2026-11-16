@@ -55,37 +55,56 @@ export function createMobileNotifications({ db, instanceId, listObservations, li
     CREATE TABLE IF NOT EXISTS mobile_attention_deliveries (id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   // Observations stored before CLI dialog detection have no needsInput; no
   // dialog was ever detected for them, so the recorded value is false.
-  db.prepare(`UPDATE mobile_attention_observations SET value = json_set(value, '$.needsInput', json('false'))
-    WHERE json_type(value, '$.needsInput') IS NULL`).run();
+  const migrateObservations = db.prepare(`UPDATE mobile_attention_observations SET value = json_set(value, '$.needsInput', json('false'))
+    WHERE json_type(value, '$.needsInput') IS NULL`);
+  migrateObservations.run();
   const tables = { observations: ['mobile_attention_observations', observation], events: ['mobile_attention_events', event], deliveries: ['mobile_attention_deliveries', delivery] };
-  function read(kind, id) {
-    const [table, validate] = tables[kind]; const row = db.prepare(`SELECT id, value FROM ${table} WHERE id = ?`).get(id);
-    if (!row) return null;
-    requireValue(typeof row.value === 'string' && row.id === id, `${kind}.row`);
-    const record = validate(JSON.parse(row.value));
+  const statements = Object.fromEntries(Object.entries(tables).map(([kind, [table]]) => [kind, {
+    get: db.prepare(`SELECT id, value FROM ${table} WHERE id = ?`),
+    all: db.prepare(`SELECT id, value FROM ${table} ORDER BY id`),
+    put: db.prepare(`INSERT INTO ${table}(id,value) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value`),
+  }]));
+  const removeEvent = db.prepare('DELETE FROM mobile_attention_events WHERE id = ?');
+  const removeDelivery = db.prepare('DELETE FROM mobile_attention_deliveries WHERE id = ?');
+  function hydrate(kind, row, id = row.id) {
+    requireValue(text(row.id) && typeof row.value === 'string' && row.id === id, `${kind}.row`);
+    const record = tables[kind][1](JSON.parse(row.value));
     requireValue((kind === 'observations' ? record.incarnationId : record.id) === id, `${kind}.identity`);
     return record;
   }
-  function list(kind) {
-    const [table] = tables[kind];
-    return db.prepare(`SELECT id FROM ${table} ORDER BY id`).all().map(row => { requireValue(text(row.id), `${kind}.id`); return read(kind, row.id); });
+  function read(kind, id) {
+    const row = statements[kind].get.get(id);
+    return row ? hydrate(kind, row, id) : null;
   }
-  function write(kind, id, record) {
-    const [table, validate] = tables[kind]; validate(record);
-    db.prepare(`INSERT INTO ${table}(id,value) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value`).run(id, JSON.stringify(record));
+  function list(kind) {
+    return statements[kind].all.all().map(row => hydrate(kind, row));
+  }
+  function write(kind, id, record, cache = null) {
+    tables[kind][1](record);
+    if (cache && cache.has(id) && JSON.stringify(cache.get(id)) === JSON.stringify(record)) return;
+    statements[kind].put.run(id, JSON.stringify(record));
+    cache?.set(id, record);
   }
   function devices() { const values = listDevices(); requireValue(Array.isArray(values), 'devices'); return values.map(device); }
   function pending() { return list('deliveries').filter(d => d.status === 'pending'); }
-  function obsolete(incarnationId) {
-    for (const e of list('events')) if (e.incarnationId === incarnationId && e.status !== 'obsolete') write('events', e.id, { ...e, status: 'obsolete' });
-    for (const d of pending()) if (read('events', d.eventId).incarnationId === incarnationId) write('deliveries', d.id, { ...d, status: 'obsolete' });
+  function obsolete(incarnationId, state) {
+    for (const e of state.eventsByIncarnation.get(incarnationId) ?? []) {
+      if (e.status !== 'obsolete') write('events', e.id, { ...e, status: 'obsolete' }, state.events);
+    }
+    for (const d of state.deliveriesByIncarnation.get(incarnationId) ?? []) {
+      if (d.status === 'pending') {
+        write('deliveries', d.id, { ...d, status: 'obsolete' }, state.deliveries);
+        state.pendingCount -= 1;
+      }
+    }
   }
-  function queue(kind, record, recipients, time) {
-    if (pending().length + recipients.length > maxPending) throw new OutboxCapacityError('Notification outbox capacity exceeded.');
+  function queue(kind, record, recipients, time, state = null) {
+    if ((state ? state.pendingCount : pending().length) + recipients.length > maxPending) throw new OutboxCapacityError('Notification outbox capacity exceeded.');
     const e = event({ id: randomUUID(), instanceId, sessionId: record?.sessionId ?? null, incarnationId: record?.incarnationId ?? null, kind, status: kind === 'ended' ? 'ended' : 'active', createdAt: time });
-    write('events', e.id, e);
+    write('events', e.id, e, state?.events);
     for (const d of recipients) {
-      const id = randomUUID(); write('deliveries', id, { id, eventId: e.id, installationId: d.installationId, status: 'pending', attempts: 0, nextAttemptAt: time, expiresAt: time + NOTIFICATION_TTL_MS });
+      const id = randomUUID(); write('deliveries', id, { id, eventId: e.id, installationId: d.installationId, status: 'pending', attempts: 0, nextAttemptAt: time, expiresAt: time + NOTIFICATION_TTL_MS }, state?.deliveries);
+      if (state) state.pendingCount += 1;
     }
     return e;
   }
@@ -93,15 +112,31 @@ export function createMobileNotifications({ db, instanceId, listObservations, li
     let capacityError = null;
     const recipients = devices().filter(eligible);
     const present = new Set(records.map(r => r.incarnationId));
-    for (const previous of list('observations')) if (!present.has(previous.incarnationId)) {
-      obsolete(previous.incarnationId);
-      write('observations', previous.incarnationId, { ...previous, executionStatus: 'unknown', workflowStatus: null, needsInput: false, reachable: false });
+    const observations = new Map(list('observations').map(r => [r.incarnationId, r]));
+    const events = new Map(list('events').map(r => [r.id, r]));
+    const deliveries = new Map(list('deliveries').map(r => [r.id, r]));
+    const eventsByIncarnation = new Map();
+    for (const e of events.values()) {
+      if (!eventsByIncarnation.has(e.incarnationId)) eventsByIncarnation.set(e.incarnationId, []);
+      eventsByIncarnation.get(e.incarnationId).push(e);
+    }
+    const deliveriesByIncarnation = new Map();
+    for (const d of deliveries.values()) {
+      if (d.status !== 'pending') continue;
+      const e = events.get(d.eventId); requireValue(e !== undefined, 'delivery.event');
+      if (!deliveriesByIncarnation.has(e.incarnationId)) deliveriesByIncarnation.set(e.incarnationId, []);
+      deliveriesByIncarnation.get(e.incarnationId).push(d);
+    }
+    const state = { events, deliveries, eventsByIncarnation, deliveriesByIncarnation, pendingCount: [...deliveries.values()].filter(d => d.status === 'pending').length };
+    for (const previous of observations.values()) if (!present.has(previous.incarnationId)) {
+      obsolete(previous.incarnationId, state);
+      write('observations', previous.incarnationId, { ...previous, executionStatus: 'unknown', workflowStatus: null, needsInput: false, reachable: false }, observations);
     }
     for (const record of records) {
-      const previous = read('observations', record.incarnationId);
+      const previous = observations.get(record.incarnationId) ?? null;
       const fresh = record.reachable && time - record.observedAt <= freshnessMs && record.observedAt <= time;
       const current = fresh ? record : { ...record, executionStatus: 'unknown', workflowStatus: null, needsInput: false };
-      if (current.executionStatus === 'running' && !current.needsInput && current.workflowStatus !== 'complete') obsolete(record.incarnationId);
+      if (current.executionStatus === 'running' && !current.needsInput && current.workflowStatus !== 'complete') obsolete(record.incarnationId, state);
       let kind = null;
       if (previous && fresh && previous.reachable && current.executionStatus !== 'unknown') {
         if (current.executionStatus === 'dead' && previous.executionStatus !== 'dead' && previous.executionStatus !== 'unknown') kind = 'ended';
@@ -110,7 +145,7 @@ export function createMobileNotifications({ db, instanceId, listObservations, li
         else if (current.executionStatus === 'idle' && previous.executionStatus === 'running' && !['complete', 'needs_input'].includes(current.workflowStatus)) kind = 'idle';
       }
       if (kind) {
-        try { queue(kind, current, recipients, time); }
+        try { queue(kind, current, recipients, time, state); }
         catch (error) {
           if (!(error instanceof OutboxCapacityError)) throw error;
           capacityError = error;
@@ -119,16 +154,14 @@ export function createMobileNotifications({ db, instanceId, listObservations, li
           continue;
         }
       }
-      write('observations', current.incarnationId, current);
+      write('observations', current.incarnationId, current, observations);
     }
-    return capacityError;
+    return { capacityError, events };
   });
   const prune = db.transaction(() => {
     const deliveries = list('deliveries');
     const protectedEvents = new Set(deliveries.filter(d => d.status === 'pending').map(d => d.eventId));
     const completedEvents = list('events').filter(e => !protectedEvents.has(e.id)).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-    const removeEvent = db.prepare('DELETE FROM mobile_attention_events WHERE id = ?');
-    const removeDelivery = db.prepare('DELETE FROM mobile_attention_deliveries WHERE id = ?');
     const removed = new Set();
     for (const e of completedEvents.slice(maxRecords)) { removeEvent.run(e.id); removed.add(e.id); }
     const terminal = deliveries.filter(d => d.status !== 'pending').sort((a, b) => b.expiresAt - a.expiresAt || a.id.localeCompare(b.id));
@@ -143,9 +176,9 @@ export function createMobileNotifications({ db, instanceId, listObservations, li
     const time = now(); requireValue(integer(time), 'now');
     const desktopActive = isDesktopActive(); requireValue(typeof desktopActive === 'boolean', 'isDesktopActive');
     requireValue(new Set(records.map(r => r.incarnationId)).size === records.length, 'observations.uniqueIncarnations');
-    const capacityError = observe(records, time);
+    const { capacityError, events } = observe(records, time);
     for (const d of pending()) {
-      const e = read('events', d.eventId); requireValue(e !== null, 'delivery.event');
+      const e = events.get(d.eventId); requireValue(e !== undefined, 'delivery.event');
       if (time >= d.expiresAt) { write('deliveries', d.id, { ...d, status: 'expired' }); continue; }
       if (e.status === 'obsolete') { write('deliveries', d.id, { ...d, status: 'obsolete' }); continue; }
       if (desktopActive && e.kind !== 'test') continue;
