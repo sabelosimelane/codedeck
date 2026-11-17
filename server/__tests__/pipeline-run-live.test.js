@@ -194,6 +194,7 @@ describeLive('pipeline run live (Phase 3)', () => {
     const deletedSessionIds = new Set();
     const runtime = createTerminalRuntime('tmux');
     let sessionSeq = 0;
+    const muting = [];
 
     const setupAgent = agents.create({
       name: 'setup-stub',
@@ -280,6 +281,11 @@ describeLive('pipeline run live (Phase 3)', () => {
 
     const engine = createRunEngine({
       runStore: runs,
+      setTerminalMuted: (sessionId, muted) => {
+        const state = runs.get(runId);
+        muting.push({ sessionId, muted, status: state.status, step: state.currentStepIndex, worktreeState: state.worktreeState });
+        return true;
+      },
       readProgressCount: async () => null,
       decisionStore: createDecisionStore(db),
       noteStore: notes,
@@ -336,6 +342,11 @@ describeLive('pipeline run live (Phase 3)', () => {
       }, 60000, 'run complete or error');
 
       expect(finished.status).toBe('complete');
+      expect(muting).toContainEqual(expect.objectContaining({ sessionId: 'codedeck-1', muted: false, status: 'running', step: 0 }));
+      expect(muting).toContainEqual(expect.objectContaining({ sessionId: 'codedeck-1', muted: true, status: 'running', step: 1 }));
+      expect(muting).toContainEqual(expect.objectContaining({ sessionId: 'codedeck-2', muted: false, status: 'running', step: 1 }));
+      expect(muting).toContainEqual(expect.objectContaining({ sessionId: 'codedeck-1', muted: true, status: 'complete', worktreeState: 'present' }));
+      expect(muting).toContainEqual(expect.objectContaining({ sessionId: 'codedeck-2', muted: true, status: 'complete', worktreeState: 'present' }));
       expect(finished.definition.steps.map(s => s.kind)).toEqual(['setup', 'node']);
       expect(finished.steps.map(s => s.status)).toEqual(['complete', 'complete']);
       expect(notes.list(runId, { offset: 0, limit: 10, direction: 'asc' }).map(note => [note.status, note.summary])).toEqual([['written', 'Pass 1'], ['written', 'Pass 2']]);
@@ -402,6 +413,7 @@ describeLive('pipeline run live notes', () => {
     let sessionSeq = 0;
     const engine = createRunEngine({
       runStore: runs,
+      setTerminalMuted: () => true,
       readProgressCount: async () => null, decisionStore: createDecisionStore(db), noteStore: notes, reviewStore: createReviewStore(db),
       createWorktree: async () => { throw new Error('existing worktree must be reused'); },
       startSession: async ({ cwd }) => {
@@ -531,6 +543,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
 
     const engine = createRunEngine({
       runStore: runs,
+      setTerminalMuted: () => true,
       readProgressCount: async () => null,
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
@@ -758,6 +771,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
 
     const engine = createRunEngine({
       runStore: runs,
+      setTerminalMuted: () => true,
       readProgressCount: async run => {
         const progress = await readRunProgress({ run, workflowProgressFile: null, progressReader: createRunProgressReader() });
         return progress?.phaseCount > 0 ? { tasksDone: progress.tasksDone, tasksTotal: progress.tasksTotal } : null;
@@ -942,6 +956,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
 
     const engine = createRunEngine({
       runStore: runs,
+      setTerminalMuted: () => true,
       readProgressCount: async () => null,
       decisionStore: decisions,
       noteStore: createNoteStore(db),
@@ -1098,6 +1113,7 @@ describeLive('pipeline run live — Resume', () => {
     const started = [];
     const engine = createRunEngine({
       runStore: runs,
+      setTerminalMuted: () => true,
       readProgressCount: async () => null,
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),

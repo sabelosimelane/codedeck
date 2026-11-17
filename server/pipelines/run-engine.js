@@ -8,6 +8,7 @@ import { applyEvent, computeActions } from './run-machine.js';
 import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
+import { planRunTerminalMuting } from './run-terminal-muting.js';
 import { prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback } from './run-notes.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
@@ -62,6 +63,7 @@ export function createRunEngine({
   readNote = defaultReadNote,
   writeFeedback = defaultWriteFeedback,
   terminalAvailable,
+  setTerminalMuted,
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
   pathExists = async () => true,
@@ -88,10 +90,28 @@ export function createRunEngine({
   if (typeof readNote !== 'function') throw new Error('createRunEngine: readNote is required');
   if (typeof writeFeedback !== 'function') throw new Error('createRunEngine: writeFeedback is required');
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
+  if (typeof setTerminalMuted !== 'function') throw new Error('createRunEngine: setTerminalMuted is required');
 
   const handles = new Map();
   const noteWarnings = new Set();
   const progressWarnings = new Set();
+  const mutingWarnings = new Set();
+
+  function updateRun(runId, patch) {
+    const stored = runStore.update(runId, patch);
+    for (const [sessionId, muted] of planRunTerminalMuting(stored)) {
+      try {
+        setTerminalMuted(sessionId, muted);
+      } catch (error) {
+        const key = JSON.stringify([runId, sessionId]);
+        if (!mutingWarnings.has(key)) {
+          mutingWarnings.add(key);
+          console.warn(`[pipeline-terminal-muting] run=${runId} session=${sessionId} error=${error?.message || error}`);
+        }
+      }
+    }
+    return stored;
+  }
 
   async function recordNote(run, stepIndex, pass, sweep = false) {
     if (run.definition.notesDir === null || run.definition.steps[stepIndex]?.kind !== 'node') return;
@@ -162,7 +182,7 @@ export function createRunEngine({
     const current = runStore.get(runId);
     if (!current) throw new Error(`pipeline run ${runId}: not found`);
     const next = applyEvent(current, event);
-    return runStore.update(runId, {
+    return updateRun(runId, {
       status: next.status,
       stopReason: next.stopReason,
       error: next.error,
@@ -201,21 +221,21 @@ export function createRunEngine({
     const run = runStore.get(runId);
     if (!run) return run;
     if (run.worktreeState === 'not_created') {
-      return runStore.update(runId, { worktreeState: 'removed', worktreeDetail: null });
+      return updateRun(runId, { worktreeState: 'removed', worktreeDetail: null });
     }
     await sweepNotes(run);
     // A worktree that existed before the run belongs to the owner: the run lets go of it, git is not called.
     if (run.worktreeState === 'external') {
-      return runStore.update(runId, { worktreeState: 'released', worktreeDetail: null });
+      return updateRun(runId, { worktreeState: 'released', worktreeDetail: null });
     }
     if (!['present', 'removal_blocked'].includes(run.worktreeState)) {
       return run;
     }
     const result = await removeWorktree(run);
     if (result?.ok) {
-      return runStore.update(runId, { worktreeState: 'removed', worktreeDetail: null });
+      return updateRun(runId, { worktreeState: 'removed', worktreeDetail: null });
     }
-    return runStore.update(runId, {
+    return updateRun(runId, {
       worktreeState: 'removal_blocked',
       worktreeDetail: String(result?.detail || 'git worktree remove failed').slice(0, 2000),
     });
@@ -530,7 +550,7 @@ export function createRunEngine({
         const steps = latest.steps.map((s, i) => (
           i === latest.currentStepIndex ? { ...s, iteration: snapshot.iteration } : s
         ));
-        runStore.update(runId, { steps });
+        updateRun(runId, { steps });
       }
       return { terminal: false };
     }
@@ -554,7 +574,7 @@ export function createRunEngine({
         const { baseCommit } = await createWorktree(run);
         // Always record a successful create so Resume/Cleanup can see the path,
         // even if Stop won the race while create was in flight.
-        run = runStore.update(runId, {
+        run = updateRun(runId, {
           baseCommit,
           worktreeState: 'present',
           worktreeDetail: null,
@@ -602,7 +622,7 @@ export function createRunEngine({
         const stepsWithSession = run.steps.map((s, i) => (
           i === stepIndex ? { ...s, sessionId } : s
         ));
-        run = runStore.update(runId, { steps: stepsWithSession });
+        run = updateRun(runId, { steps: stepsWithSession });
       }
 
       try {

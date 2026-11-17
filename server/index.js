@@ -33,6 +33,7 @@ import {
   listDirtyPaths as listPipelineDirtyPaths,
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
+import { setObservedTerminalMuted } from './pipelines/terminal-muting-adapter.js';
 import { createRunProgressReader, readRunProgress } from './pipelines/run-progress.js';
 import { classify as classifyAgentReadiness } from './pipelines/agent-readiness.js';
 import { createPipelinesRouter } from './routes/pipelines.js';
@@ -880,6 +881,7 @@ const pipelineReviewStore = createReviewStore(db);
 const pipelineProgressReader = createRunProgressReader();
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
+  setTerminalMuted: (sessionId, muted) => setObservedTerminalMuted(sessionAttention, sessionId, muted),
   readProgressCount: async run => {
     const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: pipelineProgressReader });
     return progress?.phaseCount > 0 && ['in_progress', 'all_done'].includes(progress.status)

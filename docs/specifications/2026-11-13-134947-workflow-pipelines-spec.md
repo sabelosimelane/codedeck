@@ -884,6 +884,14 @@ Rows are only ever added. A run view carries `agentsDecide` and `decisionCount`;
 
 ### 8.15 One terminal per agent (added after v1.0)
 
+While a run is open, only its current step's terminal shows status during `pending`,
+`running`, `needs_input`, `awaiting_approval` or `limit_paused`. All other terminals
+of that run are status-muted, including when the current step has no terminal yet.
+During `interrupted`, `stopped`, `error` and `complete`, all its terminals are muted.
+Removing or releasing the run's worktree closes the run and unmutes its terminals.
+The owner may change muting by hand; the next persisted run state change reapplies
+the rule. Previous attempt terminals in `priorSessionIds` are outside this rule.
+
 The original per-terminal workflow reused one terminal, clearing the agent between passes. Runs do
 the same per agent: a terminal holds one agent CLI, so steps that use the same agent work in the
 same terminal and only a step whose agent has no terminal gets a new one.

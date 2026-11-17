@@ -149,6 +149,7 @@ function setupEngine(overrides = {}) {
   const listDirtyPaths = overrides.listDirtyPaths ?? vi.fn(async () => []);
   const pathExists = overrides.pathExists ?? vi.fn(async () => true);
   const terminalAvailable = overrides.terminalAvailable ?? vi.fn(() => true);
+  const setTerminalMuted = overrides.setTerminalMuted ?? vi.fn(() => true);
   const readScreen = overrides.readScreen ?? vi.fn(async () => []);
   const decisionStore = overrides.decisionStore ?? createDecisionStore(db);
   const noteStore = overrides.noteStore ?? createNoteStore(db);
@@ -171,6 +172,7 @@ function setupEngine(overrides = {}) {
     listDirtyPaths,
     pathExists,
     terminalAvailable,
+    setTerminalMuted,
     setTimeout: overrides.setTimeout ?? setTimeout,
     clearTimeout: overrides.clearTimeout ?? clearTimeout,
     now: overrides.now ?? (() => new Date().toISOString()),
@@ -193,6 +195,7 @@ function setupEngine(overrides = {}) {
     listDirtyPaths,
     pathExists,
     terminalAvailable,
+    setTerminalMuted,
     readScreen,
     decisionStore,
     noteStore,
@@ -211,6 +214,9 @@ afterEach(() => {
 });
 
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
+  it('requires a terminal muting function at construction', () => {
+    expect(() => setupEngine({ engineExtras: { setTerminalMuted: undefined } })).toThrow('createRunEngine: setTerminalMuted is required');
+  });
   it('requires a review store with add and listSentBack at construction', () => {
     expect(() => setupEngine({ engineExtras: { reviewStore: undefined } })).toThrow('createRunEngine: reviewStore is required');
     expect(() => setupEngine({ engineExtras: { reviewStore: { add() {} } } })).toThrow('createRunEngine: reviewStore is required');
@@ -230,6 +236,7 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await done;
     expect(ctx.runStore.get(run.id).status).toBe('awaiting_approval');
+    expect(ctx.setTerminalMuted).toHaveBeenCalledWith('Demo-1', false);
     expect(ctx.noteStore.latestByStep(run.id).get(0).summary).toBe('Analysis complete');
     expect(ctx.removeWorktree).not.toHaveBeenCalled();
     await ctx.engine.approve(run.id);
@@ -674,6 +681,7 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
 
     const finished = ctx.runStore.get(run.id);
     expect(finished.status).toBe('error');
+    expect(ctx.setTerminalMuted).toHaveBeenCalledWith('Demo-1', true);
     expect(finished.error).toMatch(/codex/i);
     expect(finished.error).toMatch(/agent_working/);
     expect(finished.error).toMatch(/codex/);
@@ -1140,6 +1148,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
 
     const finished = ctx.runStore.get(run.id);
     expect(finished.status).toBe('stopped');
+    expect(ctx.setTerminalMuted).toHaveBeenCalledWith('Demo-1', true);
     expect(finished.stopReason).toBe('user');
   });
 
@@ -1726,6 +1735,7 @@ describe('createRunEngine — what the agent needs, and answering it', () => {
     const { ctx, loop, run, done } = await startWaiting();
     const waiting = ctx.runStore.get(run.id);
     expect(waiting.status).toBe('needs_input');
+    expect(ctx.setTerminalMuted).toHaveBeenCalledWith('Demo-1', false);
     expect(waiting.inputRequest).toEqual(ASKED);
     expect(ctx.readScreen).toHaveBeenCalledWith('Demo-1');
 
@@ -2509,6 +2519,41 @@ describe('createRunEngine — a step reuses the terminal of its agent', () => {
     expect(run.steps.map(s => s.sessionId)).toEqual(['Demo-1', 'Demo-2', 'Demo-2']);
     expect(ctx.startSession).toHaveBeenCalledTimes(2);
     expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, true]);
+  });
+
+  it('applies current, sibling, finished and closed muting without touching an unrelated terminal', async () => {
+    const calls = [];
+    const { ctx } = engineWith({ setTerminalMuted: vi.fn((id, muted) => { calls.push([id, muted]); return true; }) });
+    const run = await runToEnd(ctx, {
+      definition: definition({ steps: [node('Develop', CODEX), node('Review', FABLE), node('Test', FABLE)] }),
+    });
+    expect(calls).toContainEqual(['Demo-1', false]);
+    expect(calls).toContainEqual(['Demo-1', true]);
+    expect(calls).toContainEqual(['Demo-2', false]);
+    expect(calls).toContainEqual(['Demo-2', true]);
+    expect(calls.at(-2)).toEqual(['Demo-1', false]);
+    expect(calls.at(-1)).toEqual(['Demo-2', false]);
+    expect(calls.some(([id]) => id === 'Other-1')).toBe(false);
+    expect(run.worktreeState).toBe('released');
+  });
+
+  it('retries an unobserved terminal on the next transition', async () => {
+    const calls = [];
+    const { ctx } = engineWith({ setTerminalMuted: vi.fn((id, muted) => { calls.push([id, muted]); return calls.length > 1; }) });
+    await runToEnd(ctx, { definition: definition({ steps: [node('Develop', CODEX)] }) });
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls[0]).toEqual(['Demo-1', false]);
+    expect(calls[1]).toEqual(['Demo-1', false]);
+  });
+
+  it('warns once for a failing terminal and still finishes the run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { ctx } = engineWith({ setTerminalMuted: vi.fn(() => { throw new Error('tracker unavailable'); }) });
+      const run = await runToEnd(ctx, { definition: definition({ steps: [node('Develop', CODEX)] }) });
+      expect(run.status).toBe('complete');
+      expect(warn.mock.calls.filter(([message]) => String(message).startsWith('[pipeline-terminal-muting]'))).toHaveLength(1);
+    } finally { warn.mockRestore(); }
   });
 
   it('treats the same agent with another launch command as another agent', async () => {

@@ -54,7 +54,7 @@ Open `http://localhost:43000` in your browser.
 6. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
 
 Agent status comes from the live prompt, status, and footer region of each CLI pane, with 20 seconds of silence vetoing a stale working marker. Input dialogs appear as **Needs input**; working sub-agent panes and background shells keep the session **Running**. An idle agent with a live background shell therefore shows as Running.
-7. Use the pane **eye icon** — or **Cmd/Ctrl+Shift+M** on the active pane — to mute/show status colors without changing the terminal's real running/idle/finished state.
+7. Use the pane **eye icon** — or **Cmd/Ctrl+Shift+M** on the active pane — to mute/show status colors without changing the terminal's real running/idle/finished state. Workflow runs also manage their terminals' status automatically; see **One terminal per agent** below.
 8. Click the **hourglass** on a tab — beside its close button — or press **Cmd/Ctrl+Shift+U** on the active tab, to mark it waiting when you have handed its work to an agent. Waiting tabs shrink, dim and group to the left of the tab bar, their status indicators stop pulsing everywhere (tab, pane header, and sidebar), and the sidebar shows a count per project. The mark clears itself as soon as the work finishes or the session dies, so the finished styling and completion notification still reach you. Phone pushes are held while the desktop UI has been used in the last two minutes.
 9. Click the **folder icon** on any project row to browse its files — clicking a file opens it in your configured editor.
 10. Toast notifications confirm every action and surface errors.
@@ -135,6 +135,12 @@ share one tab, and a new run in an existing worktree reuses the tabs an earlier 
 left there. Nodes that use different agents get different tabs, because a terminal
 holds one agent CLI. Earlier output of a shared tab stays in its scrollback; the
 agent's conversation is cleared each time, including anything you typed there yourself.
+
+A run keeps only the terminal it is working in showing status; its other terminals
+are muted until their step starts. When the run waits for you, that step's terminal
+stays live. When the run is stopped, interrupted, failed or complete, all its
+terminals are muted. Closing the run lifts the muting. A change you make with the
+eye icon lasts until the run's next state change.
 
 The dialog's **Worktree** list offers a new worktree (the default) and every
 existing working tree of the repository: the project's own checkout and its

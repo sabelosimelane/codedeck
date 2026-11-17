@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-11-18] - A run shows live status only on the terminal it is working in
+
+### Executive Summary
+* A workflow run uses one terminal per agent, usually three, and only one is working at a time. The idle ones still showed status colours and "finished" markers on their tabs, pane headers and sidebar rows, so it was not obvious which terminal the run was in. A run now mutes the status of its terminals that are not the one it is working in, and lifts the muting on a terminal the moment its step starts. While the run waits for its owner the terminal of that step stays live; when the run is stopped, interrupted, failed or complete all its terminals are muted; closing the run lifts the muting. A terminal muted or unmuted by hand keeps that state until the run next changes state. Terminals that do not belong to an open run are not touched.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/pipelines/run-terminal-muting.js` — New. `planRunTerminalMuting(run)`: for each terminal of a run, whether its status is muted, from the run's stored state alone.
+  * `server/pipelines/run-engine.js` — Every stored change to a run now goes through one helper that applies that plan through a new required dependency, `setTerminalMuted`. A terminal that cannot be muted yet is retried at the next change; a failure warns once and never affects the run.
+* **🛠️ Codebase:**
+  * `server/pipelines/terminal-muting-adapter.js` — New. Mutes a terminal through the existing attention tracker once its status has been observed.
+  * `server/index.js` — Wires the adapter into the engine. No new endpoint, table or field: the browser and phone read `statusMuted` as before.
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md`, `docs/steering/structure.md` — The rule and the new modules.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-terminal-muting.test.js` — New. The plan for every run status, a current step without a terminal, a closed run, preconditions, and the adapter for a known and an unknown terminal.
+  * `server/__tests__/pipeline-run-engine.test.js` — The plan applied across a run, a retry after a terminal that could not be muted yet, a failing call that leaves the run's outcome unchanged, and the dependency being required.
+  * `server/__tests__/pipeline-run-live.test.js` — With real tmux: in a two-agent run each terminal is live only during its own step and both are muted when the run completes.
+  * Server suite: 82 files, 2,348 tests passed. Client suite: 69 files, 1,103 tests passed. Applied to the live run's state, the rule gave one live terminal (the current step's) and two muted.
+
 ## [2026-11-17] - Stop a looping run that has stopped making progress
 
 ### Executive Summary
