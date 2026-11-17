@@ -104,18 +104,18 @@ describe('Sidebar waiting tab count', () => {
   it('shows selectable worktree headers and keeps main-only rows unchanged', () => {
     const onSelectWorktree = vi.fn();
     const groups = new Map([['Alpha', [
-      { key: 'main', label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Alpha-1'], run: null },
-      { key: '/tmp/alpha-feature', label: 'alpha-feature', branch: 'feature', isMain: false, sessionIds: ['Alpha-2'], run: { status: 'needs_input', progress: { phase: { number: 2 }, phaseCount: 4 }, steps: [] } },
+      { key: 'main', path: '/tmp/alpha', label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Alpha-1'], run: null },
+      { key: '/tmp/alpha-feature', path: '/tmp/alpha-feature', label: 'alpha-feature', branch: 'feature', isMain: false, sessionIds: ['Alpha-2'], run: { id: '57f488b5-1234', workflowName: 'Build', status: 'needs_input', progress: { phase: { number: 2 }, phaseCount: 4 }, steps: [] } },
     ]]]);
     const view = renderSidebar({
       worktreeGroupsByProject: groups, selectedWorktreeByProject: { Alpha: 'main' }, onSelectWorktree,
       sessionStatus: [{ sessionId: 'Alpha-1', alive: true }, { sessionId: 'Alpha-2', alive: true }],
     });
     expect(view.getByText('Main checkout')).toBeTruthy();
-    expect(view.getByText('alpha-feature')).toBeTruthy();
+    expect(view.getByText('Build · 57f488b5')).toBeTruthy();
     expect(view.getByText('Phase 2 of 4')).toBeTruthy();
-    expect(view.getByText('needs you')).toBeTruthy();
-    fireEvent.click(view.getByText('alpha-feature'));
+    expect(view.getByText('needs your input')).toBeTruthy();
+    fireEvent.click(view.getByText('Build · 57f488b5'));
     expect(onSelectWorktree).toHaveBeenCalledWith('Alpha', '/tmp/alpha-feature');
   });
 

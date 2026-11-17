@@ -48,6 +48,41 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('PipelineRunsBar visual states', () => {
+  it.each([
+    ['pending', 'Starting', null], ['running', 'Running', null],
+    ['needs_input', 'Needs your input', 'answer'], ['limit_paused', 'Paused at its limit', 'continue'],
+    ['awaiting_approval', 'Waiting for your approval', 'approve'],
+    ['interrupted', 'Interrupted', 'resume'], ['stopped', 'Stopped', 'resume'],
+    ['error', 'Failed', 'resume'], ['complete', 'Complete', 'cleanup'],
+  ])('describes %s and highlights %s', (status, label, action) => {
+    const actions = { stop: true, resume: action === 'resume', continue: action === 'continue', cleanup: action === 'cleanup', answer: action === 'answer', approve: action === 'approve' };
+    const view = render(<PipelineRunsBar runs={[runView({ status, actions, ...(status === 'needs_input' ? { inputRequest: null } : {}), ...(status === 'awaiting_approval' ? { approvalRequest: { stepIndex: 1, stepName: 'Implement', note: null } } : {}) })]} onLoadNotes={vi.fn(async () => ({ notes: [] }))} />);
+    const pill = view.getByLabelText(`Run status: ${label}`);
+    expect(pill.getAttribute('data-status')).toBe(status);
+    const root = view.getByTestId('pipeline-runs-bar');
+    expect(Boolean(view.queryByRole('button', { name: 'Stop' }))).toBe(!['interrupted', 'stopped', 'error', 'complete'].includes(status));
+    const primary = root.querySelectorAll('.pipeline-run-primary');
+    if (['resume', 'continue', 'cleanup'].includes(action)) expect([...primary].map(button => button.textContent)).toEqual([action === 'cleanup' ? 'Clean up worktree' : action[0].toUpperCase() + action.slice(1)]);
+    else if (action === null) expect(primary).toHaveLength(0);
+    expect([...root.querySelectorAll('[style]')].some(element => /(?:color|background)\s*:/.test(element.getAttribute('style')))).toBe(false);
+  });
+  it('marks step states and shows a loop icon only on the closing step', () => {
+    const steps = [
+      { ...runView().steps[0], status: 'complete' },
+      { ...runView().steps[1], status: 'running' },
+      { ...runView().steps[1], index: 2, name: 'Failed', status: 'failed' },
+      { ...runView().steps[1], index: 3, name: 'Stopped', status: 'stopped' },
+      { ...runView().steps[1], index: 4, name: 'Later', status: 'pending', repeat: { mode: 'loop_back', toStepIndex: 0, max: 3 } },
+    ];
+    const view = render(<PipelineRunsBar runs={[runView({ steps, currentStepIndex: 1 })]} />);
+    expect(steps.map(step => view.getByRole('button', { name: new RegExp(`^${step.name} `) }).getAttribute('data-step-state'))).toEqual(['done', 'current', 'failed', 'stopped', 'pending']);
+    expect(view.getByRole('button', { name: /^Later / }).querySelector('svg[aria-hidden="true"]')).toBeTruthy();
+    expect(view.getByRole('button', { name: /^Later / }).querySelector('svg').getAttribute('title')).toContain('Setup');
+    expect(view.getByRole('button', { name: /^Implement / }).querySelector('svg')).toBeNull();
+  });
+});
+
 describe('PipelineRunsBar', () => {
   it('shows the approval note and sends approval or feedback once', async () => {
     const run = runView({ status: 'awaiting_approval', currentStepIndex: 1,

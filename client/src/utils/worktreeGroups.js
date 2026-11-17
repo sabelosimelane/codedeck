@@ -11,6 +11,23 @@ function optionalPath(value, field) {
   return value === null ? null : absolute(value, field);
 }
 
+export function describeWorktreeGroup(group) {
+  if (!group || typeof group !== 'object' || Array.isArray(group)) throw new Error('worktree groups: group must be an object');
+  absolute(group.path, 'group.path');
+  if (typeof group.isMain !== 'boolean') throw new Error('worktree groups: group.isMain must be a boolean');
+  if (group.branch !== null && group.branch !== undefined) nonempty(group.branch, 'group.branch');
+  if (group.run !== null && group.run !== undefined) {
+    if (typeof group.run !== 'object' || Array.isArray(group.run)) throw new Error('worktree groups: group.run must be an object');
+    nonempty(group.run.id, 'group.run.id');
+    nonempty(group.run.workflowName, 'group.run.workflowName');
+  }
+  const folder = group.path.slice(group.path.lastIndexOf('/') + 1);
+  nonempty(folder, 'group.path folder');
+  const title = group.isMain ? 'Main checkout' : group.run
+    ? `${group.run.workflowName} · ${group.run.id.slice(0, 8)}` : folder;
+  return { title, detail: null, tooltip: [folder, group.branch, group.path].filter(Boolean).join('\n') };
+}
+
 export function parseSessionWorktree(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('session worktree: row must be an object');
   const sessionId = nonempty(row.sessionId, 'sessionId');

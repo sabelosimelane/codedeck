@@ -1,0 +1,41 @@
+.pipeline-run-bar { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-surface); font-size: 12px; color: var(--text-secondary); }
+.pipeline-run-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pipeline-run-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pipeline-run-name { flex: none; color: var(--text-primary); }
+.pipeline-run-status { flex: none; padding: 2px 6px; border-radius: 4px; background: var(--bg-hover); color: var(--text-muted); white-space: nowrap; }
+.pipeline-run-status[data-tone="active"] { color: var(--accent); }
+.pipeline-run-status[data-tone="waiting"] { color: var(--warning); }
+.pipeline-run-status[data-tone="danger"] { color: var(--danger); }
+.pipeline-run-agents-decide { flex: none; color: var(--warning); }
+.pipeline-run-branch { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); color: var(--text-muted); }
+.pipeline-run-actions { display: flex; flex: none; justify-content: flex-end; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.pipeline-run-bar button { padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-hover); color: var(--text-secondary); cursor: pointer; font: inherit; }
+.pipeline-run-bar button:disabled { opacity: .6; cursor: default; }
+.pipeline-run-bar button.pipeline-run-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); font-weight: 600; }
+.pipeline-run-progress { white-space: normal; overflow-wrap: anywhere; }
+.pipeline-run-progress-phase { color: var(--text-primary); font-weight: 600; }
+.pipeline-run-muted { color: var(--text-muted); }
+.pipeline-run-accent { color: var(--accent); }
+.pipeline-run-warning { color: var(--warning); }
+.pipeline-run-danger { color: var(--danger); }
+.pipeline-run-primary-text { color: var(--text-primary); }
+.pipeline-run-steps { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; min-width: 0; }
+.pipeline-run-bar button.pipeline-run-step { position: relative; display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-hover); color: var(--text-muted); }
+.pipeline-run-step + .pipeline-run-step { margin-left: 14px; }
+.pipeline-run-step + .pipeline-run-step::before { content: ''; position: absolute; right: 100%; top: 50%; width: 14px; border-top: 1px solid var(--border); }
+.pipeline-run-bar button.pipeline-run-step[data-step-state="done"] { color: var(--text-secondary); }
+.pipeline-run-step[data-step-state="done"] svg { color: var(--accent); }
+.pipeline-run-bar button.pipeline-run-step[data-step-state="current"] { border-color: var(--accent); color: var(--text-primary); }
+.pipeline-run-bar button.pipeline-run-step[data-step-state="failed"] { border-color: var(--danger); color: var(--danger); }
+.pipeline-run-bar button.pipeline-run-step[data-step-state="stopped"] { border-color: var(--warning); color: var(--warning); }
+.pipeline-run-bar button.pipeline-run-step[data-step-state="pending"] { opacity: .6; }
+.pipeline-run-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-base); }
+.pipeline-run-panel-toggle { align-self: flex-start; }
+.pipeline-run-form-row { display: flex; align-items: flex-end; gap: 6px; }
+.pipeline-run-textarea { flex: 1; min-width: 0; resize: vertical; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); color: var(--text-primary); font-family: var(--font-mono); font-size: 12px; }
+.pipeline-run-request-content, .pipeline-run-pre-wrap, .pipeline-run-scroll-content { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); line-height: 1.5; }
+.pipeline-run-request-content { max-height: 220px; overflow-y: auto; }
+.pipeline-run-scroll-content { max-height: 240px; overflow-y: auto; }
+.pipeline-run-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; margin: 0; padding: 8px 10px; overflow-y: auto; list-style: none; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-base); }
+.pipeline-run-list-item { display: flex; flex-direction: column; gap: 2px; }
+.pipeline-run-cleanup-paths { font-family: var(--font-mono); color: var(--text-muted); }

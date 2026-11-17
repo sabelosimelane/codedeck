@@ -4,17 +4,19 @@ import React from 'react';
 import WorktreeGroupHeader from '../WorktreeGroupHeader';
 
 afterEach(cleanup);
-const base = { key: '/repo/feature', label: 'feature', branch: 'feat/fix', isMain: false, sessionIds: [], run: null };
-const run = status => ({ status, progress: null, steps: [{ status: 'running', name: 'Implement', note: null }] });
+const base = { key: '/repo/feature', path: '/repo/feature', label: 'feature', branch: 'feat/fix', isMain: false, sessionIds: [], run: null };
+const run = status => ({ id: '57f488b5-1234', workflowName: 'Medium Feature Build', status, progress: null, steps: [{ status: 'running', name: 'Implement', note: null }] });
 
 describe('WorktreeGroupHeader', () => {
   it.each([
-    ['pending', 'paused'], ['running', 'running'], ['needs_input', 'needs you'], ['limit_paused', 'paused'],
-    ['awaiting_approval', 'waiting for approval'], ['interrupted', 'stopped'], ['stopped', 'stopped'], ['error', 'error'], ['complete', 'done'],
+    ['pending', 'starting'], ['running', 'running'], ['needs_input', 'needs your input'], ['limit_paused', 'paused at its limit'],
+    ['awaiting_approval', 'waiting for your approval'], ['interrupted', 'interrupted'], ['stopped', 'stopped'], ['error', 'failed'], ['complete', 'complete'],
   ])('shows a human status for %s', (status, label) => {
     const view = render(<WorktreeGroupHeader group={{ ...base, run: run(status) }} selected={false} onClick={vi.fn()} />);
     expect(view.getByText(label)).toBeTruthy();
-    expect(Boolean(view.queryByLabelText('Waiting for owner'))).toBe(['needs_input', 'limit_paused', 'awaiting_approval'].includes(status));
+    expect(view.getByText('Medium Feature Build · 57f488b5')).toBeTruthy();
+    expect(view.getByTestId('worktree-group-header').getAttribute('title')).toBe('feature\nfeat/fix\n/repo/feature');
+    expect(view.getByTestId('worktree-group-header').textContent).not.toContain('feat/fix');
   });
 
   it('prefers phase, then latest note, then current step name', () => {
@@ -22,12 +24,19 @@ describe('WorktreeGroupHeader', () => {
     const withNote = { ...run('running'), steps: [{ status: 'complete', name: 'Setup', note: { summary: 'Ready' } }, { status: 'running', name: 'Implement', note: null }] };
     const view = render(<WorktreeGroupHeader group={{ ...base, run: { ...withNote, progress: { phase: { number: 2 }, phaseCount: 3 } } }} selected onClick={onClick} />);
     expect(view.getByText('Phase 2 of 3')).toBeTruthy();
-    expect(view.getByText('feat/fix').style.fontFamily).toBe('var(--font-mono)');
+    expect(view.getByTestId('worktree-group-header').getAttribute('data-selected')).toBe('true');
+    expect(view.getByRole('button').getAttribute('aria-label')).toBe('Select Medium Feature Build · 57f488b5 worktree');
     fireEvent.click(view.getByRole('button'));
     expect(onClick).toHaveBeenCalledOnce();
     view.rerender(<WorktreeGroupHeader group={{ ...base, run: withNote }} selected onClick={onClick} />);
     expect(view.getByText('Ready')).toBeTruthy();
     view.rerender(<WorktreeGroupHeader group={{ ...base, run: run('running') }} selected onClick={onClick} />);
     expect(view.getByText('Implement')).toBeTruthy();
+  });
+  it('names main and plain worktrees', () => {
+    const view = render(<WorktreeGroupHeader group={{ ...base, key: 'main', path: '/repo/main', isMain: true, branch: null }} selected={false} onClick={vi.fn()} />);
+    expect(view.getByText('Main checkout')).toBeTruthy();
+    view.rerender(<WorktreeGroupHeader group={base} selected={false} onClick={vi.fn()} />);
+    expect(view.getByText('feature')).toBeTruthy();
   });
 });

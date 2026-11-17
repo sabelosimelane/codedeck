@@ -17,7 +17,7 @@ const sessions = [
 ];
 const groups = [
   { key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Demo-1'], run: null },
-  { key: '/tmp/demo-feature', path: '/tmp/demo-feature', label: 'demo-feature', branch: 'feature', isMain: false, sessionIds: ['Demo-2'], run: { status: 'needs_input', worktree: { path: '/tmp/demo-feature' } } },
+  { key: '/tmp/demo-feature', path: '/tmp/demo-feature', label: 'demo-feature', branch: 'feature', isMain: false, sessionIds: ['Demo-2'], run: { id: '57f488b5-1234', workflowName: 'Build', status: 'needs_input', worktree: { path: '/tmp/demo-feature' } } },
 ];
 const originalFetch = global.fetch;
 beforeEach(() => {
@@ -35,7 +35,9 @@ describe('TerminalArea worktree view', () => {
   it.each(['needs_input', 'limit_paused', 'awaiting_approval'])('shows label, count and waiting badge for %s', async status => {
     const waitingGroups = [groups[0], { ...groups[1], run: { ...groups[1].run, status } }];
     const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={waitingGroups} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
-    await waitFor(() => expect(view.getByRole('button', { name: 'demo-feature (1)' }).textContent).toContain('demo-feature · 1 ●'));
+    await waitFor(() => expect(view.getByRole('button', { name: 'Build · 57f488b5 (1)' }).textContent).toContain('Build · 57f488b5'));
+    expect(view.getByRole('button', { name: 'Build · 57f488b5 (1)' }).querySelector('[aria-label="Waiting for owner"]')).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Build · 57f488b5 (1)' }).getAttribute('title')).toBe('demo-feature\nfeature\n/tmp/demo-feature');
   });
   it('shows a legacy run step tab in its run group and keeps that group on step activation', async () => {
     const legacy = { ...sessions[0], sessionId: 'Demo-3' };
@@ -65,10 +67,10 @@ describe('TerminalArea worktree view', () => {
     const bySession = new Map([['Demo-2', '/tmp/demo-feature'], ['Demo-3', '/tmp/demo-feature']]);
     const view = render(<TerminalArea project={project} sessionStatus={all} worktreeGroups={groups} worktreeBySession={bySession} />);
     await waitFor(() => expect(view.getAllByTestId('terminal-tab')).toHaveLength(1));
-    fireEvent.click(view.getByRole('button', { name: 'demo-feature (2)' }));
+    fireEvent.click(view.getByRole('button', { name: 'Build · 57f488b5 (2)' }));
     fireEvent.click(view.getAllByTestId('terminal-tab').find(tab => tab.getAttribute('data-session-id') === 'Demo-2'));
     fireEvent.click(view.getByRole('button', { name: 'Main checkout (1)' }));
-    fireEvent.click(view.getByRole('button', { name: 'demo-feature (2)' }));
+    fireEvent.click(view.getByRole('button', { name: 'Build · 57f488b5 (2)' }));
     await waitFor(() => expect(view.getAllByTestId('terminal-tab').find(tab => tab.getAttribute('data-active') === 'true')?.getAttribute('data-session-id')).toBe('Demo-2'));
   });
   it('opens a plain new terminal in main and switches there from a worktree', async () => {
@@ -107,7 +109,7 @@ describe('TerminalArea worktree view', () => {
     await waitFor(() => expect(restored.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-1'));
   });
   it('shows the empty state for a selected run worktree without tabs', async () => {
-    const runOnly = { key: '/tmp/demo-other', path: '/tmp/demo-other', label: 'demo-other', branch: 'other', isMain: false, sessionIds: [], run: { status: 'running', worktree: { path: '/tmp/demo-other' } } };
+    const runOnly = { key: '/tmp/demo-other', path: '/tmp/demo-other', label: 'demo-other', branch: 'other', isMain: false, sessionIds: [], run: { id: 'other-run', workflowName: 'Build', status: 'running', worktree: { path: '/tmp/demo-other' } } };
     const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={[...groups, runOnly]} selectedWorktree={runOnly.key} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
     await waitFor(() => expect(view.queryAllByTestId('terminal-tab')).toHaveLength(0));
     expect(view.getByText('No terminals open')).toBeTruthy();
@@ -119,7 +121,7 @@ describe('TerminalArea worktree view', () => {
     await waitFor(() => expect(view.getAllByTestId('terminal-tab')).toHaveLength(1));
     expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-1');
     expect(view.getByTestId('mounted-Demo-2')).toBeTruthy();
-    fireEvent.click(view.getByRole('button', { name: /demo-feature/ }));
+    fireEvent.click(view.getByRole('button', { name: /Build · 57f488b5/ }));
     expect(select).toHaveBeenCalledWith('/tmp/demo-feature');
     view.rerender(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={groups} selectedWorktree="/tmp/demo-feature" onSelectWorktree={select} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
     expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2');

@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Check } from 'lucide-react';
+import { Check, Repeat } from 'lucide-react';
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../../../shared/pipeline-definitions.mjs';
 import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
 import { approveRun, sendBackRun } from '../../utils/pipelinesApi';
 import { useToast } from '../ToastContext';
+import { describeRunStatus, describeStepState } from '../../utils/pipelineRunStatus';
+import './pipeline-runs.css';
 
 const ACCEPT_RECOMMENDATIONS = ACCEPT_RECOMMENDATIONS_ANSWER;
 
@@ -84,15 +86,15 @@ function ApprovalPanel({ run, onLoadNotes, onApprove, onSendBack }) {
       setBusy(false);
     }
   };
-  return <div role="group" aria-label={`${stepName} approval`} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', border: '1px solid var(--warning)', borderRadius: 6, background: 'var(--bg-base)' }}>
+  return <div role="group" aria-label={`${stepName} approval`} className="pipeline-run-panel">
     <strong>{`${stepName} is waiting for your approval`}</strong>
     {run.approvalRequest.note?.summary && <span>{run.approvalRequest.note.summary}</span>}
     {note.state === 'loading' && <span>Loading the step note…</span>}
     {note.state === 'error' && <span>The step note could not be loaded.</span>}
-    {note.state === 'ready' && (note.content === null ? <span>This step left no note.</span> : <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto' }}>{note.content}</div>)}
-    <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
-      <button type="button" disabled={busy} onClick={() => submit('approve')}>Approve</button>
-      <textarea aria-label="Send-back comment" value={comment} maxLength={4000} disabled={busy} onChange={event => setComment(event.target.value)} rows={2} style={{ flex: 1, background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} />
+    {note.state === 'ready' && (note.content === null ? <span>This step left no note.</span> : <div className="pipeline-run-scroll-content">{note.content}</div>)}
+    <div className="pipeline-run-form-row">
+      <button type="button" disabled={busy} onClick={() => submit('approve')} className={describeRunStatus(run).primaryAction === 'approve' ? 'pipeline-run-primary' : undefined}>Approve</button>
+      <textarea aria-label="Send-back comment" value={comment} maxLength={4000} disabled={busy} onChange={event => setComment(event.target.value)} rows={2} className="pipeline-run-textarea" />
       <button type="button" disabled={busy || !comment.trim()} onClick={() => submit('sendBack')}>Send back</button>
     </div>
   </div>;
@@ -118,19 +120,7 @@ function InputRequestPanel({ run, onAnswer }) {
   };
 
   return (
-    <div
-      role="group"
-      aria-label={`${name} needs your input`}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 6,
-        padding: '8px 10px',
-        border: '1px solid var(--warning)',
-        borderRadius: 6,
-        background: 'var(--bg-base)',
-      }}
-    >
+    <div role="group" aria-label={`${name} needs your input`} className="pipeline-run-panel">
       {request === null && (
         <span>The agent is showing a dialog in its terminal. Answer it there.</span>
       )}
@@ -138,15 +128,15 @@ function InputRequestPanel({ run, onAnswer }) {
         <span>The agent did not say what it needs. Read its terminal, then answer here or there.</span>
       )}
       {request !== null && request.questions !== null && (
-        <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-primary)', lineHeight: 1.5, maxHeight: 220, overflowY: 'auto' }}>
+        <div className="pipeline-run-request-content">
           {request.questions}
         </div>
       )}
       {request?.truncated && (
-        <span style={{ color: 'var(--warning)' }}>The list was cut here. Read the rest in the agent's terminal.</span>
+        <span className="pipeline-run-warning">The list was cut here. Read the rest in the agent's terminal.</span>
       )}
       {run.actions?.answer && (
-        <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+        <div className="pipeline-run-form-row">
           <textarea
             aria-label={`Answer for ${name}`}
             rows={2}
@@ -155,20 +145,9 @@ function InputRequestPanel({ run, onAnswer }) {
             disabled={sending}
             onChange={(event) => setDraft(event.target.value)}
             placeholder="Type your answer; it is sent to the agent's terminal"
-            style={{
-              flex: 1,
-              minWidth: 0,
-              resize: 'vertical',
-              padding: '6px 8px',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              background: 'var(--bg-surface)',
-              color: 'var(--text-primary)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 12,
-            }}
+            className="pipeline-run-textarea"
           />
-          <button type="button" disabled={sending || draft.trim() === ''} onClick={() => send(draft)}>
+          <button type="button" disabled={sending || draft.trim() === ''} onClick={() => send(draft)} className={describeRunStatus(run).primaryAction === 'answer' ? 'pipeline-run-primary' : undefined}>
             Send answer
           </button>
           {request?.questions != null && (
@@ -220,12 +199,12 @@ function DecisionsPanel({ run, onLoadDecisions }) {
 
   if (count === 0) return null;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} style={{ alignSelf: 'flex-start' }}>
+    <div className="pipeline-run-panel">
+      <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} className="pipeline-run-panel-toggle">
         {`${count} ${noun} made by agents`}
       </button>
       {open && state.status === 'failed' && (
-        <span style={{ color: 'var(--danger)' }}>
+        <span className="pipeline-run-danger">
           The decisions could not be loaded.{' '}
           <button type="button" onClick={() => load(state.pages)}>Try again</button>
         </span>
@@ -233,20 +212,20 @@ function DecisionsPanel({ run, onLoadDecisions }) {
       {open && state.decisions.length > 0 && (
         <ul
           aria-label={`Decisions agents made in ${run.workflowName}`}
-          style={{ listStyle: 'none', margin: 0, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)', maxHeight: 260, overflowY: 'auto' }}
+          className="pipeline-run-list"
         >
           {state.decisions.map(decision => (
-            <li key={decision.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <strong style={{ color: 'var(--text-primary)' }}>{`${decision.stepName}, pass ${decision.pass}`}</strong>
-              <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-primary)', lineHeight: 1.5 }}>{decision.questions}</div>
-              {decision.truncated && <span style={{ color: 'var(--warning)' }}>The list was cut here.</span>}
-              <span style={{ color: 'var(--text-muted)' }}>{`Answered: ${decision.answer}`}</span>
+            <li key={decision.id} className="pipeline-run-list-item">
+              <strong className="pipeline-run-primary-text">{`${decision.stepName}, pass ${decision.pass}`}</strong>
+              <div className="pipeline-run-pre-wrap">{decision.questions}</div>
+              {decision.truncated && <span className="pipeline-run-warning">The list was cut here.</span>}
+              <span className="pipeline-run-muted">{`Answered: ${decision.answer}`}</span>
             </li>
           ))}
         </ul>
       )}
       {open && state.status !== 'failed' && state.hasNextPage && (
-        <button type="button" disabled={state.status === 'loading'} onClick={() => load(state.pages)} style={{ alignSelf: 'flex-start' }}>
+        <button type="button" disabled={state.status === 'loading'} onClick={() => load(state.pages)} className="pipeline-run-panel-toggle">
           Show more decisions
         </button>
       )}
@@ -289,18 +268,18 @@ function NotesPanel({ run, onLoadNotes }) {
   }, [open, run.id]);
   if (run.notesDir === null) return null;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div className="pipeline-run-panel">
       {run.steps.filter(step => step.note && step.note.status !== 'written').map(step => (
-        <span key={step.index} style={{ color: 'var(--warning)' }}>{`${step.name} ${NOTE_WARNING[step.note.status]}`}</span>
+        <span key={step.index} className="pipeline-run-warning">{`${step.name} ${NOTE_WARNING[step.note.status]}`}</span>
       ))}
-      <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} style={{ alignSelf: 'flex-start' }}>Notes</button>
-      {open && state.status === 'failed' && <span style={{ color: 'var(--danger)' }}>{state.error || 'The notes could not be loaded.'} <button type="button" onClick={() => load(state.pages)}>Try again</button></span>}
+      <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} className="pipeline-run-panel-toggle">Notes</button>
+      {open && state.status === 'failed' && <span className="pipeline-run-danger">{state.error || 'The notes could not be loaded.'} <button type="button" onClick={() => load(state.pages)}>Try again</button></span>}
       {open && state.notes.length > 0 && (
-        <ul aria-label={`Notes in ${run.workflowName}`} style={{ listStyle: 'none', margin: 0, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)', maxHeight: 260, overflowY: 'auto' }}>
-          {state.notes.map(note => <li key={note.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <strong style={{ color: 'var(--text-primary)' }}>{`${note.stepName}, pass ${note.pass}`}</strong>
+        <ul aria-label={`Notes in ${run.workflowName}`} className="pipeline-run-list">
+          {state.notes.map(note => <li key={note.id} className="pipeline-run-list-item">
+            <strong className="pipeline-run-primary-text">{`${note.stepName}, pass ${note.pass}`}</strong>
             {note.summary && <span>{note.summary}</span>}
-            {note.content !== null && <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{note.content}</div>}
+            {note.content !== null && <div className="pipeline-run-pre-wrap">{note.content}</div>}
           </li>)}
         </ul>
       )}
@@ -325,49 +304,53 @@ export default function PipelineRunsBar({
   if (!runs?.length) return null;
 
   return (
-    <div
-      data-testid="pipeline-runs-bar"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 8,
-        padding: '8px 12px',
-        borderBottom: '1px solid var(--border)',
-        background: 'var(--bg-surface)',
-        fontSize: 12,
-        color: 'var(--text-secondary)',
-      }}
-    >
+    <div data-testid="pipeline-runs-bar" className="pipeline-run-bar">
       {runs.map((run) => {
         const currentStep = run.steps?.[run.currentStepIndex] || run.steps?.find((step) => step.sessionId) || run.steps?.[0];
+        const status = describeRunStatus(run);
         const blockedCleanup = run.worktree?.state === 'removal_blocked' && run.worktree.detail
           ? describeBlockedCleanup(run.worktree.detail)
           : null;
         return (
-          <div key={run.id} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div
-            style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}
-          >
-            <strong style={{ color: 'var(--text-primary)' }}>{run.workflowName}</strong>
+          <div key={run.id} className="pipeline-run-item">
+          <div className="pipeline-run-heading">
+            <strong className="pipeline-run-name">{run.workflowName}</strong>
+            <span className="pipeline-run-status" data-status={run.status} data-tone={status.tone} aria-label={`Run status: ${status.label}`}>{status.label}</span>
+            {run.agentsDecide && (
+              <span title="Agents in this run go with their own recommendations instead of pausing for you" className="pipeline-run-agents-decide">agents decide</span>
+            )}
             {run.worktree?.branch && (
-              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+              <span className="pipeline-run-branch" title={run.worktree.branch}>
                 {run.worktree.branch}
               </span>
             )}
-            <span style={{ color: 'var(--text-muted)' }}>{run.status}</span>
-            {run.agentsDecide && (
-              <span title="Agents in this run go with their own recommendations instead of pausing for you" style={{ color: 'var(--warning)' }}>agents decide</span>
-            )}
-
-            {run.progress !== null && run.progress !== undefined && (
-              <div title={run.progress.file} style={{ flexBasis: '100%', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+            <div className="pipeline-run-actions">
+              {run.actions?.stop && !['interrupted', 'stopped', 'error', 'complete'].includes(run.status) && (
+                <button type="button" onClick={() => onStop(run.id)}>Stop</button>
+              )}
+              {run.actions?.continue && (
+                <button type="button" onClick={() => onContinue(run.id)} className={status.primaryAction === 'continue' ? 'pipeline-run-primary' : undefined}>Continue</button>
+              )}
+              {run.actions?.resume && (
+                <button type="button" onClick={() => { if (window.confirm(resumeConfirmation(run, currentStep))) onResume(run.id); }} className={status.primaryAction === 'resume' ? 'pipeline-run-primary' : undefined}>Resume</button>
+              )}
+              {run.actions?.cleanup && (
+                <button type="button" onClick={() => onCleanup(run.id)} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}>
+                  {/* A worktree the owner chose is never removed; the run only lets go of it. */}
+                  {run.worktree?.state === 'external' ? 'Dismiss run' : 'Clean up worktree'}
+                </button>
+              )}
+            </div>
+          </div>
+          {run.progress !== null && run.progress !== undefined && (
+              <div title={run.progress.file} className="pipeline-run-progress">
                 {run.progress.status === 'in_progress' ? (
                   <>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{`Phase ${run.progress.phase.number} of ${run.progress.phaseCount}${run.progress.phase.title ? `: ${run.progress.phase.title}` : ''}`}</span>
-                    <span style={{ color: 'var(--text-muted)' }}>{` · ${run.progress.phase.tasksDone}/${run.progress.phase.tasksTotal} tasks`}</span>
+                    <span className="pipeline-run-progress-phase">{`Phase ${run.progress.phase.number} of ${run.progress.phaseCount}${run.progress.phase.title ? `: ${run.progress.phase.title}` : ''}`}</span>
+                    <span className="pipeline-run-muted">{` · ${run.progress.phase.tasksDone}/${run.progress.phase.tasksTotal} tasks`}</span>
                   </>
                 ) : (
-                  <span style={{ color: run.progress.status === 'all_done' ? 'var(--accent)' : 'var(--warning)' }}>
+                  <span className={run.progress.status === 'all_done' ? 'pipeline-run-accent' : 'pipeline-run-warning'}>
                     {run.progress.status === 'all_done' && `All ${run.progress.phaseCount} ${run.progress.phaseCount === 1 ? 'phase' : 'phases'} ticked`}
                     {run.progress.status === 'no_phases' && `No "## Phase N" sections in ${run.progress.file}`}
                     {run.progress.status === 'missing' && `Progress file not found: ${run.progress.file}`}
@@ -376,10 +359,10 @@ export default function PipelineRunsBar({
                 )}
               </div>
             )}
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            <div className="pipeline-run-steps">
               {(run.steps || []).map((step) => {
                 const label = chipLabel(step);
+                const loopTarget = step.repeat?.mode === 'loop_back' ? run.steps?.find(target => target.index === step.repeat.toStepIndex) : null;
                 return (
                   <button
                     key={`${run.id}-${step.index}`}
@@ -388,20 +371,11 @@ export default function PipelineRunsBar({
                     onClick={() => step.sessionId && onActivateStep(step.sessionId)}
                     aria-label={label}
                     title={label}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 4,
-                      padding: '2px 8px',
-                      borderRadius: 999,
-                      border: '1px solid var(--border)',
-                      background: 'var(--bg-hover)',
-                      color: 'var(--text-primary)',
-                      cursor: step.sessionId ? 'pointer' : 'default',
-                      opacity: step.sessionId ? 1 : 0.6,
-                    }}
+                    data-step-state={describeStepState(step, { isCurrent: step.index === run.currentStepIndex || (run.currentStepIndex === undefined && currentStep === step) }).state}
+                    className="pipeline-run-step"
                   >
-                    {step.status === 'complete' && <Check size={12} color="var(--accent)" aria-hidden="true" />}
+                    {step.status === 'complete' && <Check size={12} aria-hidden="true" />}
+                    {loopTarget && <Repeat size={12} aria-hidden="true" title={`Loops back to ${loopTarget.name}`} />}
                     {label}
                   </button>
                 );
@@ -409,15 +383,15 @@ export default function PipelineRunsBar({
             </div>
 
             {run.error && (
-              <span style={{ color: 'var(--danger)' }}>{run.error}</span>
+              <span className="pipeline-run-danger">{run.error}</span>
             )}
             {blockedCleanup && (
               <>
-                <span style={{ color: 'var(--warning)' }}>{blockedCleanup.summary}</span>
+                <span className="pipeline-run-warning">{blockedCleanup.summary}</span>
                 {blockedCleanup.paths.length > 0 && (
                   <details>
                     <summary>Show files</summary>
-                    <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                    <div className="pipeline-run-cleanup-paths">
                       {blockedCleanup.paths.map((path, index) => <div key={`${index}-${path}`}>{path}</div>)}
                     </div>
                   </details>
@@ -425,31 +399,6 @@ export default function PipelineRunsBar({
               </>
             )}
 
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              {run.actions?.stop && (
-                <button type="button" onClick={() => onStop(run.id)}>Stop</button>
-              )}
-              {run.actions?.continue && (
-                <button type="button" onClick={() => onContinue(run.id)}>Continue</button>
-              )}
-              {run.actions?.resume && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (window.confirm(resumeConfirmation(run, currentStep))) onResume(run.id);
-                  }}
-                >
-                  Resume
-                </button>
-              )}
-              {run.actions?.cleanup && (
-                <button type="button" onClick={() => onCleanup(run.id)}>
-                  {/* A worktree the owner chose is never removed; the run only lets go of it. */}
-                  {run.worktree?.state === 'external' ? 'Dismiss run' : 'Clean up worktree'}
-                </button>
-              )}
-            </div>
-          </div>
           {run.status === 'needs_input' && <InputRequestPanel run={run} onAnswer={onAnswer} />}
           {run.status === 'awaiting_approval' && <ApprovalPanel run={run} onLoadNotes={onLoadNotes} onApprove={onApprove} onSendBack={onSendBack} />}
           <DecisionsPanel run={run} onLoadDecisions={onLoadDecisions} />

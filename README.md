@@ -50,7 +50,7 @@ Open `http://localhost:43000` in your browser.
 3. Use **Split right** (columns icon) to add side-by-side terminal panes — drag dividers to resize, double-click to reset.
 4. Use **+** in the tab bar to open new terminal tabs. Each tab has its own set of panes.
 5. Use the branch-plus icon beside **+**, or **Open in new worktree** on the **No terminals open** card, to create a terminal in a new Git worktree. Enter a new branch name (a string of 1–100 characters, valid Git branch syntax, no leading dash, whitespace, control characters, `<`, or `>`). CodeDeck creates the worktree in `worktrees/` beside the home repository from the current commit; uncommitted changes and ignored files are not copied. CodeDeck never removes this worktree.
-   The sidebar groups a project's terminals and open runs by worktree. Choose a group in the sidebar or in the switcher above the terminal tabs to see that worktree's tabs and run header. A plain new terminal opens in the main checkout. Terminals already open before worktree grouping was introduced appear under **Main checkout** until closed, except terminals of an open run, which appear with that run.
+   The sidebar groups a project's terminals and open runs by worktree. Choose a group in the sidebar or in the switcher above the terminal tabs to see that worktree's tabs and run header. Both places name a run worktree **Workflow name · first eight characters of run ID**; the full folder, branch and path are in its tooltip. A plain new terminal opens in the main checkout. Terminals already open before worktree grouping was introduced appear under **Main checkout** until closed, except terminals of an open run, which appear with that run.
 6. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
 
 Agent status comes from the live prompt, status, and footer region of each CLI pane, with 20 seconds of silence vetoing a stale working marker. Input dialogs appear as **Needs input**; working sub-agent panes and background shells keep the session **Running**. An idle agent with a live background shell therefore shows as Running.
@@ -82,6 +82,8 @@ OSC 52 sequences cannot read or overwrite the clipboard. Clipboard failures
 appear as a toast. Resizing or reconnecting ends selection with a notice.
 
 ## Workflow pipelines
+
+The run header describes state in plain words, such as **Running**, **Needs your input**, **Waiting for your approval**, **Interrupted**, **Failed** and **Complete**. When an action is available, the highlighted button shows the next thing to do. The step sequence marks completed, current, failed and stopped steps and shows where a loop returns.
 
 An ordered workflow gives each agent a step, a prompt, and a handoff to the next step. Start with **Bug fix** or **Feature build** in the **Add workflow** chooser, choose an agent for every step, then save. **Blank** starts from one empty step. **Duplicate** copies an existing workflow and its agent choices into a new unsaved draft.
 

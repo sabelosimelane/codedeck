@@ -1,9 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildWorktreeGroups, parseSessionWorktree, resolveSessionWorktrees, selectStoredWorktrees, selectTabAfterClose } from '../worktreeGroups';
+import { buildWorktreeGroups, describeWorktreeGroup, parseSessionWorktree, resolveSessionWorktrees, selectStoredWorktrees, selectTabAfterClose } from '../worktreeGroups';
 
 const project = { name: 'Demo', path: '/repo/demo' };
 const session = (sessionId, worktreePath, startedAt) => ({ sessionId, worktreePath, startedAt });
 const run = (id, path, branch, createdAt) => ({ id, project: 'Demo', status: 'running', workflowName: 'Build', worktree: { path, branch }, createdAt, progress: null, steps: [] });
+
+describe('describeWorktreeGroup', () => {
+  const main = { key: 'main', path: '/repo/demo', label: 'Main checkout', branch: null, isMain: true, run: null };
+  const plain = { key: '/repo/demo-topic', path: '/repo/demo-topic', label: 'demo-topic', branch: 'feature/topic', isMain: false, run: null };
+  it('describes main, a plain worktree and a run with one consistent tooltip', () => {
+    expect(describeWorktreeGroup(main)).toEqual({ title: 'Main checkout', detail: null, tooltip: 'demo\n/repo/demo' });
+    expect(describeWorktreeGroup(plain)).toEqual({ title: 'demo-topic', detail: null, tooltip: 'demo-topic\nfeature/topic\n/repo/demo-topic' });
+    expect(describeWorktreeGroup({ ...plain, run: { id: '57f488b5-1234', workflowName: 'Medium Feature Build' } })).toEqual({ title: 'Medium Feature Build · 57f488b5', detail: null, tooltip: 'demo-topic\nfeature/topic\n/repo/demo-topic' });
+  });
+  it('rejects malformed fields at the edge', () => {
+    expect(() => describeWorktreeGroup(null)).toThrow(/group/);
+    expect(() => describeWorktreeGroup({ ...plain, path: null })).toThrow(/path/);
+    expect(() => describeWorktreeGroup({ ...plain, run: { workflowName: 'Build' } })).toThrow(/run.id/);
+  });
+});
 
 describe('buildWorktreeGroups', () => {
   it('places a legacy run step with its open run, while a recorded path wins', () => {

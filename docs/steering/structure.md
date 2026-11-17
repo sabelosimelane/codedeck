@@ -84,7 +84,8 @@ codedeck/
 │       │   └── useWaitingSessions.js # Backend-confirmed waiting marks (no optimistic dimming) + app-wide auto-clear
 │       ├── utils/
 │       │   ├── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules, quiet indicator sets
-│       │   ├── worktreeGroups.js    # Pure project/worktree grouping and session edge guard
+│       │   ├── worktreeGroups.js    # Pure project/worktree grouping, shared display name and session edge guard
+│       │   ├── pipelineRunStatus.js # Pure run and step display states
 │       │   └── terminalWorktreesApi.js # Validated POST client for new worktree terminals
 │       └── styles/
 │           └── global.css            # CSS custom properties theme
@@ -183,6 +184,7 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 - `server/routes/pipelines.js`: definitions, settings, preflight and owner actions;
   transport validation and RFC 9457 errors. See `api-standards.md` for the contract.
 - `client/src/components/pipelines/`: definition editors, Run dialog and runs bar.
+- `client/src/components/pipelines/pipeline-runs.css`: run status, actions, connected step sequence and panels.
 - `client/src/hooks/usePipelineRuns.js`: active-project runs and action feedback.
 - `client/src/hooks/usePipelineRunCounts.js`: all-project open-run counts, polled
   every two seconds without overlapping requests; pagination uses `pipelinesApi`.

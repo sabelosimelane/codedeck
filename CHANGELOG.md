@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-11-17] - A workflow run that reads at a glance
+
+### Executive Summary
+* It was hard to tell whether a run was running, finished or waiting. The run header printed raw status words such as `interrupted`, offered Stop on a run that was not running, gave every button the same weight and drew every step the same. In the sidebar, a run's worktree header put a long folder name, the branch and the status on one row, so the name wrapped a word per line and the status was cut off. A run now says its state in plain words, the next thing to do is the highlighted button, steps are drawn as a connected sequence showing which are done, current and pending, and Stop appears only while the automation is running. A run's worktree is named by its workflow and short id in both the sidebar and the switcher, on one line that fits. No behaviour or data flow changed. This is the second half of the fourth phase.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `client/src/utils/pipelineRunStatus.js` — New. `describeRunStatus` (label, tone and the primary action for each run status, only when that action is offered) and `describeStepState` (done, current, failed, stopped, pending).
+  * `client/src/utils/worktreeGroups.js` — `describeWorktreeGroup`: `Main checkout`, `<workflow> · <short run id>` for a run's worktree, the folder name otherwise, and a tooltip with the folder, branch and path.
+  * `client/src/components/WorktreeGroupHeader.jsx`, `client/src/styles/global.css` — The title on one line with an ellipsis, a status pill that is never cut off, a second line for the phase, latest note or current step; the branch moved to the tooltip.
+  * `client/src/components/TerminalArea.jsx` — The worktree switcher uses the same titles, with a tab count and a dot when the run is waiting for the owner, and scrolls instead of wrapping.
+  * `client/src/components/pipelines/PipelineRunsBar.jsx`, `client/src/components/pipelines/pipeline-runs.css` — A status pill in plain words; the primary action emphasised; Stop not shown for an interrupted, stopped, failed or complete run; steps as a connected sequence styled by state, with a marker on the step that closes a loop; one panel style; every inline style moved to the new stylesheet.
+  * `README.md`, `docs/steering/structure.md` — The status words, the highlighted next action and how a run's worktree is named.
+* **🧪 Tests:**
+  * `client/src/utils/__tests__/pipelineRunStatus.test.js` — New. Every status row, an action that is not offered, an unknown status, each step state.
+  * `client/src/utils/__tests__/worktreeGroups.test.js`, `client/src/components/__tests__/WorktreeGroupHeader.test.jsx`, `client/src/components/__tests__/TerminalAreaWorktreeFilter.test.jsx`, `client/src/components/__tests__/SidebarWaitingCount.test.jsx` — The titles and tooltip, the status pill for every status, the switcher's names, counts and waiting dot. Assertions on the group's visible name and status word were updated to the new text.
+  * `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx` — The pill for every status, the primary action, where Stop appears, each step's state, the loop marker, and no inline colour or background style; existing assertions on chips, panels, actions and callbacks unchanged.
+  * Client suite: 69 files, 1,099 tests passed; the production build succeeds. Not checked in a browser.
+
 ## [2026-11-17] - Workflow templates, Duplicate, and a run's own plan as its progress
 
 ### Executive Summary

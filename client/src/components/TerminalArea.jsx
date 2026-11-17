@@ -23,7 +23,8 @@ import {
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import SessionTitleActions from './SessionTitleActions';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
-import { parseSessionWorktree, selectTabAfterClose } from '../utils/worktreeGroups';
+import { describeWorktreeGroup, parseSessionWorktree, selectTabAfterClose } from '../utils/worktreeGroups';
+import { describeRunStatus } from '../utils/pipelineRunStatus';
 import {
   getTabWaitingKey,
   isTabWaiting,
@@ -1113,11 +1114,12 @@ export default function TerminalArea({
         onActivateStep={activatePipelineSession}
       />
 
-      {groups.length > 1 && <div className="worktree-switcher" aria-label="Worktrees" style={{ display: 'flex', gap: 4, padding: '4px 8px', background: 'var(--bg-sidebar)', borderBottom: '1px solid var(--border)' }}>
+      {groups.length > 1 && <div className="worktree-switcher" aria-label="Worktrees">
         {groups.map(group => {
           const count = tabs.filter(tab => tabGroupKey(tab) === group.key).length;
-          const waiting = ['needs_input', 'limit_paused', 'awaiting_approval'].includes(group.run?.status);
-          return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${group.label} (${count})`} aria-pressed={visibleGroup === group.key} style={{ padding: '3px 7px', borderRadius: 4, background: visibleGroup === group.key ? 'var(--bg-active)' : 'transparent', color: waiting ? 'var(--warning)' : 'var(--text-secondary)', fontSize: 11, cursor: 'pointer' }}>{group.label} · {count}{waiting ? ' ●' : ''}</button>;
+          const { title, tooltip } = describeWorktreeGroup(group);
+          const waiting = group.run && describeRunStatus(group.run).tone === 'waiting';
+          return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
         })}
       </div>}
       <TerminalTabBar tabs={displayTabs} renderTab={tab => {
