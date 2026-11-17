@@ -65,6 +65,8 @@ import { createCliNamingClient } from './cli-naming-client.js';
 import { createNamingService } from './session-naming-service.js';
 import { createNamingRouter } from './routes/session-naming.js';
 import { createTerminalWaitingStore } from './terminal-waiting-store.js';
+import { createTerminalSessionWorktreeStore } from './terminal-session-worktree-store.js';
+import { createWorktreeSessionStarter } from './terminal-session-worktree-start.js';
 import { createTerminalWaitingRouter } from './routes/terminal-waiting.js';
 import { createTerminalWorktreeService } from './terminal-worktree-service.js';
 import { createTerminalWorktreesRouter } from './routes/terminal-worktrees.js';
@@ -610,6 +612,7 @@ async function reserveTerminalSession(projectName) {
     }
 
     reservedSessionIds.add(allocation.data.sessionId);
+    terminalSessionWorktreeStore.clear(allocation.data.sessionId);
     return { status: 201, body: allocation.data };
   } catch (error) {
     return { status: 500, body: { error: 'Failed to allocate terminal', detail: error.message } };
@@ -631,6 +634,7 @@ app.get('/api/sessions', (req, res) => {
     statusCache: terminalStatusCache,
     resolveHostRuntime,
     getReachability: hostReachability.getReachability,
+    worktreeStore: terminalSessionWorktreeStore,
   // Each row feeds the shared attention tracker and carries finished /
   // statusMuted / waiting, so no client keeps its own copy of those rules.
   }).map(row => sessionStateService.annotate(row)));
@@ -769,6 +773,7 @@ app.use(createNamingRouter({
   sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id) || namingStore.get(id) !== null),
 }));
 const terminalWaitingStore = createTerminalWaitingStore(db);
+const terminalSessionWorktreeStore = createTerminalSessionWorktreeStore(db);
 // Finished, muted and last-activity state shared by the desktop and the phone.
 // Parked work that lands clears its own waiting mark here, with no browser open.
 const sessionAttention = createSessionAttention({ db, now: Date.now, onLanded: sessionId => terminalWaitingStore.clear(sessionId) });
@@ -791,6 +796,7 @@ const pipelineRunEngineRef = { current: null };
 const terminalDeleteDeps = {
   sessions, deletedSessionIds, reservedSessionIds, terminalRuntime,
   resolveHostRuntime, namingService, waitingStore: terminalWaitingStore,
+  worktreeStore: terminalSessionWorktreeStore,
   sessionAttention, mobileStore, statusCache: terminalStatusCache,
   onSessionDeleted: (sessionId) => {
     pipelineRunEngineRef.current?.notifySessionClosed?.(sessionId);
@@ -842,10 +848,16 @@ const mobileSessionStarter = createMobileSessionStarter({
   },
   releaseReservation: sessionId => reservedSessionIds.delete(sessionId),
 });
+const startSessionWithWorktree = createWorktreeSessionStarter({
+  start: (project, options) => mobileSessionStarter.start(project, options),
+  loadProjects,
+  store: terminalSessionWorktreeStore,
+  now: () => new Date().toISOString(),
+});
 app.use(createTerminalWorktreesRouter({ service: createTerminalWorktreeService({
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   execFile,
-  startSession: (project, options) => mobileSessionStarter.start(project, options),
+  startSession: startSessionWithWorktree,
   pathExists: async target => {
     try { await fs.access(target); return true; }
     catch (error) {
@@ -895,11 +907,12 @@ const pipelineRunEngine = createRunEngine({
     }
   },
   startSession: async ({ project, cwd }) => {
-    const started = await mobileSessionStarter.start(project, { cwd });
+    const started = await startSessionWithWorktree(project, { cwd });
     return started.id;
   },
   attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
-    sessionId, sessions, terminalRuntime, deletedSessionIds, { cwd },
+    sessionId, sessions, terminalRuntime, deletedSessionIds,
+    { cwd, onSessionEnded: endedId => { mobileStore.retireSession(endedId); terminalSessionWorktreeStore.clear(endedId); } },
   ),
   // Resume returns a step to its own terminal while that terminal can still be attached to.
   terminalAvailable: (sessionId) => backgroundSessionAvailable(
@@ -974,13 +987,13 @@ const agentHistory = createAgentHistory({ home: os.homedir(), fs: fsSync, Databa
 app.use(createAgentSessionsRouter({
   loadProjects,
   history: agentHistory,
-  startSession: projectName => mobileSessionStarter.start(projectName),
+  startSession: projectName => startSessionWithWorktree(projectName),
   submitCommand: (sessionId, command) => submitDetachedCommand(sessionId, command, { execFile: execFileSync, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) }),
 }));
 app.use(createMobileRouter({
   store: mobileStore, notifications: mobileNotifications,
   notificationsReady: () => notificationProvider !== null, ...mobileDiscovery,
-  startSession: projectId => mobileSessionStarter.start(projectId),
+  startSession: projectId => startSessionWithWorktree(projectId),
   setSessionState: (sessionId, patch) => sessionStateService.apply(sessionId, patch),
   terminalMetrics: () => ({
     attachments: [...sessions.values()].reduce((sum, entry) => sum + (entry.attachments?.size ?? 0), 0),
@@ -992,6 +1005,7 @@ process.once('exit', () => mobileNotifications.stop());
 const sessionPruneTimer = setInterval(() => {
   const onPruned = (sessionId, entry) => {
     mobileStore.retireSession(sessionId);
+    terminalSessionWorktreeStore.clear(sessionId);
     pipelineRunEngineRef.current?.notifySessionClosed?.(sessionId);
     console.log(`[terminal] pruned session=${sessionId} host=${entry.host ?? 'local'} alive=${entry.alive} wsAttached=${entry.wsAttached}`);
   };
@@ -1008,7 +1022,8 @@ const terminalWsOptions = {
   onInput: (sessionId, data) => { sessionAttention.touch(sessionId); namingService.input(sessionId, data); },
   onDesktopActivity: () => { lastDesktopActivityAt = Date.now(); },
   getSessionIncarnation: (id, { create } = {}) => create ? mobileStore.ensureIncarnation(id) : mobileStore.currentIncarnation(id),
-  onSessionEnded: mobileStore.retireSession,
+  onSessionEnded: sessionId => { mobileStore.retireSession(sessionId); terminalSessionWorktreeStore.clear(sessionId); },
+  onNewSession: sessionId => terminalSessionWorktreeStore.clear(sessionId),
   adoptSessionIncarnation: mobileStore.adoptIncarnation,
 };
 wss.on('connection', (ws, req) => {

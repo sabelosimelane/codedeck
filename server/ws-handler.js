@@ -1064,6 +1064,7 @@ function attachSessionSocket(ws, req, sessions, runtime, deletedSessionIds, rese
       attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
     }
 
+    if (!recoverableTmuxWithoutEntry) options.onNewSession?.(sessionId);
     sessions.set(sessionId, entry);
 
     const attachDetail = recoverableTmuxWithoutEntry ? 'durable recovery' : 'initial connection';
@@ -1659,6 +1660,7 @@ async function handleRemoteWsConnection(ws, { sessionId, cwd, cols, rows, incarn
       attachState = beginBootstrapDropAttach(entry, entry.lastSeq ?? 0);
     }
 
+    if (!recoverableWithoutEntry) options.onNewSession?.(sessionId);
     sessions.set(sessionId, entry);
 
     const attachType = recoverableWithoutEntry ? 'durable_recovery' : 'initial';

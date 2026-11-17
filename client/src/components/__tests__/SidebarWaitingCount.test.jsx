@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render } from '@testing-library/react';
 import React from 'react';
 
 const mocks = vi.hoisted(() => ({ showToast: vi.fn() }));
@@ -99,6 +99,24 @@ describe('Sidebar waiting tab count', () => {
   it('shows no badge when a project has no waiting tabs', () => {
     const view = renderSidebar({ waitingSessionIds: new Set() });
     expect(view.queryByTestId('project-waiting-count-Alpha')).toBeNull();
+  });
+
+  it('shows selectable worktree headers and keeps main-only rows unchanged', () => {
+    const onSelectWorktree = vi.fn();
+    const groups = new Map([['Alpha', [
+      { key: 'main', label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Alpha-1'], run: null },
+      { key: '/tmp/alpha-feature', label: 'alpha-feature', branch: 'feature', isMain: false, sessionIds: ['Alpha-2'], run: { status: 'needs_input', progress: { phase: { number: 2 }, phaseCount: 4 }, steps: [] } },
+    ]]]);
+    const view = renderSidebar({
+      worktreeGroupsByProject: groups, selectedWorktreeByProject: { Alpha: 'main' }, onSelectWorktree,
+      sessionStatus: [{ sessionId: 'Alpha-1', alive: true }, { sessionId: 'Alpha-2', alive: true }],
+    });
+    expect(view.getByText('Main checkout')).toBeTruthy();
+    expect(view.getByText('alpha-feature')).toBeTruthy();
+    expect(view.getByText('Phase 2 of 4')).toBeTruthy();
+    expect(view.getByText('needs you')).toBeTruthy();
+    fireEvent.click(view.getByText('alpha-feature'));
+    expect(onSelectWorktree).toHaveBeenCalledWith('Alpha', '/tmp/alpha-feature');
   });
 
   it('counts only the waiting tabs belonging to each project', () => {

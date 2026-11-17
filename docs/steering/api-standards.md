@@ -91,6 +91,11 @@ Coverage: `server/__tests__/terminal-waiting-store.test.js`,
 
 ## Terminal worktrees
 
+`GET /api/sessions` adds `worktreePath` to each existing session row. It is the
+absolute directory where that session started, or `null` for the project's main
+checkout. It does not follow later shell `cd` commands. Older sessions have no
+recorded worktree and appear under the main checkout until closed.
+
 `POST /api/terminal-worktrees` accepts exactly `{project: string, branch: string}` and
 returns 201 with `{sessionId, project, branch, worktreePath, baseCommit}`. The project
 must be local and its path a Git working tree root. The branch must be new, 1–100

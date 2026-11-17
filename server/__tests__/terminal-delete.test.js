@@ -11,6 +11,7 @@ function setup(killError = null) {
   const reservedSessionIds = new Set(['demo-1']);
   const kill = vi.fn(async () => { if (killError) throw killError; });
   const waitingStore = { clear: vi.fn() };
+  const worktreeStore = { clear: vi.fn() };
   const namingService = { remove: vi.fn() };
   const sessionAttention = { forget: vi.fn() };
   const mobileStore = { retireSession: vi.fn() };
@@ -18,11 +19,11 @@ function setup(killError = null) {
   const app = express();
   const deps = {
     sessions, deletedSessionIds, reservedSessionIds, terminalRuntime: { killAsync: kill },
-    resolveHostRuntime: () => null, namingService, waitingStore,
+    resolveHostRuntime: () => null, namingService, waitingStore, worktreeStore,
     sessionAttention, mobileStore, statusCache,
   };
   app.delete('/api/terminal/:sessionId', createTerminalDeleteHandler(deps));
-  return { app, attachment, sessions, deletedSessionIds, reservedSessionIds, kill, waitingStore, namingService, sessionAttention, mobileStore, statusCache };
+  return { app, attachment, sessions, deletedSessionIds, reservedSessionIds, kill, waitingStore, worktreeStore, namingService, sessionAttention, mobileStore, statusCache };
 }
 
 describe('DELETE /api/terminal/:sessionId', () => {
@@ -36,6 +37,7 @@ describe('DELETE /api/terminal/:sessionId', () => {
     expect(state.sessions.has('demo-1')).toBe(false);
     expect(state.deletedSessionIds.has('demo-1')).toBe(true);
     expect(state.waitingStore.clear).toHaveBeenCalledWith('demo-1');
+    expect(state.worktreeStore.clear).toHaveBeenCalledWith('demo-1');
   });
 
   it.each([
@@ -53,6 +55,7 @@ describe('DELETE /api/terminal/:sessionId', () => {
     expect(state.reservedSessionIds.has('demo-1')).toBe(true);
     expect(state.attachment.ws.close).not.toHaveBeenCalled();
     expect(state.waitingStore.clear).not.toHaveBeenCalled();
+    expect(state.worktreeStore.clear).not.toHaveBeenCalled();
     expect(state.namingService.remove).not.toHaveBeenCalled();
     expect(state.sessionAttention.forget).not.toHaveBeenCalled();
     expect(state.mobileStore.retireSession).not.toHaveBeenCalled();

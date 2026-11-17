@@ -11,6 +11,7 @@ function createMockPty() {
     resize: vi.fn(),
     kill: vi.fn(),
     emitData(data) { dataListeners.forEach(cb => cb(data)); },
+    emitExit(info) { exitListeners.forEach(cb => cb(info)); },
   };
 }
 
@@ -69,6 +70,14 @@ describe('attachBackgroundSession', () => {
     runtime = createMockRuntime(() => pty, { recoverable: true });
   });
   afterEach(() => vi.useRealTimers());
+
+  it('notifies lifecycle cleanup when a background session truly ends', () => {
+    const onSessionEnded = vi.fn();
+    attachBackgroundSession('demo-1', sessions, runtime, deletedSessionIds, { cwd: '/tmp/work', onSessionEnded });
+    runtime.isSessionRecoverable.mockReturnValue(false);
+    pty.emitExit({ exitCode: 0 });
+    expect(onSessionEnded).toHaveBeenCalledWith('demo-1');
+  });
 
   it('creates an entry with no socket, exposes write/observe/release, and reuses the loop engine for a later browser', () => {
     const handle = attachBackgroundSession('demo-1', sessions, runtime, deletedSessionIds, {

@@ -4,12 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { createTerminalWorktreeService } from '../terminal-worktree-service.js';
+import { createWorktreeSessionStarter } from '../terminal-session-worktree-start.js';
 
 function git(cwd, ...args) {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 }
 
-function fixture() {
+function fixture(recordWorktree = null) {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'terminal-worktree-')));
   const home = path.join(root, 'repo');
   mkdirSync(home);
@@ -21,16 +22,25 @@ function fixture() {
   git(home, 'commit', '-m', 'initial');
   const project = { name: 'Demo', path: home, host: 'local' };
   const startSession = vi.fn(async () => ({ id: 'Demo-1' }));
+  const startWithWorktree = recordWorktree ? createWorktreeSessionStarter({ start: startSession, loadProjects: () => [project], store: recordWorktree, now: () => '2026-11-17T10:00:00.000Z' }) : startSession;
   const service = createTerminalWorktreeService({
     findProject: name => name === 'Demo' ? project : null,
     execFile,
-    startSession,
+    startSession: startWithWorktree,
     pathExists: existsSync,
   });
   return { root, home, project, startSession, service, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
 describe('terminal worktree service', () => {
+  it('records a newly created worktree terminal through its session starter', async () => {
+    const store = { set: vi.fn() };
+    const f = fixture(store);
+    try {
+      const result = await f.service.open({ project: 'Demo', branch: 'feature' });
+      expect(store.set).toHaveBeenCalledWith({ sessionId: result.sessionId, project: 'Demo', worktreePath: result.worktreePath, createdAt: '2026-11-17T10:00:00.000Z' });
+    } finally { f.cleanup(); }
+  });
   it('creates a branch and worktree from current HEAD, then starts a terminal in it', async () => {
     const f = fixture();
     try {

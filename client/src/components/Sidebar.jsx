@@ -6,6 +6,8 @@ import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
+import SidebarSessionRows from './SidebarSessionRows';
+import WorktreeGroupHeader from './WorktreeGroupHeader';
 import { countWaitingSessionsForProject, getQuietStatusSessionIds } from '../utils/terminalWaiting';
 import {
   createNotificationAudioContext,
@@ -18,8 +20,6 @@ import {
 import {
   DEFAULT_TERMINAL_COMPLETION_NOTIFICATION_MS,
   getVisualAggregateTerminalStatus,
-  getVisualTerminalStatus,
-  getDisplayTerminalStatus,
   getTerminalCompletionNotification,
   getTerminalStatus,
   resolveTerminalCompletionNotificationMs,
@@ -28,16 +28,6 @@ import { doesSessionBelongToProject } from '../utils/terminalProjectMatch';
 
 const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
 const mod = isMac ? '⌘' : 'Ctrl+';
-
-function formatTimeSince(isoString) {
-  if (!isoString) return '';
-  const secs = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
-  if (secs < 5) return 'just now';
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  return `${Math.floor(mins / 60)}h ago`;
-}
 
 function getProjectStatus(sessions, finishedIds, mutedStatusSessionIds) {
   if (!sessions || sessions.length === 0) return { status: 'none' };
@@ -170,7 +160,7 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, waitingProjects = [], openRunCounts = new Map(), shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts }) {
+export default function Sidebar({ activeProjects, waitingProjects = [], openRunCounts = new Map(), worktreeGroupsByProject = new Map(), selectedWorktreeByProject = {}, onSelectWorktree = () => {}, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts }) {
   // Parked sessions stop pulsing and blinking here too — reusing the visual path
   // the mute drives, without joining the mute set the eye icon reports.
   const quietStatusSessionIds = getQuietStatusSessionIds(mutedStatusSessionIds, waitingSessionIds);
@@ -606,6 +596,8 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
             const isActive = activeProject?.name === project.name;
             const isRenaming = renamingProject === project.name;
             const projSessions = getProjectSessions(project);
+            const groups = worktreeGroupsByProject.get(project.name) ?? [];
+            const showWorktreeGroups = !isCompact && (groups.length > 1 || Boolean(groups[0]?.run));
             const hostName = getProjectHost(project);
             const reachability = getProjectReachability(project, projSessions);
             const lastError = getProjectLastError(project, projSessions);
@@ -739,59 +731,12 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
                 )}
 
                 {/* Per-session details */}
-                {!isCompact && projSessions.length > 0 && projSessions.map(session => {
-                  const termStatus = getDisplayTerminalStatus(session, finishedSessionIds);
-                  const visualStatus = getVisualTerminalStatus(session, finishedSessionIds, quietStatusSessionIds);
-                  const isStatusMuted = mutedStatusSessionIds.has(session.sessionId);
-                  const timeSince = formatTimeSince(session.lastOutputAt);
-                  const dotColor = visualStatus === 'busy'
-                    ? 'var(--accent)'
-                    : visualStatus === 'finished'
-                    ? 'var(--warning)'
-                    : visualStatus === 'dead'
-                    ? 'var(--danger)'
-                    : 'var(--text-muted)';
-                  return (
-                    <div key={session.sessionId} style={{ marginTop: 4 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 16, minWidth: 0 }}>
-                        <span
-                          className={visualStatus === 'busy' ? 'terminal-dot-busy' : visualStatus === 'finished' ? 'terminal-dot-finished' : undefined}
-                          style={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: '50%',
-                            background: dotColor,
-                            flexShrink: 0,
-                            display: 'inline-block',
-                          }}
-                          title={`Terminal ${session.sessionId}: ${termStatus === 'finished' ? 'finished — needs attention' : termStatus}${isStatusMuted ? ' (status colors muted)' : ''}${waitingSessionIds.has(session.sessionId) ? ' (waiting)' : ''}`}
-                        />
-                        <span title={session.sessionId} style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-                          {session.title || session.sessionId}
-                        </span>
-                        <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' }}>
-                          · {timeSince}
-                        </span>
-                      </div>
-                      {session.lastOutputLine && (
-                        <div style={{
-                          marginLeft: 28,
-                          marginTop: 2,
-                          fontSize: '11px',
-                          fontFamily: 'var(--font-mono)',
-                          color: 'var(--text-muted)',
-                          opacity: 0.6,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          maxWidth: 'calc(100% - 28px)',
-                        }}>
-                          {session.lastOutputLine}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {!isCompact && (showWorktreeGroups ? groups.map(group => (
+                  <React.Fragment key={group.key}>
+                    <WorktreeGroupHeader group={group} selected={selectedWorktreeByProject[project.name] === group.key} onClick={() => { if (!isActive) onSelect(project); onSelectWorktree(project.name, group.key); }} />
+                    <SidebarSessionRows sessions={projSessions.filter(session => group.sessionIds.includes(session.sessionId))} finishedSessionIds={finishedSessionIds} quietStatusSessionIds={quietStatusSessionIds} mutedStatusSessionIds={mutedStatusSessionIds} waitingSessionIds={waitingSessionIds} />
+                  </React.Fragment>
+                )) : <SidebarSessionRows sessions={projSessions} finishedSessionIds={finishedSessionIds} quietStatusSessionIds={quietStatusSessionIds} mutedStatusSessionIds={mutedStatusSessionIds} waitingSessionIds={waitingSessionIds} />)}
               </div>
             );
           })}

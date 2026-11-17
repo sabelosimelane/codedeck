@@ -12,6 +12,8 @@ it('counts all projects and replaces counts when runs close', async () => {
   const { result } = renderHook(() => usePipelineRunCounts(showToast));
   await waitFor(() => expect(result.current.get('Alpha')).toEqual({ open: 2, awaitingOwner: 0 }));
   expect(result.current.get('Beta')).toEqual({ open: 1, awaitingOwner: 0 });
+  expect(result.current.runsByProject.get('Alpha')).toHaveLength(2);
+  expect(result.current.runsByProject.get('Alpha')[0]).toMatchObject({ id: validRun().id, status: validRun().status, workflowName: validRun().workflowName, worktree: { path: validRun().worktree.path, branch: validRun().worktree.branch } });
   expect(mocks.listOpenRuns).toHaveBeenCalledWith();
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
   expect(result.current.size).toBe(0);

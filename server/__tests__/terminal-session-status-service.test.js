@@ -42,6 +42,7 @@ describe('listTerminalSessions', () => {
     // cockpit shows real running/idle status for backgrounded projects.
     expect(result).toMatchObject({
       sessionId: 'Mace-118',
+      worktreePath: null,
       alive: true,
       wsAttached: false,
       health: 'detached',
@@ -53,6 +54,18 @@ describe('listTerminalSessions', () => {
       needsInput: false,
     });
     expect(runtime.getSessionExecutionState).toHaveBeenCalledWith('Mace-118');
+  });
+
+  it('adds the recorded spawn worktree without changing the remaining session fields', () => {
+    const options = {
+      sessions: new Map([['Demo-1', { cwd: '/repo/demo', startedAt: null, lastOutputAt: null, lastOutputLine: '', alive: false }]]),
+      runtime: { type: 'tmux', listSessionIds: () => [] }, projects: [{ name: 'Demo', path: '/repo/demo' }],
+      computeHealth: () => 'dead', computeStallReason: () => null, sanitizePreviewLine: value => value,
+    };
+    const [main] = listTerminalSessions(options);
+    const [worktree] = listTerminalSessions({ ...options, worktreeStore: { get: () => ({ worktreePath: '/repo/demo-feature' }) } });
+    expect(worktree.worktreePath).toBe('/repo/demo-feature');
+    expect({ ...worktree, worktreePath: null }).toEqual(main);
   });
 
   it('includes detached durable tmux sessions for configured projects', () => {

@@ -46,6 +46,8 @@ codedeck/
 │   ├── agent-profiles/  # Pure live-screen readers for Codex, Claude, Cursor, agy, Muse
 │   ├── agent-history/   # Read-only CLI history readers, merge/search, and resume command/service
 │   ├── terminal-waiting-store.js # SQLite store for per-tab waiting marks
+│   ├── terminal-session-worktree-store.js # Durable spawn-worktree mapping per session id
+│   ├── terminal-session-worktree-start.js # Shared detached-session start wrapper
 │   ├── terminal-worktree-service.js # Validates and creates a branch/worktree, then starts its terminal
 │   ├── routes/
 │   │   ├── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)
@@ -64,6 +66,9 @@ codedeck/
 │       ├── components/
 │       │   ├── Sidebar.jsx           # Project list, status cockpit, file browse trigger
 │       │   ├── TerminalArea.jsx      # Tab bar, N-pane layout, localStorage persistence
+│       │   ├── TerminalTabBar.jsx    # Tab row container and actions
+│       │   ├── SidebarSessionRows.jsx # Per-project session details
+│       │   └── WorktreeGroupHeader.jsx # Worktree label, run status and progress
 │       │   ├── NewWorktreeTerminalDialog.jsx # Branch input and worktree creation feedback
 │       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, snapshot hydration, transport replay, visibility recovery
 │       │   ├── TerminalInspector.jsx # Debug inspector: health, timeline, recovery actions, snapshot copy
@@ -79,6 +84,7 @@ codedeck/
 │       │   └── useWaitingSessions.js # Backend-confirmed waiting marks (no optimistic dimming) + app-wide auto-clear
 │       ├── utils/
 │       │   ├── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules, quiet indicator sets
+│       │   ├── worktreeGroups.js    # Pure project/worktree grouping and session edge guard
 │       │   └── terminalWorktreesApi.js # Validated POST client for new worktree terminals
 │       └── styles/
 │           └── global.css            # CSS custom properties theme

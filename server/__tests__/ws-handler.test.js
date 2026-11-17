@@ -429,8 +429,10 @@ describe('handleWsConnection', () => {
     it('sends session info message with existing=false for new sessions', () => {
       const ws = createMockWs();
       const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+      const onNewSession = vi.fn();
 
-      handleWsConnection(ws, req, sessions, spawnPty);
+      handleWsConnection(ws, req, sessions, spawnPty, new Set(), new Set(), { onNewSession });
+      expect(onNewSession).toHaveBeenCalledWith('test-1');
 
       expect(ws.send.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual(
         expect.objectContaining({

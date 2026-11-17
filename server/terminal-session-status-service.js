@@ -38,6 +38,7 @@ export function listTerminalSessions({
   statusCache = null,
   resolveHostRuntime = null,
   getReachability = null,
+  worktreeStore = null,
 } = {}) {
   const result = [];
   const seenSessionIds = new Set();
@@ -86,6 +87,7 @@ export function listTerminalSessions({
 
     result.push({
       sessionId,
+      worktreePath: worktreeStore?.get(sessionId)?.worktreePath ?? null,
       host: entry.host ?? 'local',
       ...getReachability?.(entry.host ?? 'local'),
       cwd,
@@ -155,6 +157,7 @@ export function listTerminalSessions({
 
     result.push({
       sessionId,
+      worktreePath: worktreeStore?.get(sessionId)?.worktreePath ?? null,
       host: hostResolution?.host ?? 'local',
       ...getReachability?.(hostResolution?.host ?? 'local'),
       cwd,

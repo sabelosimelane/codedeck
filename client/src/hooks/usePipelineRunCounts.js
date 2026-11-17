@@ -18,8 +18,17 @@ export function usePipelineRunCounts(showToast) {
       try {
         const runs = await listOpenRuns();
         const next = new Map();
+        const runsByProject = new Map();
         for (const [index, record] of runs.entries()) {
           const run = parseRun(record, index);
+          const groupRuns = runsByProject.get(run.project) ?? [];
+          groupRuns.push({
+            id: run.id, project: run.project, status: run.status, workflowName: run.workflowName,
+            worktree: { path: run.worktree.path, branch: run.worktree.branch },
+            progress: run.progress, createdAt: run.createdAt,
+            steps: run.steps.map(step => ({ status: step.status, name: step.name, sessionId: step.sessionId, note: step.note })),
+          });
+          runsByProject.set(run.project, groupRuns);
           const counts = next.get(run.project) ?? { open: 0, awaitingOwner: 0 };
           next.set(run.project, {
             open: counts.open + 1,
@@ -27,6 +36,7 @@ export function usePipelineRunCounts(showToast) {
           });
         }
         if (!disposed) {
+          next.runsByProject = runsByProject;
           setCounts(next);
           errorReported = false;
         }

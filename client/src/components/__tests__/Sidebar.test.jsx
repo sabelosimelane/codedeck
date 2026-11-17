@@ -93,6 +93,25 @@ function renderSidebar(overrides = {}) {
 }
 
 describe('Sidebar', () => {
+  it('selecting an inactive project worktree activates its project', () => {
+    const project = { name: 'Demo', path: '/tmp/demo' };
+    const onSelect = vi.fn();
+    const onSelectWorktree = vi.fn();
+    const group = { key: '/tmp/demo-feature', path: '/tmp/demo-feature', label: 'demo-feature', branch: 'feature', isMain: false, sessionIds: [], run: null };
+    const view = renderSidebar({ activeProjects: [project], activeProject: null, onSelect, onSelectWorktree,
+      worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: [], run: null }, group]]]) });
+    fireEvent.click(view.getByRole('button', { name: 'Select demo-feature worktree' }));
+    expect(onSelect).toHaveBeenCalledWith(project);
+    expect(onSelectWorktree).toHaveBeenCalledWith(project.name, group.key);
+  });
+  it('keeps legacy session rows and omits a header for a main-only project without a run', () => {
+    const project = { name: 'Demo', path: '/tmp/demo' };
+    const sessionStatus = [{ sessionId: 'Demo-1', cwd: project.path, alive: true, title: 'Existing terminal' }];
+    const view = renderSidebar({ activeProjects: [project], activeProject: project, sessionStatus,
+      worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Demo-1'], run: null }]]]) });
+    expect(view.queryByTestId('worktree-group-header')).toBeNull();
+    expect(view.getByText('Existing terminal').title).toBe('Demo-1');
+  });
   it('shows a generated session title with the original ID available in a tooltip', () => {
     global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
     const project = { name: 'Demo', path: '/tmp/demo' };

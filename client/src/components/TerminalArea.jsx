@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
+import TerminalTabBar from './TerminalTabBar';
 import PaneDivider from './PaneDivider';
 import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play, GitBranchPlus } from 'lucide-react';
 import NewWorktreeTerminalDialog from './NewWorktreeTerminalDialog';
@@ -22,6 +23,7 @@ import {
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import SessionTitleActions from './SessionTitleActions';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
+import { parseSessionWorktree, selectTabAfterClose } from '../utils/worktreeGroups';
 import {
   getTabWaitingKey,
   isTabWaiting,
@@ -32,6 +34,10 @@ import {
 
 const IS_MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 const DEFAULT_RUNTIME_BLOCKED_MESSAGE = 'Install tmux to enable durable CodeDeck terminals.';
+function readWorktreeSelection(projectName) {
+  try { return localStorage.getItem(`codedeck-worktree-${projectName}`) ?? 'main'; }
+  catch (error) { console.warn(`Could not read worktree selection for ${projectName}: ${error.message}`); return 'main'; }
+}
 
 function ShortcutHint({ label, keys, children }) {
   const [visible, setVisible] = useState(false);
@@ -305,6 +311,10 @@ function getPaneStatusTitle(sessionId, status, session) {
 
 export default function TerminalArea({
   project,
+  worktreeBySession = new Map(),
+  worktreeGroups = null,
+  selectedWorktree,
+  onSelectWorktree,
   sessionStatus = [],
   sessionTitles = {},
   onTitlesChanged = () => {},
@@ -330,6 +340,13 @@ export default function TerminalArea({
   onLoadPipelineRunNotes = async () => null,
 }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
+  const [localWorktreeSelection, setLocalWorktreeSelection] = useState(() => readWorktreeSelection(project.name));
+  const chooseWorktree = key => {
+    setLocalWorktreeSelection(key);
+    try { localStorage.setItem(`codedeck-worktree-${project.name}`, key); }
+    catch (error) { console.warn(`Could not save worktree selection for ${project.name}: ${error.message}`); }
+    onSelectWorktree?.(key);
+  };
   const [activePaneId, setActivePaneId] = useState(null);
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
   const [inspectingSessionId, setInspectingSessionId] = useState(null);
@@ -349,7 +366,18 @@ export default function TerminalArea({
   const pendingSessionIdsRef = useRef(new Set());
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
-  const displayTabs = orderTabsForDisplay(tabs, waitingSessionIds);
+  const tabGroupKey = tab => worktreeBySession.get(tab?.panes?.[0]?.sessionId)
+    ?? createdWorktreePathsRef.current.get(`${project.name}:${tab?.panes?.[0]?.sessionId}`)
+    ?? 'main';
+  const groups = worktreeGroups ? [...worktreeGroups] : [{ key: 'main', label: 'Main checkout', path: project.path, run: null }];
+  for (const tab of (worktreeGroups ? tabs : [])) {
+    const key = tabGroupKey(tab);
+    if (!groups.some(group => group.key === key)) groups.push({ key, label: key.split('/').pop(), path: key, run: null });
+  }
+  const requestedGroup = selectedWorktree ?? localWorktreeSelection;
+  const visibleGroup = groups.some(group => group.key === requestedGroup) ? requestedGroup : 'main';
+  const displayTabs = orderTabsForDisplay(groups.length > 1 ? tabs.filter(tab => tabGroupKey(tab) === visibleGroup) : tabs, waitingSessionIds);
+  const lastActiveByGroupRef = useRef(new Map());
   // Parked panes drop their pulse and blink everywhere in this view, through the
   // same visual path the eye-icon mute drives — without joining the mute set.
   const quietStatusSessionIds = getQuietStatusSessionIds(
@@ -443,6 +471,10 @@ export default function TerminalArea({
         const res = await fetch('/api/sessions');
         if (!res.ok) throw new Error('Failed to fetch sessions');
         const liveSessions = await res.json();
+        if (worktreeGroups) {
+          if (!Array.isArray(liveSessions)) throw new Error('Invalid sessions response');
+          liveSessions.forEach(parseSessionWorktree);
+        }
 
         if (cancelled) return;
 
@@ -509,13 +541,32 @@ export default function TerminalArea({
 
   const setActiveTabId = useCallback((id) => {
     const selected = stateRef.current.tabs.find(tab => tab.id === id);
+    if (selected) chooseWorktree(tabGroupKey(selected));
     setTimeout(() => terminalRefs.current.get(selected?.panes[0]?.id)?.claimControl?.(), 0);
     updateTerminalState(prev => {
       const tab = prev.tabs.find(t => t.id === id);
       setActivePaneId(tab?.panes[0]?.id ?? null);
       return { ...prev, activeTabId: id };
     });
-  }, []);
+  }, [onSelectWorktree, worktreeBySession, project.name]);
+
+  useEffect(() => {
+    if (activeTab) lastActiveByGroupRef.current.set(tabGroupKey(activeTab), activeTab.id);
+  }, [activeTabId, project.name, worktreeBySession]);
+
+  useEffect(() => {
+    if (groups.length < 2 || (activeTab && tabGroupKey(activeTab) === visibleGroup)) return;
+    const candidates = tabs.filter(tab => tabGroupKey(tab) === visibleGroup);
+    const preferred = candidates.find(tab => tab.id === lastActiveByGroupRef.current.get(visibleGroup)) ?? candidates.at(-1);
+    if (activeTabId !== (preferred?.id ?? null)) updateTerminalState(previous => ({ ...previous, activeTabId: preferred?.id ?? null }));
+  }, [visibleGroup, tabs, activeTabId, project.name, worktreeBySession]);
+
+  const selectGroup = key => {
+    chooseWorktree(key);
+    const candidates = tabs.filter(tab => tabGroupKey(tab) === key);
+    const preferred = candidates.find(tab => tab.id === lastActiveByGroupRef.current.get(key)) ?? candidates.at(-1);
+    updateTerminalState(previous => ({ ...previous, activeTabId: preferred?.id ?? null }));
+  };
 
   // Auto-select first pane when active tab changes (project switch, initial load)
   useEffect(() => {
@@ -637,6 +688,7 @@ export default function TerminalArea({
   const addTab = useCallback(async () => {
     const sessionId = await requestTerminalSessionId('Opened terminal');
     if (!sessionId) return;
+    chooseWorktree('main');
     const tab = createTab(sessionId);
     intentionalOpenIds.current.add(sessionId);
     setActivePaneId(tab.panes[0].id);
@@ -644,13 +696,14 @@ export default function TerminalArea({
       tabs: [...prev.tabs, tab],
       activeTabId: tab.id,
     }), { persistImmediately: true });
-  }, [requestTerminalSessionId, updateTerminalState]);
+  }, [requestTerminalSessionId, updateTerminalState, onSelectWorktree]);
 
   const createWorktreeTab = useCallback(async ({ project: projectName, branch }) => {
     try {
       const result = await createWorktreeTerminal({ project: projectName, branch });
       const sessionId = result.sessionId;
       createdWorktreePathsRef.current.set(`${project.name}:${sessionId}`, result.worktreePath);
+      chooseWorktree(result.worktreePath);
       const number = getSessionNumber(project.name, sessionId);
       if (number !== null) sessionCounter = Math.max(sessionCounter, number);
       unmarkDeletedSessionIds(project.name, [sessionId]);
@@ -665,7 +718,7 @@ export default function TerminalArea({
       showToast({ type: 'error', message });
       throw error;
     }
-  }, [project.name, showToast, updateTerminalState]);
+  }, [project.name, showToast, updateTerminalState, onSelectWorktree]);
 
   // Backend-confirmed sessions (session search resume + pipeline step tabs)
   // reuse the attach path without calling /api/terminal for a second session ID.
@@ -712,8 +765,10 @@ export default function TerminalArea({
     }, { persistImmediately: true });
 
     if (nextActivePaneId) setActivePaneId(nextActivePaneId);
+    const activated = [...adoptSessions].reverse().find(item => item.activate && item.sessionId);
+    if (activated) chooseWorktree(worktreeBySession.get(activated.sessionId) ?? 'main');
     onSessionsAdopted(sessionIds);
-  }, [project.name, adoptSessions, state, updateTerminalState, onSessionsAdopted]);
+  }, [project.name, adoptSessions, state, updateTerminalState, onSessionsAdopted, onSelectWorktree, worktreeBySession]);
 
   const activatePipelineSession = useCallback((sessionId) => {
     if (!sessionId) return;
@@ -733,6 +788,12 @@ export default function TerminalArea({
       return;
     }
     createdWorktreePathsRef.current.delete(`${project.name}:${sessionId}`);
+    const closingTab = stateRef.current.tabs.find(candidate => candidate.id === tabId);
+    if (closingTab?.panes.length === 1 && stateRef.current.activeTabId === tabId) {
+      const nextId = selectTabAfterClose(stateRef.current.tabs, tabId, tabGroupKey);
+      const nextTab = stateRef.current.tabs.find(candidate => candidate.id === nextId);
+      if (nextTab) chooseWorktree(tabGroupKey(nextTab));
+    }
 
     updateTerminalState(prev => {
       const tab = prev.tabs.find(t => t.id === tabId);
@@ -764,7 +825,7 @@ export default function TerminalArea({
       // Last pane in tab → close the tab
       const remainingTabs = prev.tabs.filter(t => t.id !== tabId);
       const newActiveTabId = prev.activeTabId === tabId
-        ? remainingTabs[remainingTabs.length - 1]?.id ?? null
+        ? selectTabAfterClose(prev.tabs, tabId, tabGroupKey)
         : prev.activeTabId;
       // Auto-select first pane of new active tab
       if (prev.activeTabId === tabId) {
@@ -803,6 +864,11 @@ export default function TerminalArea({
     if (failedSessionIds.length > 0) {
       unmarkDeletedSessionIds(project.name, failedSessionIds);
     }
+    if (failedSessionIds.length === 0 && stateRef.current.activeTabId === tabId) {
+      const nextId = selectTabAfterClose(stateRef.current.tabs, tabId, tabGroupKey);
+      const nextTab = stateRef.current.tabs.find(candidate => candidate.id === nextId);
+      if (nextTab) chooseWorktree(tabGroupKey(nextTab));
+    }
 
     updateTerminalState(prev => {
       const currentTab = prev.tabs.find(candidate => candidate.id === tabId);
@@ -831,7 +897,7 @@ export default function TerminalArea({
       return {
         tabs: remainingTabs,
         activeTabId: prev.activeTabId === tabId
-          ? remainingTabs[remainingTabs.length - 1]?.id ?? null
+          ? selectTabAfterClose(prev.tabs, tabId, tabGroupKey)
           : prev.activeTabId,
       };
     }, { persistImmediately: true });
@@ -1036,7 +1102,7 @@ export default function TerminalArea({
       </div>
 
       <PipelineRunsBar
-        runs={pipelineRuns}
+        runs={worktreeGroups ? pipelineRuns.filter(run => (run.worktree.path === project.path ? 'main' : run.worktree.path) === visibleGroup) : pipelineRuns}
         onStop={onStopPipelineRun}
         onResume={onResumePipelineRun}
         onContinue={onContinuePipelineRun}
@@ -1047,22 +1113,14 @@ export default function TerminalArea({
         onActivateStep={activatePipelineSession}
       />
 
-      {/* Tab bar */}
-      <div
-        data-testid="terminal-tab-row"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          height: 38,
-          background: 'var(--bg-sidebar)',
-          borderBottom: '1px solid var(--border)',
-          padding: '0 8px',
-          gap: 2,
-          flexShrink: 0,
-        }}>
-        {/* Tab list */}
-        <div style={{ display: 'flex', gap: 2, flex: 1, overflow: 'hidden' }}>
-          {displayTabs.map(tab => {
+      {groups.length > 1 && <div className="worktree-switcher" aria-label="Worktrees" style={{ display: 'flex', gap: 4, padding: '4px 8px', background: 'var(--bg-sidebar)', borderBottom: '1px solid var(--border)' }}>
+        {groups.map(group => {
+          const count = tabs.filter(tab => tabGroupKey(tab) === group.key).length;
+          const waiting = ['needs_input', 'limit_paused', 'awaiting_approval'].includes(group.run?.status);
+          return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${group.label} (${count})`} aria-pressed={visibleGroup === group.key} style={{ padding: '3px 7px', borderRadius: 4, background: visibleGroup === group.key ? 'var(--bg-active)' : 'transparent', color: waiting ? 'var(--warning)' : 'var(--text-secondary)', fontSize: 11, cursor: 'pointer' }}>{group.label} · {count}{waiting ? ' ●' : ''}</button>;
+        })}
+      </div>}
+      <TerminalTabBar tabs={displayTabs} renderTab={tab => {
             const tabLabel = getTerminalTabLabel(tab.panes, tab.label, sessionTitles);
             const isActive = tab.id === activeTabId;
             const waitingKey = getTabWaitingKey(tab);
@@ -1174,9 +1232,7 @@ export default function TerminalArea({
                 )}
               </button>
             );
-          })}
-        </div>
-
+          }} >
         {/* Actions */}
         <button
           onClick={onOpenRunWorkflow}
@@ -1241,7 +1297,7 @@ export default function TerminalArea({
             style={{ padding: 4, borderRadius: 4, color: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 'rgba(138, 146, 166, 0.45)' : 'var(--text-muted)', opacity: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 0.5 : 1, cursor: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 'not-allowed' : 'pointer' }}
           ><GitBranchPlus size={14} /></button>
         </ShortcutHint>
-      </div>
+      </TerminalTabBar>
 
       {isTerminalRuntimeBlocked && (
         <div
@@ -1267,7 +1323,7 @@ export default function TerminalArea({
         </div>
       )}
 
-      {!isTerminalRuntimeBlocked && tabs.length === 0 && (
+      {!isTerminalRuntimeBlocked && displayTabs.length === 0 && (
         <div
           className="terminal-empty-state"
           style={{

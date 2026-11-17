@@ -15,6 +15,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Project management — add, rename, delete projects (directories on disk)
 - Terminal multiplexing — multiple terminal tabs per project, N side-by-side panes with draggable dividers
 - New worktree terminal — create a new branch and Git worktree from a local project's current commit and open its terminal as an active tab; CodeDeck does not remove it
+- Worktree groups — each project displays a main checkout group and groups for worktrees with terminals or open runs; the selected group scopes the terminal tabs and run header, and can be chosen in the sidebar or tab switcher
 - File tree browsing — view project files, click to open in system editor (VS Code, etc.)
 - Per-project file browsing — scoped file tree panel decoupled from active project
 - Directory browser — filesystem navigator for adding projects

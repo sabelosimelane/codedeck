@@ -17,6 +17,8 @@ import { openFilePreviewTab } from './utils/fileActions';
 import { useSessionTitles } from './hooks/useSessionTitles';
 import { useWaitingSessions } from './hooks/useWaitingSessions';
 import { buildRunAdoptionSessions, planTerminalAdoption } from './utils/terminalAdoption';
+import { buildWorktreeGroups, parseSessionWorktree, resolveSessionWorktrees, selectStoredWorktrees } from './utils/worktreeGroups';
+import { doesSessionBelongToProject } from './utils/terminalProjectMatch';
 import {
   DEFAULT_APP_TITLE,
   SYSTEM_RESOURCES_URL,
@@ -56,6 +58,7 @@ function AppContent() {
   });
   const [showFileTree, setShowFileTree] = useState(false);
   const [sessionStatus, setSessionStatus] = useState([]);
+  const [worktreeSelection, setWorktreeSelection] = useState({});
   const { titles: sessionTitles, refresh: refreshSessionTitles, error: namingError } = useSessionTitles();
   const [fileBrowserProject, setFileBrowserProject] = useState(null);
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
@@ -86,6 +89,32 @@ function AppContent() {
     cleanupRun,
   } = usePipelineRuns({ projectName: activeProject?.name || null, showToast });
   const openRunCounts = usePipelineRunCounts(showToast);
+  const worktreeGroupsByProject = useMemo(() => new Map(projects.map(project => [project.name, buildWorktreeGroups({
+    project,
+    sessions: sessionStatus.filter(session => doesSessionBelongToProject(session, project)).map(session => ({
+      sessionId: session.sessionId,
+      worktreePath: session.worktreePath ?? null,
+      startedAt: session.startedAt ?? null,
+    })),
+    runs: openRunCounts.runsByProject?.get(project.name) ?? [],
+  })])), [projects, sessionStatus, openRunCounts]);
+  const selectedWorktreeByProject = useMemo(() => selectStoredWorktrees(
+    projects, worktreeGroupsByProject, worktreeSelection, key => localStorage.getItem(key)
+  ), [projects, worktreeGroupsByProject, worktreeSelection]);
+  const worktreeBySession = useMemo(() => activeProject ? resolveSessionWorktrees({
+    project: activeProject,
+    sessions: sessionStatus.filter(session => doesSessionBelongToProject(session, activeProject)).map(session => ({
+      sessionId: session.sessionId,
+      worktreePath: session.worktreePath ?? null,
+      startedAt: session.startedAt ?? null,
+    })),
+    runs: openRunCounts.runsByProject?.get(activeProject.name) ?? [],
+  }) : new Map(), [activeProject, sessionStatus, openRunCounts]);
+  const selectWorktree = (projectName, key) => {
+    setWorktreeSelection(current => ({ ...current, [projectName]: key }));
+    try { localStorage.setItem(`codedeck-worktree-${projectName}`, key); }
+    catch (error) { console.warn(`Could not save worktree selection for ${projectName}: ${error.message}`); }
+  };
   const sessionStatusRequestInFlightRef = useRef(false);
   const systemResourcesRequestInFlightRef = useRef(false);
 
@@ -200,9 +229,14 @@ function AppContent() {
     sessionStatusRequestInFlightRef.current = true;
     try {
       const res = await fetch('/api/sessions');
-      if (res.ok) setSessionStatus(await res.json());
-    } catch {
-      // Silent — background session refresh failure is not user-actionable
+      if (res.ok) {
+        const rows = await res.json();
+        if (!Array.isArray(rows)) throw new Error('Invalid sessions response');
+        rows.forEach(parseSessionWorktree);
+        setSessionStatus(rows);
+      }
+    } catch (error) {
+      console.warn(`Session status refresh failed: ${error.message}`);
     } finally {
       sessionStatusRequestInFlightRef.current = false;
     }
@@ -416,6 +450,13 @@ function AppContent() {
       <Sidebar
         activeProjects={activeProjects}
         openRunCounts={openRunCounts}
+        worktreeGroupsByProject={worktreeGroupsByProject}
+        selectedWorktreeByProject={selectedWorktreeByProject}
+        onSelectWorktree={(projectName, key) => {
+          selectWorktree(projectName, key);
+          const project = projects.find(candidate => candidate.name === projectName);
+          if (project && activeProject?.name !== projectName) setActiveProject(project);
+        }}
         waitingProjects={waitingProjects}
         shelvedProjects={shelvedProjects}
         activeProject={activeProject}
@@ -470,6 +511,10 @@ function AppContent() {
         {activeProject ? (
           <TerminalArea
             project={activeProject}
+            worktreeGroups={worktreeGroupsByProject.get(activeProject.name)}
+            selectedWorktree={selectedWorktreeByProject[activeProject.name]}
+            onSelectWorktree={key => selectWorktree(activeProject.name, key)}
+            worktreeBySession={worktreeBySession}
             sessionStatus={sessionStatus}
             sessionTitles={sessionTitles}
             onTitlesChanged={refreshSessionTitles}

@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026-11-17] - Terminals and runs grouped by worktree
+
+### Executive Summary
+* Every terminal of a project sat in one flat tab bar. A workflow run opens three or four terminals in its own worktree, and nothing told them apart from the owner's own terminals or from another run's: a run's tab kept only a session id, and the automatic titles hid even that. The sidebar now shows a project's terminals and open runs grouped by worktree, with each worktree's branch, run status and phase, and a marker when the run is waiting for the owner. A switcher above the tabs appears when a project has more than one worktree in use, and the tabs and the run header show the selected worktree only. A project whose terminals are all in its main checkout and that has no open run looks as it did. This is the third phase of making workflows general.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/terminal-session-worktree-store.js`, `server/terminal-session-worktree-start.js` — New. `terminal_session_worktree` records the directory a terminal was started in when it is not the project's own path; one wrapper around the session starter sets it for worktree terminals and run steps.
+  * `client/src/utils/worktreeGroups.js` — New. `resolveSessionWorktrees` (the recorded worktree; without a record, the worktree of an open run that uses the terminal for a step; otherwise main), `buildWorktreeGroups`, the tab to select after a close, and the stored selection read only for projects with more than the main group.
+  * `client/src/components/WorktreeGroupHeader.jsx`, `client/src/components/SidebarSessionRows.jsx`, `client/src/components/Sidebar.jsx` — A selectable header per worktree with label, branch, a plain run status, the phase or latest note summary or current step, and a waiting marker; session rows moved into their own component.
+  * `client/src/components/TerminalArea.jsx`, `client/src/components/TerminalTabBar.jsx` — A worktree switcher with tab counts and waiting markers; tabs filtered to the selected worktree at display while hidden panes stay mounted; selection follows the activated tab; closing a tab stays in the worktree; a plain new terminal opens in main; the run header shows the selected worktree's run.
+  * `client/src/App.jsx`, `client/src/hooks/usePipelineRunCounts.js` — Groups and selection per project; open runs per project come from the poll that already counted them.
+* **🔌 API/Interface:**
+  * `server/terminal-session-status-service.js` — `GET /api/sessions` rows gain `worktreePath` (null for the main checkout): the start directory, which does not change when the shell changes directory.
+  * `docs/steering/api-standards.md` — The new field.
+* **🛠️ Codebase:**
+  * `server/index.js`, `server/ws-handler.js`, `server/routes/terminal-delete.js` — The record is cleared when a terminal is deleted, pruned or ends, and when its id is handed out again, because ids are reused.
+  * `README.md`, `docs/steering/product.md`, `docs/steering/structure.md` — Worktree groups; terminals opened before this change show under the main checkout until closed, except those of an open run.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-session-worktree-store.test.js`, `server/__tests__/terminal-session-worktree-start.test.js` — New. Validation, the mapping set for a worktree terminal and a run step and not for the main checkout, cleared on prune, and a reused id starting without a record.
+  * `server/__tests__/terminal-delete.test.js`, `server/__tests__/terminal-session-status-service.test.js`, `server/__tests__/ws-handler.test.js`, `server/__tests__/terminal-background-attach.test.js`, `server/__tests__/terminal-worktree-service.test.js` — The clears and the new row field.
+  * `client/src/utils/__tests__/worktreeGroups.test.js` — New. The resolution rule, grouping, ordering, the newest run, storage reads and preconditions.
+  * `client/src/components/__tests__/TerminalAreaWorktreeFilter.test.jsx`, `client/src/components/__tests__/WorktreeGroupHeader.test.jsx` — New. The switcher, filtering, selection following activation, restore of the last active tab, closing within a worktree, a new terminal from a worktree, and the header's wording for every run status.
+  * `client/src/components/__tests__/Sidebar.test.jsx`, `client/src/components/__tests__/SidebarWaitingCount.test.jsx`, `client/src/hooks/__tests__/usePipelineRunCounts.test.jsx` — Headers, a main-only project unchanged, and runs per project.
+  * Server suite: 80 files, 2,284 tests passed. Client suite: 68 files, 1,060 tests passed. The grouping was run over the live projects, terminals and open run: 86 of 86 projects grouped, and the run's three terminals fell under its worktree.
+
 ## [2026-11-17] - Read-only steps and approval gates in workflows
 
 ### Executive Summary
