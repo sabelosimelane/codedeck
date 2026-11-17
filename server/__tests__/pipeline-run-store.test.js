@@ -219,6 +219,13 @@ describe('pipeline run store', () => {
     });
     expect(stopped.stopReason).toBe('user');
   });
+  it('persists no_progress and rejects an unknown stop reason', () => {
+    const { store } = setup();
+    const created = store.create(validRun());
+    expect(() => store.update(created.id, { status: 'stopped', stopReason: 'mystery', finishedAt: '2026-11-13T12:00:00.000Z' })).toThrow(/stopReason|stop_reason/i);
+    const stopped = store.update(created.id, { status: 'stopped', stopReason: 'no_progress', finishedAt: '2026-11-13T12:00:00.000Z' });
+    expect(store.get(stopped.id).stopReason).toBe('no_progress');
+  });
 
   it('accepts a multi-step run whose steps match the definition length', () => {
     const { store } = setup();

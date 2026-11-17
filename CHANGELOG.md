@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026-11-17] - Stop a looping run that has stopped making progress
+
+### Executive Summary
+* A run with a loop spent four rounds achieving nothing: one step was blocked every round and the step that closes the loop reported that work was left each time, while the run's progress file showed the same number of ticked tasks throughout. Nothing noticed. At the end of each loop round CodeDeck now compares the number of ticked tasks in the run's progress source with the number after the previous round. After two rounds in a row with no new ticked task the run stops before the next round, says why, and counts as waiting for the owner on the sidebar and the phone. Resume gives it two more rounds. A run without a readable progress source is not guarded and behaves as before.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/pipelines/run-engine.js` — Where a loop's closing step would start another round, the engine reads the ticked-task count through a new required dependency, keeps the previous count and the number of rounds without progress in memory per run, and after `NO_PROGRESS_ROUNDS` such rounds applies the loop-back and then stops the run with the reason `no_progress`. A reading that is absent resets the count; a failed reading warns once and never stops or fails the run; Resume, Stop and a restart reset it.
+  * `server/pipelines/run-progress.js` — `parsePhaseProgress` also returns the ticked and total tasks across all phases, and `readRunProgress` resolves and reads a run's progress source for both the API view and the engine.
+  * `client/src/components/pipelines/PipelineRunsBar.jsx`, `client/src/utils/pipelineRunStatus.js` — Such a run reads "Stopped: no progress" with a line saying no task was ticked in the last two rounds, and Resume as the primary action.
+* **🔌 API/Interface:**
+  * `server/pipelines/run-machine.js`, `server/pipelines/run-store.js`, `client/src/utils/pipelineRunRecords.js` — Stop reason `no_progress` beside `user` and `terminal`. No new status, endpoint or stored column.
+  * `docs/steering/api-standards.md` — The new stop reason.
+* **🛠️ Codebase:**
+  * `shared/pipeline-definitions.mjs` — `NO_PROGRESS_ROUNDS = 2`, shared by the engine and the runs bar.
+  * `server/index.js`, `server/mobile-integration.js` — The engine's progress reading is wired from the shared function; `runNeedsOwner` treats a run stopped for no progress, like one awaiting approval, as needing the owner.
+  * `server/routes/pipelines.js` — The run view uses the shared resolve-and-read function.
+  * `client/src/hooks/usePipelineRunCounts.js` — A run stopped for no progress counts as waiting for the owner.
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — The guard, what it needs and what Resume does.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-engine.test.js` — Two rounds without progress stop the run before the next round; progress in between resets the count; a falling count is no progress; an absent reading and a failing reading never stop the run; the last allowed round still pauses at its limit; Resume needs two more rounds; a workflow without a loop is not read.
+  * `server/__tests__/pipeline-run-live.test.js` — With real tmux: a looping run whose progress file never changes stops for no progress, and one whose tasks are ticked each round runs on.
+  * `server/__tests__/pipeline-run-progress.test.js`, `server/__tests__/pipeline-run-machine.test.js`, `server/__tests__/pipeline-run-store.test.js`, `server/__tests__/pipelines-api.test.js`, `server/__tests__/mobile-integration.test.js` — Totals and the shared reader, the stop reason, the stopped run's actions, and the owner lookup.
+  * `client/src/utils/__tests__/pipelineRunRecords.test.js`, `client/src/utils/__tests__/pipelineRunStatus.test.js`, `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx`, `client/src/hooks/__tests__/usePipelineRunCounts.test.jsx` — The reason, its label and primary action, the explanation line and the count.
+  * Server suite: 81 files, 2,316 tests passed. Client suite: 69 files, 1,103 tests passed.
+
 ## [2026-11-17] - A workflow run that reads at a glance
 
 ### Executive Summary

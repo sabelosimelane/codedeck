@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile, isProgressFileInWorktree } from '../pipelines/run-progress.js';
+import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile, readRunProgress, isProgressFileInWorktree } from '../pipelines/run-progress.js';
 
 describe('isProgressFileInWorktree preconditions', () => {
   it.each([undefined, '', 'relative', 7])('rejects worktreePath %s', async worktreePath => {
@@ -53,21 +53,63 @@ describe('resolveRunProgressFile', () => {
 
 describe('parsePhaseProgress', () => {
   it('selects the first phase with unticked tasks and counts all phases', () => {
-    expect(parsePhaseProgress('## Phase 1: Done\n- [x] a\n## Session notes\n- [ ] ignore\n## Phase 2 — Review\n### Room\n- [X] a\n- [ ] b\n## Phase 3\n')).toEqual({ phaseCount: 3, phase: { number: 2, title: 'Review', tasksDone: 1, tasksTotal: 2 } });
+    expect(parsePhaseProgress('## Phase 1: Done\n- [x] a\n## Session notes\n- [ ] ignore\n## Phase 2 — Review\n### Room\n- [X] a\n- [ ] b\n## Phase 3\n')).toEqual({ phaseCount: 3, phase: { number: 2, title: 'Review', tasksDone: 1, tasksTotal: 2 }, tasksDone: 2, tasksTotal: 3 });
   });
   it('ignores fenced sections and tasks', () => {
-    expect(parsePhaseProgress('```md\n## Phase 1: Fake\n- [ ] fake\n```\n## Phase 2 - Real\n~~~\n- [ ] fake\n~~~\n- [ ] real')).toEqual({ phaseCount: 1, phase: { number: 2, title: 'Real', tasksDone: 0, tasksTotal: 1 } });
+    expect(parsePhaseProgress('```md\n## Phase 1: Fake\n- [ ] fake\n```\n## Phase 2 - Real\n~~~\n- [ ] fake\n~~~\n- [ ] real')).toEqual({ phaseCount: 1, phase: { number: 2, title: 'Real', tasksDone: 0, tasksTotal: 1 }, tasksDone: 0, tasksTotal: 1 });
   });
   it('toggles a fence on either marker and accepts tabs between heading tokens', () => {
-    expect(parsePhaseProgress('```\n## Phase 1: Hidden\n~~~\n##\tPhase\t2: Visible\n- [ ] task')).toEqual({ phaseCount: 1, phase: { number: 2, title: 'Visible', tasksDone: 0, tasksTotal: 1 } });
+    expect(parsePhaseProgress('```\n## Phase 1: Hidden\n~~~\n##\tPhase\t2: Visible\n- [ ] task')).toEqual({ phaseCount: 1, phase: { number: 2, title: 'Visible', tasksDone: 0, tasksTotal: 1 }, tasksDone: 0, tasksTotal: 1 });
   });
   it('handles all ticked, no phases, separators and long titles', () => {
-    expect(parsePhaseProgress('## Phase 1. Done\n- [x] yes')).toEqual({ phaseCount: 1, phase: null });
-    expect(parsePhaseProgress('## Session notes\n- [ ] no')).toEqual({ phaseCount: 0, phase: null });
+    expect(parsePhaseProgress('## Phase 1. Done\n- [x] yes')).toEqual({ phaseCount: 1, phase: null, tasksDone: 1, tasksTotal: 1 });
+    expect(parsePhaseProgress('## Session notes\n- [ ] no')).toEqual({ phaseCount: 0, phase: null, tasksDone: 0, tasksTotal: 0 });
     expect(parsePhaseProgress(`## Phase 9: ${'a'.repeat(125)} ###\n+ [ ] task`).phase.title).toHaveLength(120);
     expect(parsePhaseProgress('## Phase 4\n* [ ] task').phase.title).toBe('');
   });
   it('rejects non-string input', () => expect(() => parsePhaseProgress(null)).toThrow(TypeError));
+});
+
+describe('readRunProgress', () => {
+  const dirs = [];
+  afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true }))); });
+  async function run(progressFile = null, notesDir = null) {
+    const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pipeline-progress-run-'));
+    dirs.push(worktreePath);
+    return { definition: { progressFile, notesDir }, workflowId: 'workflow', input: 'todo.md', worktreePath, worktreeState: 'present' };
+  }
+  it('reads a configured source with totals and keeps the API fields separate', async () => {
+    const item = await run('todo.md');
+    await fs.writeFile(path.join(item.worktreePath, 'todo.md'), '## Phase 1\n- [x] done\n- [ ] todo\n## Phase 2\n- [x] done');
+    expect(await readRunProgress({ run: item, workflowProgressFile: null, progressReader: createRunProgressReader() }))
+      .toMatchObject({ file: 'todo.md', status: 'in_progress', tasksDone: 2, tasksTotal: 3 });
+  });
+  it('reads the run plan, and returns null without a source', async () => {
+    const item = await run(null, '.codedeck/runs/12345678');
+    await fs.mkdir(path.join(item.worktreePath, item.definition.notesDir), { recursive: true });
+    await fs.writeFile(path.join(item.worktreePath, item.definition.notesDir, 'plan.md'), '## Phase 1\n- [x] done');
+    expect((await readRunProgress({ run: item, workflowProgressFile: null, progressReader: createRunProgressReader() })).tasksDone).toBe(1);
+    item.definition.notesDir = null;
+    expect(await readRunProgress({ run: item, workflowProgressFile: null, progressReader: createRunProgressReader() })).toBeNull();
+  });
+  it('reports a configured missing source and an unreadable source', async () => {
+    const item = await run('todo.md');
+    const reader = createRunProgressReader();
+    expect((await readRunProgress({ run: item, workflowProgressFile: null, progressReader: reader })).status).toBe('missing');
+    await fs.mkdir(path.join(item.worktreePath, 'todo.md'));
+    expect((await readRunProgress({ run: item, workflowProgressFile: null, progressReader: reader })).status).toBe('unreadable');
+  });
+  it('returns null when the run worktree is not on disk', async () => {
+    const item = await run('todo.md');
+    await fs.rm(item.worktreePath, { recursive: true });
+    expect(await readRunProgress({ run: item, workflowProgressFile: null, progressReader: createRunProgressReader() })).toBeNull();
+  });
+  it('rejects malformed arguments at the edge', async () => {
+    const item = await run();
+    await expect(readRunProgress({ run: null, workflowProgressFile: null, progressReader: createRunProgressReader() })).rejects.toThrow(/run/);
+    await expect(readRunProgress({ run: item, workflowProgressFile: undefined, progressReader: createRunProgressReader() })).rejects.toThrow(/workflowProgressFile/);
+    await expect(readRunProgress({ run: item, workflowProgressFile: null, progressReader: null })).rejects.toThrow(/progressReader/);
+  });
 });
 
 describe('createRunProgressReader', () => {

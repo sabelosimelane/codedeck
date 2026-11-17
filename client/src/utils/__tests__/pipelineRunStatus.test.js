@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { describeRunStatus, describeStepState } from '../pipelineRunStatus';
 
 describe('describeRunStatus', () => {
+  it('shows a no-progress stop as waiting for the owner', () => {
+    expect(describeRunStatus({ status: 'stopped', stopReason: 'no_progress', actions: { resume: true } }))
+      .toEqual({ label: 'Stopped: no progress', tone: 'waiting', primaryAction: 'resume' });
+  });
   it.each([
     ['pending', 'Starting', 'neutral', null], ['running', 'Running', 'active', null],
     ['needs_input', 'Needs your input', 'waiting', 'answer'],

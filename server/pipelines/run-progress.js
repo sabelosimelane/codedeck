@@ -41,7 +41,9 @@ export function parsePhaseProgress(markdown) {
       if (task[1].toLowerCase() === 'x') current.tasksDone += 1;
     }
   }
-  return { phaseCount: phases.length, phase: phases.find(phase => phase.tasksDone < phase.tasksTotal) ?? null };
+  return { phaseCount: phases.length, phase: phases.find(phase => phase.tasksDone < phase.tasksTotal) ?? null,
+    tasksDone: phases.reduce((sum, phase) => sum + phase.tasksDone, 0),
+    tasksTotal: phases.reduce((sum, phase) => sum + phase.tasksTotal, 0) };
 }
 
 const inside = (root, target) => target !== root && !path.relative(root, target).startsWith('..' + path.sep) && path.relative(root, target) !== '..' && !path.isAbsolute(path.relative(root, target));
@@ -70,13 +72,22 @@ export function createRunProgressReader({ fs = defaultFs } = {}) {
   if (!fs || typeof fs.stat !== 'function' || typeof fs.realpath !== 'function' || typeof fs.open !== 'function') throw new TypeError('fs must support stat, realpath and open');
   const cache = new Map();
   const reasons = new Map();
-  const result = (file, status, parsed = null) => ({ file, status, phaseCount: status === 'in_progress' || status === 'all_done' ? parsed.phaseCount : null, phase: status === 'in_progress' ? parsed.phase : null });
+  const result = (file, status, parsed = null) => ({ file, status, phaseCount: status === 'in_progress' || status === 'all_done' ? parsed.phaseCount : null, phase: status === 'in_progress' ? parsed.phase : null,
+    tasksDone: parsed?.tasksDone ?? null, tasksTotal: parsed?.tasksTotal ?? null });
   const unreadable = (file, key, reason) => {
     if (reasons.get(key) !== reason) console.warn(`[pipeline-progress] ${reason} path=${key}`);
     reasons.set(key, reason);
     return result(file, 'unreadable');
   };
   return {
+    async worktreeExists(worktreePath) {
+      if (typeof worktreePath !== 'string' || !path.isAbsolute(worktreePath)) throw new TypeError('worktreePath must be an absolute path');
+      try { return (await fs.stat(worktreePath)).isDirectory(); }
+      catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+        throw error;
+      }
+    },
     async read({ worktreePath, progressFile }) {
       if (typeof worktreePath !== 'string' || !path.isAbsolute(worktreePath)) throw new TypeError('worktreePath must be a non-empty absolute path');
       if (typeof progressFile !== 'string' || progressFile.length === 0) throw new TypeError('progressFile must be a non-empty string');
@@ -110,4 +121,33 @@ export function createRunProgressReader({ fs = defaultFs } = {}) {
       }
     },
   };
+}
+
+export async function readRunProgress({ run, workflowProgressFile, progressReader }) {
+  if (!run || typeof run !== 'object' || Array.isArray(run)) throw new TypeError('run must be an object');
+  if (!run.definition || typeof run.definition !== 'object') throw new TypeError('run.definition must be an object');
+  if (typeof run.definition.progressFile !== 'string' && run.definition.progressFile !== null) throw new TypeError('run.definition.progressFile must be null or a string');
+  if (typeof run.definition.notesDir !== 'string' && run.definition.notesDir !== null) throw new TypeError('run.definition.notesDir must be null or a string');
+  if (typeof run.input !== 'string') throw new TypeError('run.input must be a string');
+  if (typeof run.worktreePath !== 'string' || !path.isAbsolute(run.worktreePath)) throw new TypeError('run.worktreePath must be an absolute path');
+  if (typeof run.worktreeState !== 'string') throw new TypeError('run.worktreeState must be a string');
+  if (workflowProgressFile !== null && typeof workflowProgressFile !== 'string') throw new TypeError('workflowProgressFile must be null or a string');
+  if (!progressReader || typeof progressReader.read !== 'function') throw new TypeError('progressReader.read must be a function');
+  if (typeof progressReader.worktreeExists !== 'function') throw new TypeError('progressReader.worktreeExists must be a function');
+  const source = resolveRunProgressFile({ definitionProgressFile: run.definition.progressFile,
+    workflowProgressFile, input: run.input, notesDir: run.definition.notesDir });
+  if (source === null || !['present', 'external', 'removal_blocked'].includes(run.worktreeState)) return null;
+  const exists = await progressReader.worktreeExists(run.worktreePath);
+  if (typeof exists !== 'boolean') throw new TypeError('progressReader.worktreeExists must return a boolean');
+  if (!exists) return null;
+  const progress = await progressReader.read({ worktreePath: run.worktreePath, progressFile: source.file });
+  if (!progress || typeof progress !== 'object' || Array.isArray(progress)) throw new TypeError('progressReader result must be an object');
+  if (typeof progress.file !== 'string') throw new TypeError('progressReader result.file must be a string');
+  if (typeof progress.status !== 'string') throw new TypeError('progressReader result.status must be a string');
+  if (progress.phaseCount !== null && (!Number.isSafeInteger(progress.phaseCount) || progress.phaseCount < 0)) throw new TypeError('progressReader result.phaseCount must be null or a nonnegative integer');
+  if (progress.phase !== null && typeof progress.phase !== 'object') throw new TypeError('progressReader result.phase must be null or an object');
+  if (progress.tasksDone !== null && (!Number.isSafeInteger(progress.tasksDone) || progress.tasksDone < 0)) throw new TypeError('progressReader result.tasksDone must be null or a nonnegative integer');
+  if (progress.tasksTotal !== null && (!Number.isSafeInteger(progress.tasksTotal) || progress.tasksTotal < 0)) throw new TypeError('progressReader result.tasksTotal must be null or a nonnegative integer');
+  if (source.optional && ['missing', 'no_phases'].includes(progress.status)) return null;
+  return progress;
 }

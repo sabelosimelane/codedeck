@@ -23,7 +23,7 @@ export function usePipelineRunCounts(showToast) {
           const run = parseRun(record, index);
           const groupRuns = runsByProject.get(run.project) ?? [];
           groupRuns.push({
-            id: run.id, project: run.project, status: run.status, workflowName: run.workflowName,
+            id: run.id, project: run.project, status: run.status, stopReason: run.stopReason, workflowName: run.workflowName,
             worktree: { path: run.worktree.path, branch: run.worktree.branch },
             progress: run.progress, createdAt: run.createdAt,
             steps: run.steps.map(step => ({ status: step.status, name: step.name, sessionId: step.sessionId, note: step.note })),
@@ -32,7 +32,7 @@ export function usePipelineRunCounts(showToast) {
           const counts = next.get(run.project) ?? { open: 0, awaitingOwner: 0 };
           next.set(run.project, {
             open: counts.open + 1,
-            awaitingOwner: counts.awaitingOwner + (AWAITING_OWNER.includes(run.status) ? 1 : 0),
+            awaitingOwner: counts.awaitingOwner + (AWAITING_OWNER.includes(run.status) || (run.status === 'stopped' && run.stopReason === 'no_progress') ? 1 : 0),
           });
         }
         if (!disposed) {

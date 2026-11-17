@@ -9,7 +9,7 @@ import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
 import { prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback } from './run-notes.js';
-import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../shared/pipeline-definitions.mjs';
+import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -54,6 +54,7 @@ export function createRunEngine({
   classifyReadiness,
   readExecutionState,
   readScreen,
+  readProgressCount,
   decisionStore,
   noteStore,
   reviewStore,
@@ -79,6 +80,7 @@ export function createRunEngine({
   if (typeof classifyReadiness !== 'function') throw new Error('createRunEngine: classifyReadiness is required');
   if (typeof readExecutionState !== 'function') throw new Error('createRunEngine: readExecutionState is required');
   if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
+  if (typeof readProgressCount !== 'function') throw new Error('createRunEngine: readProgressCount is required');
   if (typeof decisionStore?.add !== 'function') throw new Error('createRunEngine: decisionStore is required');
   if (typeof noteStore?.add !== 'function' || typeof noteStore?.lastContent !== 'function' || typeof noteStore?.hasPass !== 'function') throw new Error('createRunEngine: noteStore is required');
   if (typeof reviewStore?.add !== 'function' || typeof reviewStore?.listSentBack !== 'function') throw new Error('createRunEngine: reviewStore is required');
@@ -89,6 +91,7 @@ export function createRunEngine({
 
   const handles = new Map();
   const noteWarnings = new Set();
+  const progressWarnings = new Set();
 
   async function recordNote(run, stepIndex, pass, sweep = false) {
     if (run.definition.notesDir === null || run.definition.steps[stepIndex]?.kind !== 'node') return;
@@ -135,6 +138,8 @@ export function createRunEngine({
         stopRequested: false,
         // True while the run waits because the agent's CLI shows a dialog during a pass.
         dialogPause: false,
+        lastTasksDone: null,
+        roundsWithoutProgress: 0,
       };
       handles.set(runId, handle);
     }
@@ -456,7 +461,36 @@ export function createRunEngine({
       } else if (repeat?.mode === 'loop_back'
         && current.steps[current.currentStepIndex].roundsCompleted + 1 < repeat.max) {
         // Work is left and another round is allowed: the loop starts again at its first step.
+        const handle = getHandle(runId);
+        let progress = null;
+        try {
+          progress = await readProgressCount(current);
+          if (progress !== null && (!Number.isSafeInteger(progress?.tasksDone) || progress.tasksDone < 0
+            || !Number.isSafeInteger(progress?.tasksTotal) || progress.tasksTotal < 0 || progress.tasksDone > progress.tasksTotal)) {
+            throw new TypeError('readProgressCount must return null or valid task totals');
+          }
+        } catch (error) {
+          if (!progressWarnings.has(runId)) {
+            progressWarnings.add(runId);
+            console.warn(`[pipeline-progress-guard] run=${runId} read failed: ${error?.message || error}`);
+          }
+          progress = null;
+        }
+        if (progress === null) {
+          handle.lastTasksDone = null;
+          handle.roundsWithoutProgress = 0;
+        } else {
+          if (handle.lastTasksDone !== null) {
+            handle.roundsWithoutProgress = progress.tasksDone > handle.lastTasksDone ? 0 : handle.roundsWithoutProgress + 1;
+          }
+          handle.lastTasksDone = progress.tasksDone;
+        }
         persistTransition(runId, { type: 'loop_back', toStepIndex: repeat.toStepIndex, at: now() });
+        if (handle.roundsWithoutProgress >= NO_PROGRESS_ROUNDS) {
+          persistTransition(runId, { type: 'stop', reason: 'no_progress', at: now() });
+          handle.lastTasksDone = null;
+          handle.roundsWithoutProgress = 0;
+        }
       } else {
         persistTransition(runId, { type: 'limit_reached', at: now() });
       }
@@ -754,6 +788,8 @@ export function createRunEngine({
       const handle = getHandle(runId);
       handle.stopped = true;
       handle.stopRequested = true;
+      handle.lastTasksDone = null;
+      handle.roundsWithoutProgress = 0;
       try {
         handle.workflow?.stop?.();
       } catch (err) {
@@ -776,6 +812,8 @@ export function createRunEngine({
         const handle = getHandle(runId);
         handle.stopped = false;
         handle.stopRequested = false;
+        handle.lastTasksDone = null;
+        handle.roundsWithoutProgress = 0;
         persistTransition(runId, { type: 'continue', at: now() });
         const after = runStore.get(runId);
         if (after.status === 'complete') {
@@ -844,6 +882,8 @@ export function createRunEngine({
         const handle = getHandle(runId);
         handle.stopped = false;
         handle.stopRequested = false;
+        handle.lastTasksDone = null;
+        handle.roundsWithoutProgress = 0;
         persistTransition(runId, { type: 'resume', newTerminal, at: now() });
         const updated = runStore.get(runId);
         // Acknowledge Resume immediately; keep execution on the same chain.

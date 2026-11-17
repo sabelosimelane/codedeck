@@ -163,6 +163,7 @@ function setupEngine(overrides = {}) {
     classifyReadiness,
     readExecutionState,
     readScreen,
+    readProgressCount: overrides.readProgressCount ?? vi.fn(async () => null),
     decisionStore,
     noteStore,
     reviewStore,
@@ -1962,6 +1963,87 @@ describe('createRunEngine — a loop of steps', () => {
     expect(run.status).toBe('limit_paused');
     expect(run.steps[1]).toMatchObject({ status: 'limit_reached', roundsCompleted: 0 });
     expect(script.starts).toHaveLength(2);
+  });
+
+  it('stops before starting the next round after two measured rounds without progress', async () => {
+    const readProgressCount = vi.fn(async () => ({ tasksDone: 2, tasksTotal: 5 }));
+    const { script, run } = await runLoop(['continue', 'continue', 'continue', 'continue', 'continue', 'continue'], {
+      max: 5, overrides: { readProgressCount },
+    });
+    expect(run).toMatchObject({ status: 'stopped', stopReason: 'no_progress', currentStepIndex: 0 });
+    expect(run.steps[1].roundsCompleted).toBe(3);
+    expect(run.steps[0].status).toBe('stopped');
+    expect(script.starts).toHaveLength(6);
+    expect(readProgressCount).toHaveBeenCalledTimes(3);
+  });
+
+  it('requires a progress-count reader at construction', () => {
+    expect(() => setupEngine({ engineExtras: { readProgressCount: undefined } })).toThrow('createRunEngine: readProgressCount is required');
+  });
+  it('does not read progress for a workflow without a loop', async () => {
+    const readProgressCount = vi.fn(async () => ({ tasksDone: 0, tasksTotal: 1 }));
+    const ctx = setupEngine({ readProgressCount });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100);
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(readProgressCount).not.toHaveBeenCalled();
+  });
+  it('resets the no-progress streak when a later round ticks a task', async () => {
+    const counts = [1, 1, 2, 2];
+    const readProgressCount = vi.fn(async () => ({ tasksDone: counts.shift(), tasksTotal: 5 }));
+    const outcomes = [...Array(4).fill(['continue', 'continue']).flat(), 'complete', 'complete', 'complete'];
+    const { run } = await runLoop(outcomes, { max: 6, overrides: { readProgressCount } });
+    expect(run.status).toBe('complete');
+    expect(readProgressCount).toHaveBeenCalledTimes(4);
+  });
+
+  it('counts a lower ticked total as no progress', async () => {
+    const counts = [3, 2, 2];
+    const { run } = await runLoop(Array(8).fill('continue'), { max: 5,
+      overrides: { readProgressCount: vi.fn(async () => ({ tasksDone: counts.shift(), tasksTotal: 5 })) } });
+    expect(run).toMatchObject({ status: 'stopped', stopReason: 'no_progress' });
+  });
+
+  it('clears its baseline when progress cannot be read', async () => {
+    const counts = [1, 1, null, 1, 1];
+    const readProgressCount = vi.fn(async () => {
+      const tasksDone = counts.shift(); return tasksDone === null ? null : { tasksDone, tasksTotal: 5 };
+    });
+    const outcomes = [...Array(5).fill(['continue', 'continue']).flat(), 'complete', 'complete', 'complete'];
+    const { run } = await runLoop(outcomes, { max: 7, overrides: { readProgressCount } });
+    expect(run.status).toBe('complete');
+  });
+
+  it('warns once and keeps running when the reader throws', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const readProgressCount = vi.fn(async () => { throw new Error('read refused'); });
+      const outcomes = [...Array(3).fill(['continue', 'continue']).flat(), 'complete', 'complete', 'complete'];
+      const { run } = await runLoop(outcomes, { max: 5, overrides: { readProgressCount } });
+      expect(run.status).toBe('complete');
+      expect(warning.mock.calls.filter(call => String(call[0]).startsWith('[pipeline-progress-guard]'))).toHaveLength(1);
+    } finally { warning.mockRestore(); }
+  });
+
+  it('leaves the last allowed round to the existing limit pause', async () => {
+    const readProgressCount = vi.fn(async () => ({ tasksDone: 0, tasksTotal: 1 }));
+    const { run } = await runLoop(Array(6).fill('continue'), { max: 3, overrides: { readProgressCount } });
+    expect(run.status).toBe('limit_paused');
+    expect(readProgressCount).toHaveBeenCalledTimes(2);
+  });
+  it('Resume starts the loop first step and grants a fresh two-round streak', async () => {
+    const readProgressCount = vi.fn(async () => ({ tasksDone: 0, tasksTotal: 1 }));
+    const { ctx, script, run } = await runLoop(Array(12).fill('continue'), { max: 9, overrides: { readProgressCount } });
+    expect(run).toMatchObject({ status: 'stopped', stopReason: 'no_progress', currentStepIndex: 0 });
+    expect(script.starts).toHaveLength(6);
+    expect(readProgressCount).toHaveBeenCalledTimes(3);
+    await ctx.engine.resume(run.id);
+    for (let i = 0; i < 7; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'stopped', stopReason: 'no_progress', currentStepIndex: 0 });
+    expect(script.starts).toHaveLength(12);
+    expect(readProgressCount).toHaveBeenCalledTimes(6);
   });
 
   it('fails the run when the terminal a step should return to is gone', async () => {

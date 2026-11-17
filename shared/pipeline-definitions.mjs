@@ -282,3 +282,4 @@ export function composePrompt(prompt, input, errors, field = 'input') {
 }
 
 export const PROMPT_COMPOSED_MAX = COMPOSED_PROMPT_MAX;
+export const NO_PROGRESS_ROUNDS = 2;

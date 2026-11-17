@@ -14,6 +14,7 @@ import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
+import { createRunProgressReader, readRunProgress, parsePhaseProgress } from '../pipelines/run-progress.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createReviewStore } from '../pipelines/review-store.js';
@@ -279,6 +280,7 @@ describeLive('pipeline run live (Phase 3)', () => {
 
     const engine = createRunEngine({
       runStore: runs,
+      readProgressCount: async () => null,
       decisionStore: createDecisionStore(db),
       noteStore: notes,
       reviewStore: createReviewStore(db),
@@ -399,7 +401,8 @@ describeLive('pipeline run live notes', () => {
     });
     let sessionSeq = 0;
     const engine = createRunEngine({
-      runStore: runs, decisionStore: createDecisionStore(db), noteStore: notes, reviewStore: createReviewStore(db),
+      runStore: runs,
+      readProgressCount: async () => null, decisionStore: createDecisionStore(db), noteStore: notes, reviewStore: createReviewStore(db),
       createWorktree: async () => { throw new Error('existing worktree must be reused'); },
       startSession: async ({ cwd }) => {
         const sessionId = `codedeck-${++sessionSeq}`;
@@ -528,6 +531,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
 
     const engine = createRunEngine({
       runStore: runs,
+      readProgressCount: async () => null,
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
@@ -658,6 +662,9 @@ process.stdin.on('data', chunk => {
     else say('\\nresumed pass ' + prompts + '\\n[[CDW:' + id + ':COMPLETE]]\\n');
   } else if (mode === 'continue') {
     say('\\ndeveloped round ' + prompts + '\\n[[CDW:' + id + ':CONTINUE]]\\n');
+  } else if (mode === 'tick') {
+    require('node:fs').writeFileSync('todo.md', '## Phase 1\\n' + Array.from({ length: 4 }, (_, i) => '- [' + (i < prompts ? 'x' : ' ') + '] task ' + i).join('\\n'));
+    say('\\ntested round ' + prompts + '\\n[[CDW:' + id + ':' + (prompts < 3 ? 'CONTINUE' : 'COMPLETE') + ']]\\n');
   } else if (prompts === 1) {
     waitingOn = id;
     say([
@@ -677,7 +684,11 @@ process.stdin.on('data', chunk => {
 }
 
 describeLive('pipeline run live — a loop of steps whose agents decide', () => {
-  it('runs Develop and Test twice in their own two terminals and answers the question itself', async () => {
+  it.each([
+    ['asks and completes', 'ask-then-complete', null],
+    ['stops after two unchanged rounds', 'continue', 'no_progress'],
+    ['keeps going while tasks are ticked', 'tick', 'tick'],
+  ])('%s', async (_name, testMode, progressMode) => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-loop-'));
     temps.push(base);
     const tmuxDir = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-tmux-'));
@@ -685,7 +696,8 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
     const home = path.join(base, 'codedeck');
     initRepo(home);
     const developStub = writeLoopAgent(base, 'continue');
-    const testStub = writeLoopAgent(base, 'ask-then-complete');
+    const testStub = writeLoopAgent(base, testMode);
+    if (progressMode !== null) writeFileSync(path.join(home, 'todo.md'), '## Phase 1\n- [ ] task 0\n- [ ] task 1\n- [ ] task 2\n- [ ] task 3');
 
     const previousTmp = process.env.TMUX_TMPDIR;
     const previousTmux = process.env.TMUX;
@@ -719,11 +731,11 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         workflowName: 'Loop',
         workflowRevision: 1,
         agentsDecide: true,
-        progressFile: null,
+        progressFile: progressMode === null ? null : 'todo.md',
         notesDir: null,
         steps: [
           { kind: 'node', readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
-          { kind: 'node', readOnly: false, approval: false, name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 3 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
+          { kind: 'node', readOnly: false, approval: false, name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 5 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
         ],
       },
       steps: [pending(), pending()],
@@ -746,6 +758,10 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
 
     const engine = createRunEngine({
       runStore: runs,
+      readProgressCount: async run => {
+        const progress = await readRunProgress({ run, workflowProgressFile: null, progressReader: createRunProgressReader() });
+        return progress?.phaseCount > 0 ? { tasksDone: progress.tasksDone, tasksTotal: progress.tasksTotal } : null;
+      },
       decisionStore: decisions,
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
@@ -792,7 +808,21 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         throw new Error(`${err.message}: status=${run.status} step=${run.currentStepIndex} steps=${JSON.stringify(run.steps.map(s => [s.status, s.iteration, s.roundsCompleted]))}\n${screens.join('\n')}`);
       }
       const finished = runs.get(runId);
-      if (finished.status === 'complete') await done;
+      if (['complete', 'stopped'].includes(finished.status)) await done;
+
+      if (progressMode === 'no_progress') {
+        expect(finished).toMatchObject({ status: 'stopped', stopReason: 'no_progress', currentStepIndex: 0 });
+        expect(finished.steps[1].roundsCompleted).toBe(3);
+        expect(finished.steps[0].status).toBe('stopped');
+        expect(sessionSeq).toBe(2);
+        return;
+      }
+      if (progressMode === 'tick') {
+        expect(finished.status).toBe('complete');
+        expect(finished.steps[1].roundsCompleted).toBe(2);
+        expect(parsePhaseProgress(readFileSync(path.join(home, 'todo.md'), 'utf8')).tasksDone).toBe(3);
+        return;
+      }
 
       expect(finished.error).toBeNull();
       expect(finished.status).toBe('complete');
@@ -912,6 +942,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
 
     const engine = createRunEngine({
       runStore: runs,
+      readProgressCount: async () => null,
       decisionStore: decisions,
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
@@ -1067,6 +1098,7 @@ describeLive('pipeline run live — Resume', () => {
     const started = [];
     const engine = createRunEngine({
       runStore: runs,
+      readProgressCount: async () => null,
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),

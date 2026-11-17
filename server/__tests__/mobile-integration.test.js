@@ -1,7 +1,15 @@
 import { expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createMobileStore } from '../mobile-store.js';
-import { createMobileDiscovery } from '../mobile-integration.js';
+import { createMobileDiscovery, runNeedsOwner } from '../mobile-integration.js';
+it('marks only approval and no-progress current sessions as needing the owner', () => {
+  const current = { steps: [{ sessionId: 'Demo-1' }], currentStepIndex: 0 };
+  expect(runNeedsOwner([{ ...current, status: 'stopped', stopReason: 'no_progress' }], 'Demo-1')).toBe(true);
+  expect(runNeedsOwner([{ ...current, status: 'stopped', stopReason: 'user' }], 'Demo-1')).toBe(false);
+  expect(runNeedsOwner([{ ...current, status: 'awaiting_approval', stopReason: null }], 'Demo-1')).toBe(true);
+  expect(() => runNeedsOwner(null, 'Demo-1')).toThrow();
+  expect(() => runNeedsOwner([], null)).toThrow();
+});
 function attentionDeps(overrides = {}) {
   const seen = new Map();
   return {
@@ -30,7 +38,7 @@ it('refreshes detached remote sessions without a browser and preserves freshness
 it('reports the current approval step session as needing owner input', async () => {
   const db = new Database(':memory:'); const store = createMobileStore(db);
   try {
-    const discovery = createMobileDiscovery({ ...attentionDeps(), now: () => 123, store, sessions: new Map(), deletedSessionIds: new Set(), statusCache: { refreshSessionList: async () => ['Demo-1'], refreshSession: async () => ({ executionState: { executionStatus: 'idle', needsInput: false }, updatedAt: 123 }) }, loadProjects: () => [{ name: 'Demo' }], resolveHostRuntime: () => null, getReachability: () => ({ reachability: 'reachable' }), namingStore: { get: () => null }, getSessionIncarnation: async id => store.ensureIncarnation(id), runNeedsApproval: id => id === 'Demo-1' });
+    const discovery = createMobileDiscovery({ ...attentionDeps(), now: () => 123, store, sessions: new Map(), deletedSessionIds: new Set(), statusCache: { refreshSessionList: async () => ['Demo-1'], refreshSession: async () => ({ executionState: { executionStatus: 'idle', needsInput: false }, updatedAt: 123 }) }, loadProjects: () => [{ name: 'Demo' }], resolveHostRuntime: () => null, getReachability: () => ({ reachability: 'reachable' }), namingStore: { get: () => null }, getSessionIncarnation: async id => store.ensureIncarnation(id), runNeedsOwner: id => id === 'Demo-1' });
     expect((await discovery.listSessions())[0].needsInput).toBe(true);
     expect((await discovery.listObservations())[0].needsInput).toBe(true);
   } finally { db.close(); }

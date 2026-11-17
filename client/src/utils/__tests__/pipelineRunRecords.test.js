@@ -2,6 +2,11 @@ import { expect, it } from 'vitest';
 import { parseDecision, parseDecisionPage, parseInputRequest, parseRun, parseRunAutonomy, parseNotePage } from '../pipelineRunRecords';
 import { validRun } from './pipelineRunFixture';
 it('accepts the complete run response', () => { expect(parseRun(validRun())).toEqual(validRun()); });
+it('accepts no_progress on a stopped run and rejects an unknown reason', () => {
+  const run = validRun(); run.status = 'stopped'; run.stopReason = 'no_progress'; run.steps[0].status = 'stopped'; run.finishedAt = '2026-11-13T12:00:00.000Z';
+  expect(parseRun(run).stopReason).toBe('no_progress');
+  expect(() => parseRun({ ...run, stopReason: 'mystery' })).toThrow('stopReason');
+});
 it('validates approval request and action fields', () => {
   const run = validRun();
   run.status = 'awaiting_approval';

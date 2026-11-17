@@ -66,3 +66,10 @@ it('counts the runs of a project that are waiting for the owner: input, pass lim
   await waitFor(() => expect(result.current.get('Alpha')).toEqual({ open: 4, awaitingOwner: 3 }));
   expect(result.current.get('Beta')).toEqual({ open: 1, awaitingOwner: 0 });
 });
+it('counts only a no-progress stopped run as awaiting the owner', async () => {
+  const stalled = validRun(); stalled.status = 'stopped'; stalled.stopReason = 'no_progress'; stalled.steps[0].status = 'stopped'; stalled.actions.resume = true; stalled.finishedAt = '2026-11-13T12:00:00.000Z';
+  const userStopped = validRun(); userStopped.id = '11111111-1111-4111-8111-111111111115'; userStopped.status = 'stopped'; userStopped.stopReason = 'user'; userStopped.steps[0].status = 'stopped'; userStopped.actions.resume = true; userStopped.finishedAt = '2026-11-13T12:00:00.000Z';
+  mocks.listOpenRuns.mockResolvedValue([stalled, userStopped]);
+  const { result } = renderHook(() => usePipelineRunCounts(showToast));
+  await waitFor(() => expect(result.current.get('Alpha')).toEqual({ open: 2, awaitingOwner: 1 }));
+});

@@ -188,7 +188,8 @@ function applyError(run, event) {
 
 function applyStop(run, event) {
   if (!STOPPABLE.has(run.status)) illegal(run.status, event.type);
-  const reason = event.reason === 'terminal' ? 'terminal' : 'user';
+  if (event.reason !== undefined && !['user', 'terminal', 'no_progress'].includes(event.reason)) throw new Error('stop event: reason must be user, terminal or no_progress');
+  const reason = event.reason ?? 'user';
   const step = currentStep(run);
   // Spec §8.6: paused step stays limit_reached either way.
   if (step.status !== 'limit_reached' && (ACTIVE_STEP.has(step.status) || step.status === 'awaiting_approval')) {

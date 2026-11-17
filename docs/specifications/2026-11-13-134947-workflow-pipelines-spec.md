@@ -164,7 +164,7 @@ The runs bar shows the latest note and its full content for the waiting step. **
 | `project` | TEXT | project name at start |
 | `input` | TEXT | 0–4096 chars, single-line |
 | `status` | TEXT | run status enum (§5.1) |
-| `stop_reason` | TEXT | null, `user`, or `terminal`; non-null exactly when `status = stopped` |
+| `stop_reason` | TEXT | null, `user`, `terminal`, or `no_progress`; non-null exactly when `status = stopped` |
 | `current_step_index` | INTEGER | 0 ≤ index < number of steps |
 | `error` | TEXT | non-null exactly when `status = error`; ≤ 2000 chars |
 | `definition` | TEXT (JSON) | definition snapshot (below), re-validated on read |
@@ -228,7 +228,7 @@ prompt changes, and the snapshot keeps the prompt as written. A ready profile wi
 | `awaiting_approval` | A gated step finished and is waiting for the owner's Approve or Send back action |
 | `limit_paused` | A repeating step reached its maximum pass count without COMPLETE; waiting for Continue or Stop |
 | `interrupted` | The backend restarted while the run was `pending`, `running` or `needs_input` |
-| `stopped` | Stopped by the owner (`stop_reason = user`) or from the terminal's own bar / loss of the attachment (`stop_reason = terminal`) |
+| `stopped` | Stopped by the owner (`stop_reason = user`), from the terminal's own bar / loss of the attachment (`stop_reason = terminal`), or by the no-progress loop guard (`stop_reason = no_progress`) |
 | `error` | The run could not continue; `error` says why |
 | `complete` | Every step finished |
 
@@ -825,6 +825,13 @@ The closing step gets one pass per round (`maxIterations = 1`):
 | COMPLETE | step `complete`; the run advances past the loop (or completes) |
 | CONTINUE, and `roundsCompleted + 1 < max` | `roundsCompleted + 1`; every step of the loop becomes `pending` with `iteration` 0 and keeps its `sessionId`; the run continues at the loop's first step |
 | CONTINUE, and `roundsCompleted + 1 = max` | step `limit_reached`, run `limit_paused`; **Continue** advances past the loop |
+
+At a CONTINUE that allows another round, the engine compares total ticked tasks across all
+`## Phase N` sections of the run's progress source with the previous measured round. Two
+consecutive rounds without an increase raise `loop_back` and then stop with
+`stop_reason = no_progress`, before the next round's first step starts. A missing or unreadable
+source disables the guard and clears its baseline. Resume clears the baseline and gives two
+more rounds. The guard does not apply to `until_complete` passes or the last allowed round.
 
 The steps inside the loop keep their own repeat (`once` advances on either signal, as before). The
 closing step's agent is the only one that decides whether the loop runs again, so its prompt carries

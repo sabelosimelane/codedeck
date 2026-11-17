@@ -166,6 +166,12 @@ agent's context is cleared with the reset command before each new round. At the
 maximum number of rounds the run pauses and **Continue** moves past the loop. Loops
 cannot share a node, and the first node cannot loop.
 
+When the loop's closing step reports work left, CodeDeck checks the number of ticked tasks in
+the run's Progress file or its own `plan.md`. After two consecutive rounds without a new ticked
+task, it stops before starting the next round and marks the run as waiting for you. **Resume**
+gives the loop two more rounds to make progress. A run without a readable progress source is
+not guarded.
+
 **Let agents decide.** Tick this on a workflow to keep its runs going without you.
 Each agent is told to go with the option it would recommend instead of asking, and to
 write the decision down. If an agent pauses anyway and lists its questions, CodeDeck

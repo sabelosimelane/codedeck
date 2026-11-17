@@ -5,6 +5,7 @@ import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
 import { approveRun, sendBackRun } from '../../utils/pipelinesApi';
 import { useToast } from '../ToastContext';
 import { describeRunStatus, describeStepState } from '../../utils/pipelineRunStatus';
+import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
 import './pipeline-runs.css';
 
 const ACCEPT_RECOMMENDATIONS = ACCEPT_RECOMMENDATIONS_ANSWER;
@@ -342,6 +343,9 @@ export default function PipelineRunsBar({
               )}
             </div>
           </div>
+          {run.status === 'stopped' && run.stopReason === 'no_progress' && (
+            <div className="pipeline-run-warning">{`No task was ticked in the last ${NO_PROGRESS_ROUNDS} rounds. Check what the steps reported, then Resume to try again.`}</div>
+          )}
           {run.progress !== null && run.progress !== undefined && (
               <div title={run.progress.file} className="pipeline-run-progress">
                 {run.progress.status === 'in_progress' ? (

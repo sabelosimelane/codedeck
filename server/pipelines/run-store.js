@@ -20,7 +20,7 @@ const STEP_STATUSES = new Set([
 // `external` is a worktree the owner chose that existed before the run; CodeDeck never removes it.
 // `released` means the run no longer uses that worktree; nothing was removed.
 const WORKTREE_STATES = new Set(['not_created', 'present', 'removed', 'removal_blocked', 'external', 'released']);
-const STOP_REASONS = new Set(['user', 'terminal']);
+const STOP_REASONS = new Set(['user', 'terminal', 'no_progress']);
 const INTERRUPTIBLE = new Set(['pending', 'running', 'needs_input']);
 
 function fieldError(id, field, message) {

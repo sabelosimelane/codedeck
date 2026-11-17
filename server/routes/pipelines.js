@@ -17,7 +17,7 @@ import {
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions } from '../pipelines/run-machine.js';
-import { createRunProgressReader, resolveRunProgressFile, isProgressFileInWorktree } from '../pipelines/run-progress.js';
+import { createRunProgressReader, readRunProgress, isProgressFileInWorktree } from '../pipelines/run-progress.js';
 import { notePath, feedbackPath } from '../pipelines/run-notes.js';
 import { buildStepGuidance } from '../pipelines/step-guidance.js';
 import {
@@ -414,16 +414,8 @@ export function createPipelinesRouter(deps) {
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
   const asRunView = async run => {
-    const progressFile = resolveRunProgressFile({
-      definitionProgressFile: run.definition.progressFile,
-      workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null,
-      input: run.input,
-      notesDir: run.definition.notesDir,
-    });
-    const inspected = progressFile !== null && ['present', 'external', 'removal_blocked'].includes(run.worktreeState)
-      ? await progressReader.read({ worktreePath: run.worktreePath, progressFile: progressFile.file })
-      : null;
-    const progress = progressFile?.optional && ['missing', 'no_phases'].includes(inspected?.status) ? null : inspected;
+    const inspected = await readRunProgress({ run, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader });
+    const progress = inspected === null ? null : { file: inspected.file, status: inspected.status, phaseCount: inspected.phaseCount, phase: inspected.phase };
     return buildRunView(run, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
   };
 

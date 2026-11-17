@@ -15,7 +15,8 @@ export function describeRunStatus(run) {
   if (!run || typeof run !== 'object' || Array.isArray(run)) throw new Error('run status: run must be an object');
   if (typeof run.status !== 'string' || !Object.hasOwn(RUN_STATUS, run.status)) throw new Error(`run status: status ${String(run.status)} is unknown`);
   if (run.actions !== undefined && (run.actions === null || typeof run.actions !== 'object' || Array.isArray(run.actions))) throw new Error('run status: actions must be an object');
-  const [label, tone, action] = RUN_STATUS[run.status];
+  const [label, tone, action] = run.status === 'stopped' && run.stopReason === 'no_progress'
+    ? ['Stopped: no progress', 'waiting', 'resume'] : RUN_STATUS[run.status];
   return { label, tone, primaryAction: action && run.actions?.[action] === true ? action : null };
 }
 

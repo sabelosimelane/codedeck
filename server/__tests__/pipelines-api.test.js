@@ -44,6 +44,16 @@ function node(agentId, overrides = {}) {
 }
 
 async function setup(overrides = {}) {
+  if (overrides.routerDeps?.progressReader) {
+    const originalRead = overrides.routerDeps.progressReader.read;
+    overrides = { ...overrides, routerDeps: { ...overrides.routerDeps, progressReader: {
+      worktreeExists: async () => true,
+      read: async args => {
+        const progress = await originalRead(args);
+        return { ...progress, tasksDone: progress.phase?.tasksDone ?? null, tasksTotal: progress.phase?.tasksTotal ?? null };
+      },
+    } } };
+  }
   const db = new Database(':memory:');
   cleanup.push(() => db.close());
 
@@ -936,6 +946,14 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
     const again = await request(ctx.app).post(`${base}/runs/${id}/stop`);
     expect(again.status).toBe(200);
     expect(again.body.status).toBe('stopped');
+  });
+  it('returns a no-progress stop with Resume and Clean up actions', async () => {
+    const ctx = await setup();
+    const { id } = await seedRun(ctx);
+    ctx.runStore.update(id, { status: 'stopped', stopReason: 'no_progress', finishedAt: new Date().toISOString() });
+    const response = await request(ctx.app).get(`${base}/runs/${id}`);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: 'stopped', stopReason: 'no_progress', actions: { resume: true, cleanup: true } });
   });
 
   it('Stop is refused from complete and error', async () => {

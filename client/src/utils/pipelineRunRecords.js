@@ -134,7 +134,7 @@ export function parseRun(run, index = 0) {
   guard(text(run.project) && run.project.length <= 256 && !/[\x00-\x1f\x7f]/.test(run.project), 'project');
   guard(typeof run.input === 'string' && run.input.length <= 4096 && !/[\x00-\x1f\x7f]/.test(run.input), 'input');
   guard(RUN_STATUSES.includes(run.status), 'status');
-  guard(run.status === 'stopped' ? ['user', 'terminal'].includes(run.stopReason) : run.stopReason === null, 'stopReason');
+  guard(run.status === 'stopped' ? ['user', 'terminal', 'no_progress'].includes(run.stopReason) : run.stopReason === null, 'stopReason');
   guard(run.status === 'error' ? text(run.error) && run.error.length <= 2000 : run.error === null, 'error');
   guard(Array.isArray(run.steps) && run.steps.length >= 1 && run.steps.length <= 33, 'steps');
   guard(integer(run.currentStepIndex) && run.currentStepIndex < run.steps.length, 'currentStepIndex');

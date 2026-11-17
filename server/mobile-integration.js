@@ -4,6 +4,22 @@ import { isTransportFailure } from './command-runner.js';
 // Mirrors sanitizeTmuxName in terminal-runtime.js.
 const tmuxSafeName = name => name.replace(/[^a-zA-Z0-9_-]/g, '_');
 
+export function runNeedsOwner(runs, sessionId) {
+  requireField(Array.isArray(runs), 'runs', 'Run list required');
+  requireField(typeof sessionId === 'string' && sessionId.length > 0, 'sessionId', 'Session ID required');
+  return runs.map((run, index) => {
+    requireField(run && typeof run === 'object' && !Array.isArray(run), `runs[${index}]`, 'Run required');
+    requireField(typeof run.status === 'string', `runs[${index}].status`, 'Run status required');
+    requireField(run.stopReason === null || typeof run.stopReason === 'string', `runs[${index}].stopReason`, 'Stop reason required');
+    requireField(Array.isArray(run.steps), `runs[${index}].steps`, 'Run steps required');
+    requireField(Number.isSafeInteger(run.currentStepIndex) && run.currentStepIndex >= 0 && run.currentStepIndex < run.steps.length, `runs[${index}].currentStepIndex`, 'Current step index required');
+    const step = run.steps[run.currentStepIndex];
+    requireField(step && typeof step === 'object' && !Array.isArray(step), `runs[${index}].steps[${run.currentStepIndex}]`, 'Current step required');
+    requireField(step.sessionId === null || typeof step.sessionId === 'string', `runs[${index}].steps[${run.currentStepIndex}].sessionId`, 'Session ID required');
+    return (run.status === 'awaiting_approval' || (run.status === 'stopped' && run.stopReason === 'no_progress')) && step.sessionId === sessionId;
+  }).some(Boolean);
+}
+
 /**
  * tmux lists "Equinox Local-15" as "Equinox_Local-15". Map a listed name back
  * to the project's real session id: an exact project name wins; otherwise the
@@ -22,7 +38,7 @@ export function sessionIdForTmuxName(name, projects) {
 }
 
 /** Shared cached status probes, including durable sessions with no frontend. */
-export function createMobileDiscovery({ store, sessions, deletedSessionIds, statusCache, loadProjects, resolveHostRuntime, getReachability, namingStore, getSessionIncarnation, attention, describeState, getSessionActivity, runNeedsApproval = () => false, now = Date.now, freshnessMs = 30000 }) {
+export function createMobileDiscovery({ store, sessions, deletedSessionIds, statusCache, loadProjects, resolveHostRuntime, getReachability, namingStore, getSessionIncarnation, attention, describeState, getSessionActivity, runNeedsOwner = () => false, now = Date.now, freshnessMs = 30000 }) {
   for (const [field, value] of Object.entries({ loadProjects, resolveHostRuntime, getReachability, getSessionIncarnation, describeState, getSessionActivity })) requireField(typeof value === 'function', field, 'Discovery function required');
   requireField(typeof attention?.observe === 'function' && typeof attention?.knows === 'function', 'attention', 'Attention tracker required');
   const timeOf = value => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : NaN);
@@ -45,7 +61,7 @@ export function createMobileDiscovery({ store, sessions, deletedSessionIds, stat
   requireField(sessions instanceof Map && deletedSessionIds instanceof Set, 'sessions', 'Session map and deleted set required');
   requireField(store && statusCache && namingStore, 'services', 'Discovery stores required');
   requireField(typeof now === 'function', 'now', 'Clock function required');
-  requireField(typeof runNeedsApproval === 'function', 'runNeedsApproval', 'Approval lookup required');
+  requireField(typeof runNeedsOwner === 'function', 'runNeedsOwner', 'Owner lookup required');
   requireField(Number.isSafeInteger(freshnessMs) && freshnessMs > 0, 'freshnessMs', 'Positive freshness duration required');
   let pending = null;
   async function collect() {
@@ -90,12 +106,12 @@ export function createMobileDiscovery({ store, sessions, deletedSessionIds, stat
         view: { id, incarnationId, projectId: project.name, title: namingStore.get(id)?.title ?? id, status: executionStatus,
           live: reachable && executionStatus !== 'unknown', cwd: status.cwd ?? entry.cwd ?? null, host, runtimeType: entry.runtimeType ?? 'tmux',
           finished: state.finished, muted: state.muted, waiting: state.waiting, lastActivityAt: state.lastActivityAt,
-          needsInput: liveEntry?.workflow?.snapshot().status === 'needs_input' || status.executionState.needsInput === true || runNeedsApproval(id),
+          needsInput: liveEntry?.workflow?.snapshot().status === 'needs_input' || status.executionState.needsInput === true || runNeedsOwner(id),
           agentCli: status.executionState.agentCli ?? null,
           backgroundAgents: status.executionState.backgroundAgents ?? 0,
           backgroundShells: status.executionState.backgroundShells ?? 0 },
         observation: { sessionId: id, incarnationId, executionStatus, workflowStatus: entry.workflow?.snapshot().status ?? null,
-          needsInput: liveEntry?.workflow?.snapshot().status === 'needs_input' || status.executionState.needsInput === true || runNeedsApproval(id),
+          needsInput: liveEntry?.workflow?.snapshot().status === 'needs_input' || status.executionState.needsInput === true || runNeedsOwner(id),
           observedAt: status.updatedAt, reachable },
       };
     }

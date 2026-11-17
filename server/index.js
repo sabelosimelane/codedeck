@@ -33,6 +33,7 @@ import {
   listDirtyPaths as listPipelineDirtyPaths,
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
+import { createRunProgressReader, readRunProgress } from './pipelines/run-progress.js';
 import { classify as classifyAgentReadiness } from './pipelines/agent-readiness.js';
 import { createPipelinesRouter } from './routes/pipelines.js';
 import {
@@ -82,7 +83,7 @@ import { createAgentHistory } from './agent-history/index.js';
 import { createAgentSessionsRouter } from './routes/agent-sessions.js';
 import { submitDetachedCommand } from './agent-history/submit.js';
 import { createMobileRouter } from './routes/mobile.js';
-import { createMobileDiscovery } from './mobile-integration.js';
+import { createMobileDiscovery, runNeedsOwner } from './mobile-integration.js';
 import { createMobileNotifications, DESKTOP_PRESENCE_MS, initializeFcmProvider } from './mobile-notifications.js';
 import { prepareMobileDatabase } from './mobile-migration.js';
 
@@ -820,7 +821,7 @@ const mobileDiscovery = createMobileDiscovery({
   getSessionIncarnation: id => (sessions.get(id)?.hostRuntime ?? resolveHostRuntime(id)?.hostRuntime ?? terminalRuntime).getSessionIncarnationAsync(id),
   attention: sessionAttention, describeState: sessionStateService.describe,
   getSessionActivity: id => (sessions.get(id)?.hostRuntime ?? resolveHostRuntime(id)?.hostRuntime ?? terminalRuntime).getSessionActivityAsync(id),
-  runNeedsApproval: id => pipelineRunStoreForMobile?.list().some(run => run.status === 'awaiting_approval' && run.steps[run.currentStepIndex].sessionId === id) ?? false,
+  runNeedsOwner: id => runNeedsOwner(pipelineRunStoreForMobile?.list() ?? [], id),
 });
 // A missing provider is an explicit unconfigured state. A broken configured
 // provider is reported; terminal operation remains independent of push delivery.
@@ -876,8 +877,14 @@ pipelineRunStoreForMobile = pipelineRunStore;
 const pipelineDecisionStore = createDecisionStore(db);
 const pipelineNoteStore = createNoteStore(db);
 const pipelineReviewStore = createReviewStore(db);
+const pipelineProgressReader = createRunProgressReader();
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
+  readProgressCount: async run => {
+    const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: pipelineProgressReader });
+    return progress?.phaseCount > 0 && ['in_progress', 'all_done'].includes(progress.status)
+      ? { tasksDone: progress.tasksDone, tasksTotal: progress.tasksTotal } : null;
+  },
   decisionStore: pipelineDecisionStore,
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,

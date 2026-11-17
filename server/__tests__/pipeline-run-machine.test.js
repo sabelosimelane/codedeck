@@ -32,6 +32,14 @@ function run(overrides = {}) {
 }
 
 describe('applyEvent — single-step run (Spec §5)', () => {
+  it('keeps no_progress on Stop and clears it on Resume', () => {
+    const running = run({ status: 'running', worktreeState: 'present', steps: [step({ status: 'running', sessionId: 'terminal-1' })] });
+    const stopped = applyEvent(running, { type: 'stop', reason: 'no_progress', at: AT });
+    expect(stopped).toMatchObject({ status: 'stopped', stopReason: 'no_progress' });
+    expect(computeActions(stopped)).toMatchObject({ resume: true, cleanup: true });
+    expect(applyEvent(stopped, { type: 'resume', newTerminal: false, at: AT }).stopReason).toBeNull();
+    expect(() => applyEvent(running, { type: 'stop', reason: 'mystery', at: AT })).toThrow(/reason/);
+  });
   it.each(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval', 'interrupted', 'stopped', 'error', 'complete'])
     ('accepts approval events only from their legal status: %s', status => {
       const state = run({ status, steps: [step({ status: status === 'awaiting_approval' ? 'awaiting_approval' : 'running', attempt: 1, sessionId: 'terminal-1' })] });

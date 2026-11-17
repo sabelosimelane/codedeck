@@ -49,6 +49,11 @@ afterEach(() => {
 });
 
 describe('PipelineRunsBar visual states', () => {
+  it('explains a no-progress stop and makes Resume primary', () => {
+    const view = render(<PipelineRunsBar runs={[runView({ status: 'stopped', stopReason: 'no_progress', actions: { resume: true, cleanup: true }, currentStepIndex: 1 })]} />);
+    expect(view.getByText('No task was ticked in the last 2 rounds. Check what the steps reported, then Resume to try again.').className).toBe('pipeline-run-warning');
+    expect(view.getByRole('button', { name: 'Resume' }).className).toBe('pipeline-run-primary');
+  });
   it.each([
     ['pending', 'Starting', null], ['running', 'Running', null],
     ['needs_input', 'Needs your input', 'answer'], ['limit_paused', 'Paused at its limit', 'continue'],
