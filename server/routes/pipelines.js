@@ -15,7 +15,7 @@ import {
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions } from '../pipelines/run-machine.js';
-import { createRunProgressReader, resolveRunProgressFile } from '../pipelines/run-progress.js';
+import { createRunProgressReader, resolveRunProgressFile, isProgressFileInWorktree } from '../pipelines/run-progress.js';
 import {
   preflight as defaultPreflight,
   planNames as defaultPlanNames,
@@ -23,6 +23,7 @@ import {
   listWorktrees as defaultListWorktrees,
   readWorktreeChanges as defaultReadWorktreeChanges,
   buildSetupPrompt,
+  hasCommittedFile,
 } from '../pipelines/run-worktree.js';
 
 const BASE = '/api/pipelines';
@@ -764,6 +765,18 @@ export function createPipelinesRouter(deps) {
       worktreePath: names.worktreePath,
       withSetup: !useExisting,
     });
+
+    if (definition.progressFile !== null) {
+      const present = useExisting
+        ? await isProgressFileInWorktree({ worktreePath: names.worktreePath, progressFile: definition.progressFile })
+        : await hasCommittedFile({ repoPath: project.path, progressFile: definition.progressFile, execFile });
+      if (!present) {
+        const message = useExisting
+          ? `${definition.progressFile} is not in the chosen worktree. Add it there, or choose the worktree that contains it.`
+          : `${definition.progressFile} is not in this repository at its current commit. Commit it, or start the run from the project that contains it.`;
+        throw fieldError('input', message);
+      }
+    }
 
     let run;
     try {

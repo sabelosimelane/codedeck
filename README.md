@@ -91,6 +91,7 @@ The optional **Progress file** setting names a Markdown todo inside the run's wo
 it may use `{input}`. The runs bar shows the first `## Phase N` section with unticked
 boxes and its task count. If the file is absent or cannot be read, the bar says
 "Progress file not found" or "Progress file could not be read" with its path.
+A run with a Progress file is refused when that file is not in the repository at its current commit, or in the chosen worktree. Each step's agent is told to work only inside the run's worktree and to pause when something is missing there.
 A run started without a progress file follows the workflow's current setting. If its
 input does not form a valid path, the runs bar shows no phase line.
 Write a skill as `/name` at the start of a prompt (for example `/feature-dev {input}`).

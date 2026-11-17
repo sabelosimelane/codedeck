@@ -557,7 +557,7 @@ export function createRunEngine({
       const command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
       const maxIterations = maxIterationsFor(defStep.repeat);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
-      const guidance = buildStepGuidance(current.definition, stepIndex);
+      const guidance = buildStepGuidance(current.definition, stepIndex, { worktreePath: current.worktreePath });
 
       let settled = false;
       const settleWorkflow = () => {

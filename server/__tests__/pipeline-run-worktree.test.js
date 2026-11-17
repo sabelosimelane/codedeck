@@ -1,8 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
-import { create, listDirtyPaths, listWorktrees, planNames, preflight, readWorktreeChanges, remove } from '../pipelines/run-worktree.js';
+import { create, hasCommittedFile, listDirtyPaths, listWorktrees, planNames, preflight, readWorktreeChanges, remove } from '../pipelines/run-worktree.js';
 
 const RUN_ID = '0d9e4b1a-1111-4111-8111-111111111111';
 const HOME = '/Users/me/git/codedeck';
+
+describe('hasCommittedFile preconditions', () => {
+  const execFile = vi.fn();
+  it.each([undefined, '', 'relative', 7])('rejects repoPath %s', async repoPath => {
+    await expect(hasCommittedFile({ repoPath, progressFile: 'docs/todo.md', execFile })).rejects.toThrow('repoPath must be an absolute path');
+  });
+  it.each([undefined, '', 7])('rejects progressFile %s', async progressFile => {
+    await expect(hasCommittedFile({ repoPath: HOME, progressFile, execFile })).rejects.toThrow('progressFile must be a non-empty string');
+  });
+  it('rejects an absent git runner', async () => {
+    await expect(hasCommittedFile({ repoPath: HOME, progressFile: 'docs/todo.md' })).rejects.toThrow('execFile is required');
+  });
+  it('checks HEAD in repoPath', async () => {
+    const execFile = vi.fn((_cmd, args, _options, callback) => callback(null, '100644 blob abc\tdocs/todo.md\0', ''));
+    await expect(hasCommittedFile({ repoPath: '/linked', progressFile: 'docs/todo.md', execFile })).resolves.toBe(true);
+    expect(execFile.mock.calls[0][1]).toEqual(['-C', '/linked', 'ls-tree', '-z', 'HEAD', '--', 'docs/todo.md']);
+  });
+});
 
 describe('planNames', () => {
   it('builds worktree path and branch with slug and shortId', () => {
@@ -245,6 +263,16 @@ describe('preflight', () => {
 });
 
 describe('create', () => {
+  it('reads project HEAD and adds from home when the paths differ', async () => {
+    const calls = [];
+    const execFile = vi.fn((_cmd, args, _options, callback) => {
+      calls.push(args);
+      callback(null, args.includes('rev-parse') ? 'a'.repeat(40) : '', '');
+    });
+    await create({ homePath: '/home', projectPath: '/linked', worktreePath: '/new', branch: 'workflow/new', execFile, mkdir: async () => {} });
+    expect(calls[0]).toEqual(['-C', '/linked', 'rev-parse', 'HEAD']);
+    expect(calls[1]).toEqual(['-C', '/home', 'worktree', 'add', '/new', '-b', 'workflow/new', 'a'.repeat(40)]);
+  });
   it('rev-parses HEAD then worktree-adds with argv arrays and timeout', async () => {
     const calls = [];
     const execFile = vi.fn((cmd, args, options, callback) => {

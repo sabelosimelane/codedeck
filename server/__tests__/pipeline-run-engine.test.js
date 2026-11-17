@@ -7,6 +7,7 @@ import { createDecisionStore } from '../pipelines/decision-store.js';
 const WORKFLOW_ID = 'a2d0b1c2-3456-4789-8abc-def012345678';
 const AGENT_ID = 'c410a1b2-3456-4789-8abc-def012345678';
 const BASE_COMMIT = 'a'.repeat(40);
+const BOUNDARY = "Work only inside this run's worktree, /tmp/worktrees/home-feature-abcd1234, which is your current directory. Do not create, change or delete files outside it. If something you need is not in the worktree, do not look for it elsewhere: use NEEDS_INPUT and say what is missing.";
 const databases = [];
 
 function definition(overrides = {}) {
@@ -278,6 +279,7 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
       command: 'Implement ship it',
       resetCommand: '/clear',
       maxIterations: 1,
+      guidance: BOUNDARY,
       // A step in a new terminal starts on a fresh agent; nothing to reset.
       resetFirst: false,
     });
@@ -1542,9 +1544,9 @@ describe('createRunEngine — a loop of steps', () => {
   it('gives the step that closes the loop one pass per round and tells it what the loop is', async () => {
     const { script } = await runLoop(['continue', 'continue', 'complete', 'complete', 'complete']);
     const [develop, test, , , review] = script.starts;
-    expect(test).toMatchObject({ command: 'do Test', maxIterations: 1, guidance: LOOP_GUIDANCE });
-    expect(develop).not.toHaveProperty('guidance');
-    expect(review).not.toHaveProperty('guidance');
+    expect(test).toMatchObject({ command: 'do Test', maxIterations: 1, guidance: `${BOUNDARY} ${LOOP_GUIDANCE}` });
+    expect(develop.guidance).toBe(BOUNDARY);
+    expect(review.guidance).toBe(BOUNDARY);
   });
 
   it('pauses at the round limit; Continue moves past the loop', async () => {
@@ -1727,7 +1729,7 @@ describe('createRunEngine — agents decide', () => {
 
   it('tells the agent to decide for itself', async () => {
     const { loop } = await startAsking();
-    expect(loop.state.starts[0].guidance).toBe(DECIDE);
+    expect(loop.state.starts[0].guidance).toBe(`${BOUNDARY} ${DECIDE}`);
   });
 
   it('pauses for the owner when the agent asks again in the same pass', async () => {
@@ -1768,7 +1770,7 @@ describe('createRunEngine — agents decide', () => {
     await vi.advanceTimersByTimeAsync(200);
     expect(ctx.runStore.get(run.id).status).toBe('needs_input');
     expect(ctx.decisionStore.count(run.id)).toBe(0);
-    expect(loop.state.starts[0]).not.toHaveProperty('guidance');
+    expect(loop.state.starts[0].guidance).toBe(BOUNDARY);
   });
 
   it('pauses for the owner when Setup asks, even when agents decide', async () => {

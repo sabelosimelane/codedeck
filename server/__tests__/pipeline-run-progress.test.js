@@ -2,7 +2,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile } from '../pipelines/run-progress.js';
+import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile, isProgressFileInWorktree } from '../pipelines/run-progress.js';
+
+describe('isProgressFileInWorktree preconditions', () => {
+  it.each([undefined, '', 'relative', 7])('rejects worktreePath %s', async worktreePath => {
+    await expect(isProgressFileInWorktree({ worktreePath, progressFile: 'todo.md' })).rejects.toThrow('worktreePath must be a non-empty absolute path');
+  });
+  it.each([undefined, '', 7])('rejects progressFile %s', async progressFile => {
+    await expect(isProgressFileInWorktree({ worktreePath: '/tmp/worktree', progressFile })).rejects.toThrow('progressFile must be a non-empty string');
+  });
+  it('rejects an invalid fs implementation', async () => {
+    await expect(isProgressFileInWorktree({ worktreePath: '/tmp/worktree', progressFile: 'todo.md', fs: {} })).rejects.toThrow('fs must support stat and realpath');
+  });
+});
 
 describe('resolveRunProgressFile', () => {
   const resolve = (definitionProgressFile, workflowProgressFile, input = 'todo.md') =>

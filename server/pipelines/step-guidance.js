@@ -2,6 +2,7 @@
  * What a step's agent is told beyond the loop engine's standard instruction, built from the
  * run's definition snapshot. One line; the loop engine adds it to the prompt of every pass.
  */
+import path from 'node:path';
 
 const DECIDE = 'The owner is not available during this run. Do not stop for a decision you can make yourself: choose the option you would recommend, write down the decision and your reason where this project keeps such notes, and continue. Use NEEDS_INPUT only when you cannot continue at all.';
 
@@ -10,7 +11,7 @@ const DECIDE = 'The owner is not available during this run. Do not stop for a de
  * @param {number} stepIndex — the step about to run
  * @returns {string|undefined} guidance for that step, or undefined when it needs none
  */
-export function buildStepGuidance(definition, stepIndex) {
+export function buildStepGuidance(definition, stepIndex, options) {
   if (definition === null || typeof definition !== 'object' || Array.isArray(definition)) {
     throw new Error('step guidance: definition must be an object');
   }
@@ -18,8 +19,13 @@ export function buildStepGuidance(definition, stepIndex) {
   if (typeof definition.agentsDecide !== 'boolean') throw new Error('step guidance: definition.agentsDecide must be true or false');
   const step = Number.isInteger(stepIndex) ? definition.steps[stepIndex] : undefined;
   if (!step) throw new Error(`step guidance: stepIndex ${stepIndex} is not a step of the definition`);
+  if (options === null || typeof options !== 'object' || Array.isArray(options)
+    || typeof options.worktreePath !== 'string' || !options.worktreePath || !path.isAbsolute(options.worktreePath)) {
+    throw new TypeError('step guidance: worktreePath must be a non-empty absolute path');
+  }
 
   const parts = [];
+  if (step.kind === 'node') parts.push(`Work only inside this run's worktree, ${options.worktreePath}, which is your current directory. Do not create, change or delete files outside it. If something you need is not in the worktree, do not look for it elsewhere: use NEEDS_INPUT and say what is missing.`);
   if (step.repeat?.mode === 'loop_back') {
     // The agent of this step alone decides whether the loop runs again, so it is told what the loop is.
     const { toStepIndex } = step.repeat;

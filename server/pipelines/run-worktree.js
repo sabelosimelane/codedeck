@@ -96,6 +96,14 @@ function runGit(execFile, args, { timeout = GIT_TIMEOUT_MS } = {}) {
   });
 }
 
+/** A new worktree copies HEAD, so only a blob in that commit qualifies. */
+export async function hasCommittedFile({ repoPath, progressFile, execFile } = {}) {
+  if (typeof repoPath !== 'string' || !path.isAbsolute(repoPath)) throw new TypeError('repoPath must be an absolute path');
+  if (typeof progressFile !== 'string' || !progressFile) throw new TypeError('progressFile must be a non-empty string');
+  const { stdout } = await runGit(execFile, ['-C', repoPath, 'ls-tree', '-z', 'HEAD', '--', progressFile]);
+  return stdout.split('\0').some(entry => entry.split('\t')[1] === progressFile && /^100(?:644|755) blob /.test(entry));
+}
+
 async function resolveRealpath(realpath, target) {
   if (typeof realpath === 'function') return realpath(target);
   return fs.promises.realpath(target);

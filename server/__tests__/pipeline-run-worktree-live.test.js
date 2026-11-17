@@ -12,6 +12,7 @@ import {
   readWorktreeChanges,
   remove,
   resolveHomeRepoPath,
+  hasCommittedFile,
 } from '../pipelines/run-worktree.js';
 
 const SETUP_AGENT = 'c4100000-0000-4000-8000-000000000001';
@@ -44,6 +45,43 @@ function initRepo(root) {
 }
 
 describeLive('pipeline run-worktree live', () => {
+  it('accepts a committed progress file and refuses an untracked one at HEAD', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-progress-head-'));
+    const home = path.join(base, 'repo');
+    try {
+      initRepo(home);
+      mkdirSync(path.join(home, 'docs'));
+      writeFileSync(path.join(home, 'docs/todo.md'), '# committed\n');
+      git(home, ['add', 'docs/todo.md']);
+      git(home, ['commit', '-m', 'todo']);
+      writeFileSync(path.join(home, 'docs/untracked.md'), '# untracked\n');
+      expect(await hasCommittedFile({ repoPath: home, progressFile: 'docs/todo.md', execFile })).toBe(true);
+      expect(await hasCommittedFile({ repoPath: home, progressFile: 'docs/untracked.md', execFile })).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+  it('uses a linked project commit for the guard and new worktree', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-progress-linked-'));
+    const home = path.join(base, 'repo');
+    const linked = path.join(base, 'linked');
+    const run = path.join(base, 'run');
+    try {
+      initRepo(home);
+      git(home, ['worktree', 'add', '-b', 'feature/progress', linked]);
+      mkdirSync(path.join(linked, 'docs'));
+      writeFileSync(path.join(linked, 'docs/todo.md'), '# linked progress\n');
+      git(linked, ['add', 'docs/todo.md']);
+      git(linked, ['commit', '-m', 'linked progress']);
+      expect(await hasCommittedFile({ repoPath: linked, progressFile: 'docs/todo.md', execFile })).toBe(true);
+      expect(await hasCommittedFile({ repoPath: home, progressFile: 'docs/todo.md', execFile })).toBe(false);
+      const result = await create({ homePath: home, projectPath: linked, worktreePath: run, branch: 'workflow/run', execFile });
+      expect(result.baseCommit).toBe(git(linked, ['rev-parse', 'HEAD']));
+      expect(existsSync(path.join(run, 'docs/todo.md'))).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
   it('create adds a worktree and branch at base_commit', async () => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'cd-wt-home-'));
     const home = path.join(base, 'codedeck');

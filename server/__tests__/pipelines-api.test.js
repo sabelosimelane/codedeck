@@ -3,6 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createAgentStore } from '../pipelines/agent-store.js';
 import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
@@ -313,6 +316,84 @@ describe('pipelines API — agents', () => {
     const page1 = await request(app).get(`${base}/agents`).query({ page: 1, size: 2, sort: 'name,asc' });
     expect(page1.body.data.map(r => r.name)).toEqual(['same']);
     expect(page1.body.page.hasNextPage).toBe(false);
+  });
+});
+
+describe('pipelines API — progress file start boundary', () => {
+  async function ready(overrides = {}) {
+    const ctx = await setup(overrides);
+    const agent = ctx.agentStore.create(agentBody());
+    ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
+    const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
+    const body = { requestId: 'progress-boundary', workflowId: workflow.id, project: 'Demo', input: 'feature' };
+    return { ctx, workflow, body };
+  }
+
+  it.each([
+    ['blob', 201], ['missing', 400], ['untracked', 400], ['tree', 400],
+  ])('checks the linked project commit for a %s path before storing a new run', async (kind, status) => {
+    const execFile = vi.fn((_command, args, _options, callback) => {
+      expect(args).toEqual(['-C', PROJECT.path, 'ls-tree', '-z', 'HEAD', '--', 'docs/todo.md']);
+      callback(null, kind === 'blob' ? '100644 blob abc\tdocs/todo.md\0' : kind === 'tree' ? '040000 tree abc\tdocs/todo.md\0' : '', '');
+    });
+    const { ctx, body } = await ready({ routerDeps: { execFile } });
+    const result = await request(ctx.app).post(`${base}/runs`).send(body);
+    expect(result.status).toBe(status);
+    expect(execFile).toHaveBeenCalledTimes(1);
+    if (status === 400) {
+      expect(result.body.errors).toContainEqual({ field: 'input', message: 'docs/todo.md is not in this repository at its current commit. Commit it, or start the run from the project that contains it.' });
+      expect(ctx.runStore.list()).toHaveLength(0);
+      expect(ctx.scheduled).toHaveLength(0);
+    }
+  });
+
+  it('does not check progress on an idempotent replay after the file disappears', async () => {
+    const execFile = vi.fn((_command, _args, _options, callback) => callback(null, '100644 blob abc\tdocs/todo.md\0', ''));
+    const { ctx, body } = await ready({ routerDeps: { execFile } });
+    const first = await request(ctx.app).post(`${base}/runs`).send(body);
+    expect(first.status).toBe(201);
+    execFile.mockClear();
+    const replay = await request(ctx.app).post(`${base}/runs`).send(body);
+    expect(replay.status).toBe(200);
+    expect(replay.body.id).toBe(first.body.id);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an unexpected git failure as a server error', async () => {
+    const execFile = vi.fn((_command, _args, _options, callback) => callback(new Error('git crashed'), '', 'fatal: git crashed'));
+    const { ctx, body } = await ready({ routerDeps: { execFile } });
+    const result = await request(ctx.app).post(`${base}/runs`).send(body);
+    expect(result.status).toBe(500);
+    expect(ctx.runStore.list()).toHaveLength(0);
+  });
+
+  it('does not consult the guard for a workflow without progressFile', async () => {
+    const execFile = vi.fn();
+    const ctx = await setup({ routerDeps: { execFile } });
+    const { workflow } = await seedReady(ctx);
+    const result = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'no-progress', workflowId: workflow.id, project: 'Demo', input: 'feature' });
+    expect(result.status).toBe(201);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it.each(['present', 'absent', 'outside'])('checks a chosen worktree for a %s file', async kind => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'cd-progress-boundary-'));
+    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const worktreePath = path.join(root, 'worktree');
+    mkdirSync(path.join(worktreePath, 'docs'), { recursive: true });
+    if (kind === 'present') writeFileSync(path.join(worktreePath, 'docs/todo.md'), '# todo');
+    if (kind === 'outside') {
+      writeFileSync(path.join(root, 'outside.md'), '# outside');
+      symlinkSync(path.join(root, 'outside.md'), path.join(worktreePath, 'docs/todo.md'));
+    }
+    const listWorktrees = vi.fn(async () => [{ path: worktreePath, head: 'a'.repeat(40), branch: 'feature/x', missing: false }]);
+    const { ctx, body } = await ready({ routerDeps: { listWorktrees, readWorktreeChanges: async () => ({ readable: true, dirty: false }) } });
+    const result = await request(ctx.app).post(`${base}/runs`).send({ ...body, worktreePath });
+    expect(result.status).toBe(kind === 'present' ? 201 : 400);
+    if (kind !== 'present') {
+      expect(result.body.errors).toContainEqual({ field: 'input', message: 'docs/todo.md is not in the chosen worktree. Add it there, or choose the worktree that contains it.' });
+      expect(ctx.runStore.list()).toHaveLength(0);
+    }
   });
 });
 
@@ -1714,7 +1795,8 @@ describe('pipelines API — progress file', () => {
     const statuses = ['all_done', 'no_phases', 'missing', 'unreadable'];
     let status = statuses[0];
     const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status, phaseCount: status === 'all_done' ? 1 : null, phase: null }));
-    const ctx = await setup({ routerDeps: { progressReader: { read } } });
+    const execFile = vi.fn((_command, _args, _options, callback) => callback(null, '100644 blob abc\tdocs/todo.md\0', ''));
+    const ctx = await setup({ routerDeps: { progressReader: { read }, execFile } });
     const agent = ctx.agentStore.create(agentBody());
     ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
     const body = { name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] };
@@ -1738,7 +1820,8 @@ describe('pipelines API — progress file', () => {
   });
   it('persists workflow setting, snapshots composed path, and returns progress on every run view', async () => {
     const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 3 } }));
-    const ctx = await setup({ routerDeps: { progressReader: { read } } });
+    const execFile = vi.fn((_command, _args, _options, callback) => callback(null, '100644 blob abc\tdocs/todos/x.md\0', ''));
+    const ctx = await setup({ routerDeps: { progressReader: { read }, execFile } });
     const agent = ctx.agentStore.create(agentBody());
     ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
     const workflowBody = { name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}', nodes: [node(agent.id)] };

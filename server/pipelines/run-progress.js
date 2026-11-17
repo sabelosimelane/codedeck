@@ -44,6 +44,26 @@ export function parsePhaseProgress(markdown) {
 
 const inside = (root, target) => target !== root && !path.relative(root, target).startsWith('..' + path.sep) && path.relative(root, target) !== '..' && !path.isAbsolute(path.relative(root, target));
 
+async function inspectProgressFile({ worktreePath, progressFile, fs = defaultFs } = {}) {
+  if (typeof worktreePath !== 'string' || !worktreePath || !path.isAbsolute(worktreePath)) throw new TypeError('worktreePath must be a non-empty absolute path');
+  if (typeof progressFile !== 'string' || !progressFile) throw new TypeError('progressFile must be a non-empty string');
+  if (!fs || typeof fs.stat !== 'function' || typeof fs.realpath !== 'function') throw new TypeError('fs must support stat and realpath');
+  const target = path.resolve(worktreePath, progressFile);
+  if (!inside(worktreePath, target)) return 'outside worktree';
+  try {
+    const [realRoot, realTarget] = await Promise.all([fs.realpath(worktreePath), fs.realpath(target)]);
+    if (!inside(realRoot, realTarget)) return 'outside worktree real path';
+    return (await fs.stat(target)).isFile() ? 'present' : 'not a regular file';
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return 'missing';
+    throw error;
+  }
+}
+
+export async function isProgressFileInWorktree(options) {
+  return (await inspectProgressFile(options)) === 'present';
+}
+
 export function createRunProgressReader({ fs = defaultFs } = {}) {
   if (!fs || typeof fs.stat !== 'function' || typeof fs.realpath !== 'function' || typeof fs.open !== 'function') throw new TypeError('fs must support stat, realpath and open');
   const cache = new Map();
@@ -59,12 +79,11 @@ export function createRunProgressReader({ fs = defaultFs } = {}) {
       if (typeof worktreePath !== 'string' || !path.isAbsolute(worktreePath)) throw new TypeError('worktreePath must be a non-empty absolute path');
       if (typeof progressFile !== 'string' || progressFile.length === 0) throw new TypeError('progressFile must be a non-empty string');
       const target = path.resolve(worktreePath, progressFile);
-      if (!inside(worktreePath, target)) return unreadable(progressFile, target, 'outside worktree');
       try {
-        const [realRoot, realTarget] = await Promise.all([fs.realpath(worktreePath), fs.realpath(target)]);
-        if (!inside(realRoot, realTarget)) return unreadable(progressFile, target, 'outside worktree real path');
+        const presence = await inspectProgressFile({ worktreePath, progressFile, fs });
+        if (presence === 'missing') return result(progressFile, 'missing');
+        if (presence !== 'present') return unreadable(progressFile, target, presence);
         const stat = await fs.stat(target);
-        if (!stat.isFile()) return unreadable(progressFile, target, 'not a regular file');
         if (stat.size > LIMIT) return unreadable(progressFile, target, 'file exceeds 1 MiB');
         const cached = cache.get(target);
         if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return result(progressFile, cached.parsed.phase ? 'in_progress' : cached.parsed.phaseCount ? 'all_done' : 'no_phases', cached.parsed);

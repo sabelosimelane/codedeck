@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-17] - Keep a workflow run inside its worktree
+
+### Executive Summary
+* A run is meant to be self-contained in its Git worktree, but nothing enforced it. A run started from one repository with a todo that only existed in a sibling repository went ahead; its agents found the todo there and edited that other repository's main checkout directly. A run whose workflow names a progress file is now refused at the start when that file is not in the working tree it will use, and every step's agent is told that the run's worktree is the only place it may change and to pause when something it needs is missing there.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/routes/pipelines.js` — `POST /runs` checks the composed progress file before anything is created: for a new worktree it must be a file in the project's current commit, for a chosen worktree a regular file inside it. Otherwise 400 with a field error on `input` saying to commit it or start from the project that contains it; no run and no worktree are created. A replayed `requestId` returns the existing run as before.
+  * `server/pipelines/step-guidance.js` — `buildStepGuidance` takes the run's worktree path and every node step's guidance starts with the boundary sentence; Setup, which states its own boundary, is unchanged.
+  * `server/pipelines/run-engine.js` — Passes the run's worktree path to `buildStepGuidance`.
+* **🔌 API/Interface:**
+  * `docs/steering/api-standards.md` — The new 400 on `input` for `POST /runs`.
+* **🛠️ Codebase:**
+  * `server/pipelines/run-worktree.js` — `hasCommittedFile`: whether a path is a file in a repository's `HEAD`, read with `git ls-tree`. `create()` is unchanged: a run's worktree still starts from the project's current commit.
+  * `server/pipelines/run-progress.js` — `isProgressFileInWorktree`, sharing the stay-inside-the-worktree check (resolved path and real path) with the progress reader.
+  * `README.md` — When a run is refused and what each step's agent is told.
+* **🧪 Tests:**
+  * `server/__tests__/pipelines-api.test.js` — Present, absent, uncommitted and directory paths for a new worktree; present, absent and symlinked-out paths for a chosen worktree; no check without a progress file; replay after the file was removed; a project that is a linked worktree is checked at its own commit.
+  * `server/__tests__/pipeline-run-worktree.test.js`, `server/__tests__/pipeline-run-worktree-live.test.js` — `hasCommittedFile` preconditions and git call; with real git, a file committed only on a linked worktree's branch passes from that worktree and is refused from the home repository.
+  * `server/__tests__/pipeline-step-guidance.test.js`, `server/__tests__/pipeline-run-engine.test.js`, `server/__tests__/pipeline-run-live.test.js` — The boundary sentence comes first and carries the run's worktree path; worktree path preconditions; prompts sent to node steps.
+  * `server/__tests__/pipeline-run-progress.test.js` — `isProgressFileInWorktree` cases.
+  * Server suite: 75 files, 2,125 tests passed.
+
 ## [2026-11-17] - Runs already in progress follow the workflow's progress file
 
 ### Executive Summary

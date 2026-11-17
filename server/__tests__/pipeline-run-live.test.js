@@ -73,6 +73,7 @@ let armed = true;
 let emitted = 0;
 const continueFirst = ${continueFirst ? 'true' : 'false'};
 process.stdin.setEncoding('utf8');
+process.stdin.setRawMode(true);
 process.stdout.write('>_ OpenAI Codex (stub)\\n› \\n');
 process.stdin.on('data', chunk => {
   if (!armed) return;
@@ -105,6 +106,7 @@ function writeAskingAgent(dir) {
 let buf = '';
 let id = null;
 process.stdin.setEncoding('utf8');
+process.stdin.setRawMode(true);
 process.stdout.write('>_ OpenAI Codex (stub)\\n› \\n');
 process.stdin.on('data', chunk => {
   buf += chunk;
