@@ -295,7 +295,7 @@
 ### Session — 2026-11-13 (Phase 6 final regression)
 **Completed**: Phase 6: Sidebar Indicator, Documentation and Final Verification — feature complete.
 **Evidence**: Node v22.22.0. `cd server && npx vitest run --maxWorkers=1` → Test Files 67 passed (67), Tests 1425 passed (1425). `cd client && npx vitest run --maxWorkers=1` → Test Files 61 passed (61), Tests 680 passed (680). No code changes this session.
-**Next**: none in this todo. Changes remain uncommitted on `feature/workflow-pipelines` in `/Users/sabside/git/worktrees/codedeck-workflow-pipelines`; commit/merge/ship awaits the owner. Preserve ignored `.workflow/2026-11-13-134947-workflow-pipelines.md` on worktree cleanup.
+**Next**: none in this todo. Changes remain uncommitted on `feature/workflow-pipelines` in `../worktrees/codedeck-workflow-pipelines`; commit/merge/ship awaits the owner. Preserve ignored `.workflow/2026-11-13-134947-workflow-pipelines.md` on worktree cleanup.
 
 ### Deviations
 - **[Phase 6 / full regression] — run inside feature-dev**

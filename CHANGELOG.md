@@ -25,7 +25,7 @@
 ## [2026-11-17] - Show which phase a workflow run is on
 
 ### Executive Summary
-* The runs bar showed steps and loop rounds but not which phase of the work a run had reached; that lived only in the todo file the agents work from. A workflow can now name that file as its progress file, and the runs bar shows the first phase that still has unticked boxes, for example "Phase 3 of 9: Room-by-room review and finalise · 0/11 tasks". A missing or unreadable file is reported in the bar instead of showing nothing. Workflows without the setting are unchanged.
+* The runs bar showed steps and loop rounds but not which phase of the work a run had reached; that lived only in the todo file the agents work from. A workflow can now name that file as its progress file, and the runs bar shows the first phase that still has unticked boxes, for example "Phase 2 of 5: API endpoints · 3/8 tasks". A missing or unreadable file is reported in the bar instead of showing nothing. Workflows without the setting are unchanged.
 
 ### Technical Details
 * **✨ New Feature:**
