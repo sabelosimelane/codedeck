@@ -15,6 +15,14 @@ async function repo() {
   execFileSync('git', ['-C', root, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base']);
   return root;
 }
+async function outsideDir() {
+  const outside = await fs.mkdtemp(path.join(process.cwd(), '.run-notes-outside-'));
+  roots.push(outside);
+  return outside;
+}
+const runFolder = root => path.join(root, definition.notesDir);
+const readmePath = root => path.join(runFolder(root), 'README.md');
+const temporaryFiles = async root => (await fs.readdir(runFolder(root))).filter(name => name.endsWith('.tmp'));
 
 const definition = {
   workflowName: 'General workflow',
@@ -115,15 +123,75 @@ describe('run notes', () => {
     await fs.symlink(ordinary, path.join(root, notePath(definition, 1)));
     expect((await readNote({ worktreePath: root, definition, stepIndex: 1 })).status).toBe('unreadable');
   });
-  it('does not rewrite a README symlink that leaves the worktree', async () => {
+  it('rejects a .codedeck symlink before creating anything outside', async () => {
     const root = await repo();
-    const outside = path.join(process.cwd(), '.run-notes-outside-test');
-    roots.push(outside);
+    const outside = await outsideDir();
+    await fs.symlink(outside, path.join(root, '.codedeck'));
+    await expect(prepare({ worktreePath: root, definition, input: '' })).rejects.toThrow(`Run notes folder ${definition.notesDir} leaves the worktree`);
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+  it('rejects a runs symlink before creating a run folder outside', async () => {
+    const root = await repo();
+    const outside = await outsideDir();
+    await fs.mkdir(path.join(root, '.codedeck'));
+    await fs.symlink(outside, path.join(root, '.codedeck/runs'));
+    await expect(prepare({ worktreePath: root, definition, input: '' })).rejects.toThrow(`Run notes folder ${definition.notesDir} leaves the worktree`);
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+  it('replaces a README symlink without changing its target', async () => {
+    const root = await repo();
+    const outside = path.join(await outsideDir(), 'target');
     await fs.writeFile(outside, 'outside');
     await fs.mkdir(path.join(root, definition.notesDir), { recursive: true });
-    await fs.symlink(outside, path.join(root, definition.notesDir, 'README.md'));
-    await expect(prepare({ worktreePath: root, definition, input: '' })).rejects.toThrow(/leaves the worktree/);
+    await fs.symlink(outside, readmePath(root));
+    await prepare({ worktreePath: root, definition, input: '' });
     expect(await fs.readFile(outside, 'utf8')).toBe('outside');
+    expect((await fs.lstat(readmePath(root))).isFile()).toBe(true);
+    expect(await fs.readFile(readmePath(root), 'utf8')).toBe(buildReadme(definition, ''));
+    expect(await temporaryFiles(root)).toEqual([]);
+  });
+  it('replaces a hard-linked README without changing its other link', async () => {
+    const root = await repo();
+    const outside = path.join(await outsideDir(), 'target');
+    await fs.writeFile(outside, 'outside');
+    await fs.mkdir(runFolder(root), { recursive: true });
+    await fs.link(outside, readmePath(root));
+    await prepare({ worktreePath: root, definition, input: '' });
+    expect(await fs.readFile(outside, 'utf8')).toBe('outside');
+    expect((await fs.stat(readmePath(root))).nlink).toBe(1);
+    expect(await fs.readFile(readmePath(root), 'utf8')).toBe(buildReadme(definition, ''));
+  });
+  it('rejects a symlinked .gitignore without changing its target', async () => {
+    const root = await repo();
+    const outside = path.join(await outsideDir(), 'target');
+    await fs.writeFile(outside, '*\n');
+    await fs.mkdir(path.join(root, '.codedeck'));
+    await fs.symlink(outside, path.join(root, '.codedeck/.gitignore'));
+    await expect(prepare({ worktreePath: root, definition, input: '' })).rejects.toThrow(`Run notes folder ${definition.notesDir} leaves the worktree`);
+    expect(await fs.readFile(outside, 'utf8')).toBe('*\n');
+  });
+  it('cleans temporary README files on success, repeat, and rename failure', async () => {
+    const root = await repo();
+    await prepare({ worktreePath: root, definition, input: 'first' });
+    expect(await temporaryFiles(root)).toEqual([]);
+    await prepare({ worktreePath: root, definition, input: 'first' });
+    expect(await temporaryFiles(root)).toEqual([]);
+    const failingFs = { ...fs, rename: async () => { throw new Error('rename failed'); } };
+    await expect(prepare({ worktreePath: root, definition, input: 'second', fs: failingFs })).rejects.toThrow('rename failed');
+    expect(await temporaryFiles(root)).toEqual([]);
+    expect(await fs.readFile(readmePath(root), 'utf8')).toBe(buildReadme(definition, 'first'));
+  });
+  it('does not read hard-linked notes', async () => {
+    const root = await repo();
+    const outside = path.join(await outsideDir(), 'secret');
+    await fs.writeFile(outside, '# Secret note');
+    await prepare({ worktreePath: root, definition, input: '' });
+    const target = path.join(root, notePath(definition, 1));
+    await fs.link(outside, target);
+    expect(await readNote({ worktreePath: root, definition, stepIndex: 1 })).toEqual({ status: 'unreadable', content: null });
+    await fs.rm(target);
+    await fs.writeFile(target, '# Normal note');
+    expect(await readNote({ worktreePath: root, definition, stepIndex: 1 })).toEqual({ status: 'present', content: '# Normal note' });
   });
   it('never reads more than the measured file size', async () => {
     const root = await repo();

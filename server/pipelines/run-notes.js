@@ -1,7 +1,8 @@
 import path from 'node:path';
 import defaultFs from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { execFile as defaultExecFile } from 'node:child_process';
-import { inspectProgressFile } from './run-progress.js';
 import { runGit } from './run-worktree.js';
 
 export const NOTES_DIR = /^\.codedeck\/runs\/[0-9a-f]{8}$/;
@@ -60,7 +61,7 @@ function requireFs(fs, methods) {
 export async function prepare({ worktreePath, definition, input, fs = defaultFs, execFile = defaultExecFile } = {}) {
   requireWorktree(worktreePath);
   requireDefinition(definition);
-  requireFs(fs, ['mkdir', 'readFile', 'writeFile', 'realpath', 'lstat']);
+  requireFs(fs, ['mkdir', 'writeFile', 'realpath', 'lstat', 'open', 'rename', 'rm']);
   if (typeof execFile !== 'function') throw new TypeError('execFile must be a function');
   const readme = buildReadme(definition, input);
   if (definition.notesDir === null) return;
@@ -68,29 +69,48 @@ export async function prepare({ worktreePath, definition, input, fs = defaultFs,
   const unignored = () => new Error(`Run notes folder ${definition.notesDir} is not ignored by git in this worktree`);
   const tracked = await runGit(execFile, ['-C', worktreePath, 'ls-files', '--', '.codedeck']);
   if (tracked.stdout.trim()) throw unignored();
-  const dotPath = path.join(worktreePath, '.codedeck');
-  await fs.mkdir(dotPath, { recursive: true });
-  if (await fs.realpath(dotPath) !== path.join(realRoot, '.codedeck')) throw new Error('.codedeck leaves the worktree');
+  const leavesWorktree = () => new Error(`Run notes folder ${definition.notesDir} leaves the worktree`);
+  const ensureDirectory = async relative => {
+    const directory = path.join(worktreePath, relative);
+    try {
+      await fs.mkdir(directory);
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+    if (!(await fs.lstat(directory)).isDirectory() || await fs.realpath(directory) !== path.join(realRoot, relative)) throw leavesWorktree();
+    return directory;
+  };
+  const dotPath = await ensureDirectory('.codedeck');
   const ignore = path.join(dotPath, '.gitignore');
   try {
-    if (!(await fs.lstat(ignore)).isFile()) throw new Error('.codedeck/.gitignore leaves the worktree');
-    await fs.readFile(ignore);
+    if (!(await fs.lstat(ignore)).isFile()) throw leavesWorktree();
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
     await fs.writeFile(ignore, '*\n', { flag: 'wx' });
   }
-  const folder = path.join(worktreePath, definition.notesDir);
-  await fs.mkdir(folder, { recursive: true });
-  if (await fs.realpath(folder) !== path.join(realRoot, definition.notesDir)) throw new Error('run notes folder leaves the worktree');
+  await ensureDirectory('.codedeck/runs');
+  const folder = await ensureDirectory(definition.notesDir);
   const readmePath = path.join(folder, 'README.md');
   let current;
+  let handle;
   try {
-    if (!(await fs.lstat(readmePath)).isFile()) throw new Error('run notes README leaves the worktree');
-    current = await fs.readFile(readmePath, 'utf8');
+    handle = await fs.open(readmePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = await handle.stat();
+    if (stat.isFile() && stat.nlink === 1) current = await handle.readFile('utf8');
   } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
+    if (error?.code !== 'ENOENT' && error?.code !== 'ELOOP') throw error;
+  } finally {
+    await handle?.close();
   }
-  if (current !== readme) await fs.writeFile(readmePath, readme);
+  if (current !== readme) {
+    const temporary = path.join(folder, `README.md.${randomUUID()}.tmp`);
+    try {
+      await fs.writeFile(temporary, readme, { flag: 'wx', mode: 0o600 });
+      await fs.rename(temporary, readmePath);
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+  }
   try {
     await runGit(execFile, ['-C', worktreePath, 'check-ignore', '-q', `${definition.notesDir}/README.md`]);
   } catch (error) {
@@ -106,16 +126,17 @@ export async function readNote({ worktreePath, definition, stepIndex, fs = defau
   const file = notePath(definition, stepIndex);
   if (file === null) return { status: 'missing', content: null };
   try {
-    const presence = await inspectProgressFile({ worktreePath, progressFile: file, fs });
-    if (presence === 'missing') return { status: 'missing', content: null };
-    if (presence !== 'present') return { status: 'unreadable', content: null };
     const target = path.resolve(worktreePath, file);
-    if (!(await fs.lstat(target)).isFile()) return { status: 'unreadable', content: null };
-    const stat = await fs.stat(target);
-    if (stat.size > LIMIT) return { status: 'too_large', content: null };
-    const handle = await fs.open(target, 'r');
+    const realRoot = await fs.realpath(worktreePath);
+    const realParent = await fs.realpath(path.dirname(target));
+    const relativeParent = path.relative(realRoot, realParent);
+    if (relativeParent === '..' || relativeParent.startsWith(`..${path.sep}`) || path.isAbsolute(relativeParent)) return { status: 'unreadable', content: null };
+    const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     let content;
     try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink !== 1) return { status: 'unreadable', content: null };
+      if (stat.size > LIMIT) return { status: 'too_large', content: null };
       const buffer = Buffer.alloc(stat.size);
       const { bytesRead } = await handle.read(buffer, 0, stat.size, 0);
       content = buffer.subarray(0, bytesRead).toString('utf8');
@@ -123,7 +144,8 @@ export async function readNote({ worktreePath, definition, stepIndex, fs = defau
       await handle.close();
     }
     return { status: 'present', content };
-  } catch {
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { status: 'missing', content: null };
     return { status: 'unreadable', content: null };
   }
 }
