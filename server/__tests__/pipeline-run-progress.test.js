@@ -2,7 +2,35 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parsePhaseProgress, createRunProgressReader } from '../pipelines/run-progress.js';
+import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile } from '../pipelines/run-progress.js';
+
+describe('resolveRunProgressFile', () => {
+  const resolve = (definitionProgressFile, workflowProgressFile, input = 'todo.md') =>
+    resolveRunProgressFile({ definitionProgressFile, workflowProgressFile, input });
+
+  it('keeps the run snapshot over a changed workflow setting', () => {
+    expect(resolve('docs/original.md', 'docs/{input}')).toBe('docs/original.md');
+  });
+  it('composes the current workflow template once when the snapshot is null', () => {
+    expect(resolve(null, 'docs/{input}', 'tasks/todo.md')).toBe('docs/tasks/todo.md');
+    expect(resolve(null, 'docs/{input}', '$&.md')).toBe('docs/$&.md');
+    expect(resolve(null, 'docs/todo.md')).toBe('docs/todo.md');
+  });
+  it('returns null without a workflow setting or when the composed path is invalid', () => {
+    expect(resolve(null, null)).toBeNull();
+    for (const input of ['fix the login bug', '', '../todo.md', 'x'.repeat(510)]) {
+      expect(resolve(null, 'docs/{input}', input)).toBeNull();
+    }
+  });
+  it('checks every argument', () => {
+    expect(() => resolve(1, null)).toThrow(TypeError);
+    expect(() => resolve(1, null)).toThrow(/definitionProgressFile/);
+    expect(() => resolve(null, 1)).toThrow(TypeError);
+    expect(() => resolve(null, 1)).toThrow(/workflowProgressFile/);
+    expect(() => resolve(null, null, null)).toThrow(TypeError);
+    expect(() => resolve(null, null, null)).toThrow(/input/);
+  });
+});
 
 describe('parsePhaseProgress', () => {
   it('selects the first phase with unticked tasks and counts all phases', () => {

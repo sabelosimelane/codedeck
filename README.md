@@ -91,6 +91,8 @@ The optional **Progress file** setting names a Markdown todo inside the run's wo
 it may use `{input}`. The runs bar shows the first `## Phase N` section with unticked
 boxes and its task count. If the file is absent or cannot be read, the bar says
 "Progress file not found" or "Progress file could not be read" with its path.
+A run started without a progress file follows the workflow's current setting. If its
+input does not form a valid path, the runs bar shows no phase line.
 Write a skill as `/name` at the start of a prompt (for example `/feature-dev {input}`).
 Codex invokes skills with `$`, so when the CLI running the step is Codex, CodeDeck sends
 that leading `/name` as `$name`; the rest of the prompt is sent as written.

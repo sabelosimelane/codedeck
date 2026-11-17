@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { validateWorkflowBody, isProgressFilePath, isUuid, loopTargetIndex } from '../../shared/pipeline-definitions.mjs';
+import { validateWorkflowBody, isProgressFileTemplate, isUuid, loopTargetIndex } from '../../shared/pipeline-definitions.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
@@ -38,7 +38,7 @@ function requireFlag(id, field, value) {
 
 function requireProgressFile(id, value) {
   if (value === null) return null;
-  if (!isProgressFilePath(value) || value.trim() !== value) fieldError(id, 'progress_file', 'must be a trimmed relative Markdown path');
+  if (!isProgressFileTemplate(value) || value.trim() !== value) fieldError(id, 'progress_file', 'must be a trimmed relative Markdown path');
   return value;
 }
 

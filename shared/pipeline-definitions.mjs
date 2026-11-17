@@ -11,6 +11,12 @@ export function isProgressFilePath(value, max = 300) {
   return value.split('/').every(segment => segment !== '' && segment !== '..');
 }
 
+export function isProgressFileTemplate(value) {
+  return typeof value === 'string' && value.length >= 1 && value.length <= 300
+    && !PROGRESS_CONTROL.test(value)
+    && isProgressFilePath(value.replaceAll('{input}', 'x.md'), Infinity);
+}
+
 function add(errors, field, message) {
   errors.push({ field, message });
 }
@@ -145,7 +151,7 @@ export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
   if (typeof body.agentsDecide !== 'boolean') add(errors, 'agentsDecide', 'Use true or false');
   if (body.progressFile !== undefined && body.progressFile !== null && (
     (typeof body.progressFile === 'string' && PROGRESS_CONTROL.test(body.progressFile))
-    || !isProgressFilePath(typeof body.progressFile === 'string' ? body.progressFile.trim() : body.progressFile)
+    || !isProgressFileTemplate(typeof body.progressFile === 'string' ? body.progressFile.trim() : body.progressFile)
   )) {
     add(errors, 'progressFile', 'Use a relative Markdown path of 1–300 characters inside the worktree');
   }

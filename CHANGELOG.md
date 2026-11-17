@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-11-17] - Runs already in progress follow the workflow's progress file
+
+### Executive Summary
+* The phase line shipped earlier the same day could not be switched on: the setting rejected `docs/{input}`, the example its own helper text recommends, because it required the template itself to end in `.md`. And once set, it would only have applied to runs started afterwards. The setting now accepts a template whose `.md` ending comes from the run's input, and a run that started without a progress file follows the workflow's current setting, so runs already in progress show their phase too.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** `PUT /api/pipelines/workflows/:id` with `progressFile: "docs/{input}"` returned 400 on `progressFile`; a stored row with that value would also have failed to load.
+  * **Solution:** Validate the template as a path once `{input}` stands for a Markdown file name. The composed path of a run keeps the strict rule.
+* **✨ New Feature:**
+  * `server/pipelines/run-progress.js` — `resolveRunProgressFile`: a run keeps the progress file it started with; without one it uses the workflow's current setting composed with its own input, and has none when the workflow is gone, has no setting, or the input does not form a valid path. Nothing is written to the run.
+  * `server/routes/pipelines.js` — The run view resolves the progress file through `resolveRunProgressFile` before reading it.
+* **🛠️ Codebase:**
+  * `shared/pipeline-definitions.mjs` — `isProgressFileTemplate`, used for the workflow setting; `isProgressFilePath` is unchanged and still guards composed paths.
+  * `server/pipelines/workflow-store.js` — A stored `progress_file` is checked with the template rule when a row is read.
+  * `README.md`, `docs/steering/api-standards.md` — A run started without a progress file follows the workflow's current setting; an input that does not form a valid path shows no phase line.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-definitions.test.js` — Accepted and rejected templates, including `docs/{input}`, `{input}`, `docs/{input}/notes` and traversal forms.
+  * `server/__tests__/pipeline-definition-store.test.js`, `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx` — `docs/{input}` is saved and read back.
+  * `server/__tests__/pipeline-run-progress.test.js` — `resolveRunProgressFile` cases and its preconditions.
+  * `server/__tests__/pipelines-api.test.js` — Workflow create and update with `docs/{input}`; free-text input refused at run start; a run started before the setting picks it up and drops it when the setting is cleared, with its stored definition unchanged; a run with its own progress file keeps it.
+
 ## [2026-11-17] - Show which phase a workflow run is on
 
 ### Executive Summary

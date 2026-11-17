@@ -15,7 +15,7 @@ import {
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions } from '../pipelines/run-machine.js';
-import { createRunProgressReader } from '../pipelines/run-progress.js';
+import { createRunProgressReader, resolveRunProgressFile } from '../pipelines/run-progress.js';
 import {
   preflight as defaultPreflight,
   planNames as defaultPlanNames,
@@ -394,8 +394,13 @@ export function createPipelinesRouter(deps) {
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
   const asRunView = async run => {
-    const progress = run.definition.progressFile !== null && ['present', 'external', 'removal_blocked'].includes(run.worktreeState)
-      ? await progressReader.read({ worktreePath: run.worktreePath, progressFile: run.definition.progressFile })
+    const progressFile = resolveRunProgressFile({
+      definitionProgressFile: run.definition.progressFile,
+      workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null,
+      input: run.input,
+    });
+    const progress = progressFile !== null && ['present', 'external', 'removal_blocked'].includes(run.worktreeState)
+      ? await progressReader.read({ worktreePath: run.worktreePath, progressFile })
       : null;
     return buildRunView(run, decisionStore.count(run.id), progress);
   };

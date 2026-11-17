@@ -818,11 +818,11 @@ describe('PipelineSettings workflows — loops and who decides', () => {
     await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
     click('Edit workflow Feature');
     expect(screen.getByLabelText('Progress file').value).toBe('');
-    type('Progress file', ' docs/{input}.md ');
+    type('Progress file', ' docs/{input} ');
     expect(lastDirty()).toBe(true);
     click('Save workflow');
     await waitFor(() => toast('success', 'Workflow "Feature" saved'));
-    expect(backend.mutations().at(-1).body.progressFile).toBe('docs/{input}.md');
+    expect(backend.mutations().at(-1).body.progressFile).toBe('docs/{input}');
     click('Edit workflow Feature');
     type('Progress file', '');
     click('Save workflow');

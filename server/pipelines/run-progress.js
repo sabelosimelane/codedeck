@@ -1,7 +1,18 @@
 import path from 'node:path';
 import defaultFs from 'node:fs/promises';
+import { composePrompt, isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
 
 const LIMIT = 1_048_576;
+
+export function resolveRunProgressFile({ definitionProgressFile, workflowProgressFile, input }) {
+  if (definitionProgressFile !== null && typeof definitionProgressFile !== 'string') throw new TypeError('definitionProgressFile must be null or a string');
+  if (workflowProgressFile !== null && typeof workflowProgressFile !== 'string') throw new TypeError('workflowProgressFile must be null or a string');
+  if (typeof input !== 'string') throw new TypeError('input must be a string');
+  if (definitionProgressFile !== null) return definitionProgressFile;
+  if (workflowProgressFile === null) return null;
+  const composed = composePrompt(workflowProgressFile, input);
+  return isProgressFilePath(composed, 512) ? composed : null;
+}
 
 export function parsePhaseProgress(markdown) {
   if (typeof markdown !== 'string') throw new TypeError('markdown must be a string');

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   composePrompt,
+  isProgressFileTemplate,
   validateAgentBody,
   validateRunStartBody,
   validateSettingsBody,
@@ -65,11 +66,19 @@ describe('validateAgentBody', () => {
 
 describe('workflow progress file', () => {
   const body = progressFile => ({ name: 'Feature', agentsDecide: false, nodes: [{ name: 'Develop', agentId: '11111111-1111-4111-8111-111111111111', prompt: 'Work', repeat: { mode: 'once' } }], progressFile });
-  it.each(['docs/todo.md', 'docs/{input}.MD', 'a'.repeat(297) + '.md'])('accepts %s', progressFile => {
+  const valid = ['docs/{input}', '{input}', 'docs/{input}.md', 'docs/todos/{input}', 'docs/todo.md', 'docs/{input}.MD', 'a'.repeat(297) + '.md', 'a'.repeat(290) + '{input}.md'];
+  const invalid = ['', ' ', 1, {}, [], 'docs/{input}/notes', '/{input}', '~/{input}', '{input}/../x.md', 'docs//{input}', 'docs/{input}.txt', 'docs\\{input}', 'a'.repeat(301), '/tmp/todo.md', '~/todo.md', 'a\\b.md', '../todo.md', 'a/../b.md', 'a//b.md', 'a\nb.md', 'a\u0085b.md', 'a\u2028b.md', 'todo.txt', 'a'.repeat(298) + '.md'];
+  it.each(valid)('accepts %s', progressFile => {
     expect(validateWorkflowBody(body(progressFile))).toEqual([]);
   });
-  it.each(['', ' ', 1, {}, [], '/tmp/todo.md', '~/todo.md', 'a\\b.md', '../todo.md', 'a/../b.md', 'a//b.md', 'a\nb.md', 'a\u0085b.md', 'a\u2028b.md', 'todo.txt', 'a'.repeat(298) + '.md'])('rejects %s', progressFile => {
+  it.each(invalid)('rejects %s', progressFile => {
     expect(validateWorkflowBody(body(progressFile)).map(error => error.field)).toContain('progressFile');
+  });
+  it.each(valid)('recognizes template %s', value => {
+    expect(isProgressFileTemplate(value)).toBe(true);
+  });
+  it.each(invalid.filter(value => value !== ' '))('rejects template %s', value => {
+    expect(isProgressFileTemplate(value)).toBe(false);
   });
   it('accepts absent and null', () => {
     expect(validateWorkflowBody(body(null))).toEqual([]);

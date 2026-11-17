@@ -1667,6 +1667,40 @@ describe('pipelines API — decisions agents made', () => {
 });
 
 describe('pipelines API — progress file', () => {
+  it('follows the current workflow setting for a run without a progress snapshot', async () => {
+    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 1 } }));
+    const ctx = await setup({ routerDeps: { progressReader: { read } } });
+    const agent = ctx.agentStore.create(agentBody());
+    ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
+    const body = { name: 'Progress', agentsDecide: false, nodes: [node(agent.id, { prompt: 'Work' })] };
+    const workflow = ctx.workflowStore.create(body);
+    const start = (requestId, input) => request(ctx.app).post(`${base}/runs`).send({ requestId, workflowId: workflow.id, project: 'Demo', input });
+    const valid = await start('before-progress', 'todo.md');
+    const freeText = await start('before-progress-text', 'fix the login bug');
+    expect(valid.status).toBe(201);
+    expect(freeText.status).toBe(201);
+    ctx.runStore.update(valid.body.id, { worktreeState: 'present' });
+    ctx.runStore.update(freeText.body.id, { worktreeState: 'present' });
+    expect((await request(ctx.app).get(`${base}/runs/${valid.body.id}`)).body.progress).toBeNull();
+
+    const updated = await request(ctx.app).put(`${base}/workflows/${workflow.id}`).send({ ...body, progressFile: 'docs/{input}', revision: 1 });
+    expect(updated.status).toBe(200);
+    const detail = await request(ctx.app).get(`${base}/runs/${valid.body.id}`);
+    expect(detail.body.progress).toEqual({ file: 'docs/todo.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 1 } });
+    const listed = await request(ctx.app).get(`${base}/runs`);
+    expect(listed.body.data.find(run => run.id === valid.body.id).progress).toEqual(detail.body.progress);
+    expect(ctx.runStore.get(valid.body.id).definition.progressFile).toBeNull();
+    expect((await request(ctx.app).get(`${base}/runs/${freeText.body.id}`)).body.progress).toBeNull();
+
+    const cleared = await request(ctx.app).put(`${base}/workflows/${workflow.id}`).send({ ...body, progressFile: null, revision: 2 });
+    expect(cleared.status).toBe(200);
+    expect((await request(ctx.app).get(`${base}/runs/${valid.body.id}`)).body.progress).toBeNull();
+
+    ctx.workflowStore.remove(workflow.id);
+    expect(ctx.workflowStore.get(workflow.id)).toBeNull();
+    expect((await request(ctx.app).get(`${base}/runs/${valid.body.id}`)).body.progress).toBeNull();
+  });
+
   it('stores SQL and HTML looking path text as inert data', async () => {
     const ctx = await setup();
     const agent = ctx.agentStore.create(agentBody());
@@ -1693,8 +1727,11 @@ describe('pipelines API — progress file', () => {
       expect(response.status).toBe(200);
       expect(response.body.progress).toEqual({ file: 'docs/todo.md', status: wanted, phaseCount: wanted === 'all_done' ? 1 : null, phase: null });
     }
-    const cleared = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ name: 'Progress', agentsDecide: false, nodes: body.nodes, revision: 1 });
-    const duplicate = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ name: 'Progress', agentsDecide: false, nodes: body.nodes, revision: 1 });
+    const changed = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...body, progressFile: 'docs/changed.md', revision: 1 });
+    expect(changed.status).toBe(200);
+    expect((await request(ctx.app).get(`${base}/runs/${started.body.id}`)).body.progress.file).toBe('docs/todo.md');
+    const cleared = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ name: 'Progress', agentsDecide: false, nodes: body.nodes, revision: 2 });
+    const duplicate = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ name: 'Progress', agentsDecide: false, nodes: body.nodes, revision: 2 });
     expect(cleared.body.progressFile).toBeNull();
     expect(duplicate.status).toBe(409);
     expect((await request(ctx.app).get(`${base}/runs/${started.body.id}`)).body.progress.file).toBe('docs/todo.md');
@@ -1704,18 +1741,24 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup({ routerDeps: { progressReader: { read } } });
     const agent = ctx.agentStore.create(agentBody());
     ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
-    const workflowBody = { name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}.md', nodes: [node(agent.id)] };
+    const workflowBody = { name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}', nodes: [node(agent.id)] };
     const created = await request(ctx.app).post(`${base}/workflows`).send(workflowBody);
     expect(created.status).toBe(201);
-    expect(created.body.progressFile).toBe('docs/{input}.md');
-    expect((await request(ctx.app).get(`${base}/workflows/${created.body.id}`)).body.progressFile).toBe('docs/{input}.md');
-    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'progress-1', workflowId: created.body.id, project: 'Demo', input: 'rooms' });
+    expect(created.body.progressFile).toBe('docs/{input}');
+    expect((await request(ctx.app).get(`${base}/workflows/${created.body.id}`)).body.progressFile).toBe('docs/{input}');
+    const updated = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...workflowBody, revision: 1 });
+    expect(updated.status).toBe(200);
+    expect(updated.body.progressFile).toBe('docs/{input}');
+    const invalid = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'progress-invalid', workflowId: created.body.id, project: 'Demo', input: 'fix the login bug' });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.errors.map(error => error.field)).toContain('input');
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'progress-1', workflowId: created.body.id, project: 'Demo', input: 'todos/x.md' });
     expect(started.status).toBe(201);
-    expect(ctx.runStore.get(started.body.id).definition.progressFile).toBe('docs/rooms.md');
+    expect(ctx.runStore.get(started.body.id).definition.progressFile).toBe('docs/todos/x.md');
     expect(started.body.progress).toBeNull();
     ctx.runStore.update(started.body.id, { worktreeState: 'present' });
     const detail = await request(ctx.app).get(`${base}/runs/${started.body.id}`);
-    expect(detail.body.progress).toEqual({ file: 'docs/rooms.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 3 } });
+    expect(detail.body.progress).toEqual({ file: 'docs/todos/x.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 3 } });
     expect((await request(ctx.app).get(`${base}/runs`)).body.data[0].progress).toEqual(detail.body.progress);
     expect(read).toHaveBeenCalled();
     ctx.runStore.update(started.body.id, { worktreeState: 'removed' });

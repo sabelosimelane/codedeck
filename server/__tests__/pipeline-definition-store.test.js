@@ -368,8 +368,9 @@ describe('workflow progress file persistence', () => {
   it('round-trips a trimmed path and clears it on absent PUT', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);
-    const created = workflows.create({ name: 'Progress', agentsDecide: false, nodes: [node(agent.id)], progressFile: ' docs/{input}.md ' });
-    expect(created.progressFile).toBe('docs/{input}.md');
+    const created = workflows.create({ name: 'Progress', agentsDecide: false, nodes: [node(agent.id)], progressFile: ' docs/{input} ' });
+    expect(created.progressFile).toBe('docs/{input}');
+    expect(workflows.get(created.id).progressFile).toBe('docs/{input}');
     expect(workflows.update(created.id, { name: 'Progress', agentsDecide: false, nodes: [node(agent.id)], revision: 1 }).progressFile).toBeNull();
   });
   it('adds the column to an existing database and rejects corrupt rows', () => {
