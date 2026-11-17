@@ -1,4 +1,4 @@
-import { isUuid } from '../../../shared/pipeline-definitions.mjs';
+import { isUuid, isProgressFilePath } from '../../../shared/pipeline-definitions.mjs';
 import { PipelineApiError } from './pipelinesApi';
 
 const RUN_STATUSES = ['pending', 'running', 'needs_input', 'limit_paused', 'interrupted', 'stopped', 'error', 'complete'];
@@ -10,6 +10,25 @@ const nullable = (value, check) => value === null || check(value);
 const integer = value => Number.isSafeInteger(value) && value >= 0;
 
 const QUESTIONS_MAX = 4000;
+
+function parseProgress(run, guard) {
+  const progress = run.progress;
+  guard(progress === null || object(progress), 'progress');
+  if (progress === null) return null;
+  guard(isProgressFilePath(progress.file, 512), 'progress.file');
+  guard(['in_progress', 'all_done', 'no_phases', 'missing', 'unreadable'].includes(progress.status), 'progress.status');
+  const counted = progress.status === 'in_progress' || progress.status === 'all_done';
+  guard(counted ? integer(progress.phaseCount) && progress.phaseCount >= 1 : progress.phaseCount === null, 'progress.phaseCount');
+  guard(progress.status === 'in_progress' ? object(progress.phase) : progress.phase === null, 'progress.phase');
+  if (progress.status === 'in_progress') {
+    const phase = progress.phase;
+    guard(integer(phase.number), 'progress.phase.number');
+    guard(typeof phase.title === 'string' && phase.title.length <= 120, 'progress.phase.title');
+    guard(integer(phase.tasksTotal) && phase.tasksTotal >= 1, 'progress.phase.tasksTotal');
+    guard(integer(phase.tasksDone) && phase.tasksDone < phase.tasksTotal, 'progress.phase.tasksDone');
+  }
+  return progress;
+}
 
 /**
  * What an agent that signalled NEEDS_INPUT asked for: null when the run is not waiting on such a
@@ -43,6 +62,7 @@ export function parseRunAutonomy(run, index = 0) {
   };
   guard(object(run), 'run');
   guard(typeof run.agentsDecide === 'boolean', 'agentsDecide');
+  parseProgress(run, guard);
   guard(integer(run.decisionCount), 'decisionCount');
   guard(Array.isArray(run.steps), 'steps');
   run.steps.forEach((step, i) => {
@@ -66,6 +86,7 @@ export function parseRun(run, index = 0) {
   guard(text(run.workflowName) && run.workflowName.length <= 64, 'workflowName');
   // Whether this run's agents settle their own questions, and how many they have settled.
   guard(typeof run.agentsDecide === 'boolean', 'agentsDecide');
+  parseProgress(run, guard);
   guard(integer(run.decisionCount), 'decisionCount');
   guard(text(run.project) && run.project.length <= 256 && !/[\x00-\x1f\x7f]/.test(run.project), 'project');
   guard(typeof run.input === 'string' && run.input.length <= 4096 && !/[\x00-\x1f\x7f]/.test(run.input), 'input');
@@ -103,6 +124,7 @@ export function parseRun(run, index = 0) {
   guard(text(run.worktree.branch) && run.worktree.branch.length <= 256, 'worktree.branch');
   guard(nullable(run.worktree.baseCommit, value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value)), 'worktree.baseCommit');
   guard(['not_created', 'present', 'removed', 'removal_blocked', 'external', 'released'].includes(run.worktree.state), 'worktree.state');
+  guard(['present', 'external', 'removal_blocked'].includes(run.worktree.state) || run.progress === null, 'progress');
   guard(nullable(run.worktree.detail, value => text(value) && value.length <= 2000), 'worktree.detail');
   guard(object(run.actions), 'actions');
   for (const action of ['stop', 'resume', 'continue', 'cleanup', 'answer']) guard(typeof run.actions[action] === 'boolean', `actions.${action}`);

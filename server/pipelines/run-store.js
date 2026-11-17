@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isUuid } from '../../shared/pipeline-definitions.mjs';
+import { isUuid, isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
 import { validateInputRequest } from './input-request.js';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
@@ -142,12 +142,13 @@ function validateDefinitionStep(id, index, step) {
 function validateDefinition(id, definition) {
   if (!isPlainObject(definition)) fieldError(id, 'definition', 'must be an object');
   for (const key of Object.keys(definition)) {
-    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'steps'].includes(key)) {
+    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'progressFile', 'steps'].includes(key)) {
       fieldError(id, `definition.${key}`, 'unknown field');
     }
   }
   // Whether the workflow's agents settle their own questions instead of pausing for the owner.
   if (typeof definition.agentsDecide !== 'boolean') fieldError(id, 'definition.agentsDecide', 'must be true or false');
+  if (definition.progressFile !== null && !isProgressFilePath(definition.progressFile, 512)) fieldError(id, 'definition.progressFile', 'must be null or a relative Markdown path');
   if (!isUuid(definition.workflowId)) fieldError(id, 'definition.workflowId', 'must be a UUID');
   requireString(id, 'definition.workflowName', definition.workflowName, { max: 64 });
   if (!Number.isInteger(definition.workflowRevision) || definition.workflowRevision < 1) {
@@ -163,6 +164,7 @@ function validateDefinition(id, definition) {
     workflowName: definition.workflowName.trim(),
     workflowRevision: definition.workflowRevision,
     agentsDecide: definition.agentsDecide,
+    progressFile: definition.progressFile,
     steps,
   };
 }
@@ -460,9 +462,10 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       if (!Array.isArray(steps)) fieldError(row.id, 'steps', 'must be an array');
       const lacksRounds = step => isPlainObject(step) && !Object.hasOwn(step, 'roundsCompleted');
       const lacksDecide = !Object.hasOwn(definition, 'agentsDecide');
-      if (!lacksDecide && !steps.some(lacksRounds)) continue;
+      const lacksProgress = !Object.hasOwn(definition, 'progressFile');
+      if (!lacksDecide && !lacksProgress && !steps.some(lacksRounds)) continue;
       save.run(
-        JSON.stringify(lacksDecide ? { ...definition, agentsDecide: false } : definition),
+        JSON.stringify({ ...definition, ...(lacksDecide ? { agentsDecide: false } : {}), ...(lacksProgress ? { progressFile: null } : {}) }),
         JSON.stringify(steps.map(step => (lacksRounds(step) ? { ...step, roundsCompleted: 0 } : step))),
         row.id,
       );

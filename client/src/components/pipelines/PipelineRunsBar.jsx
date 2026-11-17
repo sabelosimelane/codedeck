@@ -244,6 +244,24 @@ export default function PipelineRunsBar({
               <span title="Agents in this run go with their own recommendations instead of pausing for you" style={{ color: 'var(--warning)' }}>agents decide</span>
             )}
 
+            {run.progress !== null && run.progress !== undefined && (
+              <div title={run.progress.file} style={{ flexBasis: '100%', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                {run.progress.status === 'in_progress' ? (
+                  <>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{`Phase ${run.progress.phase.number} of ${run.progress.phaseCount}${run.progress.phase.title ? `: ${run.progress.phase.title}` : ''}`}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{` · ${run.progress.phase.tasksDone}/${run.progress.phase.tasksTotal} tasks`}</span>
+                  </>
+                ) : (
+                  <span style={{ color: run.progress.status === 'all_done' ? 'var(--accent)' : 'var(--warning)' }}>
+                    {run.progress.status === 'all_done' && `All ${run.progress.phaseCount} ${run.progress.phaseCount === 1 ? 'phase' : 'phases'} ticked`}
+                    {run.progress.status === 'no_phases' && `No "## Phase N" sections in ${run.progress.file}`}
+                    {run.progress.status === 'missing' && `Progress file not found: ${run.progress.file}`}
+                    {run.progress.status === 'unreadable' && `Progress file could not be read: ${run.progress.file}`}
+                  </span>
+                )}
+              </div>
+            )}
+
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
               {(run.steps || []).map((step) => {
                 const label = chipLabel(step);

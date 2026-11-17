@@ -15,6 +15,7 @@ function definition(overrides = {}) {
     workflowName: 'Feature',
     workflowRevision: 1,
     agentsDecide: false,
+    progressFile: null,
     steps: [
       {
         kind: 'node',

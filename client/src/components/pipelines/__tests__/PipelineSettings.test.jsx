@@ -19,6 +19,7 @@ const feature = () => ({
   id: W1,
   name: 'Feature',
   agentsDecide: false,
+  progressFile: null,
   revision: 3,
   ...STAMPS,
   nodes: [
@@ -589,6 +590,7 @@ describe('PipelineSettings workflows', () => {
       body: {
         name: 'Release',
         agentsDecide: false,
+        progressFile: null,
         nodes: [
           { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 } },
           { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' } },
@@ -672,6 +674,7 @@ describe('PipelineSettings workflows', () => {
       body: {
         name: 'Feature',
         agentsDecide: false,
+        progressFile: null,
         revision: 3,
         nodes: [
           { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' } },
@@ -811,6 +814,27 @@ describe('PipelineSettings workflows', () => {
 });
 
 describe('PipelineSettings workflows — loops and who decides', () => {
+  it('edits a progress file, tracks dirty draft, and clears it with null', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    click('Edit workflow Feature');
+    expect(screen.getByLabelText('Progress file').value).toBe('');
+    type('Progress file', ' docs/{input}.md ');
+    expect(lastDirty()).toBe(true);
+    click('Save workflow');
+    await waitFor(() => toast('success', 'Workflow "Feature" saved'));
+    expect(backend.mutations().at(-1).body.progressFile).toBe('docs/{input}.md');
+    click('Edit workflow Feature');
+    type('Progress file', '');
+    click('Save workflow');
+    await waitFor(() => expect(backend.mutations().at(-1).body.progressFile).toBeNull());
+  });
+  it('shows the API field error for progressFile', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    click('Edit workflow Feature');
+    backend.failNext('PUT', 'workflows', { status: 400, message: 'Invalid progress file', errors: [{ field: 'progressFile', message: 'Invalid path' }] });
+    click('Save workflow');
+    expect(await screen.findByText('Invalid path')).toBeTruthy();
+  });
   const looping = () => ({
     ...feature(),
     agentsDecide: true,
@@ -842,6 +866,7 @@ describe('PipelineSettings workflows — loops and who decides', () => {
     expect(savedBody()).toEqual({
       name: 'Build',
       agentsDecide: true,
+      progressFile: null,
       nodes: [
         { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' } },
         { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 } },

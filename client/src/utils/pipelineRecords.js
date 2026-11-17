@@ -69,16 +69,17 @@ function parseNode(nodes, index, id) {
 
 export function parseWorkflow(record) {
   if (!isObject(record)) throw invalid('workflow', 'workflow');
-  const { id, name, agentsDecide, revision, nodes, createdAt, updatedAt } = record;
+  const { id, name, agentsDecide, progressFile, revision, nodes, createdAt, updatedAt } = record;
   if (!isUuid(id)) throw invalid('workflow', 'id');
   if (!isText(name)) throw invalid('workflow', 'name', id);
   // Whether the workflow's agents settle their own questions instead of pausing for the owner.
   if (typeof agentsDecide !== 'boolean') throw invalid('workflow', 'agentsDecide', id);
+  if (progressFile !== null && !isText(progressFile)) throw invalid('workflow', 'progressFile', id);
   if (!isRevision(revision)) throw invalid('workflow', 'revision', id);
   if (!isTimestamp(createdAt)) throw invalid('workflow', 'createdAt', id);
   if (!isTimestamp(updatedAt)) throw invalid('workflow', 'updatedAt', id);
   if (!Array.isArray(nodes) || nodes.length < 1) throw invalid('workflow', 'nodes', id);
-  return { id, name, agentsDecide, revision, nodes: nodes.map((_node, index) => parseNode(nodes, index, id)), createdAt, updatedAt };
+  return { id, name, agentsDecide, progressFile, revision, nodes: nodes.map((_node, index) => parseNode(nodes, index, id)), createdAt, updatedAt };
 }
 
 export function parseSettings(record) {

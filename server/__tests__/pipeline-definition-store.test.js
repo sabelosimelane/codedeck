@@ -285,7 +285,7 @@ describe('pipeline workflow store', () => {
     db.prepare('INSERT INTO pipeline_workflows VALUES (?, ?, ?, ?, ?, ?)')
       .run(id, 'Feature', JSON.stringify([node()]), 3, '2026-11-13T10:00:00.000Z', '2026-11-13T10:00:00.000Z');
     const workflows = createWorkflowStore(db);
-    expect(workflows.get(id)).toMatchObject({ name: 'Feature', revision: 3, agentsDecide: false });
+    expect(workflows.get(id)).toMatchObject({ name: 'Feature', revision: 3, agentsDecide: false, progressFile: null });
     // Constructing the store again finds the column already there.
     expect(createWorkflowStore(db).get(id).agentsDecide).toBe(false);
   });
@@ -361,5 +361,23 @@ describe('pipeline settings store', () => {
     settings.get();
     db.prepare('UPDATE pipeline_settings SET setup_agent_id = ? WHERE id = 1').run('bad');
     expect(() => settings.get()).toThrow(/pipeline_settings.*1.*setup_agent_id/i);
+  });
+});
+
+describe('workflow progress file persistence', () => {
+  it('round-trips a trimmed path and clears it on absent PUT', () => {
+    const { agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const created = workflows.create({ name: 'Progress', agentsDecide: false, nodes: [node(agent.id)], progressFile: ' docs/{input}.md ' });
+    expect(created.progressFile).toBe('docs/{input}.md');
+    expect(workflows.update(created.id, { name: 'Progress', agentsDecide: false, nodes: [node(agent.id)], revision: 1 }).progressFile).toBeNull();
+  });
+  it('adds the column to an existing database and rejects corrupt rows', () => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const created = workflows.create({ name: 'Progress', agentsDecide: false, nodes: [node(agent.id)] });
+    expect(db.prepare('PRAGMA table_info(pipeline_workflows)').all().some(column => column.name === 'progress_file')).toBe(true);
+    db.prepare('UPDATE pipeline_workflows SET progress_file = ? WHERE id = ?').run('../bad.md', created.id);
+    expect(() => workflows.get(created.id)).toThrow('progress_file');
   });
 });

@@ -2,6 +2,21 @@ import { expect, it } from 'vitest';
 import { parseDecision, parseDecisionPage, parseInputRequest, parseRun, parseRunAutonomy } from '../pipelineRunRecords';
 import { validRun } from './pipelineRunFixture';
 it('accepts the complete run response', () => { expect(parseRun(validRun())).toEqual(validRun()); });
+it('validates every progress field and status combination', () => {
+  const phase = { number: 3, title: 'Review', tasksDone: 0, tasksTotal: 11 };
+  const good = { file: 'docs/todo.md', status: 'in_progress', phaseCount: 9, phase };
+  expect(parseRun({ ...validRun(), progress: good }).progress).toEqual(good);
+  for (const [field, bad] of [
+    ['file', { ...good, file: '' }], ['status', { ...good, status: 'bad' }],
+    ['phaseCount', { ...good, phaseCount: 0 }], ['phase.number', { ...good, phase: { ...phase, number: -1 } }],
+    ['phase.title', { ...good, phase: { ...phase, title: 1 } }],
+    ['phase.tasksDone', { ...good, phase: { ...phase, tasksDone: 12 } }],
+    ['phase.tasksTotal', { ...good, phase: { ...phase, tasksTotal: -1 } }],
+    ['phase', { ...good, status: 'all_done' }],
+  ]) expect(() => parseRun({ ...validRun(), progress: bad })).toThrow(field);
+  expect(() => parseRun({ ...validRun(), progress: undefined })).toThrow('progress');
+  expect(() => parseRun({ ...validRun(), worktree: { ...validRun().worktree, state: 'removed' }, progress: good })).toThrow('progress');
+});
 const paths = [
  ...Object.keys(validRun()),
  ...Object.keys(validRun().steps[0]).map(k => `steps.0.${k}`),

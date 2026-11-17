@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { validateWorkflowBody, isUuid, loopTargetIndex } from '../../shared/pipeline-definitions.mjs';
+import { validateWorkflowBody, isProgressFilePath, isUuid, loopTargetIndex } from '../../shared/pipeline-definitions.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
@@ -36,6 +36,12 @@ function requireFlag(id, field, value) {
   return value === 1;
 }
 
+function requireProgressFile(id, value) {
+  if (value === null) return null;
+  if (!isProgressFilePath(value) || value.trim() !== value) fieldError(id, 'progress_file', 'must be a trimmed relative Markdown path');
+  return value;
+}
+
 function parseNodes(id, raw) {
   let nodes;
   try {
@@ -66,6 +72,7 @@ function hydrate(row) {
     id,
     name: requireName(id, row.name),
     agentsDecide: requireFlag(id, 'agents_decide', row.agents_decide),
+    progressFile: requireProgressFile(id, row.progress_file),
     nodes: parseNodes(id, row.nodes),
     revision: requireRevision(id, row.revision),
     createdAt: requireIso(id, 'created_at', row.created_at),
@@ -104,7 +111,8 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       revision INTEGER NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      agents_decide INTEGER NOT NULL DEFAULT 0
+      agents_decide INTEGER NOT NULL DEFAULT 0,
+      progress_file TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS pipeline_workflows_name_ci
       ON pipeline_workflows (lower(name));
@@ -113,17 +121,20 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
   if (!db.prepare('PRAGMA table_info(pipeline_workflows)').all().some(column => column.name === 'agents_decide')) {
     db.exec('ALTER TABLE pipeline_workflows ADD COLUMN agents_decide INTEGER NOT NULL DEFAULT 0');
   }
+  if (!db.prepare('PRAGMA table_info(pipeline_workflows)').all().some(column => column.name === 'progress_file')) {
+    db.exec('ALTER TABLE pipeline_workflows ADD COLUMN progress_file TEXT');
+  }
 
   const read = db.prepare('SELECT * FROM pipeline_workflows WHERE id = ?');
   const readAll = db.prepare('SELECT * FROM pipeline_workflows ORDER BY lower(name), id');
   const insert = db.prepare(`
     INSERT INTO pipeline_workflows
-      (id, name, nodes, revision, created_at, updated_at, agents_decide)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+      (id, name, nodes, revision, created_at, updated_at, agents_decide, progress_file)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_workflows
-    SET name = ?, nodes = ?, revision = ?, updated_at = ?, agents_decide = ?
+    SET name = ?, nodes = ?, revision = ?, updated_at = ?, agents_decide = ?, progress_file = ?
     WHERE id = ? AND revision = ?
   `);
   const removeStmt = db.prepare('DELETE FROM pipeline_workflows WHERE id = ?');
@@ -151,7 +162,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       const name = body.name.trim();
       const nodes = normalizeNodes(body.nodes);
       try {
-        insert.run(id, name, JSON.stringify(nodes), 1, stamp, stamp, body.agentsDecide ? 1 : 0);
+        insert.run(id, name, JSON.stringify(nodes), 1, stamp, stamp, body.agentsDecide ? 1 : 0, body.progressFile?.trim() ?? null);
       } catch (err) {
         if (isUniqueConflict(err)) {
           throw new Error('pipeline_workflows: name already exists');
@@ -173,7 +184,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       const stamp = now();
       let result;
       try {
-        result = updateStmt.run(name, JSON.stringify(nodes), current.revision + 1, stamp, body.agentsDecide ? 1 : 0, id, body.revision);
+        result = updateStmt.run(name, JSON.stringify(nodes), current.revision + 1, stamp, body.agentsDecide ? 1 : 0, body.progressFile?.trim() ?? null, id, body.revision);
       } catch (err) {
         if (isUniqueConflict(err)) {
           throw new Error('pipeline_workflows: name already exists');

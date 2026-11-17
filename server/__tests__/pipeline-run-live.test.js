@@ -232,6 +232,7 @@ describeLive('pipeline run live (Phase 3)', () => {
         workflowName: workflow.name,
         workflowRevision: workflow.revision,
         agentsDecide: false,
+        progressFile: null,
         steps: [
           {
             kind: 'setup',
@@ -383,6 +384,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         workflowName: 'Ask',
         workflowRevision: 1,
         agentsDecide: false,
+        progressFile: null,
         steps: [{
           kind: 'node',
           name: 'Develop',
@@ -600,6 +602,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         workflowName: 'Loop',
         workflowRevision: 1,
         agentsDecide: true,
+        progressFile: null,
         steps: [
           { kind: 'node', name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
           { kind: 'node', name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 3 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
@@ -750,6 +753,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
         workflowName: 'Dialog',
         workflowRevision: 1,
         agentsDecide: true,
+        progressFile: null,
         steps: [
           { kind: 'node', name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: { id: '0d9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'dialog-stub', launchCommand: stub, resetCommand: '/clear' } },
         ],
@@ -899,6 +903,7 @@ describeLive('pipeline run live — Resume', () => {
         workflowName: 'Resume',
         workflowRevision: 1,
         agentsDecide: false,
+        progressFile: null,
         steps: stepNames.map(name => (
           { kind: 'node', name, prompt: `do the ${name} step`, repeat: { mode: 'once' }, agent: { id: '0e9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'resume-stub', launchCommand: stub, resetCommand: '/clear' } }
         )),

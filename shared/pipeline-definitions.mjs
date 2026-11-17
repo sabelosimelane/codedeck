@@ -3,6 +3,13 @@ const MULTI_LINE = /[\x00-\x08\x0b-\x1f\x7f]/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REQUEST_ID_RE = /^[\w-]{1,128}$/;
 const COMPOSED_PROMPT_MAX = 16384;
+const PROGRESS_CONTROL = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
+
+export function isProgressFilePath(value, max = 300) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > max || PROGRESS_CONTROL.test(value)
+    || value.startsWith('/') || value.startsWith('~') || value.includes('\\') || !/\.md$/i.test(value)) return false;
+  return value.split('/').every(segment => segment !== '' && segment !== '..');
+}
 
 function add(errors, field, message) {
   errors.push({ field, message });
@@ -131,11 +138,17 @@ function validateLoops(errors, nodes) {
 
 export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['name', 'agentsDecide', 'nodes', 'revision'])) return errors;
+  if (!rejectUnknown(errors, body, ['name', 'agentsDecide', 'progressFile', 'nodes', 'revision'])) return errors;
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
   requireRevision(errors, body.revision, revisionRequired);
   // Whether agents settle their own questions during a run instead of pausing for the owner.
   if (typeof body.agentsDecide !== 'boolean') add(errors, 'agentsDecide', 'Use true or false');
+  if (body.progressFile !== undefined && body.progressFile !== null && (
+    (typeof body.progressFile === 'string' && PROGRESS_CONTROL.test(body.progressFile))
+    || !isProgressFilePath(typeof body.progressFile === 'string' ? body.progressFile.trim() : body.progressFile)
+  )) {
+    add(errors, 'progressFile', 'Use a relative Markdown path of 1–300 characters inside the worktree');
+  }
 
   if (!Array.isArray(body.nodes) || body.nodes.length < 1 || body.nodes.length > 32) {
     add(errors, 'nodes', 'Configure 1–32 nodes');

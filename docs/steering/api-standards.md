@@ -123,12 +123,12 @@ stable identity tiebreaker; unknown filters and sorts are rejected.
 | Method and path | Contract |
 | --- | --- |
 | GET/POST `/agents`, GET/PUT/DELETE `/agents/:id` | Named launch/reset definitions; PUT requires revision; referenced agents cannot be deleted |
-| GET/POST `/workflows`, GET/PUT/DELETE `/workflows/:id` | Named ordered nodes, agent references, prompt and repeat rules (`once`, `until_complete` with `max`, or `loop_back` with `to` — the name of an earlier node — and `max` rounds; loops may not share a node) and `agentsDecide` (boolean, required); PUT requires revision |
+| GET/POST `/workflows`, GET/PUT/DELETE `/workflows/:id` | Named ordered nodes, agent references, prompt and repeat rules (`once`, `until_complete` with `max`, or `loop_back` with `to` — the name of an earlier node — and `max` rounds; loops may not share a node) and `agentsDecide` (boolean, required); optional `progressFile` is null or a 1–300 character relative POSIX Markdown path inside the run worktree; PUT requires revision |
 | GET/PUT `/settings` | Setup agent selection with revision |
 | GET `/preflight?project=...` | Eligibility reasons and dirty-checkout warning for a local Git repository root |
 | GET `/worktrees?project=...` | Paginated working trees of the project's repository (sort `path,asc\|desc`); each says whether a run may use it and why not |
 | POST `/runs` | Request UUID, workflow, project and input; optional `worktreePath` of an existing worktree (404 unknown, 409 missing, unreadable by git, detached or in use) instead of a new one; snapshots definitions; requestId replay is idempotent and conflicting reuse is 409 |
-| GET `/runs`, GET `/runs/:id` | Persisted progress, steps (a looping step's `repeat.toStepIndex` and `roundsCompleted`), worktree state, allowed actions, `agentsDecide` and `decisionCount` |
+| GET `/runs`, GET `/runs/:id` | Persisted progress, steps (a looping step's `repeat.toStepIndex` and `roundsCompleted`), worktree state, allowed actions, `agentsDecide` and `decisionCount`; `progress` is null or `{file, status, phaseCount, phase}` with status `in_progress`, `all_done`, `no_phases`, `missing`, or `unreadable` |
 | GET `/runs/:id/decisions` | Paginated requests the run's agents settled themselves: step, pass, the questions listed, whether that list was cut, and the answer typed. Sort `createdAt,asc\|desc` (default `asc`); 404 for an unknown run |
 | POST `/runs/:id/stop` | Stop automation; repeated Stop is idempotent |
 | POST `/runs/:id/resume` | Fresh attempt; refuses a missing worktree |
@@ -142,5 +142,5 @@ page through all open runs. Definition conflicts and disallowed run actions retu
 409. Missing records return 404. Setup's clean-worktree guard and blocked cleanup
 are represented in the returned run; clients must inspect run status even on HTTP 200.
 
-Coverage: `server/__tests__/pipelines-api.test.js`, `pipeline-run-engine.test.js`,
+Coverage: `server/__tests__/pipelines-api.test.js`, `pipeline-run-progress.test.js`, `pipeline-run-engine.test.js`,
 `pipeline-run-store.test.js`, and client pipeline settings, run-hook and sidebar tests.

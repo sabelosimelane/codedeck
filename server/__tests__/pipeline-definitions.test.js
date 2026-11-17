@@ -63,6 +63,21 @@ describe('validateAgentBody', () => {
   });
 });
 
+describe('workflow progress file', () => {
+  const body = progressFile => ({ name: 'Feature', agentsDecide: false, nodes: [{ name: 'Develop', agentId: '11111111-1111-4111-8111-111111111111', prompt: 'Work', repeat: { mode: 'once' } }], progressFile });
+  it.each(['docs/todo.md', 'docs/{input}.MD', 'a'.repeat(297) + '.md'])('accepts %s', progressFile => {
+    expect(validateWorkflowBody(body(progressFile))).toEqual([]);
+  });
+  it.each(['', ' ', 1, {}, [], '/tmp/todo.md', '~/todo.md', 'a\\b.md', '../todo.md', 'a/../b.md', 'a//b.md', 'a\nb.md', 'a\u0085b.md', 'a\u2028b.md', 'todo.txt', 'a'.repeat(298) + '.md'])('rejects %s', progressFile => {
+    expect(validateWorkflowBody(body(progressFile)).map(error => error.field)).toContain('progressFile');
+  });
+  it('accepts absent and null', () => {
+    expect(validateWorkflowBody(body(null))).toEqual([]);
+    const without = body(null); delete without.progressFile;
+    expect(validateWorkflowBody(without)).toEqual([]);
+  });
+});
+
 describe('validateWorkflowBody', () => {
   const node = (overrides = {}) => ({
     name: 'Develop',

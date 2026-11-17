@@ -12,6 +12,7 @@ function runView(overrides = {}) {
     workflowId: 'w1',
     workflowName: 'Feature',
     agentsDecide: false,
+    progress: null,
     decisionCount: 0,
     project: 'Demo',
     input: 'build',

@@ -598,6 +598,7 @@ describe('pipelines API — preflight and runs', () => {
           workflowName: 'Feature',
           workflowRevision: 1,
           agentsDecide: false,
+          progressFile: null,
           steps: [{
             kind: 'node',
             name: 'Develop',
@@ -1662,5 +1663,80 @@ describe('pipelines API — decisions agents made', () => {
     expect(() => createPipelinesRouter({
       agentStore: {}, workflowStore: {}, settingsStore: {}, runStore: {}, findProject: () => null,
     })).toThrow('pipelines router: decisionStore is required');
+  });
+});
+
+describe('pipelines API — progress file', () => {
+  it('stores SQL and HTML looking path text as inert data', async () => {
+    const ctx = await setup();
+    const agent = ctx.agentStore.create(agentBody());
+    const progressFile = "docs/<script>alert('x')</script>';DROP TABLE.md";
+    const created = await request(ctx.app).post(`${base}/workflows`).send({ name: 'Progress', agentsDecide: false, progressFile, nodes: [node(agent.id)] });
+    expect(created.status).toBe(201);
+    expect(ctx.workflowStore.get(created.body.id).progressFile).toBe(progressFile);
+    expect(ctx.workflowStore.list()).toHaveLength(1);
+  });
+  it('returns each parsed status and clears a workflow setting with PUT', async () => {
+    const statuses = ['all_done', 'no_phases', 'missing', 'unreadable'];
+    let status = statuses[0];
+    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status, phaseCount: status === 'all_done' ? 1 : null, phase: null }));
+    const ctx = await setup({ routerDeps: { progressReader: { read } } });
+    const agent = ctx.agentStore.create(agentBody());
+    ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
+    const body = { name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] };
+    const created = await request(ctx.app).post(`${base}/workflows`).send(body);
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'progress-status', workflowId: created.body.id, project: 'Demo', input: '' });
+    ctx.runStore.update(started.body.id, { worktreeState: 'present' });
+    for (const wanted of statuses) {
+      status = wanted;
+      const response = await request(ctx.app).get(`${base}/runs/${started.body.id}`);
+      expect(response.status).toBe(200);
+      expect(response.body.progress).toEqual({ file: 'docs/todo.md', status: wanted, phaseCount: wanted === 'all_done' ? 1 : null, phase: null });
+    }
+    const cleared = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ name: 'Progress', agentsDecide: false, nodes: body.nodes, revision: 1 });
+    const duplicate = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ name: 'Progress', agentsDecide: false, nodes: body.nodes, revision: 1 });
+    expect(cleared.body.progressFile).toBeNull();
+    expect(duplicate.status).toBe(409);
+    expect((await request(ctx.app).get(`${base}/runs/${started.body.id}`)).body.progress.file).toBe('docs/todo.md');
+  });
+  it('persists workflow setting, snapshots composed path, and returns progress on every run view', async () => {
+    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 3 } }));
+    const ctx = await setup({ routerDeps: { progressReader: { read } } });
+    const agent = ctx.agentStore.create(agentBody());
+    ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
+    const workflowBody = { name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}.md', nodes: [node(agent.id)] };
+    const created = await request(ctx.app).post(`${base}/workflows`).send(workflowBody);
+    expect(created.status).toBe(201);
+    expect(created.body.progressFile).toBe('docs/{input}.md');
+    expect((await request(ctx.app).get(`${base}/workflows/${created.body.id}`)).body.progressFile).toBe('docs/{input}.md');
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'progress-1', workflowId: created.body.id, project: 'Demo', input: 'rooms' });
+    expect(started.status).toBe(201);
+    expect(ctx.runStore.get(started.body.id).definition.progressFile).toBe('docs/rooms.md');
+    expect(started.body.progress).toBeNull();
+    ctx.runStore.update(started.body.id, { worktreeState: 'present' });
+    const detail = await request(ctx.app).get(`${base}/runs/${started.body.id}`);
+    expect(detail.body.progress).toEqual({ file: 'docs/rooms.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 3 } });
+    expect((await request(ctx.app).get(`${base}/runs`)).body.data[0].progress).toEqual(detail.body.progress);
+    expect(read).toHaveBeenCalled();
+    ctx.runStore.update(started.body.id, { worktreeState: 'removed' });
+    expect((await request(ctx.app).get(`${base}/runs/${started.body.id}`)).body.progress).toBeNull();
+  });
+  it.each([1, {}, [], '', ' ', '/bad.md', '~/bad.md', 'a\\b.md', 'a/../b.md', 'a//b.md', 'a\nb.md', 'bad.txt', 'x'.repeat(298) + '.md'])('rejects invalid workflow progressFile %s', async progressFile => {
+    const ctx = await setup();
+    const agent = ctx.agentStore.create(agentBody());
+    const response = await request(ctx.app).post(`${base}/workflows`).send({ name: 'Progress', agentsDecide: false, progressFile, nodes: [node(agent.id)] });
+    expect(response.status).toBe(400);
+    expect(response.body.errors.map(error => error.field)).toContain('progressFile');
+  });
+  it('requires input for a progress placeholder and validates composed path', async () => {
+    const ctx = await setup();
+    const agent = ctx.agentStore.create(agentBody());
+    ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
+    const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}.md', nodes: [node(agent.id, { prompt: 'Work' })] });
+    for (const input of ['', '../bad', 'x'.repeat(510)]) {
+      const response = await request(ctx.app).post(`${base}/runs`).send({ requestId: `progress-${input.length}`, workflowId: workflow.id, project: 'Demo', input });
+      expect(response.status).toBe(400);
+      expect(response.body.errors.map(error => error.field)).toContain('input');
+    }
   });
 });

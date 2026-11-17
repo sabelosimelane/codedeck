@@ -8,6 +8,7 @@ function runView(overrides = {}) {
     id: 'r1',
     workflowName: 'Feature',
     agentsDecide: false,
+    progress: null,
     decisionCount: 0,
     status: 'running',
     error: null,
@@ -47,6 +48,24 @@ afterEach(() => {
 });
 
 describe('PipelineRunsBar', () => {
+  it.each([
+    [{ file: 'docs/todo.md', status: 'in_progress', phaseCount: 9, phase: { number: 3, title: 'Room review', tasksDone: 0, tasksTotal: 11 } }, 'Phase 3 of 9: Room review', '0/11 tasks'],
+    [{ file: 'docs/todo.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, title: '', tasksDone: 1, tasksTotal: 2 } }, 'Phase 1 of 1', '1/2 tasks'],
+    [{ file: 'docs/todo.md', status: 'all_done', phaseCount: 2, phase: null }, 'All 2 phases ticked', null],
+    [{ file: 'docs/todo.md', status: 'all_done', phaseCount: 1, phase: null }, 'All 1 phase ticked', null],
+    [{ file: 'docs/todo.md', status: 'no_phases', phaseCount: null, phase: null }, 'No "## Phase N" sections in docs/todo.md', null],
+    [{ file: 'docs/todo.md', status: 'missing', phaseCount: null, phase: null }, 'Progress file not found: docs/todo.md', null],
+    [{ file: 'docs/todo.md', status: 'unreadable', phaseCount: null, phase: null }, 'Progress file could not be read: docs/todo.md', null],
+  ])('shows %s', (progress, label, count) => {
+    render(<PipelineRunsBar runs={[runView({ progress })]} />);
+    expect(screen.getByText(label)).toBeTruthy();
+    if (count) expect(screen.getByText(`· ${count}`)).toBeTruthy();
+    expect(screen.getByTitle('docs/todo.md')).toBeTruthy();
+  });
+  it('renders no progress line for null', () => {
+    render(<PipelineRunsBar runs={[runView()]} />);
+    expect(screen.queryByTitle('docs/todo.md')).toBeNull();
+  });
   it('renders step chips with pass counts and action buttons from actions', () => {
     const onStop = vi.fn();
     const onActivateStep = vi.fn();

@@ -22,6 +22,7 @@ function definition(overrides = {}) {
     workflowName: 'Feature',
     workflowRevision: 1,
     agentsDecide: false,
+    progressFile: null,
     steps: [
       {
         kind: 'node',
@@ -517,7 +518,7 @@ describe('pipeline run store — loops and who decides', () => {
   it('upgrades runs stored before loops and agent decisions: the owner decided and no round was completed', () => {
     const { db, store } = setup();
     const created = store.create(validRun());
-    const { agentsDecide: _dropped, ...oldDefinition } = created.definition;
+    const { agentsDecide: _dropped, progressFile: _progress, ...oldDefinition } = created.definition;
     const oldSteps = created.steps.map(({ roundsCompleted: _rounds, ...rest }) => rest);
     db.prepare('UPDATE pipeline_runs SET definition = ?, steps = ?, status = ?, finished_at = ?, stop_reason = ? WHERE id = ?')
       .run(JSON.stringify(oldDefinition), JSON.stringify(oldSteps), 'stopped', '2026-11-14T08:00:00.000Z', 'user', created.id);
@@ -526,6 +527,7 @@ describe('pipeline run store — loops and who decides', () => {
     const reopened = createRunStore(db);
     const upgraded = reopened.get(created.id);
     expect(upgraded.definition.agentsDecide).toBe(false);
+    expect(upgraded.definition.progressFile).toBeNull();
     expect(upgraded.steps.map(s => s.roundsCompleted)).toEqual([0]);
     expect(upgraded.updatedAt).toBe(created.updatedAt);
     const stored = db.prepare('SELECT definition, steps FROM pipeline_runs WHERE id = ?').get(created.id);
@@ -540,5 +542,14 @@ describe('pipeline run store — loops and who decides', () => {
     const before = db.prepare('SELECT definition, steps FROM pipeline_runs WHERE id = ?').get(created.id);
     createRunStore(db);
     expect(db.prepare('SELECT definition, steps FROM pipeline_runs WHERE id = ?').get(created.id)).toEqual(before);
+  });
+  it.each([undefined, '', '../bad.md', '/bad.md', 'a//b.md', 2])('rejects definition.progressFile %s', progressFile => {
+    const { store } = setup();
+    expect(() => store.create(validRun({ definition: definition({ progressFile }) }))).toThrow('definition.progressFile');
+  });
+  it('round trips a composed progress file', () => {
+    const { store } = setup();
+    const created = store.create(validRun({ definition: definition({ progressFile: 'docs/room.md' }) }));
+    expect(store.get(created.id).definition.progressFile).toBe('docs/room.md');
   });
 });

@@ -87,6 +87,10 @@ Setup agent, and save an ordered workflow. Each node has a prompt, an agent and 
 repeat rule: a single pass, repetition until completion with a maximum pass count,
 or a loop back to an earlier node (see below).
 `{input}` in prompts is replaced once with the input supplied when starting a run.
+The optional **Progress file** setting names a Markdown todo inside the run's worktree;
+it may use `{input}`. The runs bar shows the first `## Phase N` section with unticked
+boxes and its task count. If the file is absent or cannot be read, the bar says
+"Progress file not found" or "Progress file could not be read" with its path.
 Write a skill as `/name` at the start of a prompt (for example `/feature-dev {input}`).
 Codex invokes skills with `$`, so when the CLI running the step is Codex, CodeDeck sends
 that leading `/name` as `$name`; the rest of the prompt is sent as written.

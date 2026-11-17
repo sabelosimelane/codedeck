@@ -11,7 +11,7 @@ const agent = (patch = {}) => ({
 });
 const node = (patch = {}) => ({ name: 'Develop', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, ...patch });
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T12:30:00.000Z' };
-const workflow = (patch = {}) => ({ id: W1, name: 'Feature', agentsDecide: false, revision: 2, nodes: [node()], ...STAMPS, ...patch });
+const workflow = (patch = {}) => ({ id: W1, name: 'Feature', agentsDecide: false, progressFile: null, revision: 2, nodes: [node()], ...STAMPS, ...patch });
 
 function rejects(parse, record, field) {
   let failure;
@@ -83,6 +83,9 @@ describe('parseWorkflow', () => {
     ['agentsDecide', { agentsDecide: undefined }],
     ['agentsDecide', { agentsDecide: 'true' }],
     ['agentsDecide', { agentsDecide: 1 }],
+    ['progressFile', { progressFile: undefined }],
+    ['progressFile', { progressFile: '' }],
+    ['progressFile', { progressFile: 5 }],
     ['nodes[1].repeat.to', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', max: 5 } })] }],
     ['nodes[1].repeat.to', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: '  ', max: 5 } })] }],
     ['nodes[1].repeat.to', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 7, max: 5 } })] }],

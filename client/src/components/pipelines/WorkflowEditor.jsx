@@ -17,13 +17,14 @@ const nextNodeKey = () => `node-${++lastNodeKey}`;
 const blankNode = () => ({ key: nextNodeKey(), name: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '' });
 
 function toDraft(workflow) {
-  if (workflow === null) return { id: null, revision: null, name: '', agentsDecide: false, nodes: [blankNode()] };
+  if (workflow === null) return { id: null, revision: null, name: '', agentsDecide: false, progressFile: '', nodes: [blankNode()] };
   const keys = workflow.nodes.map(nextNodeKey);
   return {
     id: workflow.id,
     revision: workflow.revision,
     name: workflow.name,
     agentsDecide: workflow.agentsDecide,
+    progressFile: workflow.progressFile ?? '',
     nodes: workflow.nodes.map((node, index) => ({
       key: keys[index],
       name: node.name,
@@ -50,6 +51,7 @@ function toFields(draft) {
   return {
     name: draft.name,
     agentsDecide: draft.agentsDecide,
+    progressFile: draft.progressFile.trim() || null,
     nodes: draft.nodes.map(node => ({
       name: node.name,
       agentId: node.agentId,
@@ -60,7 +62,7 @@ function toFields(draft) {
 }
 
 function shownFields(nodeCount) {
-  const fields = ['name', 'agentsDecide'];
+  const fields = ['name', 'agentsDecide', 'progressFile'];
   for (let index = 0; index < nodeCount; index++) {
     const prefix = `nodes[${index}]`;
     fields.push(`${prefix}.name`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
@@ -140,6 +142,8 @@ export default function WorkflowEditor({ workflow, agents, onSaved, onChanged, o
         <span>Let agents decide — an agent that asks a question is told to go with its own recommendation instead of pausing the run; each one is recorded on the run. Setup still asks you.</span>
       </label>
       {errors.agentsDecide && <span className="pipeline-field-error">{errors.agentsDecide}</span>}
+      <TextField label="Progress file" caption="Progress file (optional)" value={draft.progressFile} onChange={progressFile => setDraft(current => ({ ...current, progressFile }))} error={errors.progressFile} maxLength={300} />
+      <span>A Markdown todo inside the run's worktree, for example docs/{'{input}'}. The runs bar shows the first "## Phase N" section that still has unticked boxes.</span>
 
       <ol className="pipeline-nodes">
         {draft.nodes.map((node, index) => {

@@ -10,10 +10,12 @@ import {
   validateRunStartBody,
   validateRunAnswerBody,
   composePrompt,
+  isProgressFilePath,
   isUuid,
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions } from '../pipelines/run-machine.js';
+import { createRunProgressReader } from '../pipelines/run-progress.js';
 import {
   preflight as defaultPreflight,
   planNames as defaultPlanNames,
@@ -123,7 +125,7 @@ function isOpenRun(run) {
 }
 
 /** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
-function buildRunView(run, decisionCount) {
+function buildRunView(run, decisionCount, progress) {
   return {
     id: run.id,
     requestId: run.requestId,
@@ -132,6 +134,7 @@ function buildRunView(run, decisionCount) {
     // Whether this run's agents settle their own questions, as the workflow said when it started.
     agentsDecide: run.definition.agentsDecide,
     decisionCount,
+    progress,
     project: run.project,
     input: run.input,
     status: run.status,
@@ -274,7 +277,7 @@ function buildDefinitionSnapshot({
   withSetup,
 }) {
   const errors = [];
-  const needsInput = workflow.nodes.some(node => String(node.prompt).includes('{input}'));
+  const needsInput = workflow.nodes.some(node => String(node.prompt).includes('{input}')) || workflow.progressFile?.includes('{input}');
   if (needsInput && (!input || !input.trim())) {
     errors.push({ field: 'input', message: 'input is required when a node prompt contains {input}' });
   }
@@ -310,6 +313,11 @@ function buildDefinitionSnapshot({
     };
   });
 
+  const progressFile = workflow.progressFile === null ? null : composePrompt(workflow.progressFile, input);
+  if (progressFile !== null && !isProgressFilePath(progressFile, 512)) {
+    errors.push({ field: 'input', message: 'input does not form a valid progress file path' });
+  }
+
   if (errors.length) throw fieldErrors(errors);
 
   const setupSteps = withSetup ? [{
@@ -325,6 +333,7 @@ function buildDefinitionSnapshot({
     workflowName: workflow.name,
     workflowRevision: workflow.revision,
     agentsDecide: workflow.agentsDecide,
+    progressFile,
     steps: [...setupSteps, ...nodeSteps],
   };
 }
@@ -374,6 +383,7 @@ export function createPipelinesRouter(deps) {
     execFile = defaultExecFile,
     realpath,
     scheduleStart = setImmediate,
+    progressReader = createRunProgressReader(),
   } = deps ?? {};
 
   if (!agentStore) throw new Error('pipelines router: agentStore is required');
@@ -383,7 +393,12 @@ export function createPipelinesRouter(deps) {
   if (!decisionStore) throw new Error('pipelines router: decisionStore is required');
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
-  const asRunView = run => buildRunView(run, decisionStore.count(run.id));
+  const asRunView = async run => {
+    const progress = run.definition.progressFile !== null && ['present', 'external', 'removal_blocked'].includes(run.worktreeState)
+      ? await progressReader.read({ worktreePath: run.worktreePath, progressFile: run.definition.progressFile })
+      : null;
+    return buildRunView(run, decisionStore.count(run.id), progress);
+  };
 
   const router = express.Router();
   const route = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch(next);
@@ -629,7 +644,7 @@ export function createPipelinesRouter(deps) {
 
   // --- Runs ---
 
-  router.get(`${BASE}/runs`, route((req, res) => {
+  router.get(`${BASE}/runs`, route(async (req, res) => {
     const query = parseCollectionQuery(req.query, {
       sortFields: RUN_SORT,
       defaultSort: 'createdAt,desc',
@@ -676,7 +691,7 @@ export function createPipelinesRouter(deps) {
 
     const page = paginate(records, query);
     res.json({
-      data: page.data.map(run => asRunView(run)),
+      data: await Promise.all(page.data.map(run => asRunView(run))),
       page: page.page,
     });
   }));
@@ -697,7 +712,7 @@ export function createPipelinesRouter(deps) {
     const existing = runStore.getByRequestId(body.requestId);
     if (existing) {
       if (sameStartBody(existing, body)) {
-        return res.status(200).json(asRunView(existing));
+        return res.status(200).json(await asRunView(existing));
       }
       throw new PipelineError('This requestId was already used with a different body', 409);
     }
@@ -772,14 +787,14 @@ export function createPipelinesRouter(deps) {
       if (/requestId already exists/i.test(String(err?.message || err))) {
         const raced = runStore.getByRequestId(body.requestId);
         if (raced && sameStartBody(raced, body)) {
-          return res.status(200).json(asRunView(raced));
+          return res.status(200).json(await asRunView(raced));
         }
         throw new PipelineError('This requestId was already used with a different body', 409);
       }
       throw err;
     }
 
-    res.status(201).json(asRunView(run));
+    res.status(201).json(await asRunView(run));
 
     if (engine && typeof engine.start === 'function') {
       scheduleStart(() => {
@@ -792,11 +807,11 @@ export function createPipelinesRouter(deps) {
     }
   }));
 
-  router.get(`${BASE}/runs/:id`, route((req, res) => {
+  router.get(`${BASE}/runs/:id`, route(async (req, res) => {
     if (!isUuid(req.params.id)) throw new PipelineError('Run not found', 404);
     const run = runStore.get(req.params.id);
     if (!run) throw new PipelineError('Run not found', 404);
-    res.json(asRunView(run));
+    res.json(await asRunView(run));
   }));
 
   function loadRun(id) {
@@ -818,7 +833,7 @@ export function createPipelinesRouter(deps) {
     }
     const updated = runStore.get(req.params.id);
     if (!updated) throw new PipelineError('Run not found', 404);
-    res.json(asRunView(updated));
+    res.json(await asRunView(updated));
   }
 
   router.post(`${BASE}/runs/:id/stop`, route(async (req, res) => {

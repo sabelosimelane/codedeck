@@ -1,5 +1,51 @@
 # Changelog
 
+## [2026-11-17] - Show which phase a workflow run is on
+
+### Executive Summary
+* The runs bar showed steps and loop rounds but not which phase of the work a run had reached; that lived only in the todo file the agents work from. A workflow can now name that file as its progress file, and the runs bar shows the first phase that still has unticked boxes, for example "Phase 3 of 9: Room-by-room review and finalise · 0/11 tasks". A missing or unreadable file is reported in the bar instead of showing nothing. Workflows without the setting are unchanged.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/pipelines/run-progress.js` — New. `parsePhaseProgress` reads `## Phase N` sections and their checkboxes from Markdown, ignoring fenced code and other sections. `createRunProgressReader` reads the file inside the run's worktree asynchronously, refuses paths and symlinks that leave the worktree, non-regular files and files over 1 MiB, and caches the result by modification time and size.
+  * `client/src/components/pipelines/PipelineRunsBar.jsx` — One line per run before the step chips: the current phase and its task count, "All N phases ticked", or a warning naming the file when it is missing, unreadable or has no phase sections.
+  * `client/src/components/pipelines/WorkflowEditor.jsx` — "Progress file (optional)" field with helper text; an empty value is sent as `null` and the field takes part in dirty-draft detection and field errors.
+* **🔌 API/Interface:**
+  * `shared/pipeline-definitions.mjs` — `isProgressFilePath` and the optional `progressFile` on workflow bodies: a relative `.md` path of 1–300 characters with no `..`, empty segments, backslashes or control characters; absent or `null` means none.
+  * `server/routes/pipelines.js` — Workflows return `progressFile`. Starting a run composes it with the input and stores the result in the run's definition; an input that does not form a valid path is a 400 on `input`. Every run response carries `progress` (`null`, or `file`, `status`, `phaseCount`, `phase`) while the worktree exists.
+  * `docs/steering/api-standards.md` — Contract for `progressFile` and `progress`; coverage list updated.
+* **🗄️ Database:**
+  * `server/pipelines/workflow-store.js` — Nullable `progress_file` column on `pipeline_workflows`, added to existing databases on start-up and checked when a row is read.
+  * `server/pipelines/run-store.js` — `definition.progressFile` is validated on every run; runs stored before this change are given `progressFile: null`.
+* **🛠️ Codebase:**
+  * `client/src/utils/pipelineRecords.js` — A workflow record must carry `progressFile` (null or text).
+  * `client/src/utils/pipelineRunRecords.js` — A run must carry `progress`, with a guard for every field and each status combination.
+  * `README.md`, `docs/steering/structure.md` — The Progress file setting, what the runs bar shows, and the new module.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-progress.test.js` — New. Parser cases (mixed ticks, all ticked, no phases, non-phase sections, fences, separators, long titles) and reader cases against a real temporary directory (each status, directory, path escape, symlink out of the worktree, the 1 MiB boundary, cache hit and refresh, argument checks).
+  * `server/__tests__/pipelines-api.test.js` — Valid, absent, null, wrong-type, boundary, traversal and injection-looking values for `progressFile`; repeated PUT; composed path on run start; `progress` on every run response.
+  * `server/__tests__/pipeline-definitions.test.js`, `server/__tests__/pipeline-definition-store.test.js`, `server/__tests__/pipeline-run-store.test.js` — Path rule, column added to an existing database, corrupt rows rejected, old runs back-filled.
+  * `server/__tests__/pipeline-run-engine.test.js`, `server/__tests__/pipeline-run-live.test.js` — Fixtures carry `progressFile`.
+  * `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx`, `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx` — One case per progress status, nothing rendered for `null`; editing, clearing and the field error of the setting.
+  * `client/src/utils/__tests__/pipelineRecords.test.js`, `client/src/utils/__tests__/pipelineRunRecords.test.js`, `client/src/utils/__tests__/pipelineRunFixture.js`, `client/src/hooks/__tests__/usePipelineRuns.test.jsx` — Guards for the new fields; fixtures carry them.
+  * Server suite: 75 files, 2,040 tests passed. Client suite: 65 files, 963 tests passed.
+
+## [2026-11-17] - Make finished workflow runs read as finished in the runs bar
+
+### Executive Summary
+* A finished run looked unfinished. A blocked worktree cleanup printed git's raw "fatal" line followed by a wall of file paths, and step chips such as "Setup complete 1/3" read as one of three done when the second number is only the maximum allowed. The bar now says the worktree was kept because it holds uncommitted work, with the files behind a disclosure, and finished steps say how many passes or rounds they took and carry a tick. (Shipped earlier the same day in `d72b0cc`.)
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** The runs bar showed git's refusal verbatim and used `N/M` fractions for limits, so a completed run read as failed or partial.
+  * **Solution:** Describe a blocked cleanup in plain words from the detail the server already sends, and label chips by what a step took (finished) or by its limit as a maximum (unfinished).
+* **🛠️ Codebase:**
+  * `client/src/utils/pipelineWorktreeCleanup.js` — New. `describeBlockedCleanup` turns the stored cleanup detail into a summary sentence and the list of uncommitted files; git's own message is kept when there is no file list.
+  * `client/src/components/pipelines/PipelineRunsBar.jsx` — Summary plus a "Show files" disclosure for a blocked cleanup; chip labels such as "Setup complete · 1 pass" and "Test running · round 3 (max 20)"; a tick on finished steps.
+  * `client/src/hooks/usePipelineRuns.js` — The blocked-cleanup toast uses the same summary sentence.
+* **🧪 Tests:**
+  * `client/src/utils/__tests__/pipelineWorktreeCleanup.test.js`, `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx`, `client/src/hooks/__tests__/usePipelineRuns.test.jsx` — Summary and file list, each chip label form, no `N/M` fraction in any chip, and the toast text.
+
 ## [2026-11-16] - Keep resource usage visible in the CodeDeck top bar
 
 ### Executive Summary
