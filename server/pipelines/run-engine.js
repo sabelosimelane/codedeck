@@ -8,14 +8,14 @@ import { applyEvent, computeActions } from './run-machine.js';
 import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
-import { prepare as defaultPrepareNotes, readNote as defaultReadNote } from './run-notes.js';
+import { prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback } from './run-notes.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../shared/pipeline-definitions.mjs';
 
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
 const DEFAULT_DIALOG_POLL_MS = 2000;
-const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused']);
+const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
 
 // A step that loops back does one pass per round; its `max` counts rounds, not passes.
 function maxIterationsFor(repeat) {
@@ -56,8 +56,10 @@ export function createRunEngine({
   readScreen,
   decisionStore,
   noteStore,
+  reviewStore,
   prepareNotes = defaultPrepareNotes,
   readNote = defaultReadNote,
+  writeFeedback = defaultWriteFeedback,
   terminalAvailable,
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
@@ -79,8 +81,10 @@ export function createRunEngine({
   if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
   if (typeof decisionStore?.add !== 'function') throw new Error('createRunEngine: decisionStore is required');
   if (typeof noteStore?.add !== 'function' || typeof noteStore?.lastContent !== 'function' || typeof noteStore?.hasPass !== 'function') throw new Error('createRunEngine: noteStore is required');
+  if (typeof reviewStore?.add !== 'function' || typeof reviewStore?.listSentBack !== 'function') throw new Error('createRunEngine: reviewStore is required');
   if (typeof prepareNotes !== 'function') throw new Error('createRunEngine: prepareNotes is required');
   if (typeof readNote !== 'function') throw new Error('createRunEngine: readNote is required');
+  if (typeof writeFeedback !== 'function') throw new Error('createRunEngine: writeFeedback is required');
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
 
   const handles = new Map();
@@ -432,7 +436,7 @@ export function createRunEngine({
       if (await failIfSetupDirty(current)) {
         return { terminal: true };
       }
-      persistTransition(runId, { type: 'step_complete', at: now() });
+      persistTransition(runId, { type: current.definition.steps[current.currentStepIndex]?.approval ? 'approval_requested' : 'step_complete', at: now() });
       return { terminal: true };
     }
 
@@ -448,7 +452,7 @@ export function createRunEngine({
       }
       const repeat = current.definition.steps[current.currentStepIndex]?.repeat;
       if (repeat?.mode === 'once') {
-        persistTransition(runId, { type: 'step_complete', at: now() });
+        persistTransition(runId, { type: current.definition.steps[current.currentStepIndex]?.approval ? 'approval_requested' : 'step_complete', at: now() });
       } else if (repeat?.mode === 'loop_back'
         && current.steps[current.currentStepIndex].roundsCompleted + 1 < repeat.max) {
         // Work is left and another round is allowed: the loop starts again at its first step.
@@ -532,6 +536,8 @@ export function createRunEngine({
 
       const stepIndex = run.currentStepIndex;
       const defStep = run.definition.steps[stepIndex];
+      const feedback = reviewStore.listSentBack(run.id, stepIndex);
+      const feedbackFile = feedback.length ? await writeFeedback({ worktreePath: run.worktreePath, definition: run.definition, stepIndex, reviews: feedback }) : undefined;
       const agent = defStep.agent;
       let step = run.steps[stepIndex];
 
@@ -602,7 +608,7 @@ export function createRunEngine({
       const command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
       const maxIterations = maxIterationsFor(defStep.repeat);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
-      const guidance = buildStepGuidance(current.definition, stepIndex, { worktreePath: current.worktreePath });
+      const guidance = buildStepGuidance(current.definition, stepIndex, { worktreePath: current.worktreePath, ...(feedbackFile ? { feedbackPath: feedbackFile } : {}) });
 
       let settled = false;
       const settleWorkflow = () => {
@@ -781,6 +787,39 @@ export function createRunEngine({
             console.error(`[pipeline-run] continue execution failed for ${runId}:`, err);
           });
         }
+        return after;
+      });
+    },
+
+    async approve(runId) {
+      loadActionRun(runId, 'approve');
+      return enqueue(runId, async () => {
+        const run = loadActionRun(runId, 'approve');
+        const index = run.currentStepIndex;
+        reviewStore.add({ runId, stepIndex: index, stepName: run.definition.steps[index].name, attempt: run.steps[index].attempt, verdict: 'approved', comment: null });
+        persistTransition(runId, { type: 'approve', at: now() });
+        const after = runStore.get(runId);
+        if (after.status === 'complete') return cleanupWorktree(runId);
+        enqueue(runId, () => runStep(runId)).catch(err => console.error(`[pipeline-run] approval execution failed for ${runId}:`, err));
+        return after;
+      });
+    },
+
+    async sendBack(runId, comment) {
+      loadActionRun(runId, 'sendBack');
+      return enqueue(runId, async () => {
+        const run = loadActionRun(runId, 'sendBack');
+        if (typeof comment !== 'string' || !comment.trim() || comment.length > 4000 || /[\x00-\x09\x0b-\x1f\x7f]/.test(comment)) throw new TypeError('send-back comment is invalid');
+        const index = run.currentStepIndex;
+        const sessionId = run.steps[index].sessionId;
+        const newTerminal = sessionId === null || !terminalStillThere(sessionId);
+        reviewStore.add({ runId, stepIndex: index, stepName: run.definition.steps[index].name, attempt: run.steps[index].attempt, verdict: 'sent_back', comment });
+        const handle = getHandle(runId);
+        handle.stopped = false;
+        handle.stopRequested = false;
+        persistTransition(runId, { type: 'send_back', newTerminal, at: now() });
+        const after = runStore.get(runId);
+        enqueue(runId, () => runStep(runId)).catch(err => console.error(`[pipeline-run] send-back execution failed for ${runId}:`, err));
         return after;
       });
     },

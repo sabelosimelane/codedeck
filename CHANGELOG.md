@@ -1,5 +1,41 @@
 # Changelog
 
+## [2026-11-17] - Read-only steps and approval gates in workflows
+
+### Executive Summary
+* A workflow could only stop when an agent asked a question or hit a limit, and every step was free to change the code. That is too blunt for work such as analyse → specify → develop → review → test, where the analysis must not touch the code and nothing should be built until the specification has been read. A step can now be marked read-only, and a step can be marked to wait for approval: when it finishes, the run pauses and shows what the step reported, and continues only when the owner approves or sends the step back with a comment. "Let agents decide" does not skip a gate. Workflows and runs that do not use the options behave as before. This is the second phase of making workflows general.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/pipelines/run-machine.js` — Run and step status `awaiting_approval` with the events `approval_requested`, `approve` and `send_back`; it can be stopped and is offered `approve` and `sendBack`.
+  * `server/pipelines/run-engine.js` — A gated step that finishes raises `approval_requested` instead of advancing; `approve` advances or completes the run; `sendBack` records the comment and reruns the step as a new attempt in its terminal (a closed terminal is replaced). A repeating step is gated only when it completes; at its pass limit the run pauses as before and Continue moves on.
+  * `server/pipelines/review-store.js` — New. Append-only `pipeline_run_reviews` (approved or sent back, with the comment).
+  * `server/pipelines/run-notes.js` — The owner's send-back comments are written to a feedback file beside the step's note, through the same no-link, replace-by-rename path as the README, which now share one helper for the verified run folder and one for replacing a file.
+  * `server/pipelines/step-guidance.js` — A read-only step is told to change nothing in the worktree except its run note; a step that was sent back is pointed to its feedback file.
+  * `client/src/components/pipelines/WorkflowEditor.jsx` — "Read-only step" and "Wait for my approval" per node; approval is unavailable, with the reason, on a node that closes a loop.
+  * `client/src/components/pipelines/PipelineRunsBar.jsx` — An approval panel showing the step's note with Approve and Send back, and the chip label "awaiting approval".
+* **🔌 API/Interface:**
+  * `shared/pipeline-definitions.mjs` — Optional booleans `readOnly` and `approval` on workflow nodes (absent means false); `approval` is refused on a node that closes a loop.
+  * `server/routes/pipelines.js` — `POST /runs/:id/approve` and `POST /runs/:id/send-back {comment}` (404 for an unknown run, 409 when the run is not awaiting approval); run responses gain `approvalRequest`, `actions.approve` and `actions.sendBack`; workflows return the two node fields.
+  * `docs/steering/api-standards.md` — The node fields, the endpoints and the new run fields.
+* **🗄️ Database:**
+  * `server/pipelines/workflow-store.js`, `server/pipelines/run-store.js` — Stored workflow nodes and run steps are given `readOnly: false` and `approval: false`; `awaiting_approval` is a stored status that a backend restart leaves untouched. Once this has run, older code no longer accepts the stored rows.
+* **🛠️ Codebase:**
+  * `server/mobile-integration.js`, `server/mobile-notifications.js` — A session whose run is waiting for approval counts as needing input, and when that happens in the same reading as its workflow completing the phone is told "Input requested", not "Work completed".
+  * `server/index.js` — Wires the review store, which the engine now requires.
+  * `client/src/utils/pipelineRecords.js`, `client/src/utils/pipelineRunRecords.js`, `client/src/utils/pipelinesApi.js`, `client/src/hooks/usePipelineRuns.js`, `client/src/hooks/usePipelineRunCounts.js` — Guards for the new fields and status, the two actions with their toasts, and a run awaiting approval counted as waiting for the owner.
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md`, `docs/steering/structure.md` — Step options and approval.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-machine.test.js` — The three events from every status, and Stop from an approval wait.
+  * `server/__tests__/pipeline-run-engine.test.js` — A gate with its note recorded first; approving the last step completes and cleans up; sending back into the same terminal and after it was closed; a gate inside a loop in every round; a repeating step gated only on completion; "Let agents decide" still answering a question but not approving; an ungated workflow unchanged; concurrent approvals advancing once; Stop and Resume during a wait.
+  * `server/__tests__/pipeline-review-store.test.js` — New. Every field on write and read.
+  * `server/__tests__/pipeline-run-notes.test.js`, `server/__tests__/pipeline-step-guidance.test.js` — The feedback file (order, deterministic rewrite, links and a linked folder refused, nothing without send-backs) and the new sentences within the instruction-length budget.
+  * `server/__tests__/pipeline-definitions.test.js`, `server/__tests__/pipeline-definition-store.test.js`, `server/__tests__/pipeline-run-store.test.js`, `server/__tests__/pipelines-api.test.js` — The node fields and where approval is allowed; back-fills; an approval wait kept across a restart; the two endpoints.
+  * `server/__tests__/pipeline-run-live.test.js` — With real tmux: a run pauses after Analyse, is sent back with feedback, then approved, and Develop runs.
+  * `server/__tests__/mobile-integration.test.js`, `server/__tests__/mobile-notifications.test.js` — The approval wait as a need for input and the notification wording.
+  * `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx`, `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx`, `client/src/hooks/__tests__/usePipelineRuns.test.jsx`, `client/src/hooks/__tests__/usePipelineRunCounts.test.jsx`, `client/src/utils/__tests__/pipelineRecords.test.js`, `client/src/utils/__tests__/pipelineRunRecords.test.js`, `client/src/utils/__tests__/pipelinesApi.test.js`, `client/src/utils/__tests__/pipelineRunFixture.js` — The checkboxes, the approval panel, counts, guards and fixtures.
+  * Server suite: 78 files, 2,263 tests passed. Client suite: 65 files, 1,002 tests passed. The stored-row upgrade was run against a copy of the live database: 11 runs and the stored workflow loaded with both options false.
+
 ## [2026-11-17] - Stop workflow runs stalling on a rule that was too strict and a question that was never read
 
 ### Executive Summary

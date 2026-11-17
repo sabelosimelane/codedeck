@@ -9,7 +9,7 @@ const agent = (patch = {}) => ({
   id: A1, name: 'codex', launchCommand: 'codex', resetCommand: '/clear', revision: 1,
   createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z', ...patch,
 });
-const node = (patch = {}) => ({ name: 'Develop', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, ...patch });
+const node = (patch = {}) => ({ name: 'Develop', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, ...patch });
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T12:30:00.000Z' };
 const workflow = (patch = {}) => ({ id: W1, name: 'Feature', agentsDecide: false, progressFile: null, revision: 2, nodes: [node()], ...STAMPS, ...patch });
 
@@ -57,6 +57,12 @@ describe('parseAgent', () => {
 });
 
 describe('parseWorkflow', () => {
+  it('rejects malformed node flags independently', () => {
+    expect(parseWorkflow(workflow({ nodes: [node({ readOnly: true, approval: true })] })).nodes[0]).toMatchObject({ readOnly: true, approval: true });
+    for (const flag of ['readOnly', 'approval']) for (const value of [undefined, null, 'true']) {
+      rejects(parseWorkflow, workflow({ nodes: [node({ [flag]: value })] }), `nodes[0].${flag}`);
+    }
+  });
   it('keeps the workflow with both repeat shapes', () => {
     const record = workflow({ nodes: [node({ repeat: { mode: 'until_complete', max: 100 } }), node({ name: 'Test' })] });
     expect(parseWorkflow({ ...record, extra: 'ignored' })).toEqual(record);

@@ -4,6 +4,7 @@ import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
+import { createReviewStore } from '../pipelines/review-store.js';
 
 const WORKFLOW_ID = 'a2d0b1c2-3456-4789-8abc-def012345678';
 const AGENT_ID = 'c410a1b2-3456-4789-8abc-def012345678';
@@ -21,7 +22,7 @@ function definition(overrides = {}) {
     notesDir: null,
     steps: [
       {
-        kind: 'node',
+        kind: 'node', readOnly: false, approval: false,
         name: 'Develop',
         // Snapshot prompts are already composed at POST /runs.
         prompt: 'Implement ship it',
@@ -151,6 +152,7 @@ function setupEngine(overrides = {}) {
   const readScreen = overrides.readScreen ?? vi.fn(async () => []);
   const decisionStore = overrides.decisionStore ?? createDecisionStore(db);
   const noteStore = overrides.noteStore ?? createNoteStore(db);
+  const reviewStore = overrides.reviewStore ?? createReviewStore(db);
 
   const engine = createRunEngine({
     runStore,
@@ -163,6 +165,7 @@ function setupEngine(overrides = {}) {
     readScreen,
     decisionStore,
     noteStore,
+    reviewStore,
     removeWorktree,
     listDirtyPaths,
     pathExists,
@@ -192,6 +195,7 @@ function setupEngine(overrides = {}) {
     readScreen,
     decisionStore,
     noteStore,
+    reviewStore,
     writes,
     releases,
     getWorkflowNotify: () => workflowNotify,
@@ -206,8 +210,134 @@ afterEach(() => {
 });
 
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
+  it('requires a review store with add and listSentBack at construction', () => {
+    expect(() => setupEngine({ engineExtras: { reviewStore: undefined } })).toThrow('createRunEngine: reviewStore is required');
+    expect(() => setupEngine({ engineExtras: { reviewStore: { add() {} } } })).toThrow('createRunEngine: reviewStore is required');
+  });
   beforeEach(() => {
     vi.useFakeTimers();
+  });
+
+  it('records a gated pass before waiting, then approves only once', async () => {
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Analysis complete\nEvidence' }));
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote } });
+    const def = definition({ notesDir: '.codedeck/runs/abcdef12' });
+    def.steps[0].approval = true;
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('awaiting_approval');
+    expect(ctx.noteStore.latestByStep(run.id).get(0).summary).toBe('Analysis complete');
+    expect(ctx.removeWorktree).not.toHaveBeenCalled();
+    await ctx.engine.approve(run.id);
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(ctx.reviewStore.list(run.id)).toMatchObject([{ verdict: 'approved', comment: null }]);
+    await expect(ctx.engine.approve(run.id)).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+  });
+  it('approving the last gated step completes the run and removes its worktree', async () => {
+    const ctx = setupEngine();
+    const def = definition(); def.steps[0].approval = true;
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await done;
+    expect(ctx.runStore.get(run.id).status).toBe('awaiting_approval');
+    await ctx.engine.approve(run.id);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'complete', worktreeState: 'removed' });
+    expect(ctx.removeWorktree).toHaveBeenCalledOnce();
+  });
+  it('send-back after its terminal closes launches a new terminal and records the prior session', async () => {
+    let available = true;
+    const ctx = setupEngine({ terminalAvailable: vi.fn(() => available) });
+    const def = definition(); def.steps[0].approval = true;
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await done;
+    expect(ctx.runStore.get(run.id).steps[0].sessionId).toBe('Demo-1');
+    available = false;
+    await ctx.engine.sendBack(run.id, 'Please revise');
+    available = true;
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(ctx.runStore.get(run.id).steps[0]).toMatchObject({ sessionId: 'Demo-2', priorSessionIds: ['Demo-1'], attempt: 2 });
+  });
+  it('a workflow without gates completes without an approval wait or review rows', async () => {
+    const ctx = setupEngine();
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(ctx.runStore.get(run.id).steps[0].status).toBe('complete');
+    expect(ctx.reviewStore.list(run.id)).toEqual([]);
+  });
+  it('Stop during an approval wait stops the run and Resume reruns the step', async () => {
+    const ctx = setupEngine();
+    const def = definition(); def.steps[0].approval = true;
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const first = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await first;
+    expect(ctx.runStore.get(run.id).status).toBe('awaiting_approval');
+    await ctx.engine.stop(run.id);
+    expect(ctx.runStore.get(run.id).status).toBe('stopped');
+    await ctx.engine.resume(run.id);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'awaiting_approval', steps: [expect.objectContaining({ attempt: 2 })] });
+  });
+  it('serializes simultaneous approvals so the waiting step advances once', async () => {
+    const ctx = setupEngine();
+    const def = definition(); def.steps[0].approval = true;
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await done;
+    const results = await Promise.allSettled([ctx.engine.approve(run.id), ctx.engine.approve(run.id)]);
+    expect(results.map(result => result.status)).toEqual(['fulfilled', 'rejected']);
+    expect(ctx.reviewStore.list(run.id)).toHaveLength(1);
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+  it('gates an until-complete step only after COMPLETE, and leaves pass-limit Continue unchanged', async () => {
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start: () => queueMicrotask(() => { notify({ status: 'resetting', iteration: 1 }); notify({ status: 'complete', iteration: 2 }); }),
+      stop() {}, snapshot: () => ({ status: 'stopped' }),
+    }));
+    const ctx = setupEngine({ createWorkflow });
+    const def = definition(); def.steps[0].approval = true; def.steps[0].repeat = { mode: 'until_complete', max: 3 };
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await done;
+    expect(ctx.runStore.get(run.id).status).toBe('awaiting_approval');
+
+    const limitWorkflow = vi.fn(({ notify }) => ({
+      start: () => queueMicrotask(() => notify({ status: 'stopped', iteration: 2, limitReached: true })),
+      stop() {}, snapshot: () => ({ status: 'stopped' }),
+    }));
+    const limited = setupEngine({ createWorkflow: limitWorkflow });
+    const limitedDef = definition(); limitedDef.steps[0].approval = true; limitedDef.steps[0].repeat = { mode: 'until_complete', max: 2 };
+    const limitedRun = limited.runStore.create(validRun({ requestId: 'limit-approval', definition: limitedDef }));
+    const limitedDone = limited.engine.start(limitedRun.id);
+    await vi.advanceTimersByTimeAsync(1100); await limitedDone;
+    expect(limited.runStore.get(limitedRun.id).status).toBe('limit_paused');
+    await limited.engine.continue(limitedRun.id);
+    expect(limited.runStore.get(limitedRun.id).status).toBe('complete');
+  });
+
+  it('sends a gated step back into the same terminal with feedback and a new attempt', async () => {
+    const writeFeedback = vi.fn(async () => '.codedeck/runs/abcdef12/00-develop.feedback.md');
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote: vi.fn(async () => ({ status: 'missing', content: null })), writeFeedback } });
+    const def = definition({ notesDir: '.codedeck/runs/abcdef12' });
+    def.steps[0].approval = true;
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const first = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await first;
+    expect(ctx.runStore.get(run.id).steps[0].sessionId).toBe('Demo-1');
+    await ctx.engine.sendBack(run.id, 'Please add evidence');
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(ctx.runStore.get(run.id).steps[0]).toMatchObject({ attempt: 2, sessionId: 'Demo-1' });
+    expect(ctx.reviewStore.listSentBack(run.id, 0)).toMatchObject([{ comment: 'Please add evidence' }]);
+    expect(writeFeedback).toHaveBeenCalledOnce();
+    expect(ctx.getWorkflowStartArgs().guidance).toContain('The owner sent this step back: read .codedeck/runs/abcdef12/00-develop.feedback.md before you start.');
   });
 
   it('prepares run notes before launch and records a completed pass', async () => {
@@ -689,7 +819,7 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'Implement ship it',
           repeat: { mode: 'until_complete', max: 7 },
@@ -780,6 +910,8 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     return definition({
       steps: names.map((name, index) => ({
         kind: index === 0 ? 'setup' : 'node',
+        readOnly: false,
+        approval: false,
         name,
         prompt: `Prompt ${name}`,
         repeat: { mode: 'once' },
@@ -875,7 +1007,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const def = definition({
       steps: [
         {
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'do it',
           repeat: { mode: 'until_complete', max: 2 },
@@ -887,7 +1019,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
           },
         },
         {
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'Review',
           prompt: 'review it',
           repeat: { mode: 'once' },
@@ -940,7 +1072,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'do it',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1045,7 +1177,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'setup',
+          kind: 'setup', readOnly: false, approval: false,
           name: 'Setup',
           prompt: 'setup',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1330,7 +1462,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       definition: definition({
         steps: [
           {
-            kind: 'setup',
+            kind: 'setup', readOnly: false, approval: false,
             name: 'Setup',
             prompt: 'setup',
             repeat: { mode: 'until_complete', max: 3 },
@@ -1342,7 +1474,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
             },
           },
           {
-            kind: 'node',
+            kind: 'node', readOnly: false, approval: false,
             name: 'Develop',
             prompt: 'do it',
             repeat: { mode: 'once' },
@@ -1378,7 +1510,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'setup',
+          kind: 'setup', readOnly: false, approval: false,
           name: 'Setup',
           prompt: 'setup',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1698,7 +1830,7 @@ describe('createRunEngine — a loop of steps', () => {
     Review: 'c410a1b2-3456-4789-8abc-def012345612',
   };
   const defStep = (name, repeat = { mode: 'once' }) => ({
-    kind: 'node',
+    kind: 'node', readOnly: false, approval: false,
     name,
     prompt: `do ${name}`,
     repeat,
@@ -1755,6 +1887,23 @@ describe('createRunEngine — a loop of steps', () => {
     await done;
     return { ctx, script, sessions, run: ctx.runStore.get(run.id), done };
   }
+  it('gates a step inside a loop in both rounds', async () => {
+    const script = scriptedWorkflow(['complete', 'continue', 'complete', 'complete', 'complete']);
+    const ctx = setupEngine({ createWorkflow: script.createWorkflow });
+    const def = looping(2);
+    def.steps[0].approval = true;
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await done;
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'awaiting_approval', currentStepIndex: 0 });
+    await ctx.engine.approve(run.id);
+    await vi.advanceTimersByTimeAsync(2200);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'awaiting_approval', currentStepIndex: 0 });
+    await ctx.engine.approve(run.id);
+    await vi.advanceTimersByTimeAsync(2200);
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(ctx.reviewStore.list(run.id).map(row => row.verdict)).toEqual(['approved', 'approved']);
+  });
 
   it('runs the loop again when its last step reports work left, then moves on when it reports COMPLETE', async () => {
     const { ctx, script, run } = await runLoop(['continue', 'continue', 'complete', 'complete', 'complete']);
@@ -1922,7 +2071,7 @@ describe('createRunEngine — agents decide', () => {
     return { createWorkflow, state, ask: () => publish('needs_input'), complete: () => publish('complete') };
   }
 
-  async function startAsking({ agentsDecide = true, overrides = {}, kind = 'node' } = {}) {
+  async function startAsking({ agentsDecide = true, overrides = {}, kind = 'node', approval = false } = {}) {
     const loop = askingWorkflow();
     const ctx = setupEngine({
       createWorkflow: loop.createWorkflow,
@@ -1931,6 +2080,7 @@ describe('createRunEngine — agents decide', () => {
     });
     const def = definition({ agentsDecide });
     def.steps[0].kind = kind;
+    def.steps[0].approval = approval;
     const run = ctx.runStore.create(validRun({ definition: def, worktreeState: 'external', baseCommit: BASE_COMMIT }));
     const done = ctx.engine.start(run.id);
     await vi.advanceTimersByTimeAsync(100); // launch Enter
@@ -1956,6 +2106,16 @@ describe('createRunEngine — agents decide', () => {
     loop.complete();
     await done;
     expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+  it('agents decide still auto-answers a question but waits for owner approval after completion', async () => {
+    const { ctx, loop, run, done } = await startAsking({ approval: true });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(loop.state.inputs).toEqual([ANSWER]);
+    expect(ctx.decisionStore.count(run.id)).toBe(1);
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('awaiting_approval');
+    expect(ctx.reviewStore.list(run.id)).toEqual([]);
   });
 
   it('records what was asked and what was answered', async () => {
@@ -2182,7 +2342,7 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
 describe('createRunEngine — a step reuses the terminal of its agent', () => {
   const CODEX = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
   const FABLE = { id: 'c410a1b2-3456-4789-8abc-def0123456f0', name: 'fable', launchCommand: 'claude --model fable', resetCommand: '/clear' };
-  const node = (name, agent) => ({ kind: 'node', name, prompt: `do ${name}`, repeat: { mode: 'once' }, agent });
+  const node = (name, agent) => ({ kind: 'node', readOnly: false, approval: false, name, prompt: `do ${name}`, repeat: { mode: 'once' }, agent });
   const WORKTREE = '/tmp/worktrees/backend-specs';
 
   beforeEach(() => {

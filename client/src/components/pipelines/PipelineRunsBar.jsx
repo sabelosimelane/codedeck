@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../../../shared/pipeline-definitions.mjs';
 import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
+import { approveRun, sendBackRun } from '../../utils/pipelinesApi';
+import { useToast } from '../ToastContext';
 
 const ACCEPT_RECOMMENDATIONS = ACCEPT_RECOMMENDATIONS_ANSWER;
 
@@ -37,8 +39,63 @@ function resumeConfirmation(run, step) {
 }
 
 function chipLabel(step) {
+  if (step.status === 'awaiting_approval') return `${step.name} awaiting approval`;
   const pass = passLabel(step);
   return pass ? `${step.name} ${step.status} · ${pass}` : `${step.name} ${step.status}`;
+}
+
+function ApprovalPanel({ run, onLoadNotes, onApprove, onSendBack }) {
+  const { showToast } = useToast();
+  const [comment, setComment] = useState('');
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [note, setNote] = useState({ state: 'loading', content: null });
+  const { stepIndex, stepName } = run.approvalRequest;
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const page = await onLoadNotes(run.id, 0, stepIndex);
+        if (!active) return;
+        const latest = page?.notes?.[0];
+        setNote({ state: page === null ? 'error' : 'ready', content: latest?.status === 'written' ? latest.content : null });
+      } catch (error) {
+        if (active) setNote({ state: 'error', content: null });
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [run.id, stepIndex, onLoadNotes]);
+  const submit = async (kind) => {
+    if (busyRef.current || (kind === 'sendBack' && !comment.trim())) return;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      const action = kind === 'approve' ? (onApprove ?? approveRun) : (onSendBack ?? sendBackRun);
+      const result = kind === 'approve' ? await action(run.id) : await action(run.id, comment);
+      if (result !== null) {
+        showToast({ type: 'success', message: kind === 'approve' ? `${stepName} approved` : `${stepName} sent back` });
+        if (kind === 'sendBack') setComment('');
+      }
+    } catch (error) {
+      showToast({ type: 'error', message: error?.message || 'Pipelines request failed' });
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
+  return <div role="group" aria-label={`${stepName} approval`} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', border: '1px solid var(--warning)', borderRadius: 6, background: 'var(--bg-base)' }}>
+    <strong>{`${stepName} is waiting for your approval`}</strong>
+    {run.approvalRequest.note?.summary && <span>{run.approvalRequest.note.summary}</span>}
+    {note.state === 'loading' && <span>Loading the step note…</span>}
+    {note.state === 'error' && <span>The step note could not be loaded.</span>}
+    {note.state === 'ready' && (note.content === null ? <span>This step left no note.</span> : <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto' }}>{note.content}</div>)}
+    <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+      <button type="button" disabled={busy} onClick={() => submit('approve')}>Approve</button>
+      <textarea aria-label="Send-back comment" value={comment} maxLength={4000} disabled={busy} onChange={event => setComment(event.target.value)} rows={2} style={{ flex: 1, background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} />
+      <button type="button" disabled={busy || !comment.trim()} onClick={() => submit('sendBack')}>Send back</button>
+    </div>
+  </div>;
 }
 
 /**
@@ -262,6 +319,8 @@ export default function PipelineRunsBar({
   onActivateStep,
   onLoadDecisions,
   onLoadNotes,
+  onApprove,
+  onSendBack,
 }) {
   if (!runs?.length) return null;
 
@@ -392,6 +451,7 @@ export default function PipelineRunsBar({
             </div>
           </div>
           {run.status === 'needs_input' && <InputRequestPanel run={run} onAnswer={onAnswer} />}
+          {run.status === 'awaiting_approval' && <ApprovalPanel run={run} onLoadNotes={onLoadNotes} onApprove={onApprove} onSendBack={onSendBack} />}
           <DecisionsPanel run={run} onLoadDecisions={onLoadDecisions} />
           <NotesPanel run={run} onLoadNotes={onLoadNotes} />
           </div>

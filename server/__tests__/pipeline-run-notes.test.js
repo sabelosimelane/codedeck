@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { noteFileName, notePath, buildReadme, prepare, readNote } from '../pipelines/run-notes.js';
+import { noteFileName, notePath, feedbackPath, writeFeedback, buildReadme, prepare, readNote } from '../pipelines/run-notes.js';
 
 const roots = [];
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
@@ -34,6 +34,66 @@ const definition = {
 };
 
 describe('run notes', () => {
+  const feedback = [{ verdict: 'sent_back', comment: 'Please revise', createdAt: '2026-11-17T10:00:00.000Z' }];
+  it.each(['symbolic', 'hard'])('replaces a %s-linked feedback file without changing its outside target', async kind => {
+    const root = await repo();
+    await prepare({ worktreePath: root, definition, input: '' });
+    const outside = path.join(await outsideDir(), 'target');
+    const target = path.join(root, feedbackPath(definition, 1));
+    await fs.writeFile(outside, 'outside');
+    if (kind === 'symbolic') await fs.symlink(outside, target);
+    else await fs.link(outside, target);
+    await writeFeedback({ worktreePath: root, definition, stepIndex: 1, reviews: feedback });
+    expect(await fs.readFile(outside, 'utf8')).toBe('outside');
+    expect((await fs.lstat(target)).isFile()).toBe(true);
+    expect((await fs.stat(target)).nlink).toBe(1);
+    expect(await fs.readFile(target, 'utf8')).toContain('Please revise');
+    expect(await temporaryFiles(root)).toEqual([]);
+  });
+  it.each(['.codedeck/runs', definition.notesDir])('rejects feedback through linked folder %s', async relative => {
+    const root = await repo();
+    const outside = await outsideDir();
+    await fs.mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+    await fs.symlink(outside, path.join(root, relative));
+    await expect(writeFeedback({ worktreePath: root, definition, stepIndex: 1, reviews: feedback }))
+      .rejects.toThrow(`Run notes folder ${definition.notesDir} leaves the worktree`);
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+  it('returns null without writing when there are no send-backs', async () => {
+    const root = await repo();
+    await prepare({ worktreePath: root, definition, input: '' });
+    expect(await writeFeedback({ worktreePath: root, definition, stepIndex: 1, reviews: [] })).toBeNull();
+    await expect(fs.stat(path.join(root, feedbackPath(definition, 1)))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('keeps the same feedback inode for identical content and removes temporary files after rename failure', async () => {
+    const root = await repo();
+    await prepare({ worktreePath: root, definition, input: '' });
+    const target = path.join(root, feedbackPath(definition, 1));
+    await writeFeedback({ worktreePath: root, definition, stepIndex: 1, reviews: feedback });
+    const first = await fs.stat(target);
+    await writeFeedback({ worktreePath: root, definition, stepIndex: 1, reviews: feedback });
+    expect((await fs.stat(target)).ino).toBe(first.ino);
+    const failingFs = { ...fs, rename: async () => { throw new Error('rename failed'); } };
+    await expect(writeFeedback({ worktreePath: root, definition, stepIndex: 1,
+      reviews: [{ ...feedback[0], comment: 'Changed' }], fs: failingFs })).rejects.toThrow('rename failed');
+    expect(await fs.readFile(target, 'utf8')).toContain('Please revise');
+    expect(await temporaryFiles(root)).toEqual([]);
+  });
+  it('writes ordered send-back feedback inside the ignored notes folder and rewrites it deterministically', async () => {
+    const root = await repo();
+    await prepare({ worktreePath: root, definition, input: '' });
+    const reviews = [
+      { verdict: 'sent_back', comment: 'First', createdAt: '2026-11-17T10:00:00.000Z' },
+      { verdict: 'sent_back', comment: 'Second\nline', createdAt: '2026-11-17T11:00:00.000Z' },
+    ];
+    expect(await writeFeedback({ worktreePath: root, definition, stepIndex: 1, reviews })).toBe(feedbackPath(definition, 1));
+    const target = path.join(root, feedbackPath(definition, 1));
+    expect(await fs.readFile(target, 'utf8')).toContain('First');
+    expect((await fs.readFile(target, 'utf8')).indexOf('First')).toBeLessThan((await fs.readFile(target, 'utf8')).indexOf('Second'));
+    await fs.writeFile(target, 'stale');
+    await writeFeedback({ worktreePath: root, definition, stepIndex: 1, reviews });
+    expect(await fs.readFile(target, 'utf8')).toContain('Second\nline');
+  });
   it('makes bounded, deterministic file names', () => {
     expect(noteFileName(1, 'Build things')).toBe('01-build-things.md');
     expect(noteFileName(2, 'É #')).toBe('02-step.md');

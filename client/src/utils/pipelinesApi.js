@@ -147,6 +147,15 @@ export function continueRun(runId, options) {
   return postAction(runId, 'continue', options);
 }
 
+export function approveRun(runId, options) {
+  return postAction(runId, 'approve', options);
+}
+
+export function sendBackRun(runId, comment, { signal } = {}) {
+  if (typeof comment !== 'string' || !comment.trim() || comment.length > 4000 || /[\x00-\x09\x0b-\x1f\x7f]/.test(comment)) throw new PipelineApiError('comment must be 1–4000 characters without control characters other than new lines');
+  return request(`/runs/${encodeURIComponent(runId)}/send-back`, { method: 'POST', body: { comment }, signal });
+}
+
 /** Types the owner's answer into the terminal of an agent that signalled NEEDS_INPUT. */
 export function answerRun(runId, answer, { signal } = {}) {
   if (typeof answer !== 'string' || !answer.trim()) throw new PipelineApiError('answer must be a non-empty string');
@@ -163,9 +172,11 @@ export function listRunDecisions(runId, page, { signal } = {}) {
 }
 
 /** One page of notes reported by a run's steps, newest first. */
-export function listRunNotes(runId, page, { signal } = {}) {
+export function listRunNotes(runId, page, { signal, stepIndex } = {}) {
   if (!Number.isSafeInteger(page) || page < 0) throw new PipelineApiError('page must be a whole number of 0 or more');
+  if (stepIndex !== undefined && (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex > 32)) throw new PipelineApiError('stepIndex must be an integer from 0 to 32');
   const params = new URLSearchParams({ page: String(page), size: '50', sort: 'createdAt,desc' });
+  if (stepIndex !== undefined) params.set('stepIndex', String(stepIndex));
   return request(`/runs/${encodeURIComponent(runId)}/notes?${params}`, { signal });
 }
 

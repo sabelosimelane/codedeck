@@ -88,6 +88,11 @@ Open **Settings → Workflows** to add agents, choose a
 Setup agent, and save an ordered workflow. Each node has a prompt, an agent and a
 repeat rule: a single pass, repetition until completion with a maximum pass count,
 or a loop back to an earlier node (see below).
+Mark a node **Read-only step** to tell its agent to change nothing except its run note.
+Mark **Wait for my approval** to pause when the step finishes. The runs bar shows
+the step note; **Approve** advances, while **Send back** takes a comment and reruns
+the same step with that feedback. A step that closes a loop cannot wait for approval,
+though steps inside a loop can. **Let agents decide** never skips an approval gate.
 `{input}` in prompts is replaced once with the input supplied when starting a run.
 The optional **Progress file** setting names a Markdown todo inside the run's worktree;
 it may use `{input}`. The runs bar shows the first `## Phase N` section with unticked

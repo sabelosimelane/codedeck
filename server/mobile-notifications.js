@@ -140,8 +140,8 @@ export function createMobileNotifications({ db, instanceId, listObservations, li
       let kind = null;
       if (previous && fresh && previous.reachable && current.executionStatus !== 'unknown') {
         if (current.executionStatus === 'dead' && previous.executionStatus !== 'dead' && previous.executionStatus !== 'unknown') kind = 'ended';
-        else if (current.workflowStatus === 'complete' && previous.workflowStatus !== 'complete') kind = 'completed';
         else if (current.needsInput && !previous.needsInput) kind = 'input_requested';
+        else if (current.workflowStatus === 'complete' && previous.workflowStatus !== 'complete') kind = 'completed';
         else if (current.executionStatus === 'idle' && previous.executionStatus === 'running' && !['complete', 'needs_input'].includes(current.workflowStatus)) kind = 'idle';
       }
       if (kind) {

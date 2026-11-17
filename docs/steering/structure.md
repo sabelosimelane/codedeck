@@ -172,6 +172,7 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 - `server/pipelines/run-progress.js`: asynchronously reads and caches a run's Markdown phase and task progress inside its worktree.
 - `server/pipelines/run-notes.js`: prepares an ignored per-run notes folder and safely reads each step's note inside the worktree.
 - `server/pipelines/note-store.js`: append-only SQLite copies of step notes and their pass outcomes (`pipeline_run_notes`).
+- `server/pipelines/review-store.js`: append-only owner approval and send-back reviews (`pipeline_run_reviews`); `run-notes.js` writes their comments to the step feedback file.
 - `server/routes/pipelines.js`: definitions, settings, preflight and owner actions;
   transport validation and RFC 9457 errors. See `api-standards.md` for the contract.
 - `client/src/components/pipelines/`: definition editors, Run dialog and runs bar.

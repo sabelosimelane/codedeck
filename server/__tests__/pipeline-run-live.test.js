@@ -16,6 +16,7 @@ import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
+import { createReviewStore } from '../pipelines/review-store.js';
 import {
   create as createWorktree,
   remove as removeWorktree,
@@ -78,6 +79,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.setRawMode(true);
 process.stdout.write('>_ OpenAI Codex (stub)\\n› \\n');
 process.stdin.on('data', chunk => {
+  if (chunk.includes('/clear')) { buf = ''; armed = true; return; }
   if (!armed) return;
   buf += chunk;
   const match = buf.match(/Iteration identifier: ([\\w-]+)/);
@@ -246,14 +248,14 @@ describeLive('pipeline run live (Phase 3)', () => {
         notesDir: `.codedeck/runs/${runId.slice(0, 8)}`,
         steps: [
           {
-            kind: 'setup',
+            kind: 'setup', readOnly: false, approval: false,
             name: 'Setup',
             prompt: buildSetupPrompt(homeRepoPath, names.worktreePath),
             repeat: { mode: 'until_complete', max: 3 },
             agent: agentSnap(setupAgent),
           },
           {
-            kind: 'node',
+            kind: 'node', readOnly: false, approval: false,
             name: 'Echo',
             prompt: 'finish now',
             repeat: { mode: 'until_complete', max: 3 },
@@ -279,6 +281,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       runStore: runs,
       decisionStore: createDecisionStore(db),
       noteStore: notes,
+      reviewStore: createReviewStore(db),
       readScreen: async () => [],
       createWorktree: async (run) => createWorktree({
         homePath: run.homePath,
@@ -358,7 +361,7 @@ describeLive('pipeline run live (Phase 3)', () => {
 });
 
 describeLive('pipeline run live notes', () => {
-  it('writes two step notes through real terminals and leaves the worktree clean', async () => {
+  it('pauses after Analyse, sends it back with feedback, then approves and runs Develop', async () => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-notes-'));
     temps.push(base);
     const tmuxDir = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-tmux-'));
@@ -382,8 +385,8 @@ describeLive('pipeline run live notes', () => {
     const runId = '0d9e4b1a-5555-4555-8555-555555555555';
     const workflowId = '0d9e4b1a-6666-4666-8666-666666666666';
     const notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
-    const steps = ['Build', 'Test'].map((name, index) => ({
-      kind: 'node', name, prompt: `do ${name}`, repeat: { mode: 'once' },
+    const steps = ['Analyse', 'Develop'].map((name, index) => ({
+      kind: 'node', readOnly: index === 0, approval: index === 0, name, prompt: `do ${name}`, repeat: { mode: 'once' },
       agent: { id: `0d9e4b1a-7777-4777-8777-77777777777${index}`, name: `stub-${index}`, launchCommand: commands[index], resetCommand: '/clear' },
     }));
     runs.create({
@@ -396,7 +399,7 @@ describeLive('pipeline run live notes', () => {
     });
     let sessionSeq = 0;
     const engine = createRunEngine({
-      runStore: runs, decisionStore: createDecisionStore(db), noteStore: notes,
+      runStore: runs, decisionStore: createDecisionStore(db), noteStore: notes, reviewStore: createReviewStore(db),
       createWorktree: async () => { throw new Error('existing worktree must be reused'); },
       startSession: async ({ cwd }) => {
         const sessionId = `codedeck-${++sessionSeq}`;
@@ -419,16 +422,25 @@ describeLive('pipeline run live notes', () => {
     });
     try {
       await engine.start(runId);
+      const firstGate = await waitFor(() => runs.get(runId).status === 'awaiting_approval' && runs.get(runId), 60000, 'Analyse approval');
+      expect(firstGate.currentStepIndex).toBe(0);
+      expect(notes.list(runId, { offset: 0, limit: 10, direction: 'asc' })).toMatchObject([{ status: 'written', summary: 'Pass 1' }]);
+      await engine.sendBack(runId, 'Include the comparison evidence');
+      await waitFor(() => runs.get(runId).status === 'awaiting_approval' && runs.get(runId).steps[0].attempt === 2, 60000, 'Analyse sent back');
+      const feedback = readFileSync(path.join(home, notesDir, '00-analyse.feedback.md'), 'utf8');
+      expect(feedback).toContain('Include the comparison evidence');
+      expect(prompts.get('codedeck-1').join('')).toContain('00-analyse.feedback.md');
+      await engine.approve(runId);
       const finished = await waitFor(() => ['complete', 'error'].includes(runs.get(runId).status) && runs.get(runId), 60000, 'notes run complete');
       expect(finished.status).toBe('complete');
       const readme = readFileSync(path.join(home, notesDir, 'README.md'), 'utf8');
-      expect(readme).toContain(`${notesDir}/00-build.md`);
-      expect(readme).toContain(`${notesDir}/01-test.md`);
-      expect(notes.list(runId, { offset: 0, limit: 10, direction: 'asc' }).map(row => [row.status, row.summary])).toEqual([['written', 'Pass 1'], ['written', 'Pass 1']]);
+      expect(readme).toContain(`${notesDir}/00-analyse.md`);
+      expect(readme).toContain(`${notesDir}/01-develop.md`);
+      expect(notes.list(runId, { offset: 0, limit: 10, direction: 'asc' }).map(row => [row.status, row.summary])).toEqual([['written', 'Pass 1'], ['written', 'Pass 2'], ['written', 'Pass 1']]);
       expect(prompts.size).toBe(2);
       for (const [index, typed] of [...prompts.values()].entries()) {
         expect(typed.join('')).toContain(`${notesDir}/README.md`);
-        expect(typed.join('')).toContain(`${notesDir}/${index === 0 ? '00-build.md' : '01-test.md'}`);
+        expect(typed.join('')).toContain(`${notesDir}/${index === 0 ? '00-analyse.md' : '01-develop.md'}`);
       }
       expect(git(home, ['status', '--porcelain'])).toBe('');
     } finally {
@@ -487,7 +499,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         progressFile: null,
         notesDir: null,
         steps: [{
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'migrate the schema',
           repeat: { mode: 'once' },
@@ -518,6 +530,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
       runStore: runs,
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
+      reviewStore: createReviewStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
@@ -709,8 +722,8 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         progressFile: null,
         notesDir: null,
         steps: [
-          { kind: 'node', name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
-          { kind: 'node', name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 3 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
+          { kind: 'node', readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
+          { kind: 'node', readOnly: false, approval: false, name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 3 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
         ],
       },
       steps: [pending(), pending()],
@@ -735,6 +748,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
       runStore: runs,
       decisionStore: decisions,
       noteStore: createNoteStore(db),
+      reviewStore: createReviewStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
@@ -862,7 +876,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
         progressFile: null,
         notesDir: null,
         steps: [
-          { kind: 'node', name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: { id: '0d9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'dialog-stub', launchCommand: stub, resetCommand: '/clear' } },
+          { kind: 'node', readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: { id: '0d9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'dialog-stub', launchCommand: stub, resetCommand: '/clear' } },
         ],
       },
       steps: [{ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null }],
@@ -900,6 +914,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
       runStore: runs,
       decisionStore: decisions,
       noteStore: createNoteStore(db),
+      reviewStore: createReviewStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
@@ -1014,7 +1029,7 @@ describeLive('pipeline run live — Resume', () => {
         progressFile: null,
         notesDir: null,
         steps: stepNames.map(name => (
-          { kind: 'node', name, prompt: `do the ${name} step`, repeat: { mode: 'once' }, agent: { id: '0e9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'resume-stub', launchCommand: stub, resetCommand: '/clear' } }
+          { kind: 'node', readOnly: false, approval: false, name, prompt: `do the ${name} step`, repeat: { mode: 'once' }, agent: { id: '0e9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'resume-stub', launchCommand: stub, resetCommand: '/clear' } }
         )),
       },
       steps: stepNames.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null })),
@@ -1054,6 +1069,7 @@ describeLive('pipeline run live — Resume', () => {
       runStore: runs,
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
+      reviewStore: createReviewStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },

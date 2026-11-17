@@ -1,8 +1,8 @@
 import { isUuid, isProgressFilePath } from '../../../shared/pipeline-definitions.mjs';
 import { PipelineApiError } from './pipelinesApi';
 
-const RUN_STATUSES = ['pending', 'running', 'needs_input', 'limit_paused', 'interrupted', 'stopped', 'error', 'complete'];
-const STEP_STATUSES = ['pending', 'launching', 'running', 'needs_input', 'complete', 'limit_reached', 'failed', 'stopped', 'interrupted'];
+const RUN_STATUSES = ['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval', 'interrupted', 'stopped', 'error', 'complete'];
+const STEP_STATUSES = ['pending', 'launching', 'running', 'needs_input', 'awaiting_approval', 'complete', 'limit_reached', 'failed', 'stopped', 'interrupted'];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const stamp = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T.*Z$/.test(value) && Number.isFinite(Date.parse(value));
@@ -145,6 +145,8 @@ export function parseRun(run, index = 0) {
     guard(step.index === i, field('index'));
     guard(['setup', 'node'].includes(step.kind), field('kind'));
     guard(text(step.name) && step.name.length <= 64, field('name'));
+    guard(typeof step.readOnly === 'boolean' && (step.kind !== 'setup' || !step.readOnly), field('readOnly'));
+    guard(typeof step.approval === 'boolean' && (step.kind !== 'setup' || !step.approval), field('approval'));
     guard(step.notePath === null || (typeof step.notePath === 'string' && run.notesDir !== null && step.kind === 'node' && step.notePath === `${run.notesDir}/${noteFileName(i, step.name)}`), field('notePath'));
     guard(run.notesDir === null || step.kind === 'setup' ? step.notePath === null : step.notePath !== null, field('notePath'));
     parseNoteMeta(step.note, guard, field('note'));
@@ -152,6 +154,7 @@ export function parseRun(run, index = 0) {
     guard(object(step.repeat), field('repeat'));
     guard(['once', 'until_complete', 'loop_back'].includes(step.repeat.mode), field('repeat.mode'));
     const loops = step.repeat.mode === 'loop_back';
+    guard(!loops || !step.approval, field('approval'));
     // A loop names the earlier step it returns to; no other repeat has a target.
     guard(loops ? integer(step.repeat.toStepIndex) && step.repeat.toStepIndex < i : step.repeat.toStepIndex === undefined, field('repeat.toStepIndex'));
     guard(step.repeat.mode === 'once' ? step.repeat.max === undefined : integer(step.repeat.max) && step.repeat.max >= 1 && step.repeat.max <= 100, field('repeat.max'));
@@ -165,6 +168,15 @@ export function parseRun(run, index = 0) {
     guard(nullable(step.startedAt, stamp), field('startedAt'));
     guard(nullable(step.finishedAt, stamp), field('finishedAt'));
   });
+  guard(run.approvalRequest === null || object(run.approvalRequest), 'approvalRequest');
+  if (run.status === 'awaiting_approval') {
+    const approval = run.approvalRequest;
+    guard(object(approval), 'approvalRequest');
+    guard(integer(approval.stepIndex) && approval.stepIndex === run.currentStepIndex, 'approvalRequest.stepIndex');
+    guard(text(approval.stepName) && approval.stepName === run.steps[approval.stepIndex].name, 'approvalRequest.stepName');
+    parseNoteMeta(approval.note, guard, 'approvalRequest.note');
+    guard(run.steps[approval.stepIndex].status === 'awaiting_approval', 'approvalRequest');
+  } else guard(run.approvalRequest === null, 'approvalRequest');
   guard(object(run.worktree), 'worktree');
   guard(text(run.worktree.path) && run.worktree.path.startsWith('/') && !/[\x00-\x1f\x7f]/.test(run.worktree.path), 'worktree.path');
   guard(text(run.worktree.branch) && run.worktree.branch.length <= 256, 'worktree.branch');
@@ -173,10 +185,12 @@ export function parseRun(run, index = 0) {
   guard(['present', 'external', 'removal_blocked'].includes(run.worktree.state) || run.progress === null, 'progress');
   guard(nullable(run.worktree.detail, value => text(value) && value.length <= 2000), 'worktree.detail');
   guard(object(run.actions), 'actions');
-  for (const action of ['stop', 'resume', 'continue', 'cleanup', 'answer']) guard(typeof run.actions[action] === 'boolean', `actions.${action}`);
+  for (const action of ['stop', 'resume', 'continue', 'cleanup', 'answer', 'approve', 'sendBack']) guard(typeof run.actions[action] === 'boolean', `actions.${action}`);
   const inputRequest = parseInputRequest(run, index);
   // Only a request the agent signalled can be answered from here.
   guard(run.actions.answer === (run.status === 'needs_input' && inputRequest !== null), 'actions.answer');
+  guard(run.actions.approve === (run.status === 'awaiting_approval'), 'actions.approve');
+  guard(run.actions.sendBack === (run.status === 'awaiting_approval'), 'actions.sendBack');
   guard(stamp(run.createdAt), 'createdAt');
   guard(stamp(run.updatedAt), 'updatedAt');
   guard(nullable(run.finishedAt, stamp) && (!['complete', 'stopped', 'error'].includes(run.status) || run.finishedAt !== null), 'finishedAt');

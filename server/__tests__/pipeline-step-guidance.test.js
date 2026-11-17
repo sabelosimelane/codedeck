@@ -14,6 +14,12 @@ const OPTIONS = { worktreePath: '/tmp/worktrees/run' };
 const BOUNDARY = "Work only inside this run's worktree, /tmp/worktrees/run, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing.";
 
 describe('buildStepGuidance', () => {
+  it('places feedback and read-only rules after notes', () => {
+    const def = { ...definition(false, { ...step('Analyse'), readOnly: true, approval: true }), notesDir: '.codedeck/runs/abcdef12' };
+    const guidance = buildStepGuidance(def, 0, { ...OPTIONS, feedbackPath: '.codedeck/runs/abcdef12/00-analyse.feedback.md' });
+    expect(guidance).toContain('The owner sent this step back: read .codedeck/runs/abcdef12/00-analyse.feedback.md before you start. This step is read-only: change nothing in the worktree except your run note.');
+    expect(buildStepGuidance({ ...def, notesDir: null }, 0, OPTIONS)).toContain('This step is read-only: change nothing in the worktree.');
+  });
   it('places run notes directly after the worktree boundary', () => {
     const def = { ...definition(true, step('Setup', { mode: 'once' }, 'setup'), step('Build')), notesDir: '.codedeck/runs/abcdef12' };
     expect(buildStepGuidance(def, 0, OPTIONS)).toBeUndefined();
@@ -57,6 +63,14 @@ describe('buildStepGuidance', () => {
     expect(fixedLength).toBe(1000);
     expect(2000 - fixedLength).toBe(1000); // characters left for the worktree path
     expect(guidance).not.toMatch(/[\x00-\x1f\x7f]/);
+  });
+  it('includes read-only and feedback text in the worst-case guidance budget', () => {
+    const def = { ...definition(true, { ...step('Analyse'), readOnly: true, approval: true }), notesDir: '.codedeck/runs/abcdef12' };
+    const plain = buildStepGuidance(def, 0, OPTIONS);
+    const worst = buildStepGuidance(def, 0, { ...OPTIONS, feedbackPath: '.codedeck/runs/abcdef12/00-analyse.feedback.md' });
+    expect(worst.length).toBeGreaterThan(plain.length);
+    expect(worst.length).toBeLessThanOrEqual(2000);
+    expect(worst).not.toMatch(/[\x00-\x1f\x7f]/);
   });
 
   it.each([

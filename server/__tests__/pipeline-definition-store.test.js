@@ -34,6 +34,8 @@ function node(agentId = AGENT_UUID) {
     agentId,
     prompt: 'Implement {input}',
     repeat: { mode: 'once' },
+    readOnly: false,
+    approval: false,
   };
 }
 
@@ -166,6 +168,16 @@ describe('pipeline agent store', () => {
 });
 
 describe('pipeline workflow store', () => {
+  it('round trips node flags, upgrades old nodes, and rejects corrupt flags', () => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const created = workflows.create({ name: 'Review', agentsDecide: false, nodes: [{ ...node(agent.id), readOnly: true, approval: true }] });
+    expect(workflows.get(created.id).nodes[0]).toMatchObject({ readOnly: true, approval: true });
+    db.prepare('UPDATE pipeline_workflows SET nodes = json_remove(nodes, ?, ?) WHERE id = ?').run('$[0].readOnly', '$[0].approval', created.id);
+    expect(createWorkflowStore(db).get(created.id).nodes[0]).toMatchObject({ readOnly: false, approval: false });
+    db.prepare('UPDATE pipeline_workflows SET nodes = json_set(nodes, ?, ?) WHERE id = ?').run('$[0].approval', 'wrong', created.id);
+    expect(() => workflows.get(created.id)).toThrow(/nodes/);
+  });
   it('creates a workflow with nodes, revision 1 and timestamps', () => {
     const { agents, workflows } = setup();
     const agent = agents.create(validAgent);

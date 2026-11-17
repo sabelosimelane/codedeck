@@ -3,7 +3,7 @@
  * run's definition snapshot. One line; the loop engine adds it to the prompt of every pass.
  */
 import path from 'node:path';
-import { notePath, NOTES_DIR } from './run-notes.js';
+import { notePath, feedbackPath, NOTES_DIR } from './run-notes.js';
 
 const DECIDE = 'The owner is not available during this run. Do not stop for a decision you can make yourself: choose the option you would recommend, write down the decision and your reason where this project keeps such notes, and continue. Use NEEDS_INPUT only when you cannot continue at all.';
 
@@ -25,10 +25,15 @@ export function buildStepGuidance(definition, stepIndex, options) {
     || typeof options.worktreePath !== 'string' || !options.worktreePath || !path.isAbsolute(options.worktreePath)) {
     throw new TypeError('step guidance: worktreePath must be a non-empty absolute path');
   }
+  if (options.feedbackPath !== undefined && options.feedbackPath !== feedbackPath(definition, stepIndex)) throw new TypeError('step guidance: feedbackPath must be the step feedback path');
 
   const parts = [];
   if (step.kind === 'node') parts.push(`Work only inside this run's worktree, ${options.worktreePath}, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing.`);
   if (step.kind === 'node' && definition.notesDir !== null) parts.push(`Run notes: read ${definition.notesDir}/README.md before you start, and before your final signal write your note to ${notePath(definition, stepIndex)}.`);
+  if (step.kind === 'node' && options.feedbackPath !== undefined) parts.push(`The owner sent this step back: read ${options.feedbackPath} before you start.`);
+  if (step.kind === 'node' && step.readOnly === true) parts.push(definition.notesDir === null
+    ? 'This step is read-only: change nothing in the worktree.'
+    : 'This step is read-only: change nothing in the worktree except your run note.');
   if (step.repeat?.mode === 'loop_back') {
     // The agent of this step alone decides whether the loop runs again, so it is told what the loop is.
     const { toStepIndex } = step.repeat;

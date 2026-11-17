@@ -37,6 +37,32 @@ export function notePath(definition, stepIndex) {
   return definition.notesDir === null || step.kind === 'setup' ? null : `${definition.notesDir}/${noteFileName(stepIndex, step.name)}`;
 }
 
+export function feedbackPath(definition, stepIndex) {
+  const file = notePath(definition, stepIndex);
+  return file === null ? null : file.replace(/\.md$/, '.feedback.md');
+}
+
+export async function writeFeedback({ worktreePath, definition, stepIndex, reviews, fs = defaultFs } = {}) {
+  requireWorktree(worktreePath);
+  requireDefinition(definition);
+  requireFs(fs, ['realpath', 'lstat', 'open', 'writeFile', 'rename', 'rm']);
+  if (!Array.isArray(reviews)) throw new TypeError('reviews must be an array');
+  const relative = feedbackPath(definition, stepIndex);
+  if (relative === null || reviews.length === 0) return null;
+  for (const review of reviews) {
+    if (!review || review.verdict !== 'sent_back' || typeof review.comment !== 'string' || !review.comment.trim()
+      || review.comment.length > 4000 || /[\x00-\x09\x0b-\x1f\x7f]/.test(review.comment)
+      || typeof review.createdAt !== 'string' || Number.isNaN(Date.parse(review.createdAt))) {
+      throw new TypeError('reviews must contain valid send-back comments and times');
+    }
+  }
+  const folder = await verifiedRunFolder(fs, worktreePath, definition.notesDir);
+  const target = path.join(worktreePath, relative);
+  const content = ['# Owner feedback', '', ...reviews.flatMap(review => [`## ${review.createdAt}`, '', review.comment, '']), ''].join('\n');
+  await replaceFile(fs, folder, path.basename(target), content);
+  return relative;
+}
+
 export function buildReadme(definition, input) {
   requireDefinition(definition);
   if (typeof definition.workflowName !== 'string' || !definition.workflowName.trim()) throw new TypeError('definition.workflowName must be a non-empty string');
@@ -58,43 +84,32 @@ function requireFs(fs, methods) {
   if (!fs || methods.some(method => typeof fs[method] !== 'function')) throw new TypeError(`fs must support ${methods.join(', ')}`);
 }
 
-export async function prepare({ worktreePath, definition, input, fs = defaultFs, execFile = defaultExecFile } = {}) {
-  requireWorktree(worktreePath);
-  requireDefinition(definition);
-  requireFs(fs, ['mkdir', 'writeFile', 'realpath', 'lstat', 'open', 'rename', 'rm']);
-  if (typeof execFile !== 'function') throw new TypeError('execFile must be a function');
-  const readme = buildReadme(definition, input);
-  if (definition.notesDir === null) return;
+async function verifiedRunFolder(fs, worktreePath, notesDir, { create = false, onDotDirectory } = {}) {
   const realRoot = await fs.realpath(worktreePath);
-  const unignored = () => new Error(`Run notes folder ${definition.notesDir} is not ignored by git in this worktree`);
-  const tracked = await runGit(execFile, ['-C', worktreePath, 'ls-files', '--', '.codedeck']);
-  if (tracked.stdout.trim()) throw unignored();
-  const leavesWorktree = () => new Error(`Run notes folder ${definition.notesDir} leaves the worktree`);
-  const ensureDirectory = async relative => {
-    const directory = path.join(worktreePath, relative);
-    try {
-      await fs.mkdir(directory);
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
+  const leavesWorktree = () => new Error(`Run notes folder ${notesDir} leaves the worktree`);
+  let folder;
+  for (const relative of ['.codedeck', '.codedeck/runs', notesDir]) {
+    folder = path.join(worktreePath, relative);
+    if (create) {
+      try { await fs.mkdir(folder); }
+      catch (error) { if (error?.code !== 'EEXIST') throw error; }
     }
-    if (!(await fs.lstat(directory)).isDirectory() || await fs.realpath(directory) !== path.join(realRoot, relative)) throw leavesWorktree();
-    return directory;
-  };
-  const dotPath = await ensureDirectory('.codedeck');
-  const ignore = path.join(dotPath, '.gitignore');
-  try {
-    if (!(await fs.lstat(ignore)).isFile()) throw leavesWorktree();
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-    await fs.writeFile(ignore, '*\n', { flag: 'wx' });
+    let stat;
+    let real;
+    try { stat = await fs.lstat(folder); real = await fs.realpath(folder); }
+    catch { throw leavesWorktree(); }
+    if (!stat.isDirectory() || real !== path.join(realRoot, relative)) throw leavesWorktree();
+    if (relative === '.codedeck' && onDotDirectory) await onDotDirectory(folder, leavesWorktree);
   }
-  await ensureDirectory('.codedeck/runs');
-  const folder = await ensureDirectory(definition.notesDir);
-  const readmePath = path.join(folder, 'README.md');
+  return folder;
+}
+
+async function replaceFile(fs, folder, name, content) {
+  const target = path.join(folder, name);
   let current;
   let handle;
   try {
-    handle = await fs.open(readmePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await handle.stat();
     if (stat.isFile() && stat.nlink === 1) current = await handle.readFile('utf8');
   } catch (error) {
@@ -102,15 +117,39 @@ export async function prepare({ worktreePath, definition, input, fs = defaultFs,
   } finally {
     await handle?.close();
   }
-  if (current !== readme) {
-    const temporary = path.join(folder, `README.md.${randomUUID()}.tmp`);
-    try {
-      await fs.writeFile(temporary, readme, { flag: 'wx', mode: 0o600 });
-      await fs.rename(temporary, readmePath);
-    } finally {
-      await fs.rm(temporary, { force: true });
-    }
+  if (current === content) return;
+  const temporary = path.join(folder, `${name}.${randomUUID()}.tmp`);
+  try {
+    await fs.writeFile(temporary, content, { flag: 'wx', mode: 0o600 });
+    await fs.rename(temporary, target);
+  } finally {
+    await fs.rm(temporary, { force: true });
   }
+}
+
+export async function prepare({ worktreePath, definition, input, fs = defaultFs, execFile = defaultExecFile } = {}) {
+  requireWorktree(worktreePath);
+  requireDefinition(definition);
+  requireFs(fs, ['mkdir', 'writeFile', 'realpath', 'lstat', 'open', 'rename', 'rm']);
+  if (typeof execFile !== 'function') throw new TypeError('execFile must be a function');
+  const readme = buildReadme(definition, input);
+  if (definition.notesDir === null) return;
+  const unignored = () => new Error(`Run notes folder ${definition.notesDir} is not ignored by git in this worktree`);
+  const tracked = await runGit(execFile, ['-C', worktreePath, 'ls-files', '--', '.codedeck']);
+  if (tracked.stdout.trim()) throw unignored();
+  const folder = await verifiedRunFolder(fs, worktreePath, definition.notesDir, {
+    create: true,
+    onDotDirectory: async (dotPath, leavesWorktree) => {
+      const ignore = path.join(dotPath, '.gitignore');
+      try {
+        if (!(await fs.lstat(ignore)).isFile()) throw leavesWorktree();
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        await fs.writeFile(ignore, '*\n', { flag: 'wx' });
+      }
+    },
+  });
+  await replaceFile(fs, folder, 'README.md', readme);
   try {
     await runGit(execFile, ['-C', worktreePath, 'check-ignore', '-q', `${definition.notesDir}/README.md`]);
   } catch (error) {

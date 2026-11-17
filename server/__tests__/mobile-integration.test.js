@@ -27,6 +27,14 @@ it('refreshes detached remote sessions without a browser and preserves freshness
   expect((await discovery.listSessions())[0].live).toBe(false);
   db.close();
 });
+it('reports the current approval step session as needing owner input', async () => {
+  const db = new Database(':memory:'); const store = createMobileStore(db);
+  try {
+    const discovery = createMobileDiscovery({ ...attentionDeps(), now: () => 123, store, sessions: new Map(), deletedSessionIds: new Set(), statusCache: { refreshSessionList: async () => ['Demo-1'], refreshSession: async () => ({ executionState: { executionStatus: 'idle', needsInput: false }, updatedAt: 123 }) }, loadProjects: () => [{ name: 'Demo' }], resolveHostRuntime: () => null, getReachability: () => ({ reachability: 'reachable' }), namingStore: { get: () => null }, getSessionIncarnation: async id => store.ensureIncarnation(id), runNeedsApproval: id => id === 'Demo-1' });
+    expect((await discovery.listSessions())[0].needsInput).toBe(true);
+    expect((await discovery.listObservations())[0].needsInput).toBe(true);
+  } finally { db.close(); }
+});
 it('reports workflow transitions independently, never calls unreachable hosts dead, retires confirmed exits', async () => {
   const db = new Database(':memory:'); const store = createMobileStore(db);
   const entries = new Map([['Demo-1', { alive: true, host: 'remote', cwd: '/x', workflow: { snapshot: () => ({ status: 'needs_input' }) } }]]);

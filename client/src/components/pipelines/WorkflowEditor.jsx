@@ -14,7 +14,7 @@ const nextNodeKey = () => `node-${++lastNodeKey}`;
 
 // `loopTo` is the key of the node a loop returns to, so the loop follows that node when it is
 // renamed or moved; the name is filled in when the workflow is saved.
-const blankNode = () => ({ key: nextNodeKey(), name: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '' });
+const blankNode = () => ({ key: nextNodeKey(), name: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '', readOnly: false, approval: false });
 
 function toDraft(workflow) {
   if (workflow === null) return { id: null, revision: null, name: '', agentsDecide: false, progressFile: '', nodes: [blankNode()] };
@@ -30,6 +30,8 @@ function toDraft(workflow) {
       name: node.name,
       agentId: node.agentId,
       prompt: node.prompt,
+      readOnly: node.readOnly,
+      approval: node.approval,
       mode: node.repeat.mode,
       max: node.repeat.mode === 'once' ? '' : String(node.repeat.max),
       loopTo: node.repeat.mode === 'loop_back' ? keys[loopTargetIndex(workflow.nodes, index)] : '',
@@ -56,6 +58,8 @@ function toFields(draft) {
       name: node.name,
       agentId: node.agentId,
       prompt: node.prompt,
+      readOnly: node.readOnly,
+      approval: node.mode === 'loop_back' ? false : node.approval,
       repeat: toRepeat(draft.nodes, node),
     })),
   };
@@ -65,7 +69,7 @@ function shownFields(nodeCount) {
   const fields = ['name', 'agentsDecide', 'progressFile'];
   for (let index = 0; index < nodeCount; index++) {
     const prefix = `nodes[${index}]`;
-    fields.push(`${prefix}.name`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
+    fields.push(`${prefix}.name`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.readOnly`, `${prefix}.approval`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
   }
   return fields;
 }
@@ -174,6 +178,17 @@ export default function WorkflowEditor({ workflow, agents, onSaved, onChanged, o
                 </SelectField>
               </div>
               <TextField multiline rows={3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="/feature-dev {input}" />
+              <label className="pipeline-check">
+                <input type="checkbox" aria-label={`Node ${number} read-only step`} checked={node.readOnly} disabled={busy} onChange={event => setNodeField(index, 'readOnly')(event.target.checked)} />
+                <span>Read-only step — The agent is told to change nothing except its run note.</span>
+              </label>
+              {errors[`${prefix}.readOnly`] && <span className="pipeline-field-error">{errors[`${prefix}.readOnly`]}</span>}
+              <label className="pipeline-check">
+                <input type="checkbox" aria-label={`Node ${number} wait for my approval`} checked={!loops && node.approval} disabled={busy || loops} onChange={event => setNodeField(index, 'approval')(event.target.checked)} />
+                <span>Wait for my approval — The run pauses when this step finishes until you approve it or send it back.</span>
+              </label>
+              {loops && <span>A step that closes a loop cannot wait for approval.</span>}
+              {errors[`${prefix}.approval`] && <span className="pipeline-field-error">{errors[`${prefix}.approval`]}</span>}
               <div className="pipeline-node-row">
                 <SelectField label={`Node ${number} repeat`} caption="Repeat" value={node.mode} onChange={setNodeField(index, 'mode')} error={errors[`${prefix}.repeat.mode`]}>
                   <option value="once">Run once</option>

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   answerRun as apiAnswerRun,
+  approveRun as apiApproveRun,
+  sendBackRun as apiSendBackRun,
   cleanupRun as apiCleanupRun,
   continueRun as apiContinueRun,
   getRun as apiGetRun,
@@ -228,6 +230,14 @@ export function usePipelineRuns({ projectName, showToast }) {
     ),
     [runAction],
   );
+  const approveRun = useCallback(
+    runId => runAction(run => `${run.workflowName || 'Workflow'} approved`, apiApproveRun, runId),
+    [runAction],
+  );
+  const sendBackRun = useCallback(
+    (runId, comment) => runAction(run => `${run.workflowName || 'Workflow'} sent back`, id => apiSendBackRun(id, comment), runId),
+    [runAction],
+  );
   /** One page of the requests a run's agents settled themselves, or null when it could not be loaded. */
   const loadRunDecisions = useCallback(async (runId, page) => {
     try {
@@ -237,9 +247,9 @@ export function usePipelineRuns({ projectName, showToast }) {
       return null;
     }
   }, [showToast]);
-  const loadRunNotes = useCallback(async (runId, page) => {
+  const loadRunNotes = useCallback(async (runId, page, stepIndex) => {
     try {
-      return parseNotePage(await apiListRunNotes(runId, page));
+      return parseNotePage(await apiListRunNotes(runId, page, { stepIndex }));
     } catch (failure) {
       showToast({ type: 'error', message: failureMessage(failure) });
       return null;
@@ -287,6 +297,8 @@ export function usePipelineRuns({ projectName, showToast }) {
     resumeRun,
     continueRun,
     answerRun,
+    approveRun,
+    sendBackRun,
     loadRunDecisions,
     loadRunNotes,
     cleanupRun,

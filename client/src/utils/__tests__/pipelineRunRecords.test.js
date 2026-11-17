@@ -2,6 +2,21 @@ import { expect, it } from 'vitest';
 import { parseDecision, parseDecisionPage, parseInputRequest, parseRun, parseRunAutonomy, parseNotePage } from '../pipelineRunRecords';
 import { validRun } from './pipelineRunFixture';
 it('accepts the complete run response', () => { expect(parseRun(validRun())).toEqual(validRun()); });
+it('validates approval request and action fields', () => {
+  const run = validRun();
+  run.status = 'awaiting_approval';
+  run.steps[0].status = 'awaiting_approval';
+  run.approvalRequest = { stepIndex: 0, stepName: 'Setup', note: null };
+  run.actions.approve = true;
+  run.actions.sendBack = true;
+  expect(parseRun(run)).toEqual(run);
+  for (const [field, value] of [['stepIndex', -1], ['stepName', null], ['note', {}]]) {
+    expect(() => parseRun({ ...run, approvalRequest: { ...run.approvalRequest, [field]: value } })).toThrow(`approvalRequest.${field}`);
+  }
+  expect(() => parseRun({ ...run, approvalRequest: null })).toThrow('approvalRequest');
+  expect(() => parseRun({ ...run, actions: { ...run.actions, approve: false } })).toThrow('actions.approve');
+  expect(() => parseRun({ ...run, actions: { ...run.actions, sendBack: false } })).toThrow('actions.sendBack');
+});
 it('validates run notes paths and latest status', () => {
   const run = validRun();
   run.notesDir = '.codedeck/runs/abcdef12';

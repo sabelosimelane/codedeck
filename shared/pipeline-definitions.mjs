@@ -169,7 +169,7 @@ export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
       return;
     }
     for (const field of Object.keys(node)) {
-      if (!['name', 'agentId', 'prompt', 'repeat'].includes(field)) {
+      if (!['name', 'agentId', 'prompt', 'repeat', 'readOnly', 'approval'].includes(field)) {
         add(errors, `${prefix}.${field}`, 'Unknown field');
       }
     }
@@ -190,6 +190,10 @@ export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
       add(errors, `${prefix}.prompt`, 'Use 1–8192 characters without terminal control codes');
     }
     validateRepeat(errors, prefix, node.repeat);
+    for (const flag of ['readOnly', 'approval']) {
+      if (node[flag] !== undefined && typeof node[flag] !== 'boolean') add(errors, `${prefix}.${flag}`, 'Use true or false');
+    }
+    if (node.approval === true && node.repeat?.mode === 'loop_back') add(errors, `${prefix}.approval`, 'A step that closes a loop cannot wait for approval');
   });
   validateLoops(errors, body.nodes);
 
@@ -247,6 +251,22 @@ export function validateRunAnswerBody(body) {
   const { answer } = body;
   if (typeof answer !== 'string' || !answer.trim() || answer.length > 4000 || ANSWER_CONTROL.test(answer)) {
     add(errors, 'answer', 'Use 1–4000 characters; new lines are allowed, other control characters are not');
+  }
+  return errors;
+}
+
+export function validateRunApproveBody(body) {
+  const errors = [];
+  rejectUnknown(errors, body === undefined ? {} : body, []);
+  return errors;
+}
+
+export function validateRunSendBackBody(body) {
+  const errors = [];
+  if (!rejectUnknown(errors, body, ['comment'])) return errors;
+  const { comment } = body;
+  if (typeof comment !== 'string' || !comment.trim() || comment.length > 4000 || ANSWER_CONTROL.test(comment)) {
+    add(errors, 'comment', 'Use 1–4000 characters; new lines are allowed, other control characters are not');
   }
   return errors;
 }

@@ -165,6 +165,24 @@ describe('durable mobile notifications', () => {
     expect(f.service.resolveEvent(message.data.eventId).kind).toBe('input_requested');
     await f.service.tick(); expect(f.provider.send).toHaveBeenCalledTimes(1);
   });
+  it('requests input when a workflow completes in the same reading as an approval gate', async () => {
+    const f = fixture(); f.set([observation('running', 'running')]); await f.service.tick();
+    f.set([observation('idle', 'complete', { needsInput: true })]); await f.service.tick();
+    const message = f.provider.send.mock.calls[0][0];
+    expect(message.notification.body).toBe('Input requested');
+    expect(f.service.resolveEvent(message.data.eventId).kind).toBe('input_requested');
+  });
+  it.each([
+    ['completion without input', 'complete', false, 'completed'],
+    ['new input without completion', 'running', true, 'input_requested'],
+    ['same-tick completion and input', 'complete', true, 'input_requested'],
+  ])('preserves %s notification precedence', async (_label, workflowStatus, needsInput, kind) => {
+    const f = fixture();
+    f.set([observation('running', 'running')]); await f.service.tick();
+    f.set([observation('idle', workflowStatus, { needsInput })]); await f.service.tick();
+    const message = f.provider.send.mock.calls[0][0];
+    expect(f.service.resolveEvent(message.data.eventId).kind).toBe(kind);
+  });
   it('seeds initial observations without alerts and emits generic idle event only on running to idle', async () => {
     const f = fixture(); f.set([observation('running')]); await f.service.tick();
     expect(f.provider.send).not.toHaveBeenCalled();

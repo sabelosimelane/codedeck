@@ -123,18 +123,20 @@ stable identity tiebreaker; unknown filters and sorts are rejected.
 | Method and path | Contract |
 | --- | --- |
 | GET/POST `/agents`, GET/PUT/DELETE `/agents/:id` | Named launch/reset definitions; PUT requires revision; referenced agents cannot be deleted |
-| GET/POST `/workflows`, GET/PUT/DELETE `/workflows/:id` | Named ordered nodes, agent references, prompt and repeat rules (`once`, `until_complete` with `max`, or `loop_back` with `to` — the name of an earlier node — and `max` rounds; loops may not share a node) and `agentsDecide` (boolean, required); optional `progressFile` is null or a 1–300 character relative POSIX Markdown path inside the run worktree; PUT requires revision |
+| GET/POST `/workflows`, GET/PUT/DELETE `/workflows/:id` | Named ordered nodes, agent references, prompt and repeat rules (`once`, `until_complete` with `max`, or `loop_back` with `to` — the name of an earlier node — and `max` rounds; loops may not share a node) and `agentsDecide` (boolean, required); optional per-node booleans `readOnly` and `approval` default to false; `approval: true` is invalid on a loop-closing node; optional `progressFile` is null or a 1–300 character relative POSIX Markdown path inside the run worktree; PUT requires revision |
 | GET/PUT `/settings` | Setup agent selection with revision |
 | GET `/preflight?project=...` | Eligibility reasons and dirty-checkout warning for a local Git repository root |
 | GET `/worktrees?project=...` | Paginated working trees of the project's repository (sort `path,asc\|desc`); each says whether a run may use it and why not |
 | POST `/runs` | Request UUID, workflow, project and input; optional `worktreePath` of an existing worktree (404 unknown, 409 missing, unreadable by git, detached or in use) instead of a new one; snapshots definitions with `notesDir`; 400 on `input` when a configured progress file is absent from the repository's current commit or the chosen worktree; 400 on `project` when step guidance exceeds 2,000 characters; requestId replay is idempotent and conflicting reuse is 409 |
-| GET `/runs`, GET `/runs/:id` | Persisted progress, steps (a looping step's `repeat.toStepIndex` and `roundsCompleted`), worktree state, allowed actions, `agentsDecide`, `decisionCount`, `notesDir`, and per-step `notePath` and latest `note`; `progress` is null or `{file, status, phaseCount, phase}` with status `in_progress`, `all_done`, `no_phases`, `missing`, or `unreadable`. A run started without a progress file follows the workflow's current setting; if its input does not compose a valid path, `progress` is null |
+| GET `/runs`, GET `/runs/:id` | Persisted progress, steps (including `readOnly`, `approval`, and a looping step's `repeat.toStepIndex` and `roundsCompleted`), worktree state, allowed actions including `approve` and `sendBack`, `agentsDecide`, `decisionCount`, `notesDir`, and per-step `notePath` and latest `note`; `approvalRequest` is null except in `awaiting_approval`, when it contains `stepIndex`, `stepName`, and the latest note; `progress` is null or `{file, status, phaseCount, phase}` with status `in_progress`, `all_done`, `no_phases`, `missing`, or `unreadable`. A run started without a progress file follows the workflow's current setting; if its input does not compose a valid path, `progress` is null |
 | GET `/runs/:id/decisions` | Paginated requests the run's agents settled themselves: step, pass, the questions listed, whether that list was cut, and the answer typed. Sort `createdAt,asc\|desc` (default `asc`); 404 for an unknown run |
 | GET `/runs/:id/notes` | Paginated append-only notes: step, attempt, pass, status, summary and written content. Sort `createdAt,asc\|desc` (default `asc`, id tiebreaker); optional exact `stepIndex` filter; 404 for an unknown run |
 | POST `/runs/:id/stop` | Stop automation; repeated Stop is idempotent |
 | POST `/runs/:id/resume` | Fresh attempt; refuses a missing worktree |
 | POST `/runs/:id/continue` | Advance from a pass-limit pause |
 | POST `/runs/:id/answer` | Body `{ answer }` (1–4000 characters; new lines allowed, other control characters refused). Types the answer into the terminal of an agent that signalled NEEDS_INPUT and returns the run; 409 when the run is not waiting on such a request, the agent has stopped waiting, or another answer is being sent |
+| POST `/runs/:id/approve` | Empty body or `{}`; append an approval review and advance the waiting run. Unknown fields are 400, unknown run is 404, and a run outside `awaiting_approval` is 409 |
+| POST `/runs/:id/send-back` | Body `{ comment }` (1–4000 characters; new lines allowed, other control characters refused); append a send-back review and rerun the same step with a feedback file. Unknown fields are 400, unknown run is 404, and a run outside `awaiting_approval` is 409 |
 | POST `/runs/:id/cleanup` | Remove a clean worktree without force; retain branch. For a run in an existing worktree it only releases the worktree |
 
 Agents/workflows filter by exact `name`, and runs by `status`, `project`,
@@ -143,5 +145,5 @@ page through all open runs. Definition conflicts and disallowed run actions retu
 409. Missing records return 404. Setup's clean-worktree guard and blocked cleanup
 are represented in the returned run; clients must inspect run status even on HTTP 200.
 
-Coverage: `server/__tests__/pipelines-api.test.js`, `pipeline-run-progress.test.js`, `pipeline-run-notes.test.js`, `pipeline-note-store.test.js`, `pipeline-run-engine.test.js`,
+Coverage: `server/__tests__/pipelines-api.test.js`, `pipeline-run-progress.test.js`, `pipeline-run-notes.test.js`, `pipeline-note-store.test.js`, `pipeline-review-store.test.js`, `pipeline-run-engine.test.js`,
 `pipeline-run-store.test.js`, and client pipeline settings, run-hook and sidebar tests.

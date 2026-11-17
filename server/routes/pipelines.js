@@ -9,6 +9,8 @@ import {
   validateSettingsBody,
   validateRunStartBody,
   validateRunAnswerBody,
+  validateRunApproveBody,
+  validateRunSendBackBody,
   composePrompt,
   isProgressFilePath,
   isUuid,
@@ -16,7 +18,7 @@ import {
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions } from '../pipelines/run-machine.js';
 import { createRunProgressReader, resolveRunProgressFile, isProgressFileInWorktree } from '../pipelines/run-progress.js';
-import { notePath } from '../pipelines/run-notes.js';
+import { notePath, feedbackPath } from '../pipelines/run-notes.js';
 import { buildStepGuidance } from '../pipelines/step-guidance.js';
 import {
   preflight as defaultPreflight,
@@ -130,6 +132,8 @@ function isOpenRun(run) {
 
 /** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
 function buildRunView(run, decisionCount, progress, latestNotes) {
+  const currentNote = latestNotes.get(run.currentStepIndex);
+  const approvalNote = currentNote === undefined ? null : (({ status, summary, attempt, pass, createdAt }) => ({ status, summary, attempt, pass, createdAt }))(currentNote);
   return {
     id: run.id,
     requestId: run.requestId,
@@ -143,6 +147,7 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
     project: run.project,
     input: run.input,
     status: run.status,
+    approvalRequest: run.status === 'awaiting_approval' ? { stepIndex: run.currentStepIndex, stepName: run.definition.steps[run.currentStepIndex].name, note: approvalNote } : null,
     stopReason: run.stopReason,
     error: run.error,
     currentStepIndex: run.currentStepIndex,
@@ -152,6 +157,8 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
         index,
         kind: defStep.kind,
         name: defStep.name,
+        readOnly: defStep.readOnly,
+        approval: defStep.approval,
         agentName: defStep.agent.name,
         notePath: notePath(run.definition, index),
         note: latestNotes.get(index) === undefined ? null : (({ status, summary, attempt, pass, createdAt }) => ({ status, summary, attempt, pass, createdAt }))(latestNotes.get(index)),
@@ -314,6 +321,8 @@ function buildDefinitionSnapshot({
     return {
       kind: 'node',
       name: node.name,
+      readOnly: node.readOnly,
+      approval: node.approval,
       prompt,
       repeat: repeatSnapshot(index),
       agent: agentSnapshot(agent),
@@ -330,6 +339,8 @@ function buildDefinitionSnapshot({
   const setupSteps = withSetup ? [{
     kind: 'setup',
     name: 'Setup',
+    readOnly: false,
+    approval: false,
     prompt: buildSetupPrompt(homePath, worktreePath),
     repeat: { mode: 'until_complete', max: 3 },
     agent: agentSnapshot(setupAgent),
@@ -775,7 +786,8 @@ export function createPipelinesRouter(deps) {
     });
     definition.notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
     for (let index = 0; index < definition.steps.length; index++) {
-      const guidance = buildStepGuidance(definition, index, { worktreePath: names.worktreePath });
+      const guidance = buildStepGuidance(definition, index, { worktreePath: names.worktreePath,
+        ...(definition.steps[index].approval ? { feedbackPath: feedbackPath(definition, index) } : {}) });
       if (guidance !== undefined && guidance.length > 2000) throw fieldError('project', 'The worktree path is too long for the step instructions');
     }
 
@@ -884,6 +896,20 @@ export function createPipelinesRouter(deps) {
     const errors = validateRunAnswerBody(req.body);
     if (errors.length > 0) throw fieldErrors(errors);
     await runOwnerAction(req, res, 'answer', req.body.answer);
+  }));
+
+  router.post(`${BASE}/runs/:id/approve`, route(async (req, res) => {
+    loadRun(req.params.id);
+    const errors = validateRunApproveBody(req.body);
+    if (errors.length) throw fieldErrors(errors);
+    await runOwnerAction(req, res, 'approve');
+  }));
+
+  router.post(`${BASE}/runs/:id/send-back`, route(async (req, res) => {
+    loadRun(req.params.id);
+    const errors = validateRunSendBackBody(req.body);
+    if (errors.length) throw fieldErrors(errors);
+    await runOwnerAction(req, res, 'sendBack', req.body.comment);
   }));
 
   router.post(`${BASE}/runs/:id/cleanup`, route(async (req, res) => {

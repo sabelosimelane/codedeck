@@ -46,7 +46,7 @@ it.each([null, {}, { project: null }, { project: '' }, { project: 42 }])('reject
   await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: expect.stringMatching(/project|run/) }));
 });
 
-it('counts the runs of a project that are waiting for the owner: an agent asking, or a pass limit', async () => {
+it('counts the runs of a project that are waiting for the owner: input, pass limit, or approval', async () => {
   const asking = validRun();
   asking.id = '11111111-1111-4111-8111-111111111112';
   asking.status = 'needs_input'; asking.steps[0].status = 'needs_input';
@@ -54,8 +54,13 @@ it('counts the runs of a project that are waiting for the owner: an agent asking
   const paused = validRun();
   paused.id = '11111111-1111-4111-8111-111111111113';
   paused.status = 'limit_paused'; paused.steps[0].status = 'limit_reached'; paused.actions.continue = true;
-  mocks.listOpenRuns.mockResolvedValue([validRun(), asking, paused, validRun('Beta')]);
+  const approval = validRun();
+  approval.id = '11111111-1111-4111-8111-111111111114';
+  approval.status = 'awaiting_approval'; approval.steps[0].status = 'awaiting_approval';
+  approval.approvalRequest = { stepIndex: 0, stepName: approval.steps[0].name, note: null };
+  approval.actions.approve = true; approval.actions.sendBack = true;
+  mocks.listOpenRuns.mockResolvedValue([validRun(), asking, paused, approval, validRun('Beta')]);
   const { result } = renderHook(() => usePipelineRunCounts(showToast));
-  await waitFor(() => expect(result.current.get('Alpha')).toEqual({ open: 3, awaitingOwner: 2 }));
+  await waitFor(() => expect(result.current.get('Alpha')).toEqual({ open: 4, awaitingOwner: 3 }));
   expect(result.current.get('Beta')).toEqual({ open: 1, awaitingOwner: 0 });
 });

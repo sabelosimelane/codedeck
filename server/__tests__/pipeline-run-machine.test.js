@@ -32,6 +32,39 @@ function run(overrides = {}) {
 }
 
 describe('applyEvent — single-step run (Spec §5)', () => {
+  it.each(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval', 'interrupted', 'stopped', 'error', 'complete'])
+    ('accepts approval events only from their legal status: %s', status => {
+      const state = run({ status, steps: [step({ status: status === 'awaiting_approval' ? 'awaiting_approval' : 'running', attempt: 1, sessionId: 'terminal-1' })] });
+      for (const [type, legal] of [['approval_requested', status === 'running'], ['approve', status === 'awaiting_approval'], ['send_back', status === 'awaiting_approval']]) {
+        const event = { type, at: AT, newTerminal: false };
+        if (legal) expect(() => applyEvent(state, event)).not.toThrow();
+        else expect(() => applyEvent(state, event)).toThrow(/illegal transition/);
+      }
+    });
+  it('requires a new terminal when sending back a step without a session', () => {
+    const waiting = run({ status: 'awaiting_approval', steps: [step({ status: 'awaiting_approval', attempt: 1 })] });
+    expect(() => applyEvent(waiting, { type: 'send_back', newTerminal: false, at: AT })).toThrow(/new one/);
+    expect(applyEvent(waiting, { type: 'send_back', newTerminal: true, at: AT }).steps[0].attempt).toBe(2);
+  });
+  it('stops an approval wait and offers only approval, send-back and stop while waiting', () => {
+    const waiting = run({ status: 'awaiting_approval', worktreeState: 'present', steps: [step({ status: 'awaiting_approval', attempt: 1 })] });
+    expect(computeActions(waiting)).toMatchObject({ approve: true, sendBack: true, stop: true, resume: false, continue: false, answer: false });
+    const stopped = applyEvent(waiting, { type: 'stop', at: AT });
+    expect(stopped).toMatchObject({ status: 'stopped', stopReason: 'user' });
+  });
+  it('pauses for approval, sends back a new attempt, and approves exactly once', () => {
+    const running = applyEvent(applyEvent(run(), { type: 'start', at: AT }), { type: 'step_running' });
+    const waiting = applyEvent(running, { type: 'approval_requested', at: AT });
+    expect(waiting.status).toBe('awaiting_approval');
+    expect(waiting.steps[0].status).toBe('awaiting_approval');
+    expect(computeActions(waiting)).toMatchObject({ approve: true, sendBack: true, stop: true });
+    expect(applyEvent(waiting, { type: 'approve', at: AT }).status).toBe('complete');
+    expect(() => applyEvent(running, { type: 'approve' })).toThrow(/illegal transition/);
+    expect(() => applyEvent(waiting, { type: 'approval_requested' })).toThrow(/illegal transition/);
+    const back = applyEvent(waiting, { type: 'send_back', newTerminal: true, at: AT });
+    expect(back.status).toBe('running');
+    expect(back.steps[0]).toMatchObject({ status: 'launching', attempt: 2 });
+  });
   it('does not mutate the input state', () => {
     const state = run();
     const frozen = structuredClone(state);
@@ -174,7 +207,7 @@ describe('computeActions (Spec §8.8)', () => {
           : status === 'running' ? 'running'
           : 'pending',
       })],
-    }))).toEqual(expected);
+    }))).toMatchObject(expected);
   });
 
   it('resume requires worktree_state not_created or present', () => {
@@ -184,15 +217,15 @@ describe('computeActions (Spec §8.8)', () => {
   });
 
   it('an existing worktree the owner chose can be resumed, and the run released, but is never removable state', () => {
-    expect(computeActions(run({ status: 'running', worktreeState: 'external' }))).toEqual({ stop: true, resume: false, continue: false, cleanup: false, answer: false });
-    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'external', finishedAt: AT }))).toEqual({ stop: false, resume: true, continue: false, cleanup: true, answer: false });
-    expect(computeActions(run({ status: 'error', error: 'x', worktreeState: 'external', finishedAt: AT }))).toEqual({ stop: false, resume: true, continue: false, cleanup: true, answer: false });
-    expect(computeActions(run({ status: 'interrupted', worktreeState: 'external' }))).toEqual({ stop: true, resume: true, continue: false, cleanup: true, answer: false });
+    expect(computeActions(run({ status: 'running', worktreeState: 'external' }))).toMatchObject({ stop: true, resume: false, continue: false, cleanup: false, answer: false });
+    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'external', finishedAt: AT }))).toMatchObject({ stop: false, resume: true, continue: false, cleanup: true, answer: false });
+    expect(computeActions(run({ status: 'error', error: 'x', worktreeState: 'external', finishedAt: AT }))).toMatchObject({ stop: false, resume: true, continue: false, cleanup: true, answer: false });
+    expect(computeActions(run({ status: 'interrupted', worktreeState: 'external' }))).toMatchObject({ stop: true, resume: true, continue: false, cleanup: true, answer: false });
   });
 
   it('a released run offers neither resume nor cleanup', () => {
-    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'released', finishedAt: AT }))).toEqual({ stop: false, resume: false, continue: false, cleanup: false, answer: false });
-    expect(computeActions(run({ status: 'complete', worktreeState: 'released', finishedAt: AT }))).toEqual({ stop: false, resume: false, continue: false, cleanup: false, answer: false });
+    expect(computeActions(run({ status: 'stopped', stopReason: 'user', worktreeState: 'released', finishedAt: AT }))).toMatchObject({ stop: false, resume: false, continue: false, cleanup: false, answer: false });
+    expect(computeActions(run({ status: 'complete', worktreeState: 'released', finishedAt: AT }))).toMatchObject({ stop: false, resume: false, continue: false, cleanup: false, answer: false });
   });
 
   it('resumes a stopped run in an existing worktree', () => {

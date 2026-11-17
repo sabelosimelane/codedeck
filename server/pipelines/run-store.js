@@ -10,11 +10,11 @@ const COMMIT_RE = /^[0-9a-f]{40}$/;
 const ABS_PATH_RE = /^\//;
 
 const RUN_STATUSES = new Set([
-  'pending', 'running', 'needs_input', 'limit_paused',
+  'pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval',
   'interrupted', 'stopped', 'error', 'complete',
 ]);
 const STEP_STATUSES = new Set([
-  'pending', 'launching', 'running', 'needs_input',
+  'pending', 'launching', 'running', 'needs_input', 'awaiting_approval',
   'complete', 'limit_reached', 'failed', 'stopped', 'interrupted',
 ]);
 // `external` is a worktree the owner chose that existed before the run; CodeDeck never removes it.
@@ -123,15 +123,21 @@ function validateDefinitionStep(id, index, step) {
   const prefix = `definition.steps[${index}]`;
   if (!isPlainObject(step)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(step)) {
-    if (!['kind', 'name', 'prompt', 'repeat', 'agent'].includes(key)) {
+    if (!['kind', 'name', 'prompt', 'repeat', 'agent', 'readOnly', 'approval'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
   if (step.kind !== 'setup' && step.kind !== 'node') {
     fieldError(id, `${prefix}.kind`, 'must be setup or node');
   }
+  if (typeof step.readOnly !== 'boolean') fieldError(id, `${prefix}.readOnly`, 'must be true or false');
+  if (typeof step.approval !== 'boolean') fieldError(id, `${prefix}.approval`, 'must be true or false');
+  if (step.kind === 'setup' && (step.readOnly || step.approval)) fieldError(id, prefix, 'Setup flags must be false');
+  if (step.repeat?.mode === 'loop_back' && step.approval) fieldError(id, `${prefix}.approval`, 'a loop closer cannot wait for approval');
   return {
     kind: step.kind,
+    readOnly: step.readOnly,
+    approval: step.approval,
     name: requireString(id, `${prefix}.name`, step.name, { max: 64 }).trim(),
     prompt: requireString(id, `${prefix}.prompt`, step.prompt, { max: 16384, singleLine: false }),
     repeat: validateRepeat(id, `${prefix}.repeat`, step.repeat, index),
@@ -466,9 +472,10 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       const lacksDecide = !Object.hasOwn(definition, 'agentsDecide');
       const lacksProgress = !Object.hasOwn(definition, 'progressFile');
       const lacksNotes = !Object.hasOwn(definition, 'notesDir');
-      if (!lacksDecide && !lacksProgress && !lacksNotes && !steps.some(lacksRounds)) continue;
+      const lacksFlags = step => isPlainObject(step) && (!Object.hasOwn(step, 'readOnly') || !Object.hasOwn(step, 'approval'));
+      if (!lacksDecide && !lacksProgress && !lacksNotes && !steps.some(lacksRounds) && !definition.steps?.some(lacksFlags)) continue;
       save.run(
-        JSON.stringify({ ...definition, ...(lacksDecide ? { agentsDecide: false } : {}), ...(lacksProgress ? { progressFile: null } : {}), ...(lacksNotes ? { notesDir: null } : {}) }),
+        JSON.stringify({ ...definition, ...(lacksDecide ? { agentsDecide: false } : {}), ...(lacksProgress ? { progressFile: null } : {}), ...(lacksNotes ? { notesDir: null } : {}), steps: definition.steps?.map(step => isPlainObject(step) ? { ...step, ...(!Object.hasOwn(step, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(step, 'approval') ? { approval: false } : {}) } : step) }),
         JSON.stringify(steps.map(step => (lacksRounds(step) ? { ...step, roundsCompleted: 0 } : step))),
         row.id,
       );

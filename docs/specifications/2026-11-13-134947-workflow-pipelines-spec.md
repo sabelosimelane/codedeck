@@ -138,6 +138,18 @@ The README lists the workflow, input, ordered steps, agent names and note paths.
 
 All run responses include `notesDir`, each step's `notePath`, and the latest note status, summary, attempt, pass, and timestamp. `GET /api/pipelines/runs/:id/notes` returns paginated notes, sorted by `createdAt,asc|desc` with id tiebreaker and optional exact `stepIndex` filter. Unknown runs return 404; invalid pagination, filters, and sorts return a problem document. The runs bar shows a newest-first notes panel and warns when a step's latest pass left no new readable note.
 
+### Step options and owner approval
+
+Each workflow node stores and returns `readOnly` and `approval` booleans. Requests may omit either, which means false; a present non-boolean value is a field error. A node with `repeat.mode = loop_back` cannot have `approval: true`, though `once`, `until_complete`, and nodes inside a loop can. Stored older workflows and run snapshots backfill both fields to false; present invalid stored values fail validation. Setup always has false for both options.
+
+A read-only node receives the instruction to change nothing in the worktree except its run note (or nothing when the run has no notes folder). This is guidance, not filesystem enforcement.
+
+When an approval node completes its single pass or reports COMPLETE in `until_complete`, the engine records its note, then sets both run and step to `awaiting_approval`. The step index and worktree remain in place. At the pass limit without COMPLETE, `until_complete` still becomes `limit_paused`; Continue advances as before and serves as owner approval. A gated node inside a loop pauses on each round. Let agents decide does not approve a gate.
+
+The runs bar shows the latest note and its full content for the waiting step. **Approve** records an `approved` review and advances or completes and cleans up. **Send back** requires a 1–4000 character comment, records `sent_back`, resets the step's agent, and starts a new attempt in its terminal (replacing a closed terminal). The step guidance directs the agent to `NN-<slug>.feedback.md` immediately after the notes sentence. At each start, CodeDeck deterministically rewrites that file inside the ignored notes folder from all send-back reviews for that step, in time order. It writes no file or sentence when there are none.
+
+`pipeline_run_reviews` is append-only: `id`, `run_id`, `step_index`, `step_name`, `attempt`, `verdict` (`approved` or `sent_back`), `comment` (null for approval), and `created_at`; the `(run_id, id)` index preserves review order. Both owner endpoints serialize with other run actions and reject unknown runs (404), invalid bodies (400), and runs outside `awaiting_approval` (409). Run responses include `approvalRequest: null` except while waiting, when it is `{ stepIndex, stepName, note }`, and `actions.approve` and `actions.sendBack` are true only while waiting. This state survives restart, can be stopped, and keeps its terminal reserved. Mobile attention and the sidebar treat it as waiting for the owner; an input-requested phone notification takes precedence if completion and the new input need are observed together.
+
 ### 4.4 Run — table `pipeline_runs`
 
 | Field | Type | Constraints |
@@ -209,6 +221,7 @@ prompt changes, and the snapshot keeps the prompt as written. A ready profile wi
 | `pending` | Accepted; the worktree is being created or the first terminal is being opened |
 | `running` | A step is launching or working |
 | `needs_input` | The current step's agent is waiting for the owner (a dialog of its CLI, at launch or during a pass, or a NEEDS_INPUT signal) |
+| `awaiting_approval` | A gated step finished and is waiting for the owner's Approve or Send back action |
 | `limit_paused` | A repeating step reached its maximum pass count without COMPLETE; waiting for Continue or Stop |
 | `interrupted` | The backend restarted while the run was `pending`, `running` or `needs_input` |
 | `stopped` | Stopped by the owner (`stop_reason = user`) or from the terminal's own bar / loss of the attachment (`stop_reason = terminal`) |
@@ -220,6 +233,9 @@ stateDiagram-v2
   [*] --> pending: POST /runs
   pending --> running: worktree created, step 0 terminal attached
   running --> needs_input: CLI dialog or NEEDS_INPUT signal
+  running --> awaiting_approval: gated step finished
+  awaiting_approval --> running: Approve or Send back
+  awaiting_approval --> complete: Approve last step
   needs_input --> running: owner answers in the terminal
   running --> running: step done, next step starts
   running --> limit_paused: repeat maximum reached without COMPLETE
@@ -232,6 +248,7 @@ stateDiagram-v2
   pending --> stopped: Stop
   running --> stopped: Stop
   needs_input --> stopped: Stop
+  awaiting_approval --> stopped: Stop
   limit_paused --> stopped: Stop
   interrupted --> stopped: Stop
   pending --> interrupted: backend restart
@@ -243,11 +260,11 @@ stateDiagram-v2
   complete --> [*]
 ```
 
-`limit_paused` survives a backend restart unchanged: nothing in memory is needed to act on it.
+`limit_paused` and `awaiting_approval` survive a backend restart unchanged: nothing in memory is needed to act on them.
 
 ### 5.2 Step status
 
-`pending`, `launching`, `running`, `needs_input`, `complete`, `limit_reached`, `failed`, `stopped`,
+`pending`, `launching`, `running`, `needs_input`, `awaiting_approval`, `complete`, `limit_reached`, `failed`, `stopped`,
 `interrupted`. A step is finished when it is `complete` or `limit_reached`.
 
 ### 5.3 Worktree state

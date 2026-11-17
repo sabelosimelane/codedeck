@@ -22,7 +22,7 @@ export function sessionIdForTmuxName(name, projects) {
 }
 
 /** Shared cached status probes, including durable sessions with no frontend. */
-export function createMobileDiscovery({ store, sessions, deletedSessionIds, statusCache, loadProjects, resolveHostRuntime, getReachability, namingStore, getSessionIncarnation, attention, describeState, getSessionActivity, now = Date.now, freshnessMs = 30000 }) {
+export function createMobileDiscovery({ store, sessions, deletedSessionIds, statusCache, loadProjects, resolveHostRuntime, getReachability, namingStore, getSessionIncarnation, attention, describeState, getSessionActivity, runNeedsApproval = () => false, now = Date.now, freshnessMs = 30000 }) {
   for (const [field, value] of Object.entries({ loadProjects, resolveHostRuntime, getReachability, getSessionIncarnation, describeState, getSessionActivity })) requireField(typeof value === 'function', field, 'Discovery function required');
   requireField(typeof attention?.observe === 'function' && typeof attention?.knows === 'function', 'attention', 'Attention tracker required');
   const timeOf = value => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : NaN);
@@ -45,6 +45,7 @@ export function createMobileDiscovery({ store, sessions, deletedSessionIds, stat
   requireField(sessions instanceof Map && deletedSessionIds instanceof Set, 'sessions', 'Session map and deleted set required');
   requireField(store && statusCache && namingStore, 'services', 'Discovery stores required');
   requireField(typeof now === 'function', 'now', 'Clock function required');
+  requireField(typeof runNeedsApproval === 'function', 'runNeedsApproval', 'Approval lookup required');
   requireField(Number.isSafeInteger(freshnessMs) && freshnessMs > 0, 'freshnessMs', 'Positive freshness duration required');
   let pending = null;
   async function collect() {
@@ -89,12 +90,12 @@ export function createMobileDiscovery({ store, sessions, deletedSessionIds, stat
         view: { id, incarnationId, projectId: project.name, title: namingStore.get(id)?.title ?? id, status: executionStatus,
           live: reachable && executionStatus !== 'unknown', cwd: status.cwd ?? entry.cwd ?? null, host, runtimeType: entry.runtimeType ?? 'tmux',
           finished: state.finished, muted: state.muted, waiting: state.waiting, lastActivityAt: state.lastActivityAt,
-          needsInput: liveEntry?.workflow?.snapshot().status === 'needs_input' || status.executionState.needsInput === true,
+          needsInput: liveEntry?.workflow?.snapshot().status === 'needs_input' || status.executionState.needsInput === true || runNeedsApproval(id),
           agentCli: status.executionState.agentCli ?? null,
           backgroundAgents: status.executionState.backgroundAgents ?? 0,
           backgroundShells: status.executionState.backgroundShells ?? 0 },
         observation: { sessionId: id, incarnationId, executionStatus, workflowStatus: entry.workflow?.snapshot().status ?? null,
-          needsInput: liveEntry?.workflow?.snapshot().status === 'needs_input' || status.executionState.needsInput === true,
+          needsInput: liveEntry?.workflow?.snapshot().status === 'needs_input' || status.executionState.needsInput === true || runNeedsApproval(id),
           observedAt: status.updatedAt, reachable },
       };
     }

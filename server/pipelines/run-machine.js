@@ -3,7 +3,7 @@
  * flags (Spec §8.8).
  */
 
-const STOPPABLE = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'interrupted']);
+const STOPPABLE = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval', 'interrupted']);
 const RESUMABLE = new Set(['interrupted', 'stopped', 'error']);
 const RESUME_WORKTREE = new Set(['not_created', 'present', 'external']);
 const CLEANUP_STATUS = new Set(['complete', 'stopped', 'error', 'interrupted']);
@@ -98,6 +98,43 @@ function applyStepComplete(run, event) {
   return run;
 }
 
+function applyApprovalRequested(run, event) {
+  if (run.status !== 'running') illegal(run.status, event.type);
+  const step = currentStep(run);
+  if (step.status !== 'running') illegal(`step:${step.status}`, event.type);
+  step.status = 'awaiting_approval';
+  finishStep(step, event.at);
+  run.status = 'awaiting_approval';
+  return run;
+}
+
+function applyApprove(run, event) {
+  if (run.status !== 'awaiting_approval') illegal(run.status, event.type);
+  const step = currentStep(run);
+  if (step.status !== 'awaiting_approval') illegal(`step:${step.status}`, event.type);
+  run.status = 'running';
+  step.status = 'running';
+  return applyStepComplete(run, event);
+}
+
+function applySendBack(run, event) {
+  if (run.status !== 'awaiting_approval') illegal(run.status, event.type);
+  const step = currentStep(run);
+  if (step.status !== 'awaiting_approval') illegal(`step:${step.status}`, event.type);
+  if (typeof event.newTerminal !== 'boolean') throw new Error('send_back event: newTerminal must be true or false');
+  if (event.newTerminal) {
+    if (step.sessionId) step.priorSessionIds = [...step.priorSessionIds, step.sessionId];
+    step.sessionId = null;
+  } else if (!step.sessionId) throw new Error('send_back event: a step without a terminal needs a new one');
+  step.status = 'launching';
+  step.attempt += 1;
+  step.iteration = 0;
+  step.finishedAt = null;
+  step.startedAt = event.at ?? step.startedAt;
+  run.status = 'running';
+  return run;
+}
+
 /**
  * The current step finished a pass with work left and sends the run back to an earlier
  * step: one round of the loop is done. Every step of the loop becomes pending again and
@@ -154,7 +191,7 @@ function applyStop(run, event) {
   const reason = event.reason === 'terminal' ? 'terminal' : 'user';
   const step = currentStep(run);
   // Spec §8.6: paused step stays limit_reached either way.
-  if (step.status !== 'limit_reached' && ACTIVE_STEP.has(step.status)) {
+  if (step.status !== 'limit_reached' && (ACTIVE_STEP.has(step.status) || step.status === 'awaiting_approval')) {
     step.status = 'stopped';
     finishStep(step, event.at);
   }
@@ -216,6 +253,9 @@ const HANDLERS = {
   needs_input: applyNeedsInput,
   input_received: applyInputReceived,
   step_complete: applyStepComplete,
+  approval_requested: applyApprovalRequested,
+  approve: applyApprove,
+  send_back: applySendBack,
   loop_back: applyLoopBack,
   limit_reached: applyLimitReached,
   error: applyError,
@@ -252,5 +292,7 @@ export function computeActions(run) {
     cleanup: CLEANUP_STATUS.has(status) && CLEANUP_WORKTREE.has(worktree),
     // Only a request the agent signalled can be answered by typing into its terminal.
     answer: status === 'needs_input' && run.inputRequest !== null,
+    approve: status === 'awaiting_approval',
+    sendBack: status === 'awaiting_approval',
   };
 }

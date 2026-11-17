@@ -23,8 +23,8 @@ const feature = () => ({
   revision: 3,
   ...STAMPS,
   nodes: [
-    { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 } },
-    { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' } },
+    { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false },
+    { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
   ],
 });
 
@@ -592,8 +592,8 @@ describe('PipelineSettings workflows', () => {
         agentsDecide: false,
         progressFile: null,
         nodes: [
-          { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 } },
-          { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' } },
+          { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false },
+          { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
         ],
       },
     }]);
@@ -677,8 +677,8 @@ describe('PipelineSettings workflows', () => {
         progressFile: null,
         revision: 3,
         nodes: [
-          { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' } },
-          { name: 'Test', agentId: A1, prompt: '/feature-test {input}', repeat: { mode: 'once' } },
+          { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+          { name: 'Test', agentId: A1, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
         ],
       },
     }]);
@@ -839,9 +839,9 @@ describe('PipelineSettings workflows — loops and who decides', () => {
     ...feature(),
     agentsDecide: true,
     nodes: [
-      { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' } },
-      { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 } },
-      { name: 'Review', agentId: A1, prompt: '/review', repeat: { mode: 'once' } },
+      { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+      { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 }, readOnly: false, approval: false },
+      { name: 'Review', agentId: A1, prompt: '/review', repeat: { mode: 'once' }, readOnly: false, approval: false },
     ],
   });
   const options = label => [...screen.getByLabelText(label).options].map(option => option.textContent);
@@ -868,8 +868,8 @@ describe('PipelineSettings workflows — loops and who decides', () => {
       agentsDecide: true,
       progressFile: null,
       nodes: [
-        { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' } },
-        { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 } },
+        { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+        { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 }, readOnly: false, approval: false },
       ],
     });
   });
@@ -893,6 +893,38 @@ describe('PipelineSettings workflows — loops and who decides', () => {
     expect(screen.queryByLabelText('Node 2 maximum passes')).toBeNull();
     expect(decide().checked).toBe(true);
     expect(lastDirty()).toBe(false);
+  });
+
+  it('tracks read-only and approval choices and disables approval on a loop closer', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    click('Edit workflow Feature');
+    const readOnly = screen.getByRole('checkbox', { name: 'Node 1 read-only step' });
+    const approval = screen.getByRole('checkbox', { name: 'Node 2 wait for my approval' });
+    expect(lastDirty()).toBe(false);
+    fireEvent.click(readOnly);
+    fireEvent.click(approval);
+    expect(lastDirty()).toBe(true);
+    expect(readOnly.checked).toBe(true);
+    expect(approval.checked).toBe(true);
+    type('Node 2 repeat', 'loop_back');
+    expect(approval.disabled).toBe(true);
+    expect(approval.checked).toBe(false);
+    expect(screen.getByText('A step that closes a loop cannot wait for approval.')).toBeTruthy();
+  });
+  it('shows server field errors beside the read-only and approval checkboxes', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    backend.failNext('PUT', 'workflows', {
+      status: 400, message: 'Validation failed',
+      errors: [
+        { field: 'nodes[0].readOnly', message: 'Read-only flag is invalid' },
+        { field: 'nodes[1].approval', message: 'Approval flag is invalid' },
+      ],
+    });
+    click('Edit workflow Feature');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Node 1 read-only step' }));
+    click('Save workflow');
+    expect(await screen.findByText('Read-only flag is invalid')).toBeTruthy();
+    expect(screen.getByText('Approval flag is invalid')).toBeTruthy();
   });
 
   it('keeps a loop on the same node when that node is renamed', async () => {

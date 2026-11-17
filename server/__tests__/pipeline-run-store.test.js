@@ -26,7 +26,7 @@ function definition(overrides = {}) {
     notesDir: null,
     steps: [
       {
-        kind: 'node',
+        kind: 'node', readOnly: false, approval: false,
         name: 'Develop',
         prompt: 'Implement the feature',
         repeat: { mode: 'once' },
@@ -83,6 +83,29 @@ function validRun(overrides = {}) {
 }
 
 describe('pipeline run store', () => {
+  it('leaves an approval wait untouched while interrupting a running run on the same restart', () => {
+    const { db, store } = setup();
+    const waiting = store.create(validRun({ requestId: 'approval-restart', status: 'awaiting_approval',
+      steps: [step({ status: 'awaiting_approval', attempt: 1, sessionId: 'Demo-1' })] }));
+    const running = store.create(validRun({ requestId: 'running-restart', status: 'running',
+      steps: [step({ status: 'running', attempt: 1, sessionId: 'Demo-2' })] }));
+    const reopened = createRunStore(db);
+    expect(reopened.get(waiting.id).steps[0]).toMatchObject({ status: 'awaiting_approval', sessionId: 'Demo-1' });
+    expect(reopened.get(waiting.id).status).toBe('awaiting_approval');
+    expect(reopened.get(running.id).status).toBe('interrupted');
+    expect(reopened.get(running.id).steps[0].status).toBe('interrupted');
+  });
+  it('validates and backfills snapshot flags and retains an approval wait across restart', () => {
+    const { db, store } = setup();
+    const flagged = definition({ steps: [{ ...definition().steps[0], readOnly: true, approval: true }] });
+    const waiting = store.create(validRun({ status: 'awaiting_approval', definition: flagged, steps: [step({ status: 'awaiting_approval', attempt: 1 })] }));
+    expect(waiting.definition.steps[0]).toMatchObject({ readOnly: true, approval: true });
+    expect(createRunStore(db).get(waiting.id).status).toBe('awaiting_approval');
+    db.prepare('UPDATE pipeline_runs SET definition = json_remove(definition, ?, ?) WHERE id = ?').run('$.steps[0].readOnly', '$.steps[0].approval', waiting.id);
+    expect(createRunStore(db).get(waiting.id).definition.steps[0]).toMatchObject({ readOnly: false, approval: false });
+    db.prepare('UPDATE pipeline_runs SET definition = json_set(definition, ?, ?) WHERE id = ?').run('$.steps[0].approval', 'wrong', waiting.id);
+    expect(() => store.get(waiting.id)).toThrow(/definition.steps\[0\].approval/);
+  });
   it('validates notesDir and backfills absent stored values on reopen', () => {
     const { db, store } = setup();
     expect(() => store.create(validRun({ definition: definition({ notesDir: '../bad' }) }))).toThrow(/definition.notesDir/);
@@ -202,7 +225,7 @@ describe('pipeline run store', () => {
     const def = definition({
       steps: [
         {
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'One',
           prompt: 'one',
           repeat: { mode: 'once' },
@@ -214,7 +237,7 @@ describe('pipeline run store', () => {
           },
         },
         {
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'Two',
           prompt: 'two',
           repeat: { mode: 'until_complete', max: 3 },
@@ -286,7 +309,7 @@ describe('pipeline run store', () => {
     const def = definition({
       steps: [
         {
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'One',
           prompt: 'one',
           repeat: { mode: 'once' },
@@ -298,7 +321,7 @@ describe('pipeline run store', () => {
           },
         },
         {
-          kind: 'node',
+          kind: 'node', readOnly: false, approval: false,
           name: 'Two',
           prompt: 'two',
           repeat: { mode: 'once' },
@@ -447,7 +470,7 @@ describe('pipeline run store — input request', () => {
 
 describe('pipeline run store — loops and who decides', () => {
   const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
-  const defStep = (name, repeat = { mode: 'once' }, kind = 'node') => ({ kind, name, prompt: `do ${name}`, repeat, agent });
+  const defStep = (name, repeat = { mode: 'once' }, kind = 'node') => ({ kind, readOnly: false, approval: false, name, prompt: `do ${name}`, repeat, agent });
   const loop = (toStepIndex, max = 20) => ({ mode: 'loop_back', toStepIndex, max });
   const looping = (overrides = {}) => {
     const def = definition({

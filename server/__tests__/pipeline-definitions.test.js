@@ -97,6 +97,33 @@ describe('validateWorkflowBody', () => {
   });
   const valid = { name: 'Feature', agentsDecide: false, nodes: [node()] };
 
+  it('validates both optional node flags and forbids approval on a loop closer', () => {
+    for (const flag of ['readOnly', 'approval']) {
+      expect(validateWorkflowBody({ ...valid, nodes: [node({ [flag]: true })] })).toEqual([]);
+      expect(validateWorkflowBody({ ...valid, nodes: [node({ [flag]: false })] })).toEqual([]);
+      for (const value of [null, 0, 'true']) {
+        expect(fields(validateWorkflowBody({ ...valid, nodes: [node({ [flag]: value })] }))).toContain(`nodes[0].${flag}`);
+      }
+    }
+    const nodes = [node({ name: 'Analyse', approval: true }), node({ name: 'Review', repeat: { mode: 'loop_back', to: 'Analyse', max: 2 }, approval: true })];
+    expect(fields(validateWorkflowBody({ ...valid, nodes }))).toContain('nodes[1].approval');
+    expect(validateWorkflowBody({ ...valid, nodes: [{ ...nodes[0], repeat: { mode: 'until_complete', max: 2 } }, { ...nodes[1], approval: false }] })).toEqual([]);
+  });
+  it.each([{ mode: 'once' }, { mode: 'until_complete', max: 2 }])('accepts approval on a %j node', repeat => {
+    expect(validateWorkflowBody({ ...valid, nodes: [node({ repeat, approval: true })] })).toEqual([]);
+  });
+  it('accepts approval on a non-closing node inside a loop', () => {
+    expect(validateWorkflowBody({ ...valid, nodes: [
+      node({ name: 'Analyse', approval: true }),
+      node({ name: 'Review', repeat: { mode: 'loop_back', to: 'Analyse', max: 2 } }),
+    ] })).toEqual([]);
+  });
+  it.each(['readOnly', 'approval'])('names %s for every wrong node flag type', flag => {
+    for (const bad of [null, 0, 1, 'true', [], {}]) {
+      expect(fields(validateWorkflowBody({ ...valid, nodes: [node({ [flag]: bad })] }))).toContain(`nodes[0].${flag}`);
+    }
+  });
+
   it('accepts a valid workflow', () => {
     expect(validateWorkflowBody(valid)).toEqual([]);
   });

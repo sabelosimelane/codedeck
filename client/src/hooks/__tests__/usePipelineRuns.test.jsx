@@ -60,6 +60,26 @@ afterEach(() => {
 });
 
 describe('usePipelineRuns', () => {
+  it('approves and sends back waiting runs with action feedback', async () => {
+    const waiting = runView({ status: 'awaiting_approval' });
+    const approved = runView({ status: 'complete' });
+    const sentBack = runView({ status: 'running' });
+    global.fetch = vi.fn(async (url, options) => {
+      const target = String(url);
+      if (target.endsWith('/approve')) return okRun(approved);
+      if (target.endsWith('/send-back')) {
+        expect(JSON.parse(options.body)).toEqual({ comment: 'Add evidence' });
+        return okRun(sentBack);
+      }
+      return okList([waiting]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    await act(async () => { expect(await result.current.approveRun('r1')).toEqual(approved); });
+    await act(async () => { expect(await result.current.sendBackRun('r1', 'Add evidence')).toEqual(sentBack); });
+    expect(showToast.mock.calls.map(([toast]) => toast.message)).toContain('Feature approved');
+    expect(showToast.mock.calls.map(([toast]) => toast.message)).toContain('Feature sent back');
+  });
   it('loads and validates a run notes page', async () => {
     global.fetch = vi.fn(async url => String(url).includes('/notes?')
       ? { ok: true, status: 200, json: async () => ({ data: [], page: { currentPage: 0, size: 50, totalElements: 0, totalPages: 0, hasNextPage: false } }) }

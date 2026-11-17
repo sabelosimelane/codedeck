@@ -547,7 +547,7 @@ describe('pipelines API — preflight and runs', () => {
     expect(started.body.steps).toHaveLength(2);
     expect(started.body.steps[0]).toMatchObject({
       index: 0,
-      kind: 'setup',
+      kind: 'setup', readOnly: false, approval: false,
       name: 'Setup',
       agentName: 'codex-sol-high',
       status: 'pending',
@@ -555,7 +555,7 @@ describe('pipelines API — preflight and runs', () => {
     });
     expect(started.body.steps[1]).toMatchObject({
       index: 1,
-      kind: 'node',
+      kind: 'node', readOnly: false, approval: false,
       name: 'Develop',
       agentName: 'codex-sol-high',
       status: 'pending',
@@ -730,7 +730,7 @@ describe('pipelines API — preflight and runs', () => {
           progressFile: null,
           notesDir: null,
           steps: [{
-            kind: 'node',
+            kind: 'node', readOnly: false, approval: false,
             name: 'Develop',
             prompt: 'Implement x',
             repeat: { mode: 'once' },
@@ -842,6 +842,15 @@ describe('pipelines API — hostile and boundary payloads', () => {
 });
 
 describe('pipelines API — owner actions (Spec §8.8)', () => {
+  it.each(['approve', 'send-back'])('returns a problem 404 for unknown and malformed run ids on %s', async action => {
+    const ctx = await setup();
+    for (const id of ['c4f2d3e4-5678-4901-8cde-f01234567890', 'not-a-uuid']) {
+      const response = await request(ctx.app).post(`${base}/runs/${id}/${action}`).send(action === 'approve' ? {} : { comment: 'Revise' });
+      expect(response.status).toBe(404);
+      expect(response.type).toBe('application/problem+json');
+      expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+    }
+  });
   async function seedRun(ctx, overrides = {}) {
     const { agent, workflow } = await seedReady(ctx);
     const started = await request(ctx.app).post(`${base}/runs`).send({
@@ -857,6 +866,62 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
     }
     return { id, agent, workflow, view: () => request(ctx.app).get(`${base}/runs/${id}`) };
   }
+
+  it('validates approval bodies and returns a conflict after an approval advances', async () => {
+    const ctx = await setup();
+    const { id } = await seedRun(ctx);
+    const original = ctx.runStore.get(id);
+    ctx.runStore.update(id, { status: 'awaiting_approval', steps: original.steps.map((step, index) => index === 0 ? { ...step, status: 'awaiting_approval', attempt: 1 } : step) });
+    ctx.engine.approve = vi.fn(async runId => {
+      const run = ctx.runStore.get(runId);
+      if (run.status !== 'awaiting_approval') throw Object.assign(new Error('Approval already handled'), { code: 'ACTION_REFUSED' });
+      return ctx.runStore.update(runId, { status: 'complete', finishedAt: new Date().toISOString(), steps: run.steps.map((step, index) => index === run.currentStepIndex ? { ...step, status: 'complete' } : step) });
+    });
+    expect((await request(ctx.app).post(`${base}/runs/${id}/approve`).send({ unexpected: true })).body.errors[0].field).toBe('unexpected');
+    const approved = await request(ctx.app).post(`${base}/runs/${id}/approve`).send({});
+    expect(approved.status).toBe(200);
+    expect(approved.body.approvalRequest).toBeNull();
+    expect((await request(ctx.app).post(`${base}/runs/${id}/approve`).send({})).status).toBe(409);
+    expect((await request(ctx.app).post(`${base}/runs/${id}/send-back`).send({ comment: '' })).status).toBe(400);
+    expect((await request(ctx.app).post(`${base}/runs/not-a-uuid/approve`).send({})).status).toBe(404);
+  });
+  it('validates send-back comments and exposes the waiting approval request', async () => {
+    const ctx = await setup();
+    const { id } = await seedRun(ctx);
+    const original = ctx.runStore.get(id);
+    ctx.runStore.update(id, { status: 'awaiting_approval', steps: original.steps.map((step, index) => index === 0 ? { ...step, status: 'awaiting_approval', attempt: 1 } : step) });
+    const waiting = await request(ctx.app).get(`${base}/runs/${id}`);
+    expect(waiting.body.approvalRequest).toMatchObject({ stepIndex: 0, stepName: 'Setup', note: null });
+    expect(waiting.body.actions).toMatchObject({ approve: true, sendBack: true });
+    for (const body of [{}, { comment: '' }, { comment: 'x'.repeat(4001) }, { comment: 'bad\u0000text' }, { comment: 3 }, { comment: 'ok', extra: true }]) {
+      expect((await request(ctx.app).post(`${base}/runs/${id}/send-back`).send(body)).status).toBe(400);
+    }
+    expect((await request(ctx.app).post(`${base}/runs/${id}/send-back`).set('Content-Type', 'application/json').send('{bad')).status).toBe(400);
+    ctx.engine.sendBack = vi.fn(async (runId, comment) => {
+      const run = ctx.runStore.get(runId);
+      if (run.status !== 'awaiting_approval') throw Object.assign(new Error('Approval already handled'), { code: 'ACTION_REFUSED' });
+      expect(comment).toBe('Please revise\nwith evidence');
+      return ctx.runStore.update(runId, { status: 'running', steps: run.steps.map((step, index) => index === run.currentStepIndex ? { ...step, status: 'running' } : step) });
+    });
+    const sent = await request(ctx.app).post(`${base}/runs/${id}/send-back`).send({ comment: 'Please revise\nwith evidence' });
+    expect(sent.status).toBe(200);
+    expect(ctx.engine.sendBack).toHaveBeenCalledOnce();
+    expect((await request(ctx.app).post(`${base}/runs/${id}/send-back`).send({ comment: 'Again' })).status).toBe(409);
+    expect((await request(ctx.app).post(`${base}/runs/not-a-uuid/send-back`).send({ comment: 'Again' })).status).toBe(404);
+  });
+  it('accepts a 4000-character send-back comment and rejects 4001', async () => {
+    const ctx = await setup();
+    const { id } = await seedRun(ctx);
+    const original = ctx.runStore.get(id);
+    ctx.runStore.update(id, { status: 'awaiting_approval', steps: original.steps.map((step, index) => index === 0 ? { ...step, status: 'awaiting_approval', attempt: 1 } : step) });
+    const tooLong = await request(ctx.app).post(`${base}/runs/${id}/send-back`).send({ comment: 'x'.repeat(4001) });
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.errors[0].field).toBe('comment');
+    ctx.engine.sendBack = vi.fn(async () => ctx.runStore.get(id));
+    const boundary = await request(ctx.app).post(`${base}/runs/${id}/send-back`).send({ comment: 'x'.repeat(4000) });
+    expect(boundary.status).toBe(200);
+    expect(ctx.engine.sendBack).toHaveBeenCalledWith(id, 'x'.repeat(4000));
+  });
 
   it('Stop is accepted from pending and idempotent when already stopped', async () => {
     const ctx = await setup();
@@ -1206,7 +1271,7 @@ describe('pipelines API — worktrees', () => {
       path: FEATURE_WT.path, branch: 'feature/x', baseCommit: HEAD_B, state: 'external', detail: null,
     });
     expect(started.body.steps.map(item => [item.kind, item.name])).toEqual([['node', 'Develop']]);
-    expect(started.body.actions).toEqual({ stop: true, resume: false, continue: false, cleanup: false, answer: false });
+    expect(started.body.actions).toEqual({ stop: true, resume: false, continue: false, cleanup: false, answer: false, approve: false, sendBack: false });
     const stored = ctx.runStore.get(started.body.id);
     expect(stored.definition.steps.map(item => item.kind)).toEqual(['node']);
     expect(stored.worktreeState).toBe('external');
@@ -1524,6 +1589,49 @@ describe('pipelines API — loops and who decides', () => {
     };
     return { agent, body };
   }
+  it('round trips absent, true and false node flags through POST and PUT, including repeated PUT', async () => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    const created = await request(ctx.app).post(`${base}/workflows`).send(body);
+    expect(created.status).toBe(201);
+    expect(created.body.nodes[0]).toMatchObject({ readOnly: false, approval: false });
+    const flags = { ...body, nodes: body.nodes.map((entry, index) => index === 0 ? { ...entry, readOnly: true, approval: true } : { ...entry, readOnly: false, approval: false }) };
+    const updated = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...flags, revision: 1 });
+    expect(updated.status).toBe(200);
+    expect(updated.body.nodes[0]).toMatchObject({ readOnly: true, approval: true });
+    expect(updated.body.nodes[1]).toMatchObject({ readOnly: false, approval: false });
+    const repeated = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...flags, revision: 2 });
+    expect(repeated.status).toBe(200);
+    expect(repeated.body.nodes[0]).toMatchObject({ readOnly: true, approval: true });
+  });
+  it.each(['readOnly', 'approval'])('rejects each wrong %s type in POST and PUT with the node field', async flag => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    const created = await request(ctx.app).post(`${base}/workflows`).send(body);
+    for (const bad of [null, 0, 'true', [], {}]) {
+      const invalid = { ...body, nodes: body.nodes.map((entry, index) => index === 0 ? { ...entry, [flag]: bad } : entry) };
+      for (const response of [
+        await request(ctx.app).post(`${base}/workflows`).send({ ...invalid, name: 'Invalid' }),
+        await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...invalid, revision: 1 }),
+      ]) {
+        expect(response.status).toBe(400);
+        expect(response.body.errors.map(error => error.field)).toContain(`nodes[0].${flag}`);
+      }
+    }
+  });
+  it('rejects approval on a loop-closing node in POST and PUT', async () => {
+    const ctx = await setup();
+    const { body } = await seedLoop(ctx);
+    const created = await request(ctx.app).post(`${base}/workflows`).send(body);
+    const invalid = { ...body, nodes: body.nodes.map((entry, index) => index === 1 ? { ...entry, approval: true } : entry) };
+    for (const response of [
+      await request(ctx.app).post(`${base}/workflows`).send({ ...invalid, name: 'Invalid' }),
+      await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...invalid, revision: 1 }),
+    ]) {
+      expect(response.status).toBe(400);
+      expect(response.body.errors.map(error => error.field)).toContain('nodes[1].approval');
+    }
+  });
 
   it('saves a workflow with a loop and agents that decide, and returns it as stored', async () => {
     const ctx = await setup();

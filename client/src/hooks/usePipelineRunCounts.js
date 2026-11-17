@@ -3,7 +3,7 @@ import { parseRun } from '../utils/pipelineRunRecords';
 import { listOpenRuns } from '../utils/pipelinesApi';
 
 // A run in one of these waits for the owner: an agent needs input, or a step reached its pass limit.
-const AWAITING_OWNER = ['needs_input', 'limit_paused'];
+const AWAITING_OWNER = ['needs_input', 'limit_paused', 'awaiting_approval'];
 
 /** Per project: how many runs are open, and how many of those wait for the owner. */
 export function usePipelineRunCounts(showToast) {

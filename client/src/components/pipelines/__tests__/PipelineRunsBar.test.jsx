@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import PipelineRunsBar from '../PipelineRunsBar';
+vi.mock('../../ToastContext', () => ({ useToast: () => ({ showToast: vi.fn() }) }));
 
 function runView(overrides = {}) {
   return {
@@ -48,6 +49,60 @@ afterEach(() => {
 });
 
 describe('PipelineRunsBar', () => {
+  it('shows the approval note and sends approval or feedback once', async () => {
+    const run = runView({ status: 'awaiting_approval', currentStepIndex: 1,
+      approvalRequest: { stepIndex: 1, stepName: 'Implement', note: { status: 'written', summary: 'Specified', attempt: 1, pass: 1, createdAt: '2026-11-17T10:00:00.000Z' } },
+      actions: { approve: true, sendBack: true },
+      steps: [{ ...runView().steps[0] }, { ...runView().steps[1], status: 'awaiting_approval' }],
+    });
+    const load = vi.fn(async () => ({ notes: [{ id: 1, content: '# Specified\nDetails', status: 'written' }], hasNextPage: false }));
+    const approve = vi.fn(async () => ({}));
+    const sendBack = vi.fn(async () => ({}));
+    render(<PipelineRunsBar runs={[run]} onLoadNotes={load} onApprove={approve} onSendBack={sendBack} />);
+    expect(screen.getByText('Implement is waiting for your approval')).toBeTruthy();
+    expect(screen.getByText('Implement awaiting approval')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/Details/)).toBeTruthy());
+    expect(load).toHaveBeenCalledWith('r1', 0, 1);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Send-back comment' }), { target: { value: 'Please revise' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send back' }));
+    await waitFor(() => expect(sendBack).toHaveBeenCalledWith('r1', 'Please revise'));
+  });
+  it('prevents a duplicate approval while the first request is pending', async () => {
+    const run = runView({ status: 'awaiting_approval', currentStepIndex: 1,
+      approvalRequest: { stepIndex: 1, stepName: 'Implement', note: null },
+      actions: { approve: true, sendBack: true },
+      steps: [{ ...runView().steps[0] }, { ...runView().steps[1], status: 'awaiting_approval' }],
+    });
+    let resolveApproval;
+    const approve = vi.fn(() => new Promise(resolve => { resolveApproval = resolve; }));
+    render(<PipelineRunsBar runs={[run]} onLoadNotes={vi.fn(async () => ({ notes: [], hasNextPage: false }))} onApprove={approve} />);
+    const button = screen.getByRole('button', { name: 'Approve' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(true);
+    await act(async () => resolveApproval({}));
+  });
+  it('shows no-note text and prevents an empty or duplicate send-back', async () => {
+    const run = runView({ status: 'awaiting_approval', currentStepIndex: 1,
+      approvalRequest: { stepIndex: 1, stepName: 'Implement', note: null },
+      actions: { approve: true, sendBack: true },
+      steps: [{ ...runView().steps[0] }, { ...runView().steps[1], status: 'awaiting_approval' }],
+    });
+    let resolveSend;
+    const sendBack = vi.fn(() => new Promise(resolve => { resolveSend = resolve; }));
+    render(<PipelineRunsBar runs={[run]} onLoadNotes={vi.fn(async () => ({ notes: [], hasNextPage: false }))} onSendBack={sendBack} />);
+    await waitFor(() => expect(screen.getByText('This step left no note.')).toBeTruthy());
+    const button = screen.getByRole('button', { name: 'Send back' });
+    expect(button.disabled).toBe(true);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Send-back comment' }), { target: { value: 'Revise this' } });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(sendBack).toHaveBeenCalledTimes(1);
+    await act(async () => resolveSend({}));
+  });
   it.each([
     ['missing', 'left no note on its last pass'],
     ['unchanged', 'did not update its note on its last pass'],

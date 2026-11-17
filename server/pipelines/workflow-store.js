@@ -98,6 +98,8 @@ function normalizeNodes(nodes) {
     agentId: node.agentId,
     prompt: node.prompt,
     repeat: normalizeRepeat(nodes, index),
+    readOnly: node.readOnly ?? false,
+    approval: node.approval ?? false,
   }));
 }
 
@@ -124,6 +126,21 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
   if (!db.prepare('PRAGMA table_info(pipeline_workflows)').all().some(column => column.name === 'progress_file')) {
     db.exec('ALTER TABLE pipeline_workflows ADD COLUMN progress_file TEXT');
   }
+
+  const upgradeNodes = db.transaction(() => {
+    const save = db.prepare('UPDATE pipeline_workflows SET nodes = ? WHERE id = ?');
+    for (const row of db.prepare('SELECT id, nodes FROM pipeline_workflows').all()) {
+      let nodes;
+      try { nodes = JSON.parse(row.nodes); } catch { fieldError(row.id, 'nodes', 'must be valid JSON'); }
+      if (!Array.isArray(nodes)) fieldError(row.id, 'nodes', 'must be an array');
+      if (nodes.some(node => node && typeof node === 'object' && !Array.isArray(node) && (!Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval')))) {
+        save.run(JSON.stringify(nodes.map(node => node && typeof node === 'object' && !Array.isArray(node)
+          ? { ...node, ...(!Object.hasOwn(node, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(node, 'approval') ? { approval: false } : {}) }
+          : node)), row.id);
+      }
+    }
+  });
+  upgradeNodes();
 
   const read = db.prepare('SELECT * FROM pipeline_workflows WHERE id = ?');
   const readAll = db.prepare('SELECT * FROM pipeline_workflows ORDER BY lower(name), id');

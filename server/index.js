@@ -26,6 +26,7 @@ import { createSettingsStore } from './pipelines/settings-store.js';
 import { createRunStore } from './pipelines/run-store.js';
 import { createDecisionStore } from './pipelines/decision-store.js';
 import { createNoteStore } from './pipelines/note-store.js';
+import { createReviewStore } from './pipelines/review-store.js';
 import {
   create as createPipelineWorktree,
   remove as removePipelineWorktree,
@@ -806,12 +807,14 @@ deleteProject = createProjectDeletionService({
   },
 });
 terminalStatusCache.refreshSessionList();
+let pipelineRunStoreForMobile = null;
 const mobileDiscovery = createMobileDiscovery({
   store: mobileStore, sessions, deletedSessionIds, statusCache: terminalStatusCache,
   loadProjects, resolveHostRuntime, getReachability: hostReachability.getReachability, namingStore,
   getSessionIncarnation: id => (sessions.get(id)?.hostRuntime ?? resolveHostRuntime(id)?.hostRuntime ?? terminalRuntime).getSessionIncarnationAsync(id),
   attention: sessionAttention, describeState: sessionStateService.describe,
   getSessionActivity: id => (sessions.get(id)?.hostRuntime ?? resolveHostRuntime(id)?.hostRuntime ?? terminalRuntime).getSessionActivityAsync(id),
+  runNeedsApproval: id => pipelineRunStoreForMobile?.list().some(run => run.status === 'awaiting_approval' && run.steps[run.currentStepIndex].sessionId === id) ?? false,
 });
 // A missing provider is an explicit unconfigured state. A broken configured
 // provider is reported; terminal operation remains independent of push delivery.
@@ -857,12 +860,15 @@ const pipelineAgentStore = createAgentStore(db);
 const pipelineWorkflowStore = createWorkflowStore(db);
 const pipelineSettingsStore = createSettingsStore(db);
 const pipelineRunStore = createRunStore(db);
+pipelineRunStoreForMobile = pipelineRunStore;
 const pipelineDecisionStore = createDecisionStore(db);
 const pipelineNoteStore = createNoteStore(db);
+const pipelineReviewStore = createReviewStore(db);
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
   decisionStore: pipelineDecisionStore,
   noteStore: pipelineNoteStore,
+  reviewStore: pipelineReviewStore,
   createWorktree: async (run) => {
     const project = loadProjects().find(candidate => candidate.name === run.project);
     if (!project?.path) throw new Error(`Project ${run.project} not found for worktree create`);
@@ -958,6 +964,7 @@ app.use(createPipelinesRouter({
   runStore: pipelineRunStore,
   decisionStore: pipelineDecisionStore,
   noteStore: pipelineNoteStore,
+  reviewStore: pipelineReviewStore,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   engine: pipelineRunEngine,
   execFile,

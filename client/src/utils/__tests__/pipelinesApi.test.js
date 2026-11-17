@@ -23,6 +23,8 @@ import {
   startRun,
   stopRun,
   answerRun,
+  approveRun,
+  sendBackRun,
   listRunDecisions,
   listRunNotes,
 } from '../pipelinesApi';
@@ -43,6 +45,15 @@ function jsonResponse(body, { ok = true, status = 200 } = {}) {
 }
 
 describe('pipelinesApi', () => {
+  it('posts approval and send-back and filters notes to the gated step', async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ id: 'r1' }));
+    await approveRun('r1');
+    await sendBackRun('r1', 'More detail');
+    await listRunNotes('r1', 0, { stepIndex: 2 });
+    expect(global.fetch.mock.calls[0][0]).toBe('/api/pipelines/runs/r1/approve');
+    expect(global.fetch.mock.calls[1][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ comment: 'More detail' }) });
+    expect(global.fetch.mock.calls[2][0]).toContain('stepIndex=2');
+  });
   it('loads a run notes page newest first', async () => {
     global.fetch = vi.fn(async () => jsonResponse({ data: [], page: { hasNextPage: false } }));
     await listRunNotes('run-1', 2);

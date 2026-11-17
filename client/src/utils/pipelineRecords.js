@@ -64,7 +64,9 @@ function parseNode(nodes, index, id) {
   if (!isText(node.name)) throw invalid('workflow', `${path}.name`, id);
   if (!isUuid(node.agentId)) throw invalid('workflow', `${path}.agentId`, id);
   if (!isText(node.prompt)) throw invalid('workflow', `${path}.prompt`, id);
-  return { name: node.name, agentId: node.agentId, prompt: node.prompt, repeat: parseRepeat(nodes, index, id) };
+  if (typeof node.readOnly !== 'boolean') throw invalid('workflow', `${path}.readOnly`, id);
+  if (typeof node.approval !== 'boolean' || (node.repeat?.mode === 'loop_back' && node.approval)) throw invalid('workflow', `${path}.approval`, id);
+  return { name: node.name, agentId: node.agentId, prompt: node.prompt, repeat: parseRepeat(nodes, index, id), readOnly: node.readOnly, approval: node.approval };
 }
 
 export function parseWorkflow(record) {
