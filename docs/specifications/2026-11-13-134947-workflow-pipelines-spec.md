@@ -602,10 +602,14 @@ each notify the run engine with the session id.
 **Input requests (added after v1.0).** The loop instruction tells the agent to print, before a
 NEEDS_INPUT signal, a questions marker (`[[CDW:<identifier>:QUESTIONS]]`, built like the signal), then
 a numbered list of questions, each with `Recommended:` and its recommended answer. When the loop
-reports `needs_input`, the engine reads the last 400 lines of the step's terminal and takes the lines
+reports `needs_input`, the engine reads up to 400 lines of the step's terminal (the visible screen when the CLI uses tmux's alternate screen) and takes the lines
 between that marker and the signal of the same iteration (`server/pipelines/input-request.js`): leading
 bullets and indentation are dropped, a wrapped line joins the one above, and the text is cut at 4000
 characters. The run stores it as `inputRequest`:
+
+Node steps create, change and delete files only in their run worktree. They may read outside files
+referenced by instructions, skills or project documents. When the task's own files are absent from
+the worktree, they ask for input instead of searching other repositories.
 
 | `inputRequest` | Meaning |
 |---|---|
@@ -882,6 +886,7 @@ Consequences:
 ## 11. Known Limits
 
 - Only CLIs with a screen profile (Claude, Codex, Cursor, agy, Muse) can run a step.
+- For a full-screen CLI, CodeDeck can read only its visible screen. If a question list is longer than the screen, CodeDeck cannot read the full list and asks the owner instead.
 - Local projects whose path is the top level of a git working tree only.
 - The worktree contains committed files only; an uncommitted todo or spec in the checkout is absent
   from it. The Run dialog warns; it does not block.

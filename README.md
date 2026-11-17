@@ -93,7 +93,7 @@ The optional **Progress file** setting names a Markdown todo inside the run's wo
 it may use `{input}`. The runs bar shows the first `## Phase N` section with unticked
 boxes and its task count. If the file is absent or cannot be read, the bar says
 "Progress file not found" or "Progress file could not be read" with its path.
-A run with a Progress file is refused when that file is not in the repository at its current commit, or in the chosen worktree. Each step's agent is told to work only inside the run's worktree and to pause when something is missing there.
+A run with a Progress file is refused when that file is not in the repository at its current commit, or in the chosen worktree. Each step's agent is told to create, change and delete files only inside the run's worktree. It may read outside files named by its instructions, skills or project documents. If the task's own files are missing from the worktree, it asks for input instead of searching other repositories.
 A run started without a progress file follows the workflow's current setting. If its
 input does not form a valid path, the runs bar shows no phase line.
 Write a skill as `/name` at the start of a prompt (for example `/feature-dev {input}`).
@@ -142,6 +142,7 @@ too. If the agent did not list its questions, the runs bar says so and you read 
 terminal. A dialog the agent CLI shows (trust, permission, a question form), while starting
 or in the middle of a pass, also pauses the run and is answered in the terminal only. The sidebar count for a project turns to the warning colour
 while one of its runs waits for you, and the phone gets an "Input requested" push.
+For a full-screen CLI, CodeDeck reads only the visible screen. If its question list extends beyond that screen, CodeDeck cannot read the full list and asks you instead.
 
 **Looping a group of nodes.** Set a node's repeat to **Loop back to an earlier node**,
 choose that node and a maximum number of rounds. The nodes from there to the looping

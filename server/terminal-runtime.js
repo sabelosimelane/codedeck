@@ -1061,6 +1061,32 @@ function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess
     },
 
     /**
+     * What an agent has printed, for reading its questions. A full-screen CLI runs in
+     * tmux's alternate screen: its visible screen is captured as shown. `-a` would
+     * return the shell screen saved underneath, which is why this is not
+     * captureSessionSnapshot.
+     */
+    captureAgentScreen(sessionId, windowLines = TERMINAL_SNAPSHOT_WINDOW_LINES) {
+      if (!this.isAvailable()) return normalizeCapturedSnapshot('', windowLines, { historyGuaranteed: false });
+      const tmuxName = sanitizeTmuxName(sessionId);
+      try {
+        const normalizedWindowLines = Math.max(1, parseInt(windowLines, 10) || TERMINAL_SNAPSHOT_WINDOW_LINES);
+        const terminalState = getTmuxPaneSnapshotState(tmuxName);
+        const captureArgs = ['capture-pane', '-p'];
+        if (terminalState.screenMode !== 'alternate') {
+          const paneHeight = getTmuxPaneNumberValue(tmuxName, '#{pane_height}');
+          const historyLines = Math.max(normalizedWindowLines - Math.max(1, paneHeight || 0), 0);
+          captureArgs.push('-S', historyLines > 0 ? `-${historyLines}` : '0');
+        }
+        captureArgs.push('-t', tmuxName);
+        const output = execFileSync('tmux', captureArgs, { stdio: 'pipe', encoding: 'utf8' });
+        return normalizeCapturedSnapshot(output, normalizedWindowLines, { historyGuaranteed: true, terminalState });
+      } catch {
+        return normalizeCapturedSnapshot('', windowLines, { historyGuaranteed: false });
+      }
+    },
+
+    /**
      * Capture the authoritative recent tmux window used to rebuild browser
      * attachments. The snapshot includes the currently visible pane content and
      * is capped to the most recent 10,000 terminal lines.
@@ -1387,6 +1413,26 @@ export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sl
     },
 
     /** Runner-routed equivalent of the local snapshot capture — same shape, same clamping. */
+    async captureAgentScreen(sessionId, windowLines = TERMINAL_SNAPSHOT_WINDOW_LINES) {
+      const tmuxName = sanitizeTmuxName(sessionId);
+      try {
+        const normalizedWindowLines = Math.max(1, parseInt(windowLines, 10) || TERMINAL_SNAPSHOT_WINDOW_LINES);
+        const { stdout: stateRaw } = await tmux(['display-message', '-p', '-t', tmuxName, TMUX_PANE_STATE_FORMAT], { timeout: STATUS_POLL_TIMEOUT_MS });
+        const terminalState = parseTmuxPaneStateOutput(stateRaw);
+        const captureArgs = ['capture-pane', '-p'];
+        if (terminalState.screenMode !== 'alternate') {
+          const paneHeight = await getPaneNumberValue(tmuxName, '#{pane_height}');
+          const historyLines = Math.max(normalizedWindowLines - Math.max(1, paneHeight || 0), 0);
+          captureArgs.push('-S', historyLines > 0 ? `-${historyLines}` : '0');
+        }
+        captureArgs.push('-t', tmuxName);
+        const { stdout: output } = await tmux(captureArgs);
+        return normalizeCapturedSnapshot(output, normalizedWindowLines, { historyGuaranteed: true, terminalState });
+      } catch {
+        return normalizeCapturedSnapshot('', windowLines, { historyGuaranteed: false });
+      }
+    },
+
     async captureSessionSnapshotAsync(sessionId, windowLines = TERMINAL_SNAPSHOT_WINDOW_LINES) {
       const tmuxName = sanitizeTmuxName(sessionId);
 

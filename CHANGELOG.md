@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-11-17] - Stop workflow runs stalling on a rule that was too strict and a question that was never read
+
+### Executive Summary
+* A run set to let its agents decide stalled waiting for its owner, for two reasons. First, the rule added earlier the same day to keep a run inside its worktree told agents not to look anywhere else for what they need; an agent took that to forbid reading a standards file the project's own documents point to, and made no progress for several rounds. Agents may now read outside the worktree what their instructions, skills or the project's documents refer to; they still may not create, change or delete anything outside it, nor go to other repositories for the task's own files. Second, CodeDeck never read the questions of an agent that runs full-screen, such as Codex: it was looking at the shell screen hidden underneath, so it reported that the agent had not said what it needs and "Let agents decide" could never answer for such a step. It now reads the screen the agent is showing.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** The boundary sentence said "If something you need is not in the worktree, do not look for it elsewhere", which also forbade reading. Separately, questions were read through the browser-reconnect snapshot, which for a pane in tmux's alternate screen captures with `-a`, the screen saved underneath, so the question markers were never found.
+  * **Solution:** Reword the boundary to forbid changes, not reads; read agent output through a capture of the visible screen.
+* **🛠️ Codebase:**
+  * `server/pipelines/step-guidance.js` — The boundary sentence for node steps: work in the worktree, change nothing outside it, reading referenced files outside it is allowed, and the task's own files are not sought in other repositories.
+  * `server/terminal-runtime.js` — `captureAgentScreen` on the local and host runtimes: the visible screen for a pane in the alternate screen, the visible screen plus scrollback otherwise. `captureSessionSnapshot`, used to rebuild browser attachments, is unchanged.
+  * `server/index.js` — The run engine's `readScreen` uses `captureAgentScreen`.
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md` — The boundary as it now reads, and the limit that a full-screen CLI shows CodeDeck only its visible screen, so a question list longer than the screen is put to the owner.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-step-guidance.test.js`, `server/__tests__/pipeline-run-engine.test.js` — The new sentence, its position and the instruction-length budget.
+  * `server/__tests__/terminal-runtime.test.js`, `server/__tests__/host-terminal-runtime.test.js` — The visible screen is captured without `-a` in the alternate screen, with scrollback otherwise, and a tmux failure is reported as not trustworthy.
+  * `server/__tests__/pipeline-run-live.test.js` — With real tmux, a stub agent in the alternate screen asks a question: without "Let agents decide" the question is shown to the owner; with it, the decision is recorded and the answer typed.
+  * Server suite: 77 files, 2,190 tests passed. Checked against a live Codex terminal showing a question: the new read returned the question, the old one found no marker.
+
 ## [2026-11-17] - Run notes: a workflow run carries its own handoff between steps
 
 ### Executive Summary

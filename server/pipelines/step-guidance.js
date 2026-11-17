@@ -27,7 +27,7 @@ export function buildStepGuidance(definition, stepIndex, options) {
   }
 
   const parts = [];
-  if (step.kind === 'node') parts.push(`Work only inside this run's worktree, ${options.worktreePath}, which is your current directory. Do not create, change or delete files outside it. If something you need is not in the worktree, do not look for it elsewhere: use NEEDS_INPUT and say what is missing.`);
+  if (step.kind === 'node') parts.push(`Work only inside this run's worktree, ${options.worktreePath}, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing.`);
   if (step.kind === 'node' && definition.notesDir !== null) parts.push(`Run notes: read ${definition.notesDir}/README.md before you start, and before your final signal write your note to ${notePath(definition, stepIndex)}.`);
   if (step.repeat?.mode === 'loop_back') {
     // The agent of this step alone decides whether the loop runs again, so it is told what the loop is.

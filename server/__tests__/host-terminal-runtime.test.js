@@ -278,6 +278,29 @@ describe('createHostTerminalRuntime.captureSessionSnapshotAsync', () => {
   });
 });
 
+describe('createHostTerminalRuntime.captureAgentScreen', () => {
+  it.each([
+    ['alternate', '1', ['capture-pane', '-p', '-t', 'proj-1']],
+    ['primary', '0', ['capture-pane', '-p', '-S', '-70', '-t', 'proj-1']],
+  ])('reads the visible %s screen', async (_mode, alternateOn, expectedArgs) => {
+    const runner = fakeRunner({
+      'display-message': args => {
+        if (args.at(-1).includes('alternate_on')) return `${alternateOn}\t0\t\t4\t2\t1\tblock\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t1`;
+        if (args.at(-1) === '#{pane_height}') return '30';
+        return '80';
+      },
+      'capture-pane': 'Question?\n',
+    });
+    expect(await makeRuntime(runner).captureAgentScreen('proj-1', 100)).toMatchObject({ data: 'Question?\r\n', historyGuaranteed: true });
+    expect(runner.tmuxCalls('capture-pane')[0].args).toEqual(expectedArgs);
+  });
+
+  it('reports tmux failure as untrustworthy', async () => {
+    const runner = fakeRunner({ 'display-message': transportError() });
+    expect((await makeRuntime(runner).captureAgentScreen('proj-1', 100)).historyGuaranteed).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // resizeSessionAsync / getSessionCwdAsync / getSessionStatusAsync / listSessionIdsAsync
 // ---------------------------------------------------------------------------

@@ -904,7 +904,7 @@ const pipelineRunEngine = createRunEngine({
   // The end of the terminal's screen and scrollback, where an agent prints what it needs
   // before a NEEDS_INPUT signal. Pipeline runs use local projects only.
   readScreen: async (sessionId) => {
-    const snapshot = terminalRuntime.captureSessionSnapshot(sessionId, PIPELINE_QUESTION_SCREEN_LINES);
+    const snapshot = terminalRuntime.captureAgentScreen(sessionId, PIPELINE_QUESTION_SCREEN_LINES);
     if (snapshot.historyGuaranteed !== true || typeof snapshot.data !== 'string') {
       throw new Error(`The terminal screen of ${sessionId} could not be read.`);
     }

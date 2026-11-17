@@ -22,6 +22,35 @@ describe('createTerminalRuntime', () => {
   });
 
   it.each([
+    ['alternate', '1', ['capture-pane', '-p', '-t', 'demo-1']],
+    ['primary', '0', ['capture-pane', '-p', '-S', '-70', '-t', 'demo-1']],
+  ])('reads the visible %s agent screen', async (_mode, alternateOn, expectedArgs) => {
+    execFileSync.mockImplementation((_cmd, args) => {
+      if (args[0] === '-V') return 'tmux 3.4';
+      if (args[0] === 'display-message') {
+        if (args.at(-1).includes('alternate_on')) return `${alternateOn}\t0\t\t0\t0\t0\tblock\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0`;
+        if (args.at(-1) === '#{pane_height}') return '30';
+        return '80';
+      }
+      if (args[0] === 'capture-pane') return 'Question?\n';
+      throw new Error(`unexpected ${args[0]}`);
+    });
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    const runtime = createTerminalRuntime('tmux');
+    expect(runtime.captureAgentScreen('demo-1', 100)).toMatchObject({ data: 'Question?\r\n', historyGuaranteed: true });
+    expect(execFileSync.mock.calls.find(([, args]) => args[0] === 'capture-pane')[1]).toEqual(expectedArgs);
+  });
+
+  it('reports an agent screen capture failure as untrustworthy', async () => {
+    execFileSync.mockImplementation((_cmd, args) => {
+      if (args[0] === '-V') return 'tmux 3.4';
+      throw new Error('tmux failed');
+    });
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    expect(createTerminalRuntime('tmux').captureAgentScreen('demo-1', 100).historyGuaranteed).toBe(false);
+  });
+
+  it.each([
     ['gone after tmux kill', false, false],
     ['survivor force killed', true, false],
     ['survivor remains', true, true],

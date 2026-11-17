@@ -106,7 +106,7 @@ process.stdin.on('data', chunk => {
   return script;
 }
 
-function writeAskingAgent(dir) {
+function writeAskingAgent(dir, { alternate = false, agentsDecide = false } = {}) {
   // Asks two questions the way the loop instruction requires, then completes once it is answered.
   const script = path.join(dir, 'stub-agent-asking');
   writeFileSync(script, `#!/usr/bin/env node
@@ -114,7 +114,7 @@ let buf = '';
 let id = null;
 process.stdin.setEncoding('utf8');
 process.stdin.setRawMode(true);
-process.stdout.write('>_ OpenAI Codex (stub)\\n› \\n');
+process.stdout.write('${alternate ? '\\x1b[?1049h' : ''}>_ OpenAI Codex (stub)\\n› \\n');
 process.stdin.on('data', chunk => {
   buf += chunk;
   if (id === null) {
@@ -137,7 +137,7 @@ process.stdin.on('data', chunk => {
     }, 200);
     return;
   }
-  if (!/Use the existing schema\\./.test(buf)) return;
+  if (!/${agentsDecide ? 'Proceed with your recommendations\\.' : 'Use the existing schema\\.'}/.test(buf)) return;
   buf = '';
   setTimeout(() => {
     process.stdout.write('\\nstub agent was answered\\n[[CDW:' + id + ':COMPLETE]]\\n');
@@ -441,14 +441,18 @@ describeLive('pipeline run live notes', () => {
 });
 
 describeLive('pipeline run live — an agent that needs input', () => {
-  it('reads the questions off the real terminal screen, types the answer in and completes', async () => {
+  it.each([
+    ['primary screen', false, false],
+    ['alternate screen', true, false],
+    ['alternate screen with agents decide', true, true],
+  ])('reads questions from the %s and handles the answer', async (_case, alternate, agentsDecide) => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-ask-'));
     temps.push(base);
     const tmuxDir = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-tmux-'));
     temps.push(tmuxDir);
     const home = path.join(base, 'codedeck');
     initRepo(home);
-    const askingStub = writeAskingAgent(base);
+    const askingStub = writeAskingAgent(base, { alternate, agentsDecide });
 
     const previousTmp = process.env.TMUX_TMPDIR;
     const previousTmux = process.env.TMUX;
@@ -479,7 +483,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         workflowId,
         workflowName: 'Ask',
         workflowRevision: 1,
-        agentsDecide: false,
+        agentsDecide,
         progressFile: null,
         notesDir: null,
         steps: [{
@@ -505,7 +509,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
 
     // The same capture the live backend uses for readScreen (server/index.js).
     const readScreen = async (sessionId) => {
-      const snapshot = runtime.captureSessionSnapshot(sessionId, 400);
+      const snapshot = runtime.captureAgentScreen(sessionId, 400);
       if (snapshot.historyGuaranteed !== true) throw new Error('screen capture failed');
       return snapshot.data.replace(/\r/g, '').split('\n');
     };
@@ -544,22 +548,24 @@ describeLive('pipeline run live — an agent that needs input', () => {
       const done = engine.start(runId);
       const waiting = await waitFor(() => {
         const run = runs.get(runId);
-        return run.status === 'needs_input' || run.status === 'error' ? run : null;
+        return ['needs_input', 'error', 'complete'].includes(run.status) ? run : null;
       }, 30000, 'run needs input or error');
-
-      expect(waiting.status).toBe('needs_input');
-      expect(waiting.inputRequest).toEqual({
-        questions: [
-          '1. Which schema should the migration target?',
-          'Recommended: the existing guardian schema.',
-          '2. May I delete the old index? Recommended: no.',
-        ].join('\n'),
-        truncated: false,
-      });
-
-      const answered = await engine.answer(runId, 'Use the existing schema.');
-      expect(answered.inputRequest).toBeNull();
-      expect(['running', 'complete']).toContain(answered.status);
+      const expectedQuestions = [
+        '1. Which schema should the migration target?',
+        'Recommended: the existing guardian schema.',
+        '2. May I delete the old index? Recommended: no.',
+      ].join('\n');
+      if (agentsDecide) {
+        expect(waiting.status).toBe('complete');
+        const decisions = createDecisionStore(db).list(runId, { offset: 0, limit: 10, direction: 'asc' });
+        expect(decisions).toEqual([expect.objectContaining({ questions: expectedQuestions, answer: 'Proceed with your recommendations.' })]);
+      } else {
+        expect(waiting.status).toBe('needs_input');
+        expect(waiting.inputRequest).toEqual({ questions: expectedQuestions, truncated: false });
+        const answered = await engine.answer(runId, 'Use the existing schema.');
+        expect(answered.inputRequest).toBeNull();
+        expect(['running', 'complete']).toContain(answered.status);
+      }
 
       await done;
       const finished = runs.get(runId);

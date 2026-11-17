@@ -11,7 +11,7 @@ const loop = toStepIndex => ({ mode: 'loop_back', toStepIndex, max: 20 });
 const LOOP = 'This step closes a loop: CodeDeck repeats the steps from "Develop" to "Test" in order, round after round. Use COMPLETE only when the whole task is finished and no step of the loop has work left; use CONTINUE when another round is needed.';
 const DECIDE = 'The owner is not available during this run. Do not stop for a decision you can make yourself: choose the option you would recommend, write down the decision and your reason where this project keeps such notes, and continue. Use NEEDS_INPUT only when you cannot continue at all.';
 const OPTIONS = { worktreePath: '/tmp/worktrees/run' };
-const BOUNDARY = "Work only inside this run's worktree, /tmp/worktrees/run, which is your current directory. Do not create, change or delete files outside it. If something you need is not in the worktree, do not look for it elsewhere: use NEEDS_INPUT and say what is missing.";
+const BOUNDARY = "Work only inside this run's worktree, /tmp/worktrees/run, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing.";
 
 describe('buildStepGuidance', () => {
   it('places run notes directly after the worktree boundary', () => {
@@ -24,6 +24,8 @@ describe('buildStepGuidance', () => {
     const def = definition(false, step('Develop'), step('Test', { mode: 'until_complete', max: 5 }));
     expect(buildStepGuidance(def, 0, OPTIONS)).toBe(BOUNDARY);
     expect(buildStepGuidance(def, 1, OPTIONS)).toBe(BOUNDARY);
+    expect(BOUNDARY).not.toContain('do not look for it elsewhere');
+    expect(BOUNDARY.startsWith("Work only inside this run's worktree")).toBe(true);
   });
 
   it('tells the step that closes a loop what COMPLETE and CONTINUE mean for the loop', () => {
@@ -51,6 +53,9 @@ describe('buildStepGuidance', () => {
     const def = definition(true, step(long), step(`${long}2`.slice(0, 64), loop(0)));
     const guidance = buildStepGuidance(def, 1, OPTIONS);
     expect(guidance.length).toBeLessThanOrEqual(2000);
+    const fixedLength = guidance.length - OPTIONS.worktreePath.length;
+    expect(fixedLength).toBe(1000);
+    expect(2000 - fixedLength).toBe(1000); // characters left for the worktree path
     expect(guidance).not.toMatch(/[\x00-\x1f\x7f]/);
   });
 
