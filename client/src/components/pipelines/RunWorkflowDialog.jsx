@@ -39,6 +39,7 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(false);
+  const selectedWorkflow = workflows.find(workflow => workflow.id === workflowId);
 
   useEffect(() => {
     let cancelled = false;
@@ -140,6 +141,8 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
                   style={FIELD_STYLE}
                 />
               </label>
+              <p className="pipeline-hint">What this run is about: a description of the task, or the path of a file its steps should work from.</p>
+              {selectedWorkflow?.progressFile?.includes('{input}') && <p className="pipeline-hint">This workflow reads its progress from {selectedWorkflow.progressFile}, so the input must be that file&apos;s path.</p>}
 
               {listable && (
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>

@@ -1907,8 +1907,60 @@ describe('pipelines API — decisions agents made', () => {
 });
 
 describe('pipelines API — progress file', () => {
+  async function startOptionalPlanRun(read) {
+    const ctx = await setup({ routerDeps: { progressReader: { read } } });
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'run-notes-plan', workflowId: workflow.id, project: 'Demo', input: 'build it' });
+    expect(started.status).toBe(201);
+    ctx.runStore.update(started.body.id, { worktreeState: 'present' });
+    return { ctx, started, view: () => request(ctx.app).get(`${base}/runs/${started.body.id}`) };
+  }
+
+  it('hides a missing optional run notes plan', async () => {
+    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'missing', phaseCount: null, phase: null }));
+    const { ctx, started, view } = await startOptionalPlanRun(read);
+    expect((await view()).body.progress).toBeNull();
+    expect(read).toHaveBeenLastCalledWith({ worktreePath: ctx.runStore.get(started.body.id).worktreePath, progressFile: `${started.body.notesDir}/plan.md` });
+  });
+
+  it('shows the current phase from an optional run notes plan', async () => {
+    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Build', tasksDone: 0, tasksTotal: 2 } }));
+    const { started, view } = await startOptionalPlanRun(read);
+    expect((await view()).body.progress).toEqual({ file: `${started.body.notesDir}/plan.md`, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Build', tasksDone: 0, tasksTotal: 2 } });
+  });
+
+  it('hides an optional run notes plan without phase sections', async () => {
+    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'no_phases', phaseCount: null, phase: null }));
+    const { view } = await startOptionalPlanRun(read);
+    expect((await view()).body.progress).toBeNull();
+  });
+
+  it('reports an unreadable optional run notes plan', async () => {
+    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'unreadable', phaseCount: null, phase: null }));
+    const { view } = await startOptionalPlanRun(read);
+    expect((await view()).body.progress).toMatchObject({ status: 'unreadable' });
+  });
+
+  it('reports a missing configured Progress file', async () => {
+    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'missing', phaseCount: null, phase: null }));
+    const { ctx, started, view } = await startOptionalPlanRun(read);
+    const old = ctx.runStore.get(started.body.id);
+    ctx.db.prepare('UPDATE pipeline_runs SET definition = ? WHERE id = ?').run(JSON.stringify({ ...old.definition, progressFile: 'docs/progress.md' }), old.id);
+    expect((await view()).body.progress).toMatchObject({ file: 'docs/progress.md', status: 'missing' });
+  });
+
+  it('does not read progress for an old run without notes or a Progress file', async () => {
+    const read = vi.fn();
+    const { ctx, started, view } = await startOptionalPlanRun(read);
+    const old = ctx.runStore.get(started.body.id);
+    ctx.db.prepare('UPDATE pipeline_runs SET definition = ? WHERE id = ?').run(JSON.stringify({ ...old.definition, notesDir: null }), old.id);
+    expect((await view()).body.progress).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  });
   it('follows the current workflow setting for a run without a progress snapshot', async () => {
-    const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 1 } }));
+    const read = vi.fn(async ({ progressFile }) => progressFile.endsWith('/plan.md')
+      ? { file: progressFile, status: 'missing', phaseCount: null, phase: null }
+      : { file: progressFile, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 1 } });
     const ctx = await setup({ routerDeps: { progressReader: { read } } });
     const agent = ctx.agentStore.create(agentBody());
     ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });

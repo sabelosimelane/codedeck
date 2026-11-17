@@ -72,7 +72,7 @@ export function buildReadme(definition, input) {
     const file = notePath(definition, index);
     lines.push(`${String(index).padStart(2, '0')}. ${step.name} — ${step.agent.name} — ${file ?? 'no note'}`);
   });
-  lines.push('', '## How notes work', '', 'Before starting, read this file and every earlier step note that exists.', 'Before your final signal, write or replace your own note.', 'Start your note with one line `# <one-line summary>`. Then record what was done, what was decided and why, what is left, and where things are (paths).', 'This folder is ignored by git, belongs to this run, and is safe to delete once the run is over.', '');
+  lines.push('', '## How notes work', '', 'Before starting, read this file and every earlier step note that exists.', 'Before your final signal, write or replace your own note.', 'Start your note with one line `# <one-line summary>`. Then record what was done, what was decided and why, what is left, and where things are (paths).', `If the work has phases, keep ${definition.notesDir}/plan.md with ## Phase N: <title> sections and - [ ] or - [x] tasks. CodeDeck shows the current phase from it.`, 'This folder is ignored by git, belongs to this run, and is safe to delete once the run is over.', '');
   return lines.join('\n');
 }
 

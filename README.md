@@ -83,13 +83,16 @@ appear as a toast. Resizing or reconnecting ends selection with a notice.
 
 ## Workflow pipelines
 
+An ordered workflow gives each agent a step, a prompt, and a handoff to the next step. Start with **Bug fix** or **Feature build** in the **Add workflow** chooser, choose an agent for every step, then save. **Blank** starts from one empty step. **Duplicate** copies an existing workflow and its agent choices into a new unsaved draft.
+
 Each new run has notes in `.codedeck/runs/<run-id-prefix>` inside its worktree. Git ignores the folder. Each step is asked to read earlier notes and write a summary of its work, decisions, remaining tasks, and paths before its final signal. CodeDeck keeps a copy of each step note when the pass ends and shows the history in the runs bar.
+When steps divide work into phases, they can keep `plan.md` in that run's notes folder with `## Phase N: <title>` sections and `- [ ]` or `- [x]` tasks. Without a configured Progress file, the runs bar reads this plan. If it is absent or has no phases, no progress line appears; an unreadable plan is reported.
 
 Open **Settings → Workflows** to add agents, choose a
 Setup agent, and save an ordered workflow. Each node has a prompt, an agent and a
 repeat rule: a single pass, repetition until completion with a maximum pass count,
 or a loop back to an earlier node (see below).
-Mark a node **Read-only step** to tell its agent to change nothing except its run note.
+Mark a node **Read-only step** to tell its agent to write only inside its run notes folder: its note, and a plan when its instructions ask for one. A run without a notes folder is told to change nothing in the worktree.
 Mark **Wait for my approval** to pause when the step finishes. The runs bar shows
 the step note; **Approve** advances, while **Send back** takes a comment and reruns
 the same step with that feedback. A step that closes a loop cannot wait for approval,
@@ -101,7 +104,8 @@ boxes and its task count. If the file is absent or cannot be read, the bar says
 "Progress file not found" or "Progress file could not be read" with its path.
 A run with a Progress file is refused when that file is not in the repository at its current commit, or in the chosen worktree. Each step's agent is told to create, change and delete files only inside the run's worktree. It may read outside files named by its instructions, skills or project documents. If the task's own files are missing from the worktree, it asks for input instead of searching other repositories.
 A run started without a progress file follows the workflow's current setting. If its
-input does not form a valid path, the runs bar shows no phase line.
+input does not form a valid path, the runs bar shows no phase line. A workflow with no Progress file uses the optional run notes plan above.
+The Feature build template plans phases in that file, then repeats Develop, Review and Test until all tasks pass before committing. The Bug fix template gates Analyse and Specify on owner approval before implementation.
 Write a skill as `/name` at the start of a prompt (for example `/feature-dev {input}`).
 Codex invokes skills with `$`, so when the CLI running the step is Codex, CodeDeck sends
 that leading `/name` as `$name`; the rest of the prompt is sent as written.

@@ -418,10 +418,12 @@ export function createPipelinesRouter(deps) {
       definitionProgressFile: run.definition.progressFile,
       workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null,
       input: run.input,
+      notesDir: run.definition.notesDir,
     });
-    const progress = progressFile !== null && ['present', 'external', 'removal_blocked'].includes(run.worktreeState)
-      ? await progressReader.read({ worktreePath: run.worktreePath, progressFile })
+    const inspected = progressFile !== null && ['present', 'external', 'removal_blocked'].includes(run.worktreeState)
+      ? await progressReader.read({ worktreePath: run.worktreePath, progressFile: progressFile.file })
       : null;
+    const progress = progressFile?.optional && ['missing', 'no_phases'].includes(inspected?.status) ? null : inspected;
     return buildRunView(run, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
   };
 

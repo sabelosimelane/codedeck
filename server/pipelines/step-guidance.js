@@ -33,7 +33,7 @@ export function buildStepGuidance(definition, stepIndex, options) {
   if (step.kind === 'node' && options.feedbackPath !== undefined) parts.push(`The owner sent this step back: read ${options.feedbackPath} before you start.`);
   if (step.kind === 'node' && step.readOnly === true) parts.push(definition.notesDir === null
     ? 'This step is read-only: change nothing in the worktree.'
-    : 'This step is read-only: change nothing in the worktree except your run note.');
+    : `This step is read-only: change nothing in the worktree except files in the run notes folder, ${definition.notesDir}.`);
   if (step.repeat?.mode === 'loop_back') {
     // The agent of this step alone decides whether the loop runs again, so it is told what the loop is.
     const { toStepIndex } = step.repeat;

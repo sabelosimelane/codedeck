@@ -52,6 +52,21 @@ afterEach(() => {
 });
 
 describe('RunWorkflowDialog', () => {
+  it('explains the input and path requirement only for a selected templated Progress file', async () => {
+    mockApi();
+    workflows[0].progressFile = 'docs/{input}';
+    workflows[1].progressFile = 'docs/todo.md';
+    try {
+      await renderDialog();
+      expect(screen.getByText('What this run is about: a description of the task, or the path of a file its steps should work from.')).toBeTruthy();
+      expect(screen.getByText('This workflow reads its progress from docs/{input}, so the input must be that file\'s path.')).toBeTruthy();
+      fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: workflows[1].id } });
+      expect(screen.queryByText(/so the input must be that file/)).toBeNull();
+    } finally {
+      delete workflows[0].progressFile;
+      delete workflows[1].progressFile;
+    }
+  });
   it('loads workflows and starts a run in a new worktree with the selected input', async () => {
     mockApi();
     const { onStart, onClose } = await renderDialog();

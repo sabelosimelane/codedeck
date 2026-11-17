@@ -16,7 +16,7 @@ const nextNodeKey = () => `node-${++lastNodeKey}`;
 // renamed or moved; the name is filled in when the workflow is saved.
 const blankNode = () => ({ key: nextNodeKey(), name: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '', readOnly: false, approval: false });
 
-function toDraft(workflow) {
+function toDraft(workflow, roleHints = null) {
   if (workflow === null) return { id: null, revision: null, name: '', agentsDecide: false, progressFile: '', nodes: [blankNode()] };
   const keys = workflow.nodes.map(nextNodeKey);
   return {
@@ -30,6 +30,7 @@ function toDraft(workflow) {
       name: node.name,
       agentId: node.agentId,
       prompt: node.prompt,
+      role: roleHints?.[index] ?? null,
       readOnly: node.readOnly,
       approval: node.approval,
       mode: node.repeat.mode,
@@ -75,10 +76,10 @@ function shownFields(nodeCount) {
 }
 
 /** Editor for one workflow: a draft of its name and ordered nodes, saved as a whole. */
-export default function WorkflowEditor({ workflow, agents, onSaved, onChanged, onCancel, onDirtyChange }) {
+export default function WorkflowEditor({ workflow, agents, roleHints = null, prefilled = false, onSaved, onChanged, onCancel, onDirtyChange }) {
   const { showToast } = useToast();
-  const [draft, setDraft] = useState(() => toDraft(workflow));
-  const [loaded, setLoaded] = useState(draft);
+  const [draft, setDraft] = useState(() => toDraft(workflow, roleHints));
+  const [loaded, setLoaded] = useState(() => prefilled ? toDraft(null) : toDraft(workflow, roleHints));
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
 
@@ -140,7 +141,7 @@ export default function WorkflowEditor({ workflow, agents, onSaved, onChanged, o
   return (
     <section className="pipeline-form" aria-label="Workflow editor">
       <h4>{draft.id === null ? 'New workflow' : 'Edit workflow'}</h4>
-      <TextField label="Workflow name" caption="Name" value={draft.name} onChange={name => setDraft(current => ({ ...current, name }))} error={errors.name} maxLength={64} placeholder="Feature" />
+      <TextField label="Workflow name" caption="Name" value={draft.name} onChange={name => setDraft(current => ({ ...current, name }))} error={errors.name} maxLength={64} placeholder="e.g. Bug fix" />
       <label className="pipeline-check">
         <input type="checkbox" aria-label="Let agents decide" checked={draft.agentsDecide} disabled={busy} onChange={event => setDraft(current => ({ ...current, agentsDecide: event.target.checked }))} />
         <span>Let agents decide — an agent that asks a question is told to go with its own recommendation instead of pausing the run; each one is recorded on the run. Setup still asks you.</span>
@@ -171,16 +172,17 @@ export default function WorkflowEditor({ workflow, agents, onSaved, onChanged, o
                 </div>
               </div>
               <div className="pipeline-node-row">
-                <TextField label={`Node ${number} name`} caption="Name" value={node.name} onChange={setNodeField(index, 'name')} error={errors[`${prefix}.name`]} maxLength={64} placeholder="Develop" />
+                <TextField label={`Node ${number} name`} caption="Name" value={node.name} onChange={setNodeField(index, 'name')} error={errors[`${prefix}.name`]} maxLength={64} placeholder="e.g. Analyse" />
                 <SelectField label={`Node ${number} agent`} caption="Agent" value={node.agentId} onChange={setNodeField(index, 'agentId')} error={errors[`${prefix}.agentId`]}>
                   <option value="">Choose an agent</option>
                   {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                 </SelectField>
+                {node.role && !node.agentId && <span className="pipeline-role-hint">{node.role}</span>}
               </div>
-              <TextField multiline rows={3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="/feature-dev {input}" />
+              <TextField multiline rows={3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="What this step should do. {input} is replaced with what you type when starting a run." />
               <label className="pipeline-check">
                 <input type="checkbox" aria-label={`Node ${number} read-only step`} checked={node.readOnly} disabled={busy} onChange={event => setNodeField(index, 'readOnly')(event.target.checked)} />
-                <span>Read-only step — The agent is told to change nothing except its run note.</span>
+                <span>Read-only step — The agent is told to change nothing except files in its run notes folder.</span>
               </label>
               {errors[`${prefix}.readOnly`] && <span className="pipeline-field-error">{errors[`${prefix}.readOnly`]}</span>}
               <label className="pipeline-check">

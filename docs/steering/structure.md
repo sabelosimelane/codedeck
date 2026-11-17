@@ -170,6 +170,7 @@ codedeck/
 The per-terminal Workflow bar and browser control messages were removed. Only pipeline runs use the loop engine through background terminal attachments.
 
 - `shared/pipeline-definitions.mjs`: shared definition validation and prompt composition.
+- `shared/workflow-templates.mjs`: immutable Bug fix and Feature build starting points, shared by client and server without saved template state.
 - `server/pipelines/`: revisioned SQLite stores, Git worktree operations, readiness
   classification, pure run state transitions and serialized background execution.
   `step-guidance.js` builds what a looping or self-deciding step is told beyond the

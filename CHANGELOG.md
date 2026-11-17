@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-17] - Workflow templates, Duplicate, and a run's own plan as its progress
+
+### Executive Summary
+* The only way to get a workflow was a blank editor whose examples described a feature build, and a run showed phase progress only if a Progress file had been configured. "Add workflow" now offers two starting points written in plain prompts, with no skills: Bug fix (analyse, specify, develop, review, test, commit, with the first two read-only and waiting for approval) and Feature build (plan, develop, review, test, commit). An existing workflow can be duplicated. The editor and the Run dialog describe a workflow in general terms. A run whose steps keep a `plan.md` in the run notes shows its phase from it without any setting. A read-only step may write inside the run notes folder, so a planning step can write that plan. This is the first half of the fourth phase.
+
+### Technical Details
+* **✨ New Feature:**
+  * `shared/workflow-templates.mjs` — New. `WORKFLOW_TEMPLATES` (Bug fix, Feature build) with node names, role hints, prompts, repeat rules and step options, and `buildTemplateDraft`; templates carry no agent ids.
+  * `client/src/components/pipelines/WorkflowList.jsx`, `client/src/components/pipelines/pipeline-settings.css` — A chooser behind "Add workflow" (Blank or a template) that pre-fills the editor with a unique name and a role hint beside each agent select; a Duplicate action that opens a copy as a new workflow.
+  * `server/pipelines/run-progress.js`, `server/routes/pipelines.js` — With no Progress file on the run or its workflow, `<notes folder>/plan.md` is the progress source, and a run that keeps no plan, or a plan without phase sections, shows nothing. A configured Progress file behaves as before.
+  * `server/pipelines/run-notes.js` — The README in the run notes says where to keep the plan and in what form.
+* **🐛 Bug Fix:**
+  * **Problem:** A read-only step was told to change nothing except its run note, which would stop a read-only planning step writing `plan.md` beside it.
+  * **Solution:** `server/pipelines/step-guidance.js` — A read-only step may change files in the run notes folder only; `client/src/components/pipelines/WorkflowEditor.jsx` says the same in the option's caption.
+* **🛠️ Codebase:**
+  * `client/src/components/pipelines/WorkflowEditor.jsx`, `client/src/components/pipelines/RunWorkflowDialog.jsx` — General placeholders; the Run dialog says what the input is, and that it must be a file path when the workflow's Progress file is built from it.
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md`, `docs/steering/api-standards.md`, `docs/steering/structure.md` — Templates, Duplicate, the plan default and read-only steps.
+* **🧪 Tests:**
+  * `server/__tests__/workflow-templates.test.js` — New. The two templates as specified, drafts that pass validation once agents are chosen, `{input}` where required, no skill invocation, prompt limits, and files written by read-only steps staying in the run notes folder.
+  * `server/__tests__/pipeline-run-progress.test.js`, `server/__tests__/pipeline-run-notes.test.js`, `server/__tests__/pipeline-step-guidance.test.js`, `server/__tests__/pipelines-api.test.js` — The resolution order and its optional flag, the README, the read-only sentence within the instruction budget, and each plan case (none, with phases, without phase sections, a configured file that is missing, an old run without notes).
+  * `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx`, `client/src/components/pipelines/__tests__/RunWorkflowDialog.test.jsx` — The chooser, pre-fill and role hints, a unique name, Duplicate, placeholders, the caption and the input hints.
+  * Server suite: 81 files, 2,296 tests passed. Client suite: 68 files, 1,064 tests passed.
+
 ## [2026-11-17] - Terminals and runs grouped by worktree
 
 ### Executive Summary

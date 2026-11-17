@@ -17,16 +17,20 @@ describe('isProgressFileInWorktree preconditions', () => {
 });
 
 describe('resolveRunProgressFile', () => {
-  const resolve = (definitionProgressFile, workflowProgressFile, input = 'todo.md') =>
-    resolveRunProgressFile({ definitionProgressFile, workflowProgressFile, input });
+  const resolve = (definitionProgressFile, workflowProgressFile, input = 'todo.md', notesDir = null) =>
+    resolveRunProgressFile({ definitionProgressFile, workflowProgressFile, input, notesDir });
 
   it('keeps the run snapshot over a changed workflow setting', () => {
-    expect(resolve('docs/original.md', 'docs/{input}')).toBe('docs/original.md');
+    expect(resolve('docs/original.md', 'docs/{input}', 'todo.md', '.codedeck/runs/12345678')).toEqual({ file: 'docs/original.md', optional: false });
   });
   it('composes the current workflow template once when the snapshot is null', () => {
-    expect(resolve(null, 'docs/{input}', 'tasks/todo.md')).toBe('docs/tasks/todo.md');
-    expect(resolve(null, 'docs/{input}', '$&.md')).toBe('docs/$&.md');
-    expect(resolve(null, 'docs/todo.md')).toBe('docs/todo.md');
+    expect(resolve(null, 'docs/{input}', 'tasks/todo.md')).toEqual({ file: 'docs/tasks/todo.md', optional: false });
+    expect(resolve(null, 'docs/{input}', '$&.md')).toEqual({ file: 'docs/$&.md', optional: false });
+    expect(resolve(null, 'docs/todo.md')).toEqual({ file: 'docs/todo.md', optional: false });
+  });
+  it('uses the run notes plan only when no configured file applies', () => {
+    expect(resolve(null, null, 'task', '.codedeck/runs/12345678')).toEqual({ file: '.codedeck/runs/12345678/plan.md', optional: true });
+    expect(resolve(null, 'docs/{input}', 'invalid task', '.codedeck/runs/12345678')).toBeNull();
   });
   it('returns null without a workflow setting or when the composed path is invalid', () => {
     expect(resolve(null, null)).toBeNull();
@@ -41,6 +45,9 @@ describe('resolveRunProgressFile', () => {
     expect(() => resolve(null, 1)).toThrow(/workflowProgressFile/);
     expect(() => resolve(null, null, null)).toThrow(TypeError);
     expect(() => resolve(null, null, null)).toThrow(/input/);
+    for (const notesDir of [undefined, 1, '', '/tmp/notes', '.codedeck/runs/bad', '../escape']) {
+      expect(() => resolveRunProgressFile({ definitionProgressFile: null, workflowProgressFile: null, input: '', notesDir })).toThrow(/notesDir/);
+    }
   });
 });
 

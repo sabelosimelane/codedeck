@@ -106,6 +106,7 @@ describe('run notes', () => {
   });
   it('describes every step and its handoff', () => {
     const readme = buildReadme(definition, 'do a thing');
+    expect(readme).toContain(`${definition.notesDir}/plan.md`);
     expect(readme).toContain('do a thing');
     expect(readme).toContain('01-build-things.md');
     expect(readme).toContain('Setup');

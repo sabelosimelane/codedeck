@@ -104,7 +104,10 @@ async function renderSettings(seed) {
 const agents = () => within(screen.getByRole('region', { name: 'Agents' }));
 const workflows = () => within(screen.getByRole('region', { name: 'Workflows' }));
 const type = (label, value) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
-const click = name => fireEvent.click(screen.getByRole('button', { name }));
+const click = name => {
+  fireEvent.click(screen.getByRole('button', { name }));
+  if (name === 'Add workflow') fireEvent.click(screen.getByRole('button', { name: 'Blank' }));
+};
 const toast = (kind, message) => expect(showToast).toHaveBeenCalledWith({ type: kind, message });
 const lastDirty = () => onDirtyChange.mock.calls.at(-1)?.[0];
 const nodeNames = () => screen.getAllByLabelText(/^Node \d+ name$/).map(input => input.value);
@@ -564,6 +567,46 @@ describe('PipelineSettings setup agent', () => {
 });
 
 describe('PipelineSettings workflows', () => {
+  it('offers blank and templates, prefills role hints and creates only after agents are chosen', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature(), { ...feature(), id: A2, name: 'Bug fix' }] });
+    fireEvent.click(screen.getByRole('button', { name: 'Add workflow' }));
+    expect(screen.getByRole('button', { name: 'Blank' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Bug fix.*Investigate/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Feature build.*Plan/ })).toBeTruthy();
+    click(/Bug fix.*Investigate/);
+    expect(screen.getByLabelText('Workflow name').value).toBe('Bug fix 2');
+    expect(nodeNames()).toEqual(['Analyse', 'Specify', 'Develop', 'Review', 'Test', 'Commit']);
+    expect(screen.getByLabelText('Node 1 read-only step').checked).toBe(true);
+    expect(screen.getByLabelText('Node 1 wait for my approval').checked).toBe(true);
+    expect(screen.getByLabelText('Node 1 agent').value).toBe('');
+    expect(screen.getByText('Investigator')).toBeTruthy();
+    expect(lastDirty()).toBe(true);
+    for (let index = 1; index <= 6; index++) type(`Node ${index} agent`, A1);
+    click('Save workflow');
+    await waitFor(() => expect(backend.mutations()).toHaveLength(1));
+    expect(backend.mutations()[0].body.nodes[4].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 5 });
+    expect(backend.mutations()[0].body.nodes[0].role).toBeUndefined();
+  });
+
+  it('duplicates as a new workflow with agents and unique bounded name', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature(), { ...feature(), id: A2, name: 'Copy of Feature' }] });
+    click('Duplicate workflow Feature');
+    expect(screen.getByLabelText('Workflow name').value).toBe('Copy of Feature 2');
+    expect(screen.getByLabelText('Node 1 agent').value).toBe(A1);
+    expect(lastDirty()).toBe(true);
+    click('Save workflow');
+    await waitFor(() => expect(backend.mutations()).toHaveLength(1));
+    expect(backend.mutations()[0]).toMatchObject({ method: 'POST', path: '/workflows', body: { name: 'Copy of Feature 2' } });
+  });
+
+  it('uses general editor placeholders', async () => {
+    await renderSettings({ agents: [codex()] });
+    click('Add workflow');
+    expect(screen.getByLabelText('Workflow name').placeholder).toBe('e.g. Bug fix');
+    expect(screen.getByLabelText('Node 1 name').placeholder).toBe('e.g. Analyse');
+    expect(screen.getByLabelText('Node 1 prompt').placeholder).toBe('What this step should do. {input} is replaced with what you type when starting a run.');
+  });
+
   it('asks for an agent before a workflow can be added', async () => {
     await renderSettings();
     expect(screen.getByRole('button', { name: 'Add workflow' }).disabled).toBe(true);
@@ -899,6 +942,7 @@ describe('PipelineSettings workflows — loops and who decides', () => {
     await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
     click('Edit workflow Feature');
     const readOnly = screen.getByRole('checkbox', { name: 'Node 1 read-only step' });
+    expect(screen.getAllByText('Read-only step — The agent is told to change nothing except files in its run notes folder.')).toHaveLength(2);
     const approval = screen.getByRole('checkbox', { name: 'Node 2 wait for my approval' });
     expect(lastDirty()).toBe(false);
     fireEvent.click(readOnly);

@@ -9,6 +9,9 @@
 .pipeline-settings button:disabled { opacity: 0.4; cursor: default; }
 .pipeline-settings button.pipeline-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); font-weight: 600; }
 .pipeline-settings button.pipeline-add { color: var(--accent); }
+.pipeline-template-chooser { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); }
+.pipeline-template-chooser button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
+.pipeline-template-chooser span, .pipeline-role-hint { color: var(--text-secondary); font-size: 12px; }
 .pipeline-settings button.pipeline-danger { color: var(--danger); }
 
 .pipeline-settings input, .pipeline-settings select, .pipeline-settings textarea { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-base); color: var(--text-primary); font-family: var(--font-mono); font-size: 12px; outline: none; }

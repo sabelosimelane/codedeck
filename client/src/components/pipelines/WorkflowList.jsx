@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
-import { Pencil, Plus, Trash2 } from 'lucide-react';
+import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
 import { deleteWorkflow } from '../../utils/pipelinesApi';
+import { WORKFLOW_TEMPLATES, buildTemplateDraft } from '../../../../shared/workflow-templates.mjs';
 import { useToast } from '../ToastContext';
 import WorkflowEditor from './WorkflowEditor';
 import { failureMessage } from './definitionForm';
@@ -12,6 +13,20 @@ function summary(workflow) {
   return `${count} ${count === 1 ? 'node' : 'nodes'}: ${names.join(' → ')}${workflow.agentsDecide ? ' · agents decide' : ''}`;
 }
 
+function uniqueName(name, workflows) {
+  if (typeof name !== 'string' || !name.trim()) throw new TypeError('name must be a non-empty string');
+  if (!Array.isArray(workflows)) throw new TypeError('workflows must be an array');
+  const taken = new Set(workflows.map(workflow => workflow.name.trim().toLowerCase()));
+  const base = name.slice(0, 64);
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let number = 2; number <= workflows.length + 2; number++) {
+    const suffix = ` ${number}`;
+    const candidate = `${name.slice(0, 64 - suffix.length)}${suffix}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  throw new Error('Could not choose a unique workflow name');
+}
+
 /** Workflows list; one workflow at a time is open in the editor. */
 export default function WorkflowList({ workflows, agents, onChanged, onDirtyChange }) {
   const { showToast } = useToast();
@@ -20,6 +35,7 @@ export default function WorkflowList({ workflows, agents, onChanged, onDirtyChan
   const [opened, setOpened] = useState(0);
   const [busy, setBusy] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
+  const [choosing, setChoosing] = useState(false);
 
   const reportDirty = useCallback((dirty) => {
     setEditorDirty(dirty);
@@ -27,12 +43,22 @@ export default function WorkflowList({ workflows, agents, onChanged, onDirtyChan
   }, [onDirtyChange]);
 
   // Opening another workflow would replace the editor, so an unsaved draft is only dropped on purpose.
-  const open = (workflow) => {
+  const open = (workflow, roleHints = null, prefilled = false) => {
     if (editorDirty && !window.confirm('Discard the unsaved changes to this workflow?')) return;
-    setEditing({ workflow });
+    setChoosing(false);
+    setEditing({ workflow, roleHints, prefilled });
     setOpened(count => count + 1);
   };
   const close = () => setEditing(null);
+  const chooseTemplate = (template) => {
+    const draft = buildTemplateDraft(template.id);
+    open({ ...draft, id: null, revision: null, name: uniqueName(draft.name, workflows) }, template.nodes.map(node => node.role), true);
+  };
+  const duplicate = (workflow) => open({
+    id: null, revision: null, name: uniqueName(`Copy of ${workflow.name}`, workflows),
+    agentsDecide: workflow.agentsDecide, progressFile: workflow.progressFile,
+    nodes: workflow.nodes.map(node => ({ ...node, repeat: { ...node.repeat } })),
+  }, null, true);
 
   const remove = async (workflow) => {
     if (!window.confirm(`Delete workflow "${workflow.name}"?`)) return;
@@ -65,6 +91,7 @@ export default function WorkflowList({ workflows, agents, onChanged, onDirtyChan
               <span className="pipeline-item-meta">{summary(workflow)}</span>
             </div>
             <div className="pipeline-item-actions">
+              <button type="button" aria-label={`Duplicate workflow ${workflow.name}`} title="Duplicate" disabled={busy} onClick={() => duplicate(workflow)}><Copy size={13} /></button>
               <button type="button" aria-label={`Edit workflow ${workflow.name}`} title="Edit" disabled={busy} onClick={() => open(workflow)}>
                 <Pencil size={13} />
               </button>
@@ -78,15 +105,23 @@ export default function WorkflowList({ workflows, agents, onChanged, onDirtyChan
 
       {editing === null ? (
         <>
-          <button type="button" className="pipeline-add" disabled={busy || agents.length === 0} onClick={() => open(null)}>
+          <button type="button" className="pipeline-add" disabled={busy || agents.length === 0} aria-expanded={choosing} onClick={() => setChoosing(value => !value)}>
             <Plus size={12} /> Add workflow
           </button>
+          {choosing && <div className="pipeline-template-chooser" aria-label="Workflow starting point">
+            <button type="button" onClick={() => open(null)}>Blank</button>
+            {WORKFLOW_TEMPLATES.map(template => <button type="button" key={template.id} onClick={() => chooseTemplate(template)}>
+              <strong>{template.name}</strong><span>{template.description}</span>
+            </button>)}
+          </div>}
           {agents.length === 0 && <p className="pipeline-hint">Add an agent before creating a workflow.</p>}
         </>
       ) : (
         <WorkflowEditor
           key={opened}
           workflow={editing.workflow}
+          roleHints={editing.roleHints}
+          prefilled={editing.prefilled}
           agents={agents}
           onSaved={async () => { close(); await onChanged(); }}
           onChanged={onChanged}

@@ -1,17 +1,19 @@
 import path from 'node:path';
 import defaultFs from 'node:fs/promises';
 import { composePrompt, isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
+import { NOTES_DIR } from './run-notes.js';
 
 const LIMIT = 1_048_576;
 
-export function resolveRunProgressFile({ definitionProgressFile, workflowProgressFile, input }) {
+export function resolveRunProgressFile({ definitionProgressFile, workflowProgressFile, input, notesDir }) {
   if (definitionProgressFile !== null && typeof definitionProgressFile !== 'string') throw new TypeError('definitionProgressFile must be null or a string');
   if (workflowProgressFile !== null && typeof workflowProgressFile !== 'string') throw new TypeError('workflowProgressFile must be null or a string');
   if (typeof input !== 'string') throw new TypeError('input must be a string');
-  if (definitionProgressFile !== null) return definitionProgressFile;
-  if (workflowProgressFile === null) return null;
+  if (notesDir !== null && (typeof notesDir !== 'string' || !NOTES_DIR.test(notesDir))) throw new TypeError('notesDir must be null or a run notes path');
+  if (definitionProgressFile !== null) return { file: definitionProgressFile, optional: false };
+  if (workflowProgressFile === null) return notesDir === null ? null : { file: `${notesDir}/plan.md`, optional: true };
   const composed = composePrompt(workflowProgressFile, input);
-  return isProgressFilePath(composed, 512) ? composed : null;
+  return isProgressFilePath(composed, 512) ? { file: composed, optional: false } : null;
 }
 
 export function parsePhaseProgress(markdown) {

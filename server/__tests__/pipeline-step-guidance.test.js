@@ -17,8 +17,8 @@ describe('buildStepGuidance', () => {
   it('places feedback and read-only rules after notes', () => {
     const def = { ...definition(false, { ...step('Analyse'), readOnly: true, approval: true }), notesDir: '.codedeck/runs/abcdef12' };
     const guidance = buildStepGuidance(def, 0, { ...OPTIONS, feedbackPath: '.codedeck/runs/abcdef12/00-analyse.feedback.md' });
-    expect(guidance).toContain('The owner sent this step back: read .codedeck/runs/abcdef12/00-analyse.feedback.md before you start. This step is read-only: change nothing in the worktree except your run note.');
-    expect(buildStepGuidance({ ...def, notesDir: null }, 0, OPTIONS)).toContain('This step is read-only: change nothing in the worktree.');
+    expect(guidance).toContain('The owner sent this step back: read .codedeck/runs/abcdef12/00-analyse.feedback.md before you start. This step is read-only: change nothing in the worktree except files in the run notes folder, .codedeck/runs/abcdef12.');
+    expect(buildStepGuidance({ ...def, notesDir: null }, 0, OPTIONS)).toBe(`${BOUNDARY} This step is read-only: change nothing in the worktree.`);
   });
   it('places run notes directly after the worktree boundary', () => {
     const def = { ...definition(true, step('Setup', { mode: 'once' }, 'setup'), step('Build')), notesDir: '.codedeck/runs/abcdef12' };
@@ -70,6 +70,9 @@ describe('buildStepGuidance', () => {
     const worst = buildStepGuidance(def, 0, { ...OPTIONS, feedbackPath: '.codedeck/runs/abcdef12/00-analyse.feedback.md' });
     expect(worst.length).toBeGreaterThan(plain.length);
     expect(worst.length).toBeLessThanOrEqual(2000);
+    const fixedLength = worst.length - OPTIONS.worktreePath.length;
+    expect(fixedLength).toBe(1019);
+    expect(2000 - fixedLength).toBe(981); // room left for the worktree path
     expect(worst).not.toMatch(/[\x00-\x1f\x7f]/);
   });
 
