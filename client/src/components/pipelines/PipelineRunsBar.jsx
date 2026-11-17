@@ -1,15 +1,25 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Check } from 'lucide-react';
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../../../shared/pipeline-definitions.mjs';
+import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
 
 const ACCEPT_RECOMMENDATIONS = ACCEPT_RECOMMENDATIONS_ANSWER;
 
 function passLabel(step) {
-  if (step?.repeat?.mode === 'until_complete' && typeof step.repeat.max === 'number') {
-    return `${step.iteration ?? 0}/${step.repeat.max}`;
+  if (step.repeat?.mode === 'until_complete') {
+    if (step.status === 'complete') {
+      return `${step.iteration} ${step.iteration === 1 ? 'pass' : 'passes'}`;
+    }
+    return step.iteration >= 1
+      ? `pass ${step.iteration} (max ${step.repeat.max})`
+      : `max ${step.repeat.max} passes`;
   }
   // A step that loops back counts rounds of its loop: the ones it sent back, plus the current one.
-  if (step?.repeat?.mode === 'loop_back') {
-    return `round ${step.roundsCompleted + 1}/${step.repeat.max}`;
+  if (step.repeat?.mode === 'loop_back') {
+    const rounds = step.roundsCompleted + 1;
+    return step.status === 'complete'
+      ? `${rounds} ${rounds === 1 ? 'round' : 'rounds'}`
+      : `round ${rounds} (max ${step.repeat.max})`;
   }
   return null;
 }
@@ -28,7 +38,7 @@ function resumeConfirmation(run, step) {
 
 function chipLabel(step) {
   const pass = passLabel(step);
-  return pass ? `${step.name} ${step.status} ${pass}` : `${step.name} ${step.status}`;
+  return pass ? `${step.name} ${step.status} · ${pass}` : `${step.name} ${step.status}`;
 }
 
 /**
@@ -215,6 +225,9 @@ export default function PipelineRunsBar({
     >
       {runs.map((run) => {
         const currentStep = run.steps?.[run.currentStepIndex] || run.steps?.find((step) => step.sessionId) || run.steps?.[0];
+        const blockedCleanup = run.worktree?.state === 'removal_blocked' && run.worktree.detail
+          ? describeBlockedCleanup(run.worktree.detail)
+          : null;
         return (
           <div key={run.id} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div
@@ -243,6 +256,9 @@ export default function PipelineRunsBar({
                     aria-label={label}
                     title={label}
                     style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
                       padding: '2px 8px',
                       borderRadius: 999,
                       border: '1px solid var(--border)',
@@ -252,6 +268,7 @@ export default function PipelineRunsBar({
                       opacity: step.sessionId ? 1 : 0.6,
                     }}
                   >
+                    {step.status === 'complete' && <Check size={12} color="var(--accent)" aria-hidden="true" />}
                     {label}
                   </button>
                 );
@@ -261,8 +278,18 @@ export default function PipelineRunsBar({
             {run.error && (
               <span style={{ color: 'var(--danger)' }}>{run.error}</span>
             )}
-            {run.worktree?.state === 'removal_blocked' && run.worktree.detail && (
-              <span style={{ color: 'var(--warning)' }}>{run.worktree.detail}</span>
+            {blockedCleanup && (
+              <>
+                <span style={{ color: 'var(--warning)' }}>{blockedCleanup.summary}</span>
+                {blockedCleanup.paths.length > 0 && (
+                  <details>
+                    <summary>Show files</summary>
+                    <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                      {blockedCleanup.paths.map((path, index) => <div key={`${index}-${path}`}>{path}</div>)}
+                    </div>
+                  </details>
+                )}
+              </>
             )}
 
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>

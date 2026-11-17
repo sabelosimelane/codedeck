@@ -11,6 +11,7 @@ import {
   stopRun as apiStopRun,
 } from '../utils/pipelinesApi';
 import { parseDecisionPage, parseInputRequest, parseRunAutonomy } from '../utils/pipelineRunRecords';
+import { describeBlockedCleanup } from '../utils/pipelineWorktreeCleanup';
 
 // What the runs bar shows of a run is checked before the run is shown.
 function checkRun(run, index) {
@@ -245,7 +246,9 @@ export function usePipelineRuns({ projectName, showToast }) {
       if (next.worktree?.state === 'removal_blocked') {
         showToast({
           type: 'error',
-          message: next.worktree.detail || `${next.workflowName || 'Workflow'} worktree cleanup was blocked`,
+          message: next.worktree.detail
+            ? describeBlockedCleanup(next.worktree.detail).summary
+            : `${next.workflowName || 'Workflow'} worktree cleanup was blocked`,
         });
       } else if (next.worktree?.state === 'released') {
         showToast({

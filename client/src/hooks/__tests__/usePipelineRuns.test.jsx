@@ -382,7 +382,7 @@ describe('usePipelineRuns', () => {
 
     expect(showToast).toHaveBeenCalledWith({
       type: 'error',
-      message: 'contains modified or untracked files\ntmp.out',
+      message: 'Worktree kept: it has uncommitted work. Commit or discard the files, then choose Clean up worktree.',
     });
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({
       type: 'success',

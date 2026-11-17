@@ -63,11 +63,11 @@ describe('PipelineRunsBar', () => {
 
     expect(screen.getByText('Feature')).toBeTruthy();
     expect(screen.getByText('workflow/feature-abcd')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Setup complete 1\/3/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Implement running 2\/5/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Setup complete · 1 pass' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Implement running · pass 2 (max 5)' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(onStop).toHaveBeenCalledWith('r1');
-    fireEvent.click(screen.getByRole('button', { name: /Implement running 2\/5/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Implement running · pass 2 (max 5)' }));
     expect(onActivateStep).toHaveBeenCalledWith('Demo-2');
   });
 
@@ -136,7 +136,7 @@ describe('PipelineRunsBar', () => {
     expect(onResume).not.toHaveBeenCalled();
   });
 
-  it('shows error and blocked-cleanup detail', () => {
+  it('shows a plain blocked-cleanup summary with dirty files collapsed', () => {
     render(
       <PipelineRunsBar
         runs={[runView({
@@ -146,7 +146,7 @@ describe('PipelineRunsBar', () => {
           worktree: {
             branch: 'workflow/feature-abcd',
             state: 'removal_blocked',
-            detail: 'contains modified or untracked files: notes.txt',
+            detail: "fatal: '/tmp/worktree' contains modified or untracked files, use --force to delete it\nnotes.txt\ntmp.out",
           },
         })]}
         onStop={vi.fn()}
@@ -157,8 +157,32 @@ describe('PipelineRunsBar', () => {
       />,
     );
 
-    expect(screen.getByText(/contains modified or untracked files/i)).toBeTruthy();
+    expect(screen.getByText('Worktree kept: it has uncommitted work. Commit or discard the files, then choose Clean up worktree.')).toBeTruthy();
+    const disclosure = screen.getByText('Show files').closest('details');
+    expect(disclosure).toBeTruthy();
+    expect(disclosure.open).toBe(false);
+    expect(within(disclosure).getByText('notes.txt')).toBeTruthy();
+    expect(within(disclosure).getByText('tmp.out')).toBeTruthy();
+    expect(screen.queryByText(/fatal:/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Clean up worktree' })).toBeTruthy();
+  });
+
+  it('shows a single-line blocked-cleanup detail without a file disclosure', () => {
+    render(
+      <PipelineRunsBar
+        runs={[runView({
+          worktree: { branch: 'workflow/feature-abcd', state: 'removal_blocked', detail: 'fatal: worktree is locked' },
+        })]}
+        onStop={vi.fn()}
+        onResume={vi.fn()}
+        onContinue={vi.fn()}
+        onCleanup={vi.fn()}
+        onActivateStep={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('fatal: worktree is locked')).toBeTruthy();
+    expect(screen.queryByText('Show files')).toBeNull();
   });
 
   it('offers Dismiss run, not worktree cleanup, for a run in an existing worktree', () => {
@@ -322,7 +346,7 @@ describe('PipelineRunsBar — loops and decisions agents made', () => {
 
   it('shows which round a loop is on, on the step that loops back', () => {
     renderBar(loopRun());
-    expect(screen.getByRole('button', { name: 'Test running round 3/20' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Test running · round 3 (max 20)' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Develop complete' })).toBeTruthy();
   });
 
@@ -330,7 +354,45 @@ describe('PipelineRunsBar — loops and decisions agents made', () => {
     const run = loopRun();
     run.steps[1] = { ...run.steps[1], status: 'pending', roundsCompleted: 0 };
     renderBar(run);
-    expect(screen.getByRole('button', { name: 'Test pending round 1/20' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Test pending · round 1 (max 20)' })).toBeTruthy();
+  });
+
+  it('shows completed loop counts with the right singular or plural noun', () => {
+    const run = loopRun();
+    run.steps[1] = { ...run.steps[1], status: 'complete', roundsCompleted: 5, repeat: { ...run.steps[1].repeat, max: 12 } };
+    const { rerender } = renderBar(run);
+    expect(screen.getByRole('button', { name: 'Test complete · 6 rounds' })).toBeTruthy();
+
+    rerender(loopRun({ steps: [{ ...run.steps[1], roundsCompleted: 0 }] }));
+    expect(screen.getByRole('button', { name: 'Test complete · 1 round' })).toBeTruthy();
+  });
+
+  it('shows completed passes and pending pass limits', () => {
+    const run = runView();
+    run.steps[0] = { ...run.steps[0], iteration: 2 };
+    run.steps[1] = { ...run.steps[1], status: 'pending', iteration: 0, repeat: { mode: 'until_complete', max: 3 } };
+    renderBar(run);
+    expect(screen.getByRole('button', { name: 'Setup complete · 2 passes' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Implement pending · max 3 passes' })).toBeTruthy();
+  });
+
+  it('shows a tick only on complete chips and keeps labels free of progress fractions', () => {
+    const run = loopRun({ steps: [
+      runView().steps[0],
+      runView().steps[1],
+      { ...loopRun().steps[1], index: 2 },
+      { ...loopRun().steps[0], index: 3 },
+    ] });
+    renderBar(run);
+    const complete = screen.getByRole('button', { name: 'Setup complete · 1 pass' });
+    const running = screen.getByRole('button', { name: 'Implement running · pass 2 (max 5)' });
+    expect(complete.querySelector('svg')).toBeTruthy();
+    expect(complete.querySelector('svg').getAttribute('aria-hidden')).toBe('true');
+    expect(running.querySelector('svg')).toBeNull();
+    expect(complete.getAttribute('title')).toBe(complete.getAttribute('aria-label'));
+    expect(running.getAttribute('title')).toBe(running.getAttribute('aria-label'));
+    expect([...screen.getByTestId('pipeline-runs-bar').querySelectorAll('button[aria-label]')]
+      .map(chip => chip.textContent).join(' ')).not.toMatch(/\d+\/\d+/);
   });
 
   it('marks a run whose agents decide, and only such a run', () => {
