@@ -23,6 +23,7 @@ function definition(overrides = {}) {
     workflowRevision: 1,
     agentsDecide: false,
     progressFile: null,
+    notesDir: null,
     steps: [
       {
         kind: 'node',
@@ -82,6 +83,14 @@ function validRun(overrides = {}) {
 }
 
 describe('pipeline run store', () => {
+  it('validates notesDir and backfills absent stored values on reopen', () => {
+    const { db, store } = setup();
+    expect(() => store.create(validRun({ definition: definition({ notesDir: '../bad' }) }))).toThrow(/definition.notesDir/);
+    const created = store.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    expect(created.definition.notesDir).toBe('.codedeck/runs/abcdef12');
+    db.prepare('UPDATE pipeline_runs SET definition = json_remove(definition, ?) WHERE id = ?').run('$.notesDir', created.id);
+    expect(createRunStore(db).get(created.id).definition.notesDir).toBeNull();
+  });
   it('creates a run with a UUID and timestamps', () => {
     const { store } = setup();
     const created = store.create(validRun());

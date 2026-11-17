@@ -13,6 +13,7 @@ function runView(overrides = {}) {
     workflowName: 'Feature',
     agentsDecide: false,
     progress: null,
+    notesDir: null,
     decisionCount: 0,
     project: 'Demo',
     input: 'build',
@@ -59,6 +60,25 @@ afterEach(() => {
 });
 
 describe('usePipelineRuns', () => {
+  it('loads and validates a run notes page', async () => {
+    global.fetch = vi.fn(async url => String(url).includes('/notes?')
+      ? { ok: true, status: 200, json: async () => ({ data: [], page: { currentPage: 0, size: 50, totalElements: 0, totalPages: 0, hasNextPage: false } }) }
+      : okList([]));
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    let loaded;
+    await act(async () => { loaded = await result.current.loadRunNotes('r1', 0); });
+    expect(loaded).toEqual({ notes: [], hasNextPage: false, total: 0 });
+  });
+  it('toasts when a run notes page cannot load', async () => {
+    global.fetch = vi.fn(async url => String(url).includes('/notes?')
+      ? { ok: false, status: 500, json: async () => ({ detail: 'Notes unavailable' }) }
+      : okList([]));
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    let loaded;
+    await act(async () => { loaded = await result.current.loadRunNotes('r1', 0); });
+    expect(loaded).toBeNull();
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Pipelines request failed (500)' });
+  });
   it('polls open runs every 2s for the active project', async () => {
     const first = runView({ id: 'r1', status: 'running' });
     const second = runView({ id: 'r1', status: 'complete', worktree: { ...runView().worktree, state: 'removal_blocked' } });

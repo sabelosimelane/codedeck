@@ -82,6 +82,8 @@ appear as a toast. Resizing or reconnecting ends selection with a notice.
 
 ## Workflow pipelines
 
+Each new run has notes in `.codedeck/runs/<run-id-prefix>` inside its worktree. Git ignores the folder. Each step is asked to read earlier notes and write a summary of its work, decisions, remaining tasks, and paths before its final signal. CodeDeck keeps a copy of each step note when the pass ends and shows the history in the runs bar.
+
 Open **Settings → Workflows** to add agents, choose a
 Setup agent, and save an ordered workflow. Each node has a prompt, an agent and a
 repeat rule: a single pass, repetition until completion with a maximum pass count,

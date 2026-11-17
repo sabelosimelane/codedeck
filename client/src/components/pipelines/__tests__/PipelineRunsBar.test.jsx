@@ -49,6 +49,44 @@ afterEach(() => {
 
 describe('PipelineRunsBar', () => {
   it.each([
+    ['missing', 'left no note on its last pass'],
+    ['unchanged', 'did not update its note on its last pass'],
+    ['unreadable', 'note could not be read on its last pass'],
+    ['too_large', 'note is too large on its last pass'],
+  ])('warns for %s notes', (status, warning) => {
+    const run = runView({ notesDir: '.codedeck/runs/abcdef12', steps: [{ ...runView().steps[1], index: 0, kind: 'node', note: { status, summary: null, attempt: 1, pass: 1, createdAt: '2026-11-13T12:00:00.000Z' } }] });
+    render(<PipelineRunsBar runs={[run]} onLoadNotes={vi.fn()} />);
+    expect(screen.getByText(`Implement ${warning}`)).toBeTruthy();
+  });
+  it('hides Notes for runs created before notes existed', () => {
+    render(<PipelineRunsBar runs={[runView({ notesDir: null })]} />);
+    expect(screen.queryByRole('button', { name: 'Notes' })).toBeNull();
+  });
+  it('shows notes, newest first, and warns when a step left no note', async () => {
+    const run = runView({ notesDir: '.codedeck/runs/abcdef12', steps: [
+      { ...runView().steps[0], kind: 'setup', notePath: null, note: null },
+      { ...runView().steps[1], kind: 'node', notePath: '.codedeck/runs/abcdef12/01-implement.md', note: { status: 'missing', summary: null, attempt: 1, pass: 2, createdAt: '2026-11-13T12:00:00.000Z' } },
+    ] });
+    const load = vi.fn(async () => ({ notes: [{ id: 1, stepName: 'Implement', pass: 1, summary: 'First', content: '# First\nChanged a file' }], hasNextPage: false, total: 1 }));
+    render(<PipelineRunsBar runs={[run]} onLoadNotes={load} />);
+    expect(screen.getByText('Implement left no note on its last pass')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
+    await waitFor(() => expect(screen.getByText('Implement, pass 1')).toBeTruthy());
+    expect(screen.getByText(/# First\s+Changed a file/)).toBeTruthy();
+    expect(load).toHaveBeenCalledWith('r1', 0);
+  });
+  it('shows retry after a failed injected notes load without calling the API', async () => {
+    const run = runView({ notesDir: '.codedeck/runs/abcdef12' });
+    const load = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ notes: [], hasNextPage: false });
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    render(<PipelineRunsBar runs={[run]} onLoadNotes={load} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each([
     [{ file: 'docs/todo.md', status: 'in_progress', phaseCount: 9, phase: { number: 3, title: 'Room review', tasksDone: 0, tasksTotal: 11 } }, 'Phase 3 of 9: Room review', '0/11 tasks'],
     [{ file: 'docs/todo.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, title: '', tasksDone: 1, tasksTotal: 2 } }, 'Phase 1 of 1', '1/2 tasks'],
     [{ file: 'docs/todo.md', status: 'all_done', phaseCount: 2, phase: null }, 'All 2 phases ticked', null],

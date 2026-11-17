@@ -4,7 +4,7 @@ import { buildStepGuidance } from '../pipelines/step-guidance.js';
 const agent = { id: 'c410a1b2-3456-4789-8abc-def012345678', name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
 const step = (name, repeat = { mode: 'once' }, kind = 'node') => ({ kind, name, prompt: `do ${name}`, repeat, agent });
 const definition = (agentsDecide, ...steps) => ({
-  workflowId: 'a2d0b1c2-3456-4789-8abc-def012345678', workflowName: 'Feature', workflowRevision: 1, agentsDecide, steps,
+  workflowId: 'a2d0b1c2-3456-4789-8abc-def012345678', workflowName: 'Feature', workflowRevision: 1, agentsDecide, notesDir: null, steps,
 });
 const loop = toStepIndex => ({ mode: 'loop_back', toStepIndex, max: 20 });
 
@@ -14,6 +14,12 @@ const OPTIONS = { worktreePath: '/tmp/worktrees/run' };
 const BOUNDARY = "Work only inside this run's worktree, /tmp/worktrees/run, which is your current directory. Do not create, change or delete files outside it. If something you need is not in the worktree, do not look for it elsewhere: use NEEDS_INPUT and say what is missing.";
 
 describe('buildStepGuidance', () => {
+  it('places run notes directly after the worktree boundary', () => {
+    const def = { ...definition(true, step('Setup', { mode: 'once' }, 'setup'), step('Build')), notesDir: '.codedeck/runs/abcdef12' };
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBeUndefined();
+    expect(buildStepGuidance(def, 1, OPTIONS)).toContain(`${BOUNDARY} Run notes: read .codedeck/runs/abcdef12/README.md before you start, and before your final signal write your note to .codedeck/runs/abcdef12/01-build.md.`);
+    expect(() => buildStepGuidance({ ...def, notesDir: undefined }, 1, OPTIONS)).toThrow(/notesDir/);
+  });
   it('gives boundary guidance to a plain node', () => {
     const def = definition(false, step('Develop'), step('Test', { mode: 'until_complete', max: 5 }));
     expect(buildStepGuidance(def, 0, OPTIONS)).toBe(BOUNDARY);

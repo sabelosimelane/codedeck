@@ -6,11 +6,12 @@ import {
   getRun as apiGetRun,
   listOpenRuns,
   listRunDecisions as apiListRunDecisions,
+  listRunNotes as apiListRunNotes,
   resumeRun as apiResumeRun,
   startRun as apiStartRun,
   stopRun as apiStopRun,
 } from '../utils/pipelinesApi';
-import { parseDecisionPage, parseInputRequest, parseRunAutonomy } from '../utils/pipelineRunRecords';
+import { parseDecisionPage, parseNotePage, parseInputRequest, parseRunAutonomy } from '../utils/pipelineRunRecords';
 import { describeBlockedCleanup } from '../utils/pipelineWorktreeCleanup';
 
 // What the runs bar shows of a run is checked before the run is shown.
@@ -236,6 +237,14 @@ export function usePipelineRuns({ projectName, showToast }) {
       return null;
     }
   }, [showToast]);
+  const loadRunNotes = useCallback(async (runId, page) => {
+    try {
+      return parseNotePage(await apiListRunNotes(runId, page));
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+      return null;
+    }
+  }, [showToast]);
   const cleanupRun = useCallback(async (runId) => {
     const project = projectNameRef.current;
     try {
@@ -279,6 +288,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     continueRun,
     answerRun,
     loadRunDecisions,
+    loadRunNotes,
     cleanupRun,
   };
 }

@@ -1,5 +1,35 @@
 # Changelog
 
+## [2026-11-17] - Run notes: a workflow run carries its own handoff between steps
+
+### Executive Summary
+* A workflow run carried nothing from one step to the next. Every agent is cleared before each pass, so the only continuity was whatever files the prompts or skills happened to write, and a workflow made of plain prompts had no handoff at all. Each new run now has a notes folder inside its worktree that git ignores. Every step is pointed to a README listing the steps and each step's note, writes its own note before finishing, and CodeDeck keeps a copy of that note when the pass ends, so what a step reported can be read in the runs bar and survives the worktree being removed. Runs started before this change behave as before. This is the first phase of making workflows independent of any particular skill.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/pipelines/run-notes.js` — New. Note file names, the README text, an idempotent `prepare` that creates `.codedeck/runs/<8 hex>` with a self-ignoring `.codedeck/.gitignore` (written only when absent) and fails when git does not ignore the folder, and a contained, size-capped `readNote`.
+  * `server/pipelines/note-store.js` — New. Append-only `pipeline_run_notes` (run, step, attempt, pass, status, summary, content), with the latest row per step read without content.
+  * `server/pipelines/run-engine.js` — Prepares the folder at each step start, before any agent is launched; records the step's note once per pass at the three places a pass ends (completion, the pass limit, the reset between passes); sweeps notes before a worktree is removed or released. A recording failure warns once and never changes the run.
+  * `server/pipelines/step-guidance.js` — Node steps of a run with notes are told to read the README first and to write their note before the final signal.
+  * `client/src/components/pipelines/PipelineRunsBar.jsx` — A Notes panel per run (newest first, paged) and a warning line for a step whose last pass left no note, did not update it, or left one that could not be read.
+* **🔌 API/Interface:**
+  * `server/routes/pipelines.js` — Run responses gain `notesDir`, `steps[].notePath` and `steps[].note`. New paginated `GET /api/pipelines/runs/:id/notes` with a `stepIndex` filter. Starting a run is refused with a field error on `project` when a step's instructions would exceed the 2,000-character limit for the worktree path.
+  * `docs/steering/api-standards.md` — Contract for the new fields and endpoint.
+* **🗄️ Database:**
+  * `server/pipelines/run-store.js` — `definition.notesDir` is validated on every run; runs stored earlier are given `notesDir: null`. Once this has run, older code no longer accepts the stored rows.
+* **🛠️ Codebase:**
+  * `server/pipelines/run-progress.js`, `server/pipelines/run-worktree.js` — The stay-inside-the-worktree check and the git runner are shared with run notes; the Setup prompt says not to copy `.codedeck/` from the home checkout.
+  * `server/index.js` — Wires the note store into the engine and the router.
+  * `client/src/utils/pipelineRunRecords.js`, `client/src/utils/pipelinesApi.js`, `client/src/hooks/usePipelineRuns.js`, `client/src/App.jsx`, `client/src/components/TerminalArea.jsx` — Guards for the new fields, the notes loader with its error toast, and its path to the runs bar.
+  * `README.md`, `docs/specifications/2026-11-13-134947-workflow-pipelines-spec.md`, `docs/steering/structure.md` — Run notes.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-notes.test.js`, `server/__tests__/pipeline-note-store.test.js` — New. File names, README, `prepare` against real git (status stays clean, an existing `.gitignore` is kept, a tracked or unignored `.codedeck` is refused), note reading limits; store validation, paging and the latest row per step.
+  * `server/__tests__/pipeline-run-engine.test.js` — One row per pass for two passes, at the pass limit and for a repeated pass-end event; nothing at the reset before pass 1; a recording failure leaves the run unchanged; the sweep before removal; old runs untouched.
+  * `server/__tests__/pipeline-run-live.test.js`, `server/__tests__/pipeline-run-worktree-live.test.js` — With real tmux, a two-step run whose stub agent writes its notes; with real git, a worktree holding the notes folder is removed without force.
+  * `server/__tests__/pipeline-step-guidance.test.js`, `server/__tests__/pipeline-run-store.test.js`, `server/__tests__/pipelines-api.test.js` — The notes sentence and the instruction-length budget; `notesDir` validation and back-fill; the new fields, the notes endpoint and the start guard.
+  * `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx`, `client/src/hooks/__tests__/usePipelineRuns.test.jsx`, `client/src/utils/__tests__/pipelineRunRecords.test.js`, `client/src/utils/__tests__/pipelinesApi.test.js`, `client/src/utils/__tests__/pipelineRunFixture.js` — The panel, the loader's toast, guards and fixtures.
+  * Server suite: 77 files, 2,176 tests passed. Client suite: 65 files, 988 tests passed. The stored-row upgrade was also run against a copy of the live database: all 10 stored runs loaded with `notesDir: null`.
+
 ## [2026-11-17] - Keep a workflow run inside its worktree
 
 ### Executive Summary

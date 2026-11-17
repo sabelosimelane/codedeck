@@ -3,6 +3,7 @@
  * run's definition snapshot. One line; the loop engine adds it to the prompt of every pass.
  */
 import path from 'node:path';
+import { notePath, NOTES_DIR } from './run-notes.js';
 
 const DECIDE = 'The owner is not available during this run. Do not stop for a decision you can make yourself: choose the option you would recommend, write down the decision and your reason where this project keeps such notes, and continue. Use NEEDS_INPUT only when you cannot continue at all.';
 
@@ -17,6 +18,7 @@ export function buildStepGuidance(definition, stepIndex, options) {
   }
   if (!Array.isArray(definition.steps)) throw new Error('step guidance: definition.steps must be an array');
   if (typeof definition.agentsDecide !== 'boolean') throw new Error('step guidance: definition.agentsDecide must be true or false');
+  if (definition.notesDir !== null && (typeof definition.notesDir !== 'string' || !NOTES_DIR.test(definition.notesDir))) throw new TypeError('step guidance: definition.notesDir must be null or a run notes path');
   const step = Number.isInteger(stepIndex) ? definition.steps[stepIndex] : undefined;
   if (!step) throw new Error(`step guidance: stepIndex ${stepIndex} is not a step of the definition`);
   if (options === null || typeof options !== 'object' || Array.isArray(options)
@@ -26,6 +28,7 @@ export function buildStepGuidance(definition, stepIndex, options) {
 
   const parts = [];
   if (step.kind === 'node') parts.push(`Work only inside this run's worktree, ${options.worktreePath}, which is your current directory. Do not create, change or delete files outside it. If something you need is not in the worktree, do not look for it elsewhere: use NEEDS_INPUT and say what is missing.`);
+  if (step.kind === 'node' && definition.notesDir !== null) parts.push(`Run notes: read ${definition.notesDir}/README.md before you start, and before your final signal write your note to ${notePath(definition, stepIndex)}.`);
   if (step.repeat?.mode === 'loop_back') {
     // The agent of this step alone decides whether the loop runs again, so it is told what the loop is.
     const { toStepIndex } = step.repeat;

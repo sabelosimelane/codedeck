@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFile, execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -15,6 +15,7 @@ import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
+import { createNoteStore } from '../pipelines/note-store.js';
 import {
   create as createWorktree,
   remove as removeWorktree,
@@ -64,7 +65,7 @@ function initRepo(root) {
   git(root, ['commit', '-m', 'init']);
 }
 
-function writeStubAgent(dir, { continueFirst = false } = {}) {
+function writeStubAgent(dir, { continueFirst = false, writeNote = false } = {}) {
   // Reads PTY input; emits CONTINUE once (optional) then COMPLETE for each iteration id.
   const script = path.join(dir, continueFirst ? 'stub-agent-repeat' : 'stub-agent');
   writeFileSync(script, `#!/usr/bin/env node
@@ -72,6 +73,7 @@ let buf = '';
 let armed = true;
 let emitted = 0;
 const continueFirst = ${continueFirst ? 'true' : 'false'};
+const writeNote = ${writeNote ? 'true' : 'false'};
 process.stdin.setEncoding('utf8');
 process.stdin.setRawMode(true);
 process.stdout.write('>_ OpenAI Codex (stub)\\n› \\n');
@@ -84,6 +86,11 @@ process.stdin.on('data', chunk => {
   armed = false;
   emitted += 1;
   const pass = emitted;
+  if (writeNote) {
+    const note = buf.match(/write your note to (\\.codedeck\\/runs\\/[0-9a-f]{8}\\/[^\\s]+\\.md)/);
+    if (!note) throw new Error('run note path absent from terminal guidance');
+    require('node:fs').writeFileSync(note[1], '# Pass ' + pass + '\\nWork completed');
+  }
   setTimeout(() => {
     if (continueFirst && pass === 1) {
       process.stdout.write('\\n[[CDW:' + id + ':CONTINUE]]\\n');
@@ -168,7 +175,7 @@ describeLive('pipeline run live (Phase 3)', () => {
     const home = path.join(base, 'codedeck');
     initRepo(home);
     const setupStub = writeStubAgent(base);
-    const repeatStub = writeStubAgent(base, { continueFirst: true });
+    const repeatStub = writeStubAgent(base, { continueFirst: true, writeNote: true });
 
     const previousTmp = process.env.TMUX_TMPDIR;
     const previousTmux = process.env.TMUX;
@@ -219,6 +226,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       resetCommand: agent.resetCommand,
     });
 
+    const notes = createNoteStore(db);
     runs.create({
       id: runId,
       requestId: 'live-complete-1',
@@ -235,6 +243,7 @@ describeLive('pipeline run live (Phase 3)', () => {
         workflowRevision: workflow.revision,
         agentsDecide: false,
         progressFile: null,
+        notesDir: `.codedeck/runs/${runId.slice(0, 8)}`,
         steps: [
           {
             kind: 'setup',
@@ -269,6 +278,7 @@ describeLive('pipeline run live (Phase 3)', () => {
     const engine = createRunEngine({
       runStore: runs,
       decisionStore: createDecisionStore(db),
+      noteStore: notes,
       readScreen: async () => [],
       createWorktree: async (run) => createWorktree({
         homePath: run.homePath,
@@ -323,6 +333,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       expect(finished.status).toBe('complete');
       expect(finished.definition.steps.map(s => s.kind)).toEqual(['setup', 'node']);
       expect(finished.steps.map(s => s.status)).toEqual(['complete', 'complete']);
+      expect(notes.list(runId, { offset: 0, limit: 10, direction: 'asc' }).map(note => [note.status, note.summary])).toEqual([['written', 'Pass 1'], ['written', 'Pass 2']]);
       expect(finished.worktreeState).toBe('removed');
       expect(existsSync(finished.worktreePath)).toBe(false);
       expect(git(home, ['rev-parse', '--verify', names.branch])).toBeTruthy();
@@ -341,6 +352,89 @@ describeLive('pipeline run live (Phase 3)', () => {
       try {
         execFileSync('git', ['-C', home, 'worktree', 'remove', '--force', names.worktreePath], { stdio: 'pipe' });
       } catch { /* cleanup */ }
+      db.close();
+    }
+  }, 90000);
+});
+
+describeLive('pipeline run live notes', () => {
+  it('writes two step notes through real terminals and leaves the worktree clean', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-notes-'));
+    temps.push(base);
+    const tmuxDir = mkdtempSync(path.join(os.tmpdir(), 'cd-pipeline-tmux-'));
+    temps.push(tmuxDir);
+    const home = path.join(base, 'codedeck');
+    initRepo(home);
+    const second = path.join(base, 'second');
+    mkdirSync(second);
+    const commands = [writeStubAgent(base, { writeNote: true }), writeStubAgent(second, { writeNote: true })];
+    const previousTmp = process.env.TMUX_TMPDIR;
+    const previousTmux = process.env.TMUX;
+    process.env.TMUX_TMPDIR = tmuxDir;
+    delete process.env.TMUX;
+    const db = new Database(':memory:');
+    const runs = createRunStore(db);
+    const notes = createNoteStore(db);
+    const runtime = createTerminalRuntime('tmux');
+    const sessions = new Map();
+    const deletedSessionIds = new Set();
+    const prompts = new Map();
+    const runId = '0d9e4b1a-5555-4555-8555-555555555555';
+    const workflowId = '0d9e4b1a-6666-4666-8666-666666666666';
+    const notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
+    const steps = ['Build', 'Test'].map((name, index) => ({
+      kind: 'node', name, prompt: `do ${name}`, repeat: { mode: 'once' },
+      agent: { id: `0d9e4b1a-7777-4777-8777-77777777777${index}`, name: `stub-${index}`, launchCommand: commands[index], resetCommand: '/clear' },
+    }));
+    runs.create({
+      id: runId, requestId: 'live-notes-1', workflowId, project: 'codedeck', input: '',
+      status: 'pending', stopReason: null, currentStepIndex: 0, error: null,
+      definition: { workflowId, workflowName: 'Live notes', workflowRevision: 1, agentsDecide: false, progressFile: null, notesDir, steps },
+      steps: steps.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null })),
+      homePath: home, worktreePath: home, worktreeBranch: 'master', baseCommit: git(home, ['rev-parse', 'HEAD']),
+      worktreeState: 'external', worktreeDetail: null, inputRequest: null, finishedAt: null,
+    });
+    let sessionSeq = 0;
+    const engine = createRunEngine({
+      runStore: runs, decisionStore: createDecisionStore(db), noteStore: notes,
+      createWorktree: async () => { throw new Error('existing worktree must be reused'); },
+      startSession: async ({ cwd }) => {
+        const sessionId = `codedeck-${++sessionSeq}`;
+        runtime.createDetachedSession({ cwd, cols: INITIAL_COLS, rows: INITIAL_ROWS, sessionId });
+        return sessionId;
+      },
+      attachBackground: (sessionId, options) => {
+        const attachment = attachBackgroundSession(sessionId, sessions, runtime, deletedSessionIds, options);
+        const write = attachment.entry.pty.write.bind(attachment.entry.pty);
+        prompts.set(sessionId, []);
+        attachment.entry.pty.write = data => { prompts.get(sessionId).push(String(data)); return write(data); };
+        return attachment;
+      },
+      terminalAvailable: sessionId => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      classifyReadiness: () => 'ready',
+      readExecutionState: async () => ({ executionReason: 'agent_prompt_idle', foregroundCommand: 'node', lines: ['› '], profile: { promptVisible: () => true, skillPrefix: '/' }, isAlive: true, entryExists: true }),
+      readScreen: async () => [],
+      readinessPollMs: 50, launchEnterDelayMs: 50,
+    });
+    try {
+      await engine.start(runId);
+      const finished = await waitFor(() => ['complete', 'error'].includes(runs.get(runId).status) && runs.get(runId), 60000, 'notes run complete');
+      expect(finished.status).toBe('complete');
+      const readme = readFileSync(path.join(home, notesDir, 'README.md'), 'utf8');
+      expect(readme).toContain(`${notesDir}/00-build.md`);
+      expect(readme).toContain(`${notesDir}/01-test.md`);
+      expect(notes.list(runId, { offset: 0, limit: 10, direction: 'asc' }).map(row => [row.status, row.summary])).toEqual([['written', 'Pass 1'], ['written', 'Pass 1']]);
+      expect(prompts.size).toBe(2);
+      for (const [index, typed] of [...prompts.values()].entries()) {
+        expect(typed.join('')).toContain(`${notesDir}/README.md`);
+        expect(typed.join('')).toContain(`${notesDir}/${index === 0 ? '00-build.md' : '01-test.md'}`);
+      }
+      expect(git(home, ['status', '--porcelain'])).toBe('');
+    } finally {
+      try { execFileSync('tmux', ['kill-server'], { stdio: 'pipe' }); } catch { /* ignore */ }
+      if (previousTmp === undefined) delete process.env.TMUX_TMPDIR; else process.env.TMUX_TMPDIR = previousTmp;
+      if (previousTmux === undefined) delete process.env.TMUX; else process.env.TMUX = previousTmux;
       db.close();
     }
   }, 90000);
@@ -387,6 +481,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         workflowRevision: 1,
         agentsDecide: false,
         progressFile: null,
+        notesDir: null,
         steps: [{
           kind: 'node',
           name: 'Develop',
@@ -418,6 +513,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
     const engine = createRunEngine({
       runStore: runs,
       decisionStore: createDecisionStore(db),
+      noteStore: createNoteStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
@@ -605,6 +701,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         workflowRevision: 1,
         agentsDecide: true,
         progressFile: null,
+        notesDir: null,
         steps: [
           { kind: 'node', name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
           { kind: 'node', name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 3 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
@@ -631,6 +728,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
     const engine = createRunEngine({
       runStore: runs,
       decisionStore: decisions,
+      noteStore: createNoteStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
@@ -756,6 +854,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
         workflowRevision: 1,
         agentsDecide: true,
         progressFile: null,
+        notesDir: null,
         steps: [
           { kind: 'node', name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: { id: '0d9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'dialog-stub', launchCommand: stub, resetCommand: '/clear' } },
         ],
@@ -794,6 +893,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
     const engine = createRunEngine({
       runStore: runs,
       decisionStore: decisions,
+      noteStore: createNoteStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },
@@ -906,6 +1006,7 @@ describeLive('pipeline run live — Resume', () => {
         workflowRevision: 1,
         agentsDecide: false,
         progressFile: null,
+        notesDir: null,
         steps: stepNames.map(name => (
           { kind: 'node', name, prompt: `do the ${name} step`, repeat: { mode: 'once' }, agent: { id: '0e9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'resume-stub', launchCommand: stub, resetCommand: '/clear' } }
         )),
@@ -946,6 +1047,7 @@ describeLive('pipeline run live — Resume', () => {
     const engine = createRunEngine({
       runStore: runs,
       decisionStore: createDecisionStore(db),
+      noteStore: createNoteStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
       removeWorktree: async () => { throw new Error('an existing worktree is never removed'); },

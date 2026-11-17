@@ -128,6 +128,16 @@ The launch command is the interactive command for the CLI, e.g.
 | `setup_agent_id` | TEXT | null, or UUID of an existing agent | null |
 | `revision` | INTEGER | ≥ 1 | 1 |
 
+### Run notes
+
+Every run created after this change snapshots `notesDir` as `.codedeck/runs/<first eight hex characters of run id>`; older rows are upgraded to `notesDir: null` and keep their previous behavior. At every step start, CodeDeck idempotently prepares the folder in the run worktree, writes `.codedeck/.gitignore` containing `*` and a newline only when absent, and writes a deterministic README. It verifies that Git ignores the README before launching an agent. Setup is told not to copy `.codedeck/` from the home checkout. Node guidance names the README and that step's `NN-<slug>.md` note path; Setup has no note. A guidance length over 2,000 characters rejects start before creating a run or worktree.
+
+The README lists the workflow, input, ordered steps, agent names and note paths. It instructs each agent to read earlier notes and to write a note with a one-line `#` summary, completed work, decisions and reasons, remaining work, and relevant paths before its final signal. The folder is ignored by Git, belongs to the run, and may be deleted after the run. CodeDeck keeps the folder in worktrees it does not own.
+
+`pipeline_run_notes` is an append-only SQLite table with `id`, `run_id`, `step_index`, `step_name`, `attempt`, `pass`, `status`, `summary`, `content`, and `created_at`. At the end of each node pass, CodeDeck reads only a regular file whose resolved and real path stay inside the worktree, with a 262,144-byte limit. It records `written` for changed content, `unchanged` for identical content, or `missing`, `unreadable`, or `too_large`. Only `written` rows carry summary and content. Errors are warned once and do not change run state. Before cleanup, a final sweep stores any newly changed note.
+
+All run responses include `notesDir`, each step's `notePath`, and the latest note status, summary, attempt, pass, and timestamp. `GET /api/pipelines/runs/:id/notes` returns paginated notes, sorted by `createdAt,asc|desc` with id tiebreaker and optional exact `stepIndex` filter. Unknown runs return 404; invalid pagination, filters, and sorts return a problem document. The runs bar shows a newest-first notes panel and warns when a step's latest pass left no new readable note.
+
 ### 4.4 Run — table `pipeline_runs`
 
 | Field | Type | Constraints |

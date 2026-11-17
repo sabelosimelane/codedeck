@@ -44,7 +44,7 @@ export function parsePhaseProgress(markdown) {
 
 const inside = (root, target) => target !== root && !path.relative(root, target).startsWith('..' + path.sep) && path.relative(root, target) !== '..' && !path.isAbsolute(path.relative(root, target));
 
-async function inspectProgressFile({ worktreePath, progressFile, fs = defaultFs } = {}) {
+export async function inspectProgressFile({ worktreePath, progressFile, fs = defaultFs } = {}) {
   if (typeof worktreePath !== 'string' || !worktreePath || !path.isAbsolute(worktreePath)) throw new TypeError('worktreePath must be a non-empty absolute path');
   if (typeof progressFile !== 'string' || !progressFile) throw new TypeError('progressFile must be a non-empty string');
   if (!fs || typeof fs.stat !== 'function' || typeof fs.realpath !== 'function') throw new TypeError('fs must support stat and realpath');

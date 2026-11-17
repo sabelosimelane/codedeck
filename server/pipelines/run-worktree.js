@@ -59,7 +59,7 @@ export function planNames({ runId, workflowName, homeRepoPath }) {
 }
 
 /** Invoke injected execFile with argv arrays; supports callback-style and promise-returning fakes. */
-function runGit(execFile, args, { timeout = GIT_TIMEOUT_MS } = {}) {
+export function runGit(execFile, args, { timeout = GIT_TIMEOUT_MS } = {}) {
   if (typeof execFile !== 'function') throw new Error('execFile is required');
   const options = { timeout, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 };
   return new Promise((resolve, reject) => {
@@ -345,7 +345,7 @@ Worktree (your current directory, the only place you may change): ${worktreePath
 2. Find files in the home checkout that git ignores and that the project needs locally to build,
    test or run (for example .env.local, local.properties, service-account files). Copy each one to
    the same relative path and the same name in the worktree. Do not copy dependency or build output
-   directories; install or build those in the worktree instead.
+   directories; install or build those in the worktree instead. Do not copy .codedeck/ from the home checkout.
 3. Never print, summarise or log the contents of a copied file. Copy with file operations only.
 4. Do not create, modify or delete tracked files, do not commit, and change nothing in the home
    checkout.

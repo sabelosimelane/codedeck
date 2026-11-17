@@ -162,6 +162,13 @@ export function listRunDecisions(runId, page, { signal } = {}) {
   return request(`/runs/${encodeURIComponent(runId)}/decisions?${params}`, { signal });
 }
 
+/** One page of notes reported by a run's steps, newest first. */
+export function listRunNotes(runId, page, { signal } = {}) {
+  if (!Number.isSafeInteger(page) || page < 0) throw new PipelineApiError('page must be a whole number of 0 or more');
+  const params = new URLSearchParams({ page: String(page), size: '50', sort: 'createdAt,desc' });
+  return request(`/runs/${encodeURIComponent(runId)}/notes?${params}`, { signal });
+}
+
 export function cleanupRun(runId, options) {
   return postAction(runId, 'cleanup', options);
 }

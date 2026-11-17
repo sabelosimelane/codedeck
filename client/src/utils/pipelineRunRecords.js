@@ -10,6 +10,44 @@ const nullable = (value, check) => value === null || check(value);
 const integer = value => Number.isSafeInteger(value) && value >= 0;
 
 const QUESTIONS_MAX = 4000;
+const NOTES_DIR = /^\.codedeck\/runs\/[0-9a-f]{8}$/;
+const NOTE_STATUSES = ['written', 'unchanged', 'missing', 'unreadable', 'too_large'];
+const noteFileName = (index, name) => `${String(index).padStart(2, '0')}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'step'}.md`;
+
+function parseNoteMeta(note, guard, prefix) {
+  guard(note === null || object(note), prefix);
+  if (note === null) return;
+  guard(NOTE_STATUSES.includes(note.status), `${prefix}.status`);
+  guard(note.status === 'written' ? typeof note.summary === 'string' && note.summary.length <= 200 : note.summary === null, `${prefix}.summary`);
+  guard(integer(note.attempt) && note.attempt >= 1, `${prefix}.attempt`);
+  guard(integer(note.pass) && note.pass >= 1 && note.pass <= 100, `${prefix}.pass`);
+  guard(stamp(note.createdAt), `${prefix}.createdAt`);
+}
+
+export function parseNote(note) {
+  const guard = (condition, field) => { if (!condition) throw new PipelineApiError(`Invalid note field ${field}`); };
+  guard(object(note), 'note');
+  guard(Number.isSafeInteger(note.id) && note.id >= 1, 'id');
+  guard(integer(note.stepIndex) && note.stepIndex <= 32, 'stepIndex');
+  guard(text(note.stepName) && note.stepName.length <= 64 && !/[\r\n]/.test(note.stepName), 'stepName');
+  parseNoteMeta(note, guard, 'note');
+  guard(note.status === 'written' ? typeof note.content === 'string' && new TextEncoder().encode(note.content).length <= 262_144 : note.content === null, 'content');
+  return note;
+}
+
+export function parseNotePage(body) {
+  const guard = (condition, field) => { if (!condition) throw new PipelineApiError(`Invalid notes response field ${field}`); };
+  guard(object(body), 'body');
+  guard(Array.isArray(body.data), 'data');
+  guard(object(body.page), 'page');
+  const { currentPage, size, totalElements, totalPages, hasNextPage } = body.page;
+  guard(integer(currentPage), 'page.currentPage');
+  guard(integer(size) && size >= 1 && size <= 100, 'page.size');
+  guard(integer(totalElements), 'page.totalElements');
+  guard(integer(totalPages), 'page.totalPages');
+  guard(typeof hasNextPage === 'boolean', 'page.hasNextPage');
+  return { notes: body.data.map(parseNote), hasNextPage, total: totalElements };
+}
 
 function parseProgress(run, guard) {
   const progress = run.progress;
@@ -62,6 +100,7 @@ export function parseRunAutonomy(run, index = 0) {
   };
   guard(object(run), 'run');
   guard(typeof run.agentsDecide === 'boolean', 'agentsDecide');
+  guard(run.notesDir === null || typeof run.notesDir === 'string' && NOTES_DIR.test(run.notesDir), 'notesDir');
   parseProgress(run, guard);
   guard(integer(run.decisionCount), 'decisionCount');
   guard(Array.isArray(run.steps), 'steps');
@@ -71,6 +110,9 @@ export function parseRunAutonomy(run, index = 0) {
     const loops = step.repeat.mode === 'loop_back';
     if (loops) guard(integer(step.repeat.max) && step.repeat.max >= 1 && step.repeat.max <= 100, `steps[${i}].repeat.max`);
     guard(integer(step.roundsCompleted) && (loops ? step.roundsCompleted < step.repeat.max : step.roundsCompleted === 0), `steps[${i}].roundsCompleted`);
+    guard(step.notePath === null || (typeof step.notePath === 'string' && step.notePath === `${run.notesDir}/${noteFileName(i, step.name)}` && step.kind === 'node'), `steps[${i}].notePath`);
+    guard(run.notesDir !== null && step.kind === 'node' ? step.notePath !== null : step.notePath === null, `steps[${i}].notePath`);
+    parseNoteMeta(step.note, guard, `steps[${i}].note`);
   });
 }
 
@@ -86,6 +128,7 @@ export function parseRun(run, index = 0) {
   guard(text(run.workflowName) && run.workflowName.length <= 64, 'workflowName');
   // Whether this run's agents settle their own questions, and how many they have settled.
   guard(typeof run.agentsDecide === 'boolean', 'agentsDecide');
+  guard(run.notesDir === null || typeof run.notesDir === 'string' && NOTES_DIR.test(run.notesDir), 'notesDir');
   parseProgress(run, guard);
   guard(integer(run.decisionCount), 'decisionCount');
   guard(text(run.project) && run.project.length <= 256 && !/[\x00-\x1f\x7f]/.test(run.project), 'project');
@@ -102,6 +145,9 @@ export function parseRun(run, index = 0) {
     guard(step.index === i, field('index'));
     guard(['setup', 'node'].includes(step.kind), field('kind'));
     guard(text(step.name) && step.name.length <= 64, field('name'));
+    guard(step.notePath === null || (typeof step.notePath === 'string' && run.notesDir !== null && step.kind === 'node' && step.notePath === `${run.notesDir}/${noteFileName(i, step.name)}`), field('notePath'));
+    guard(run.notesDir === null || step.kind === 'setup' ? step.notePath === null : step.notePath !== null, field('notePath'));
+    parseNoteMeta(step.note, guard, field('note'));
     guard(text(step.agentName) && step.agentName.length <= 64, field('agentName'));
     guard(object(step.repeat), field('repeat'));
     guard(['once', 'until_complete', 'loop_back'].includes(step.repeat.mode), field('repeat.mode'));

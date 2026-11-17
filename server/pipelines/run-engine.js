@@ -8,6 +8,7 @@ import { applyEvent, computeActions } from './run-machine.js';
 import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
+import { prepare as defaultPrepareNotes, readNote as defaultReadNote } from './run-notes.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../shared/pipeline-definitions.mjs';
 
 const DEFAULT_POLL_MS = 1000;
@@ -54,6 +55,9 @@ export function createRunEngine({
   readExecutionState,
   readScreen,
   decisionStore,
+  noteStore,
+  prepareNotes = defaultPrepareNotes,
+  readNote = defaultReadNote,
   terminalAvailable,
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
@@ -74,9 +78,43 @@ export function createRunEngine({
   if (typeof readExecutionState !== 'function') throw new Error('createRunEngine: readExecutionState is required');
   if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
   if (typeof decisionStore?.add !== 'function') throw new Error('createRunEngine: decisionStore is required');
+  if (typeof noteStore?.add !== 'function' || typeof noteStore?.lastContent !== 'function' || typeof noteStore?.hasPass !== 'function') throw new Error('createRunEngine: noteStore is required');
+  if (typeof prepareNotes !== 'function') throw new Error('createRunEngine: prepareNotes is required');
+  if (typeof readNote !== 'function') throw new Error('createRunEngine: readNote is required');
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
 
   const handles = new Map();
+  const noteWarnings = new Set();
+
+  async function recordNote(run, stepIndex, pass, sweep = false) {
+    if (run.definition.notesDir === null || run.definition.steps[stepIndex]?.kind !== 'node') return;
+    try {
+      if (!sweep && noteStore.hasPass(run.id, stepIndex, run.steps[stepIndex].attempt, pass)) return;
+      const result = await readNote({ worktreePath: run.worktreePath, definition: run.definition, stepIndex });
+      if (!result || !['present', 'missing', 'unreadable', 'too_large'].includes(result.status)) throw new Error('invalid note read result');
+      const last = noteStore.lastContent(run.id, stepIndex);
+      const changed = result.status === 'present' && result.content !== last;
+      if (sweep && !changed) return;
+      const status = result.status === 'present' ? changed ? 'written' : 'unchanged' : result.status;
+      const summary = changed ? (result.content.split(/\r?\n/).find(line => line.trim()) ?? '').replace(/^\s*#+/, '').trim().slice(0, 200) : null;
+      noteStore.add({ runId: run.id, stepIndex, stepName: run.definition.steps[stepIndex].name, attempt: run.steps[stepIndex].attempt, pass, status, summary, content: changed ? result.content : null });
+    } catch (error) {
+      const key = `${run.id}:${stepIndex}:${String(error?.message || error)}`;
+      if (!noteWarnings.has(key)) {
+        noteWarnings.add(key);
+        console.warn(`[pipeline-notes] run=${run.id} step=${stepIndex} error=${error?.message || error}`);
+      }
+    }
+  }
+
+  async function sweepNotes(run) {
+    if (run.definition.notesDir === null) return;
+    for (let index = 0; index < run.definition.steps.length; index++) {
+      if (run.definition.steps[index].kind === 'node' && run.steps[index].attempt > 0) {
+        await recordNote(run, index, Math.max(1, run.steps[index].iteration), true);
+      }
+    }
+  }
 
   function getHandle(runId) {
     let handle = handles.get(runId);
@@ -156,6 +194,7 @@ export function createRunEngine({
     if (run.worktreeState === 'not_created') {
       return runStore.update(runId, { worktreeState: 'removed', worktreeDetail: null });
     }
+    await sweepNotes(run);
     // A worktree that existed before the run belongs to the owner: the run lets go of it, git is not called.
     if (run.worktreeState === 'external') {
       return runStore.update(runId, { worktreeState: 'released', worktreeDetail: null });
@@ -386,6 +425,7 @@ export function createRunEngine({
     }
 
     if (snapshot.status === 'complete') {
+      if (current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received' });
       }
@@ -402,6 +442,7 @@ export function createRunEngine({
     }
 
     if (snapshot.status === 'stopped' && snapshot.limitReached) {
+      if (current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received' });
       }
@@ -440,6 +481,7 @@ export function createRunEngine({
     }
 
     if (snapshot.status === 'running' || snapshot.status === 'resetting') {
+      if (snapshot.status === 'resetting' && snapshot.iteration >= 1 && current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received' });
       }
@@ -484,6 +526,9 @@ export function createRunEngine({
       if (handle.stopped) return;
       run = runStore.get(runId);
       if (!run || !['pending', 'running'].includes(run.status)) return;
+
+      if (run.definition.notesDir !== null) await prepareNotes({ worktreePath: run.worktreePath, definition: run.definition, input: run.input });
+      if (handle.stopped) return;
 
       const stepIndex = run.currentStepIndex;
       const defStep = run.definition.steps[stepIndex];

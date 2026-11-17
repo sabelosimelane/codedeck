@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
+import { createNoteStore } from '../pipelines/note-store.js';
 
 const WORKFLOW_ID = 'a2d0b1c2-3456-4789-8abc-def012345678';
 const AGENT_ID = 'c410a1b2-3456-4789-8abc-def012345678';
@@ -17,6 +18,7 @@ function definition(overrides = {}) {
     workflowRevision: 1,
     agentsDecide: false,
     progressFile: null,
+    notesDir: null,
     steps: [
       {
         kind: 'node',
@@ -148,6 +150,7 @@ function setupEngine(overrides = {}) {
   const terminalAvailable = overrides.terminalAvailable ?? vi.fn(() => true);
   const readScreen = overrides.readScreen ?? vi.fn(async () => []);
   const decisionStore = overrides.decisionStore ?? createDecisionStore(db);
+  const noteStore = overrides.noteStore ?? createNoteStore(db);
 
   const engine = createRunEngine({
     runStore,
@@ -159,6 +162,7 @@ function setupEngine(overrides = {}) {
     readExecutionState,
     readScreen,
     decisionStore,
+    noteStore,
     removeWorktree,
     listDirtyPaths,
     pathExists,
@@ -187,6 +191,7 @@ function setupEngine(overrides = {}) {
     terminalAvailable,
     readScreen,
     decisionStore,
+    noteStore,
     writes,
     releases,
     getWorkflowNotify: () => workflowNotify,
@@ -203,6 +208,240 @@ afterEach(() => {
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+  });
+
+  it('prepares run notes before launch and records a completed pass', async () => {
+    const prepareNotes = vi.fn(async () => {});
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Finished\nChanged file' }));
+    const ctx = setupEngine({ engineExtras: { prepareNotes, readNote } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(prepareNotes).toHaveBeenCalledBefore(ctx.startSession);
+    expect(ctx.noteStore.list(run.id, { offset: 0, limit: 10, direction: 'asc' })).toMatchObject([{ status: 'written', summary: 'Finished', pass: 1 }]);
+  });
+  it('records each changed note before the next pass prompt and on completion', async () => {
+    const events = [];
+    const readNote = vi.fn(async () => {
+      const pass = Math.min(readNote.mock.calls.length, 2);
+      events.push(`read ${pass}`);
+      return { status: 'present', content: `# Pass ${pass}\nChanged in pass ${pass}` };
+    });
+    const createWorkflow = vi.fn(({ notify, write }) => ({
+      start(args) {
+        queueMicrotask(async () => {
+          notify({ status: 'resetting', iteration: 1 }); // CONTINUE on pass 1
+          for (let i = 0; i < 100 && ctx.noteStore.count(run.id) < 1; i += 1) await Promise.resolve();
+          events.push(`stored ${ctx.noteStore.count(run.id)}`);
+          write('pass 2 prompt');
+          events.push('prompt 2');
+          notify({ status: 'complete', iteration: 2 }); // COMPLETE on pass 2
+        });
+      },
+      stop() {},
+      snapshot: () => ({ status: 'stopped' }),
+    }));
+    const ctx = setupEngine({ createWorkflow, engineExtras: { prepareNotes: vi.fn(async () => {}), readNote } });
+    const def = definition({ notesDir: '.codedeck/runs/abcdef12' });
+    def.steps[0].repeat = { mode: 'until_complete', max: 3 };
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.noteStore.list(run.id, { offset: 0, limit: 10, direction: 'asc' })).toMatchObject([
+      { pass: 1, status: 'written', content: '# Pass 1\nChanged in pass 1' },
+      { pass: 2, status: 'written', content: '# Pass 2\nChanged in pass 2' },
+    ]);
+    expect(events.indexOf('read 1')).toBeLessThan(events.indexOf('prompt 2'));
+    expect(events).toContain('stored 1');
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+  it('records both passes when CONTINUE reaches the repeat limit', async () => {
+    const readNote = vi.fn(async () => ({ status: 'present', content: `# Pass ${readNote.mock.calls.length}` }));
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start: () => queueMicrotask(() => {
+        notify({ status: 'resetting', iteration: 1 }); // CONTINUE on pass 1
+        notify({ status: 'stopped', iteration: 2, limitReached: true }); // CONTINUE on pass 2
+      }),
+      stop() {},
+      snapshot: () => ({ status: 'stopped' }),
+    }));
+    const ctx = setupEngine({ createWorkflow, engineExtras: { prepareNotes: vi.fn(async () => {}), readNote } });
+    const def = definition({ notesDir: '.codedeck/runs/abcdef12' });
+    def.steps[0].repeat = { mode: 'until_complete', max: 2 };
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('limit_paused');
+    expect(ctx.noteStore.list(run.id, { offset: 0, limit: 10, direction: 'asc' })).toMatchObject([
+      { pass: 1, status: 'written' }, { pass: 2, status: 'written' },
+    ]);
+    expect(readNote).toHaveBeenCalledTimes(2);
+  });
+  it('reads and records a pass only once when its reset snapshot repeats', async () => {
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# First pass' }));
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start: () => queueMicrotask(() => {
+        notify({ status: 'resetting', iteration: 1 });
+        notify({ status: 'resetting', iteration: 1 });
+        notify({ status: 'stopped', iteration: 2, limitReached: true });
+      }),
+      stop() {},
+      snapshot: () => ({ status: 'stopped' }),
+    }));
+    const ctx = setupEngine({ createWorkflow, engineExtras: { prepareNotes: vi.fn(async () => {}), readNote } });
+    const def = definition({ notesDir: '.codedeck/runs/abcdef12' });
+    def.steps[0].repeat = { mode: 'until_complete', max: 2 };
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.noteStore.list(run.id, { offset: 0, limit: 10, direction: 'asc' }).filter(row => row.pass === 1)).toMatchObject([
+      { pass: 1, status: 'written' },
+    ]);
+    expect(readNote.mock.calls).toHaveLength(2);
+  });
+  it('fails before launching when run notes cannot be prepared', async () => {
+    const prepareNotes = vi.fn(async () => { throw new Error('Run notes folder is not ignored'); });
+    const ctx = setupEngine({ engineExtras: { prepareNotes } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    await ctx.engine.start(run.id);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'Run notes folder is not ignored' });
+    expect(ctx.startSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ status: 'present', content: '# Same' }, 'unchanged'],
+    [{ status: 'missing', content: null }, 'missing'],
+    [{ status: 'unreadable', content: null }, 'unreadable'],
+    [{ status: 'too_large', content: null }, 'too_large'],
+  ])('records %s without failing the run', async (result, status) => {
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote: vi.fn(async () => result) } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    if (status === 'unchanged') ctx.noteStore.add({ runId: run.id, stepIndex: 0, stepName: 'Develop', attempt: 2, pass: 1, status: 'written', summary: 'Same', content: '# Same' });
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(ctx.noteStore.latestByStep(run.id).get(0).status).toBe(status);
+  });
+
+  it('keeps a legacy run free of note preparation and recording', async () => {
+    const prepareNotes = vi.fn();
+    const readNote = vi.fn();
+    const ctx = setupEngine({ engineExtras: { prepareNotes, readNote } });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(prepareNotes).not.toHaveBeenCalled();
+    expect(readNote).not.toHaveBeenCalled();
+    expect(ctx.noteStore.count(run.id)).toBe(0);
+  });
+  it('sweeps a note written after the pass boundary before worktree removal', async () => {
+    const readNote = vi.fn()
+      .mockResolvedValueOnce({ status: 'missing', content: null })
+      .mockResolvedValueOnce({ status: 'present', content: '# Late\nSaved before cleanup' });
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.noteStore.list(run.id, { offset: 0, limit: 10, direction: 'asc' }).map(row => row.status)).toEqual(['missing', 'written']);
+    expect(ctx.noteStore.lastContent(run.id, 0)).toContain('Saved before cleanup');
+    expect(readNote).toHaveBeenCalledTimes(2);
+  });
+  it('logs a recording error and still completes the run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote: vi.fn(async () => { throw new Error('read failed'); }) } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('[pipeline-notes]');
+    warn.mockRestore();
+  });
+  it('does not record the iteration-zero reset of a reused terminal', async () => {
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Done' }));
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start: () => queueMicrotask(() => {
+        notify({ status: 'resetting', iteration: 0 });
+        notify({ status: 'complete', iteration: 1 });
+      }),
+      stop() {},
+    }));
+    const ctx = setupEngine({ createWorkflow, engineExtras: { prepareNotes: vi.fn(async () => {}), readNote } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.noteStore.count(run.id)).toBe(1);
+  });
+  it.each([
+    ['two passes', [{ status: 'resetting', iteration: 1 }, { status: 'complete', iteration: 2 }], 2, ['written', 'unchanged']],
+    ['pass limit', [{ status: 'stopped', iteration: 2, limitReached: true }], 1, ['written']],
+    ['duplicate pass end', [{ status: 'resetting', iteration: 1 }, { status: 'resetting', iteration: 1 }, { status: 'complete', iteration: 2 }], 2, ['written', 'unchanged']],
+  ])('records once for %s', async (_name, snapshots, expectedCount, statuses) => {
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start: () => queueMicrotask(() => snapshots.forEach(snapshot => notify(snapshot))),
+      stop() {},
+      snapshot: () => ({ status: 'stopped' }),
+    }));
+    const ctx = setupEngine({ createWorkflow, engineExtras: { prepareNotes: vi.fn(async () => {}), readNote: vi.fn(async () => ({ status: 'present', content: '# Same' })) } });
+    const def = definition({ notesDir: '.codedeck/runs/abcdef12' });
+    def.steps[0].repeat = { mode: 'until_complete', max: 2 };
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    const rows = ctx.noteStore.list(run.id, { offset: 0, limit: 10, direction: 'asc' });
+    expect(rows).toHaveLength(expectedCount);
+    expect(rows.map(row => row.status)).toEqual(statuses);
+    expect(rows.map(row => row.pass)).toEqual(expectedCount === 1 ? [2] : [1, 2]);
+  });
+  it('does not record an iteration-zero reset before the first pass', async () => {
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Done' }));
+    let startArgs;
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start: (args) => { startArgs = args; queueMicrotask(() => { notify({ status: 'resetting', iteration: 0 }); notify({ status: 'complete', iteration: 1 }); }); },
+      stop() {}, snapshot: () => ({ status: 'stopped' }),
+    }));
+    const ctx = setupEngine({ createWorkflow, engineExtras: { prepareNotes: vi.fn(async () => {}), readNote } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }), worktreeState: 'external', steps: [step({ sessionId: 'Demo-1' })] }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(startArgs.resetFirst).toBe(true);
+    expect(ctx.noteStore.count(run.id)).toBe(1);
+    expect(readNote).toHaveBeenCalledTimes(2);
+  });
+  it.each(['read', 'add'])('keeps the run outcome and warns once when note %s fails', async (failure) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote: failure === 'read' ? vi.fn(async () => { throw new Error('note read failed'); }) : vi.fn(async () => ({ status: 'present', content: '# Done' })) } });
+    if (failure === 'add') vi.spyOn(ctx.noteStore, 'add').mockImplementation(() => { throw new Error('note add failed'); });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   async function runSkillStep(profile) {

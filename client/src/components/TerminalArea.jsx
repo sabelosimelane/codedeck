@@ -327,6 +327,7 @@ export default function TerminalArea({
   onCleanupPipelineRun = () => {},
   onAnswerPipelineRun = async () => null,
   onLoadPipelineRunDecisions = async () => null,
+  onLoadPipelineRunNotes = async () => null,
 }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [activePaneId, setActivePaneId] = useState(null);
@@ -1042,6 +1043,7 @@ export default function TerminalArea({
         onCleanup={onCleanupPipelineRun}
         onAnswer={onAnswerPipelineRun}
         onLoadDecisions={onLoadPipelineRunDecisions}
+        onLoadNotes={onLoadPipelineRunNotes}
         onActivateStep={activatePipelineSession}
       />
 

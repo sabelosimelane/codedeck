@@ -142,13 +142,14 @@ function validateDefinitionStep(id, index, step) {
 function validateDefinition(id, definition) {
   if (!isPlainObject(definition)) fieldError(id, 'definition', 'must be an object');
   for (const key of Object.keys(definition)) {
-    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'progressFile', 'steps'].includes(key)) {
+    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'progressFile', 'notesDir', 'steps'].includes(key)) {
       fieldError(id, `definition.${key}`, 'unknown field');
     }
   }
   // Whether the workflow's agents settle their own questions instead of pausing for the owner.
   if (typeof definition.agentsDecide !== 'boolean') fieldError(id, 'definition.agentsDecide', 'must be true or false');
   if (definition.progressFile !== null && !isProgressFilePath(definition.progressFile, 512)) fieldError(id, 'definition.progressFile', 'must be null or a relative Markdown path');
+  if (definition.notesDir !== null && (typeof definition.notesDir !== 'string' || !/^\.codedeck\/runs\/[0-9a-f]{8}$/.test(definition.notesDir))) fieldError(id, 'definition.notesDir', 'must be null or .codedeck/runs/ followed by eight lowercase hex characters');
   if (!isUuid(definition.workflowId)) fieldError(id, 'definition.workflowId', 'must be a UUID');
   requireString(id, 'definition.workflowName', definition.workflowName, { max: 64 });
   if (!Number.isInteger(definition.workflowRevision) || definition.workflowRevision < 1) {
@@ -165,6 +166,7 @@ function validateDefinition(id, definition) {
     workflowRevision: definition.workflowRevision,
     agentsDecide: definition.agentsDecide,
     progressFile: definition.progressFile,
+    notesDir: definition.notesDir,
     steps,
   };
 }
@@ -463,9 +465,10 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       const lacksRounds = step => isPlainObject(step) && !Object.hasOwn(step, 'roundsCompleted');
       const lacksDecide = !Object.hasOwn(definition, 'agentsDecide');
       const lacksProgress = !Object.hasOwn(definition, 'progressFile');
-      if (!lacksDecide && !lacksProgress && !steps.some(lacksRounds)) continue;
+      const lacksNotes = !Object.hasOwn(definition, 'notesDir');
+      if (!lacksDecide && !lacksProgress && !lacksNotes && !steps.some(lacksRounds)) continue;
       save.run(
-        JSON.stringify({ ...definition, ...(lacksDecide ? { agentsDecide: false } : {}), ...(lacksProgress ? { progressFile: null } : {}) }),
+        JSON.stringify({ ...definition, ...(lacksDecide ? { agentsDecide: false } : {}), ...(lacksProgress ? { progressFile: null } : {}), ...(lacksNotes ? { notesDir: null } : {}) }),
         JSON.stringify(steps.map(step => (lacksRounds(step) ? { ...step, roundsCompleted: 0 } : step))),
         row.id,
       );

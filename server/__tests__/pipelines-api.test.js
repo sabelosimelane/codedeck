@@ -11,6 +11,7 @@ import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
+import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
 
 const base = '/api/pipelines';
@@ -51,6 +52,7 @@ async function setup(overrides = {}) {
   const settingsStore = createSettingsStore(db);
   const runStore = createRunStore(db);
   const decisionStore = createDecisionStore(db);
+  const noteStore = createNoteStore(db);
 
   const engineStarts = [];
   const engine = {
@@ -184,6 +186,7 @@ async function setup(overrides = {}) {
     settingsStore,
     runStore,
     decisionStore,
+    noteStore,
     findProject,
     engine,
     preflight,
@@ -201,6 +204,7 @@ async function setup(overrides = {}) {
     settingsStore,
     runStore,
     decisionStore,
+    noteStore,
     engine,
     engineStarts,
     scheduled,
@@ -316,6 +320,50 @@ describe('pipelines API — agents', () => {
     const page1 = await request(app).get(`${base}/agents`).query({ page: 1, size: 2, sort: 'name,asc' });
     expect(page1.body.data.map(r => r.name)).toEqual(['same']);
     expect(page1.body.page.hasNextPage).toBe(false);
+  });
+});
+
+describe('pipelines API — run notes', () => {
+  it('creates a notes directory and exposes a paged notes list and latest step note', async () => {
+    const ctx = await setup();
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'notes-1', workflowId: workflow.id, project: 'Demo', input: 'x' });
+    expect(started.status).toBe(201);
+    expect(started.body.notesDir).toBe(`.codedeck/runs/${started.body.id.slice(0, 8)}`);
+    expect(started.body.steps[0].notePath).toBeNull();
+    expect(started.body.steps[1].notePath).toMatch(/01-develop\.md$/);
+    ctx.noteStore.add({ runId: started.body.id, stepIndex: 1, stepName: 'Develop', attempt: 1, pass: 1, status: 'written', summary: 'Done', content: '# Done' });
+    const page = await request(ctx.app).get(`${base}/runs/${started.body.id}/notes`);
+    expect(page.status).toBe(200);
+    expect(page.body).toMatchObject({ data: [{ status: 'written', summary: 'Done', content: '# Done' }], page: { currentPage: 0, size: 20, totalElements: 1, totalPages: 1, hasNextPage: false } });
+    expect((await request(ctx.app).get(`${base}/runs/${started.body.id}`)).body.steps[1].note.summary).toBe('Done');
+    expect((await request(ctx.app).get(`${base}/runs/${started.body.id}/notes`).query({ sort: 'bad' })).status).toBe(400);
+  });
+  it('pages, filters, sorts, rejects bad queries, and returns 404 for an unknown run', async () => {
+    const ctx = await setup();
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'notes-query', workflowId: workflow.id, project: 'Demo', input: 'x' });
+    const id = started.body.id;
+    for (let pass = 1; pass <= 3; pass++) ctx.noteStore.add({ runId: id, stepIndex: 1, stepName: 'Develop', attempt: 1, pass, status: 'written', summary: `Pass ${pass}`, content: `# Pass ${pass}` });
+    const get = query => request(ctx.app).get(`${base}/runs/${id}/notes`).query(query);
+    expect((await get({ page: 1, size: 1, sort: 'createdAt,desc', stepIndex: 1 })).body).toMatchObject({ data: [{ pass: 2 }], page: { currentPage: 1, size: 1, totalElements: 3, totalPages: 3, hasNextPage: true } });
+    expect((await get({ sort: 'createdAt,asc' })).body.data.map(row => row.pass)).toEqual([1, 2, 3]);
+    expect((await get({ stepIndex: 0 })).body.data).toEqual([]);
+    for (const query of [{ page: -1 }, { size: 0 }, { sort: 'name,asc' }, { stepIndex: -1 }, { other: 'x' }]) {
+      const response = await get(query);
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ status: 400, errors: [expect.objectContaining({ field: expect.any(String) })], traceId: expect.any(String) });
+    }
+    expect((await request(ctx.app).get(`${base}/runs/11111111-1111-4111-8111-111111111111/notes`)).status).toBe(404);
+  });
+  it('refuses a worktree path that makes guidance too long before writing a run', async () => {
+    const ctx = await setup({ planNames: () => ({ worktreePath: `/${'a'.repeat(1900)}`, branch: 'workflow/long' }) });
+    const { workflow } = await seedReady(ctx);
+    const result = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'long-notes', workflowId: workflow.id, project: 'Demo', input: 'x' });
+    expect(result.status).toBe(400);
+    expect(result.body.errors).toEqual([{ field: 'project', message: expect.any(String) }]);
+    expect(ctx.runStore.list()).toEqual([]);
+    expect(ctx.engine.start).not.toHaveBeenCalled();
   });
 });
 
@@ -680,6 +728,7 @@ describe('pipelines API — preflight and runs', () => {
           workflowRevision: 1,
           agentsDecide: false,
           progressFile: null,
+          notesDir: null,
           steps: [{
             kind: 'node',
             name: 'Develop',
@@ -715,6 +764,7 @@ describe('pipelines API — preflight and runs', () => {
       settingsStore,
       runStore,
       decisionStore: createDecisionStore(db),
+      noteStore: createNoteStore(db),
       findProject: () => PROJECT,
       engine: { start: () => {} },
       preflight: async () => ({ eligible: true, reasons: [], branch: 'main', head: 'a'.repeat(40), dirty: false }),
@@ -944,6 +994,7 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       settingsStore: ctx.settingsStore,
       runStore: reopenedStore,
       decisionStore: ctx.decisionStore,
+      noteStore: ctx.noteStore,
       findProject: name => ctx.projects.get(name) ?? null,
       engine: {
         ...ctx.engine,

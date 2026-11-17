@@ -1,7 +1,36 @@
 import { expect, it } from 'vitest';
-import { parseDecision, parseDecisionPage, parseInputRequest, parseRun, parseRunAutonomy } from '../pipelineRunRecords';
+import { parseDecision, parseDecisionPage, parseInputRequest, parseRun, parseRunAutonomy, parseNotePage } from '../pipelineRunRecords';
 import { validRun } from './pipelineRunFixture';
 it('accepts the complete run response', () => { expect(parseRun(validRun())).toEqual(validRun()); });
+it('validates run notes paths and latest status', () => {
+  const run = validRun();
+  run.notesDir = '.codedeck/runs/abcdef12';
+  run.steps[0].notePath = null;
+  expect(parseRun(run)).toEqual(run);
+  run.steps[0].notePath = `${run.notesDir}/00-setup.md`;
+  expect(() => parseRun(run)).toThrow('notePath');
+  run.notesDir = '../bad';
+  expect(() => parseRun(run)).toThrow('notesDir');
+});
+it('checks notes consistency in the lightweight runs-bar parser', () => {
+  const run = validRun();
+  run.notesDir = '.codedeck/runs/abcdef12';
+  run.steps[0].kind = 'node';
+  expect(() => parseRunAutonomy(run)).toThrow('notePath');
+});
+it('parses notes pages and rejects malformed note fields', () => {
+  const note = { id: 1, stepIndex: 1, stepName: 'Build', attempt: 1, pass: 1, status: 'written', summary: 'Done', content: '# Done', createdAt: '2026-11-13T12:00:00.000Z' };
+  const page = { data: [note], page: { currentPage: 0, size: 20, totalElements: 1, totalPages: 1, hasNextPage: false } };
+  expect(parseNotePage(page).notes).toEqual([note]);
+  expect(() => parseNotePage({ ...page, data: [{ ...note, attempt: null }] })).toThrow('attempt');
+});
+it.each([
+  ['id', 0], ['stepIndex', -1], ['stepName', ''], ['attempt', 0], ['pass', 0],
+  ['status', 'bad'], ['summary', null], ['content', null], ['createdAt', 'bad'],
+])('rejects invalid note %s', (field, bad) => {
+  const note = { id: 1, stepIndex: 1, stepName: 'Build', attempt: 1, pass: 1, status: 'written', summary: 'Done', content: '# Done', createdAt: '2026-11-13T12:00:00.000Z' };
+  expect(() => parseNotePage({ data: [{ ...note, [field]: bad }], page: { currentPage: 0, size: 20, totalElements: 1, totalPages: 1, hasNextPage: false } })).toThrow(field);
+});
 it('validates every progress field and status combination', () => {
   const phase = { number: 3, title: 'Review', tasksDone: 0, tasksTotal: 11 };
   const good = { file: 'docs/todo.md', status: 'in_progress', phaseCount: 9, phase };

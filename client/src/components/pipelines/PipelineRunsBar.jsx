@@ -197,6 +197,61 @@ function DecisionsPanel({ run, onLoadDecisions }) {
   );
 }
 
+const NOTE_WARNING = {
+  missing: 'left no note on its last pass',
+  unchanged: 'did not update its note on its last pass',
+  unreadable: 'note could not be read on its last pass',
+  too_large: 'note is too large on its last pass',
+};
+
+function NotesPanel({ run, onLoadNotes }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState({ notes: [], hasNextPage: false, pages: 0, status: 'idle' });
+  const latest = useRef(0);
+  const load = async page => {
+    const request = ++latest.current;
+    setState(current => ({ ...current, status: 'loading' }));
+    try {
+      const loaded = await onLoadNotes(run.id, page);
+      if (request !== latest.current) return;
+      setState(current => loaded === null ? { ...current, status: 'failed' } : {
+        notes: page === 0 ? loaded.notes : [...current.notes, ...loaded.notes],
+        hasNextPage: loaded.hasNextPage,
+        pages: page + 1,
+        status: 'idle',
+      });
+    } catch (error) {
+      if (request === latest.current) setState(current => ({ ...current, status: 'failed', error: error?.message || 'Notes could not be loaded' }));
+    }
+  };
+  useEffect(() => {
+    if (open) load(0);
+    else latest.current += 1;
+    // The run id identifies the list; opening it refreshes page zero.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, run.id]);
+  if (run.notesDir === null) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {run.steps.filter(step => step.note && step.note.status !== 'written').map(step => (
+        <span key={step.index} style={{ color: 'var(--warning)' }}>{`${step.name} ${NOTE_WARNING[step.note.status]}`}</span>
+      ))}
+      <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} style={{ alignSelf: 'flex-start' }}>Notes</button>
+      {open && state.status === 'failed' && <span style={{ color: 'var(--danger)' }}>{state.error || 'The notes could not be loaded.'} <button type="button" onClick={() => load(state.pages)}>Try again</button></span>}
+      {open && state.notes.length > 0 && (
+        <ul aria-label={`Notes in ${run.workflowName}`} style={{ listStyle: 'none', margin: 0, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)', maxHeight: 260, overflowY: 'auto' }}>
+          {state.notes.map(note => <li key={note.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <strong style={{ color: 'var(--text-primary)' }}>{`${note.stepName}, pass ${note.pass}`}</strong>
+            {note.summary && <span>{note.summary}</span>}
+            {note.content !== null && <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{note.content}</div>}
+          </li>)}
+        </ul>
+      )}
+      {open && state.hasNextPage && <button type="button" disabled={state.status === 'loading'} onClick={() => load(state.pages)}>Show more notes</button>}
+    </div>
+  );
+}
+
 export default function PipelineRunsBar({
   runs,
   onStop,
@@ -206,6 +261,7 @@ export default function PipelineRunsBar({
   onAnswer,
   onActivateStep,
   onLoadDecisions,
+  onLoadNotes,
 }) {
   if (!runs?.length) return null;
 
@@ -337,6 +393,7 @@ export default function PipelineRunsBar({
           </div>
           {run.status === 'needs_input' && <InputRequestPanel run={run} onAnswer={onAnswer} />}
           <DecisionsPanel run={run} onLoadDecisions={onLoadDecisions} />
+          <NotesPanel run={run} onLoadNotes={onLoadNotes} />
           </div>
         );
       })}

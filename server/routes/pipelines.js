@@ -16,6 +16,8 @@ import {
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions } from '../pipelines/run-machine.js';
 import { createRunProgressReader, resolveRunProgressFile, isProgressFileInWorktree } from '../pipelines/run-progress.js';
+import { notePath } from '../pipelines/run-notes.js';
+import { buildStepGuidance } from '../pipelines/step-guidance.js';
 import {
   preflight as defaultPreflight,
   planNames as defaultPlanNames,
@@ -43,6 +45,7 @@ const AGENT_SORT = ['name', 'updatedAt'];
 const WORKFLOW_SORT = ['name', 'updatedAt'];
 const RUN_SORT = ['createdAt', 'updatedAt', 'status'];
 const DECISION_SORT = ['createdAt'];
+const NOTE_SORT = ['createdAt'];
 
 class PipelineError extends Error {
   constructor(message, status, errors, extra = {}) {
@@ -126,7 +129,7 @@ function isOpenRun(run) {
 }
 
 /** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
-function buildRunView(run, decisionCount, progress) {
+function buildRunView(run, decisionCount, progress, latestNotes) {
   return {
     id: run.id,
     requestId: run.requestId,
@@ -135,6 +138,7 @@ function buildRunView(run, decisionCount, progress) {
     // Whether this run's agents settle their own questions, as the workflow said when it started.
     agentsDecide: run.definition.agentsDecide,
     decisionCount,
+    notesDir: run.definition.notesDir,
     progress,
     project: run.project,
     input: run.input,
@@ -149,6 +153,8 @@ function buildRunView(run, decisionCount, progress) {
         kind: defStep.kind,
         name: defStep.name,
         agentName: defStep.agent.name,
+        notePath: notePath(run.definition, index),
+        note: latestNotes.get(index) === undefined ? null : (({ status, summary, attempt, pass, createdAt }) => ({ status, summary, attempt, pass, createdAt }))(latestNotes.get(index)),
         repeat: defStep.repeat,
         status: progress.status,
         sessionId: progress.sessionId,
@@ -374,6 +380,7 @@ export function createPipelinesRouter(deps) {
     settingsStore,
     runStore,
     decisionStore,
+    noteStore,
     findProject,
     engine,
     preflight = defaultPreflight,
@@ -392,6 +399,7 @@ export function createPipelinesRouter(deps) {
   if (!settingsStore) throw new Error('pipelines router: settingsStore is required');
   if (!runStore) throw new Error('pipelines router: runStore is required');
   if (!decisionStore) throw new Error('pipelines router: decisionStore is required');
+  if (!noteStore) throw new Error('pipelines router: noteStore is required');
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
   const asRunView = async run => {
@@ -403,7 +411,7 @@ export function createPipelinesRouter(deps) {
     const progress = progressFile !== null && ['present', 'external', 'removal_blocked'].includes(run.worktreeState)
       ? await progressReader.read({ worktreePath: run.worktreePath, progressFile })
       : null;
-    return buildRunView(run, decisionStore.count(run.id), progress);
+    return buildRunView(run, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
   };
 
   const router = express.Router();
@@ -765,6 +773,11 @@ export function createPipelinesRouter(deps) {
       worktreePath: names.worktreePath,
       withSetup: !useExisting,
     });
+    definition.notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
+    for (let index = 0; index < definition.steps.length; index++) {
+      const guidance = buildStepGuidance(definition, index, { worktreePath: names.worktreePath });
+      if (guidance !== undefined && guidance.length > 2000) throw fieldError('project', 'The worktree path is too long for the step instructions');
+    }
 
     if (definition.progressFile !== null) {
       const present = useExisting
@@ -896,6 +909,24 @@ export function createPipelinesRouter(deps) {
         totalPages: Math.ceil(total / query.size),
         hasNextPage: (query.page + 1) * query.size < total,
       },
+    });
+  }));
+
+  router.get(`${BASE}/runs/:id/notes`, route((req, res) => {
+    const run = loadRun(req.params.id);
+    const query = parseCollectionQuery(req.query, { sortFields: NOTE_SORT, defaultSort: 'createdAt,asc', filters: [{
+      name: 'stepIndex',
+      parse: value => {
+        if (typeof value !== 'string' || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > 32) throw fieldError('stepIndex', 'Use a non-negative step index');
+        return Number(value);
+      },
+    }] });
+    const stepIndex = query.filters.stepIndex ?? null;
+    const total = noteStore.count(run.id, stepIndex);
+    const records = noteStore.list(run.id, { offset: query.page * query.size, limit: query.size, direction: query.direction, stepIndex });
+    res.json({
+      data: records.map(({ id, stepIndex: index, stepName, attempt, pass, status, summary, content, createdAt }) => ({ id, stepIndex: index, stepName, attempt, pass, status, summary, content, createdAt })),
+      page: { currentPage: query.page, size: query.size, totalElements: total, totalPages: Math.ceil(total / query.size), hasNextPage: (query.page + 1) * query.size < total },
     });
   }));
 

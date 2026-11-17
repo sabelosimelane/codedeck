@@ -14,6 +14,7 @@ import {
   resolveHomeRepoPath,
   hasCommittedFile,
 } from '../pipelines/run-worktree.js';
+import { prepare as prepareNotes } from '../pipelines/run-notes.js';
 
 const SETUP_AGENT = 'c4100000-0000-4000-8000-000000000001';
 const RUN_ID = '0d9e4b1a-1111-4111-8111-111111111111';
@@ -45,6 +46,21 @@ function initRepo(root) {
 }
 
 describeLive('pipeline run-worktree live', () => {
+  it('removes a worktree with prepared ignored run notes without force', async () => {
+    const base = mkdtempSync(path.join(process.cwd(), '.run-worktree-notes-'));
+    const home = path.join(base, 'repo');
+    const run = path.join(base, 'run');
+    try {
+      initRepo(home);
+      git(home, ['worktree', 'add', '-b', 'workflow/notes', run]);
+      await prepareNotes({ worktreePath: run, definition: { workflowName: 'Feature', notesDir: '.codedeck/runs/abcdef12', steps: [{ kind: 'node', name: 'Build', agent: { name: 'Codex' } }] }, input: 'x' });
+      expect(git(run, ['status', '--porcelain'])).toBe('');
+      git(home, ['worktree', 'remove', run]);
+      expect(existsSync(run)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
   it('accepts a committed progress file and refuses an untracked one at HEAD', async () => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'cd-progress-head-'));
     const home = path.join(base, 'repo');

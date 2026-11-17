@@ -24,6 +24,7 @@ import {
   stopRun,
   answerRun,
   listRunDecisions,
+  listRunNotes,
 } from '../pipelinesApi';
 
 let originalFetch;
@@ -42,6 +43,11 @@ function jsonResponse(body, { ok = true, status = 200 } = {}) {
 }
 
 describe('pipelinesApi', () => {
+  it('loads a run notes page newest first', async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ data: [], page: { hasNextPage: false } }));
+    await listRunNotes('run-1', 2);
+    expect(global.fetch.mock.calls[0][0]).toBe('/api/pipelines/runs/run-1/notes?page=2&size=50&sort=createdAt%2Cdesc');
+  });
   it('lists workflows from the paginated envelope', async () => {
     global.fetch = vi.fn(async () => jsonResponse({
       data: [{ id: 'w1', name: 'Feature' }],
