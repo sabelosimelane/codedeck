@@ -1,0 +1,30 @@
+.workflows-screen { position: fixed; inset: 0; z-index: 1500; display: flex; flex-direction: column; background: var(--bg-base); color: var(--text-primary); }
+.workflows-screen-header { display: flex; align-items: center; gap: 12px; flex: none; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.workflows-screen-header button { margin-left: auto; padding: 4px; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.workflows-screen-body { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+/* The list of workflows keeps to the left; the workflow being built takes the rest. */
+.workflows-screen section[aria-label="Workflows"] { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); column-gap: 20px; align-items: start; }
+.workflows-screen section[aria-label="Workflows"] > * { grid-column: 1; }
+.workflows-screen section[aria-label="Workflows"] > .workflow-builder { grid-column: 2; grid-row: 1 / span 12; }
+/* Inside the builder: workflow fields across the top, then the steps beside the open step. */
+.workflow-builder { display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr); column-gap: 16px; row-gap: 8px; align-items: start; }
+.workflow-builder > * { grid-column: 1 / -1; }
+.workflow-builder > .workflow-rail { grid-column: 1; }
+.workflow-builder > .pipeline-nodes { grid-column: 2; margin: 0; padding: 0; }
+.workflow-builder > .workflow-preview { grid-column: 3; }
+.workflow-rail { display: flex; flex-direction: column; gap: 4px; }
+.workflow-rail-step { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-left: 2px solid transparent; border-radius: 6px; background: var(--bg-surface); color: var(--text-secondary); text-align: left; cursor: grab; }
+.workflow-rail-step[aria-current="step"] { border-left-color: var(--accent); background: var(--bg-active); color: var(--text-primary); }
+.workflow-rail-number { flex: none; width: 18px; color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
+.workflow-rail-text { display: flex; flex-direction: column; min-width: 0; }
+.workflow-rail-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-rail-meta { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.workflow-rail-add { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; }
+.workflow-preview { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.workflow-preview h5 { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.workflow-preview-text { max-height: 60vh; margin: 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); color: var(--text-primary); font-family: var(--font-mono); font-size: 11px; line-height: 1.5; }
+.run-dialog-link { align-self: flex-start; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; }
+@media (max-width: 1100px) {
+  .workflow-builder { grid-template-columns: 200px minmax(0, 1fr); }
+  .workflow-builder > .workflow-preview { grid-column: 1 / -1; }
+}

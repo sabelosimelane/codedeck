@@ -9,6 +9,8 @@ import ProjectSwitcher from './components/ProjectSwitcher';
 import ShortcutsOverlay from './components/ShortcutsOverlay';
 import SessionSearch from './components/SessionSearch';
 import RunWorkflowDialog from './components/pipelines/RunWorkflowDialog';
+import WorkflowsScreen from './components/pipelines/builder/WorkflowsScreen';
+import { onOpenWorkflowBuilder } from './utils/workflowBuilder';
 import PaneDivider from './components/PaneDivider';
 import PreviewPage from './components/PreviewPage';
 import { ToastProvider, useToast } from './components/ToastContext';
@@ -66,6 +68,8 @@ function AppContent() {
   const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
   const [showSessionSearch, setShowSessionSearch] = useState(false);
   const [showRunWorkflow, setShowRunWorkflow] = useState(false);
+  const [showWorkflowBuilder, setShowWorkflowBuilder] = useState(false);
+  useEffect(() => onOpenWorkflowBuilder(() => setShowWorkflowBuilder(true)), []);
   const [resumedSession, setResumedSession] = useState(null);
   const [adoptedSessionIds, setAdoptedSessionIds] = useState(() => new Set());
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
@@ -614,6 +618,7 @@ function AppContent() {
           }}
         />
       )}
+      {showWorkflowBuilder && <WorkflowsScreen onClose={() => setShowWorkflowBuilder(false)} />}
       {showProjectSwitcher && (
         <ProjectSwitcher
           projects={[...activeProjects, ...waitingProjects]}

@@ -94,6 +94,14 @@ export function deleteWorkflow(id, { signal } = {}) {
   return request(itemPath('workflows', id), { method: 'DELETE', signal });
 }
 
+/**
+ * What the agent of one step would be sent, composed by the backend with the functions a run
+ * uses. `workflow` is the draft without agents; nothing is saved.
+ */
+export function previewPrompt({ workflow, nodeIndex, input }, { signal } = {}) {
+  return request('/prompt-previews', { method: 'POST', body: { workflow, nodeIndex, input }, signal });
+}
+
 /** Workflow templates the owner saved; the built-in ones are shared code, not records. */
 export function listTemplates({ signal } = {}) {
   return listAll('/templates', { signal });

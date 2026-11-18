@@ -1172,3 +1172,17 @@ describe('PipelineSettings — reuse: saved templates and saved steps', () => {
     expect(workflows().getByText('Plan, build, test')).toBeTruthy();
   });
 });
+
+describe('PipelineSettings — the way to the builder', () => {
+  it('asks the app to open the workflow builder', async () => {
+    const asked = vi.fn();
+    window.addEventListener('codedeck:open-workflow-builder', asked);
+    try {
+      await renderSettings({ agents: [codex()] });
+      click('Open the workflow builder');
+      expect(asked).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('codedeck:open-workflow-builder', asked);
+    }
+  });
+});

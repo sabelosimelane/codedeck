@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { listWorkflows, listWorktrees, preflightProject } from '../../utils/pipelinesApi';
 import { parsePreflight, parseWorktree } from '../../utils/pipelineRecords';
+import { openWorkflowBuilder } from '../../utils/workflowBuilder';
 import '../session-search.css';
 
 function newRequestId() {
@@ -155,6 +156,7 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
                   style={FIELD_STYLE}
                 />
               </label>
+              <button type="button" className="run-dialog-link" onClick={() => { onClose(); openWorkflowBuilder(); }}>Edit workflows…</button>
               <p className="pipeline-hint">What this run is about: a description of the task, or the path of a file its steps should work from.</p>
               {selectedWorkflow?.progressFile?.includes('{input}') && <p className="pipeline-hint">This workflow reads its progress from {selectedWorkflow.progressFile}, so the input must be that file&apos;s path.</p>}
 

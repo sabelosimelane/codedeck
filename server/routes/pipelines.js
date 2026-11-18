@@ -21,6 +21,7 @@ import { computeActions } from '../pipelines/run-machine.js';
 import { createRunProgressReader, readRunProgress, isProgressFileInWorktree } from '../pipelines/run-progress.js';
 import { notePath, feedbackPath } from '../pipelines/run-notes.js';
 import { buildStepGuidance } from '../pipelines/step-guidance.js';
+import { buildPrompt as buildPassPrompt } from '../terminal-workflow.js';
 import {
   preflight as defaultPreflight,
   planNames as defaultPlanNames,
@@ -574,6 +575,52 @@ export function createPipelinesRouter(deps) {
   }
   mountLibrary('templates', templateStore, 'Template', (body, options) => validateWorkflowBody(body, { ...options, template: true }));
   mountLibrary('step-presets', stepPresetStore, 'Saved step', validateStepPresetBody);
+
+  // --- What a step's agent is sent, for a workflow that may not be saved yet ---
+  // Built with the same functions a run uses. What only a real run knows is shown as a
+  // placeholder: the task's folder, the run notes folder and the pass identifier.
+  const PREVIEW = { worktreePath: '/path/to/the/task', notesDir: '.codedeck/runs/00000000', identifier: '<pass identifier>' };
+
+  router.post(`${BASE}/prompt-previews`, route((req, res) => {
+    const body = req.body;
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) throw fieldError('body', 'A JSON object is required');
+    const unknown = Object.keys(body).filter(field => !['workflow', 'nodeIndex', 'input'].includes(field));
+    if (unknown.length) throw fieldErrors(unknown.map(field => ({ field, message: 'Unknown field' })));
+    const errors = validateWorkflowBody(body.workflow, { template: true }).map(error => ({ field: `workflow.${error.field}`, message: error.message }));
+    if (typeof body.input !== 'string' || body.input.length > 4096 || /[\x00-\x1f\x7f]/.test(body.input)) {
+      errors.push({ field: 'input', message: 'Use 0–4096 characters on one line without control characters' });
+    }
+    const nodes = Array.isArray(body.workflow?.nodes) ? body.workflow.nodes : [];
+    if (!Number.isInteger(body.nodeIndex) || body.nodeIndex < 0 || body.nodeIndex >= Math.max(nodes.length, 1)) {
+      errors.push({ field: 'nodeIndex', message: 'Use the position of one of the workflow nodes, counting from 0' });
+    }
+    if (errors.length) throw fieldErrors(errors);
+
+    const definition = {
+      agentsDecide: body.workflow.agentsDecide,
+      notesDir: PREVIEW.notesDir,
+      steps: nodes.map((node, index) => ({
+        kind: 'node',
+        name: node.name.trim(),
+        // The note path helper wants every step to name its agent; the name is not part of what is sent.
+        agent: { name: 'not chosen yet' },
+        readOnly: node.readOnly === true,
+        repeat: node.repeat.mode === 'loop_back' ? { mode: 'loop_back', toStepIndex: loopTargetIndex(nodes, index), max: node.repeat.max } : node.repeat,
+      })),
+    };
+    const node = nodes[body.nodeIndex];
+    // An empty example input leaves the placeholder visible instead of an empty gap.
+    const command = composePrompt(node.prompt, body.input === '' ? '{input}' : body.input, errors, 'input');
+    if (errors.length) throw fieldErrors(errors);
+    const guidance = buildStepGuidance(definition, body.nodeIndex, { worktreePath: PREVIEW.worktreePath });
+    res.json({
+      stepName: definition.steps[body.nodeIndex].name,
+      prompt: buildPassPrompt(command, PREVIEW.identifier, guidance),
+      placeholders: PREVIEW,
+      // A leading /skill is written $skill for Codex; which CLI runs the step is only known in a run.
+      skillRewrite: /^\/(?=[A-Za-z0-9][A-Za-z0-9_-]*(?:\s|$))/.test(command),
+    });
+  }));
 
   // --- Settings ---
 

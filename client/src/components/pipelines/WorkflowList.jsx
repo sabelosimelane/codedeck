@@ -29,7 +29,7 @@ function uniqueName(name, workflows) {
 }
 
 /** Workflows list; one workflow at a time is open in the editor. */
-export default function WorkflowList({ workflows, agents, templates = [], stepPresets = [], onChanged, onDirtyChange }) {
+export default function WorkflowList({ workflows, agents, templates = [], stepPresets = [], variant = 'form', onChanged, onDirtyChange }) {
   const { showToast } = useToast();
   // `opened` counts editor openings so each one starts from a fresh draft.
   const [editing, setEditing] = useState(null);
@@ -168,6 +168,7 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
           roleHints={editing.roleHints}
           prefilled={editing.prefilled}
           agents={agents}
+          variant={variant}
           stepPresets={stepPresets}
           onLibraryChanged={onChanged}
           onSaved={async () => { close(); await onChanged(); }}

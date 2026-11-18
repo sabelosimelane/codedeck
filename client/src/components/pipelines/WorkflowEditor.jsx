@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, BookmarkPlus, Plus, Trash2 } from 'lucide-react';
 import { loopTargetIndex, validateWorkflowBody, validateStepPresetBody, WORKFLOW_KINDS, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
-import { createStepPreset, createTemplate, createWorkflow, getWorkflow, updateWorkflow } from '../../utils/pipelinesApi';
+import { createStepPreset, createTemplate, createWorkflow, getWorkflow, previewPrompt, updateWorkflow } from '../../utils/pipelinesApi';
 import { parseWorkflow } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
 import { OtherErrors, SelectField, TextField, diagnoseSaveFailure, errorsByField, failureMessage } from './definitionForm';
@@ -83,8 +83,55 @@ function shownFields(nodeCount) {
   return fields;
 }
 
+/**
+ * What the selected step's agent would be sent, asked of the backend a moment after the
+ * draft stops changing. Nothing is saved; the backend composes it as a run would.
+ */
+function PromptPreview({ fields, nodeIndex }) {
+  const [input, setInput] = useState('');
+  const [state, setState] = useState({ status: 'idle', prompt: null, message: null, skillRewrite: false });
+  const latest = useRef(0);
+  const workflow = { ...fields, nodes: fields.nodes.map(({ agentId: _agentId, ...node }) => node) };
+  const key = JSON.stringify([workflow, nodeIndex, input]);
+  useEffect(() => {
+    const request = ++latest.current;
+    const timer = setTimeout(async () => {
+      setState(current => ({ ...current, status: 'loading' }));
+      try {
+        const result = await previewPrompt({ workflow, nodeIndex, input });
+        if (request !== latest.current) return;
+        if (typeof result?.prompt !== 'string') throw new Error('Invalid preview from the pipelines API: prompt');
+        setState({ status: 'ready', prompt: result.prompt, message: null, skillRewrite: result.skillRewrite === true });
+      } catch (failure) {
+        if (request !== latest.current) return;
+        const field = Array.isArray(failure?.errors) && failure.errors[0]?.message ? `${failure.errors[0].field.replace(/^workflow\./, '')}: ${failure.errors[0].message}` : null;
+        setState({ status: 'failed', prompt: null, message: field ?? failureMessage(failure), skillRewrite: false });
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+    // `key` is the draft, the step and the example input; `workflow` is rebuilt on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return (
+    <section className="workflow-preview" aria-label="What the agent is sent">
+      <h5>What the agent is sent</h5>
+      <TextField label="Example input" caption="Example input — stands in for what you type when starting a run" value={input} onChange={setInput} maxLength={4096} placeholder="e.g. docs/todos/replies.md" />
+      {state.status === 'failed' && <span className="pipeline-field-error" role="status">{`No preview yet — ${state.message}`}</span>}
+      {state.prompt !== null && <pre className="workflow-preview-text">{state.prompt}</pre>}
+      {state.prompt !== null && (
+        <span className="pipeline-hint">
+          The task&apos;s folder, the run notes folder and the pass identifier are filled in when a run starts.
+          {state.skillRewrite && ' The leading /skill is written $skill when Codex runs the step.'}
+        </span>
+      )}
+    </section>
+  );
+}
+
 /** Editor for one workflow: a draft of its name and ordered nodes, saved as a whole. */
-export default function WorkflowEditor({ workflow, agents, stepPresets = [], roleHints = null, prefilled = false, onSaved, onChanged, onCancel, onDirtyChange, onLibraryChanged = async () => {} }) {
+export default function WorkflowEditor({ workflow, agents, stepPresets = [], roleHints = null, prefilled = false, variant = 'form', onSaved, onChanged, onCancel, onDirtyChange, onLibraryChanged = async () => {} }) {
+  if (variant !== 'form' && variant !== 'builder') throw new Error('workflow editor: variant must be form or builder');
+  const builder = variant === 'builder';
   const { showToast } = useToast();
   const [draft, setDraft] = useState(() => toDraft(workflow, roleHints));
   const [loaded, setLoaded] = useState(() => prefilled ? toDraft(null) : toDraft(workflow, roleHints));
@@ -108,6 +155,25 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
     [next[index], next[index + offset]] = [next[index + offset], next[index]];
     return next;
   });
+  // Builder: one step is open at a time; the rail picks it and reorders by drag.
+  const [selectedKey, setSelectedKey] = useState(() => draft.nodes[0]?.key ?? null);
+  const dragFrom = useRef(null);
+  const selectedIndex = Math.max(0, draft.nodes.findIndex(node => node.key === selectedKey));
+  const dropNode = (to) => {
+    const from = dragFrom.current;
+    dragFrom.current = null;
+    if (from === null || from === to) return;
+    restructureNodes((nodes) => {
+      const next = [...nodes];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+  const addNode = (node) => {
+    setNodes(nodes => [...nodes, node]);
+    setSelectedKey(node.key);
+  };
 
   const save = async () => {
     const editing = draft.id !== null;
@@ -188,26 +254,7 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
     }
   };
 
-  return (
-    <section className="pipeline-form" aria-label="Workflow editor">
-      <h4>{draft.id === null ? 'New workflow' : 'Edit workflow'}</h4>
-      <TextField label="Workflow name" caption="Name" value={draft.name} onChange={name => setDraft(current => ({ ...current, name }))} error={errors.name} maxLength={64} placeholder="e.g. Bug fix" />
-      <div className="pipeline-node-row">
-        <SelectField label="Workflow kind" caption="Kind — what it is for; it only groups workflows" value={draft.kind} onChange={kind => setDraft(current => ({ ...current, kind }))} error={errors.kind}>
-          {WORKFLOW_KINDS.map(kind => <option key={kind} value={kind}>{WORKFLOW_KIND_LABELS[kind]}</option>)}
-        </SelectField>
-        <TextField label="Workflow description" caption="Description (optional)" value={draft.description} onChange={description => setDraft(current => ({ ...current, description }))} error={errors.description} maxLength={280} placeholder="One line on what this workflow does" />
-      </div>
-      <label className="pipeline-check">
-        <input type="checkbox" aria-label="Let agents decide" checked={draft.agentsDecide} disabled={busy} onChange={event => setDraft(current => ({ ...current, agentsDecide: event.target.checked }))} />
-        <span>Let agents decide — an agent that asks a question is told to go with its own recommendation instead of pausing the run; each one is recorded on the run. Setup still asks you.</span>
-      </label>
-      {errors.agentsDecide && <span className="pipeline-field-error">{errors.agentsDecide}</span>}
-      <TextField label="Progress file" caption="Progress file (optional)" value={draft.progressFile} onChange={progressFile => setDraft(current => ({ ...current, progressFile }))} error={errors.progressFile} maxLength={300} />
-      <span>A Markdown todo inside the run's worktree, for example docs/{'{input}'}. The runs bar shows the first "## Phase N" section that still has unticked boxes.</span>
-
-      <ol className="pipeline-nodes">
-        {draft.nodes.map((node, index) => {
+  const renderNode = (node, index) => {
           const number = index + 1;
           const prefix = `nodes[${index}]`;
           const loops = node.mode === 'loop_back';
@@ -238,7 +285,7 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
                 </SelectField>
                 <TextField label={`Node ${number} role`} caption="Role (optional)" value={node.role} onChange={setNodeField(index, 'role')} error={errors[`${prefix}.role`]} maxLength={32} placeholder="e.g. Reviewer" />
               </div>
-              <TextField multiline rows={3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="What this step should do. {input} is replaced with what you type when starting a run." />
+              <TextField multiline rows={builder ? 14 : 3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="What this step should do. {input} is replaced with what you type when starting a run." />
               <label className="pipeline-check">
                 <input type="checkbox" aria-label={`Node ${number} read-only step`} checked={node.readOnly} disabled={busy} onChange={event => setNodeField(index, 'readOnly')(event.target.checked)} />
                 <span>Read-only step — The agent is told to change nothing except files in its run notes folder.</span>
@@ -274,18 +321,63 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
               )}
             </li>
           );
-        })}
+  };
+
+  return (
+    <section className={builder ? 'pipeline-form workflow-builder' : 'pipeline-form'} aria-label="Workflow editor">
+      <h4>{draft.id === null ? 'New workflow' : 'Edit workflow'}</h4>
+      <TextField label="Workflow name" caption="Name" value={draft.name} onChange={name => setDraft(current => ({ ...current, name }))} error={errors.name} maxLength={64} placeholder="e.g. Bug fix" />
+      <div className="pipeline-node-row">
+        <SelectField label="Workflow kind" caption="Kind — what it is for; it only groups workflows" value={draft.kind} onChange={kind => setDraft(current => ({ ...current, kind }))} error={errors.kind}>
+          {WORKFLOW_KINDS.map(kind => <option key={kind} value={kind}>{WORKFLOW_KIND_LABELS[kind]}</option>)}
+        </SelectField>
+        <TextField label="Workflow description" caption="Description (optional)" value={draft.description} onChange={description => setDraft(current => ({ ...current, description }))} error={errors.description} maxLength={280} placeholder="One line on what this workflow does" />
+      </div>
+      <label className="pipeline-check">
+        <input type="checkbox" aria-label="Let agents decide" checked={draft.agentsDecide} disabled={busy} onChange={event => setDraft(current => ({ ...current, agentsDecide: event.target.checked }))} />
+        <span>Let agents decide — an agent that asks a question is told to go with its own recommendation instead of pausing the run; each one is recorded on the run. Setup still asks you.</span>
+      </label>
+      {errors.agentsDecide && <span className="pipeline-field-error">{errors.agentsDecide}</span>}
+      <TextField label="Progress file" caption="Progress file (optional)" value={draft.progressFile} onChange={progressFile => setDraft(current => ({ ...current, progressFile }))} error={errors.progressFile} maxLength={300} />
+      <span>A Markdown todo inside the run's worktree, for example docs/{'{input}'}. The runs bar shows the first "## Phase N" section that still has unticked boxes.</span>
+
+      {builder && (
+        <nav className="workflow-rail" aria-label="Steps of this workflow">
+          {draft.nodes.map((node, index) => (
+            <button key={node.key} type="button" draggable={!busy} className="workflow-rail-step" aria-current={index === selectedIndex ? 'step' : undefined}
+              aria-label={`Step ${index + 1}: ${node.name.trim() || 'no name yet'}`}
+              title="Drag to reorder"
+              onClick={() => setSelectedKey(node.key)}
+              onDragStart={() => { dragFrom.current = index; }}
+              onDragOver={event => event.preventDefault()}
+              onDrop={(event) => { event.preventDefault(); dropNode(index); }}>
+              <span className="workflow-rail-number">{index + 1}</span>
+              <span className="workflow-rail-text">
+                <span className="workflow-rail-name">{node.name.trim() || '(no name yet)'}</span>
+                <span className="workflow-rail-meta">{[node.role.trim(), agents.find(agent => agent.id === node.agentId)?.name ?? 'no agent', node.mode === 'loop_back' ? `↺ ${draft.nodes.find(candidate => candidate.key === node.loopTo)?.name.trim() || '?'}` : null, node.approval && node.mode !== 'loop_back' ? 'approval' : null].filter(Boolean).join(' · ')}</span>
+              </span>
+              {Object.keys(errors).some(field => field.startsWith(`nodes[${index}].`)) && <span className="pipeline-field-error" aria-label="This step has an invalid field">!</span>}
+            </button>
+          ))}
+          <button type="button" className="workflow-rail-add" disabled={busy || draft.nodes.length >= MAX_NODES} onClick={() => addNode(blankNode())}><Plus size={12} /> Add step</button>
+        </nav>
+      )}
+      <ol className="pipeline-nodes">
+        {builder ? renderNode(draft.nodes[selectedIndex], selectedIndex) : draft.nodes.map(renderNode)}
       </ol>
+      {builder && <PromptPreview fields={toFields(draft)} nodeIndex={selectedIndex} />}
       <OtherErrors errors={errors} shownFields={shownFields(draft.nodes.length)} />
 
       <div className="pipeline-form-actions">
-        <button type="button" disabled={busy || draft.nodes.length >= MAX_NODES} onClick={() => setNodes(nodes => [...nodes, blankNode()])}>
-          <Plus size={12} /> Add node
-        </button>
+        {!builder && (
+          <button type="button" disabled={busy || draft.nodes.length >= MAX_NODES} onClick={() => addNode(blankNode())}>
+            <Plus size={12} /> Add node
+          </button>
+        )}
         {stepPresets.length > 0 && (
           <select aria-label="Insert a saved step" value="" disabled={busy || draft.nodes.length >= MAX_NODES} onChange={(event) => {
             const preset = stepPresets.find(candidate => candidate.id === event.target.value);
-            if (preset) setNodes(nodes => [...nodes, nodeFromPreset(preset)]);
+            if (preset) addNode(nodeFromPreset(preset));
           }}>
             <option value="">Insert a saved step…</option>
             {stepPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.role ? `${preset.name} (${preset.role})` : preset.name}</option>)}

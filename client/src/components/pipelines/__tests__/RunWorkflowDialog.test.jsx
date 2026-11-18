@@ -190,6 +190,21 @@ describe('RunWorkflowDialog', () => {
     expect(startButton().disabled).toBe(false);
   });
 
+  it('closes and asks for the workflow builder from Edit workflows', async () => {
+    mockApi();
+    const asked = vi.fn();
+    window.addEventListener('codedeck:open-workflow-builder', asked);
+    try {
+      const { onClose, onStart } = await renderDialog();
+      fireEvent.click(screen.getByRole('button', { name: 'Edit workflows…' }));
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(asked).toHaveBeenCalledTimes(1);
+      expect(onStart).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('codedeck:open-workflow-builder', asked);
+    }
+  });
+
   it('shows the API message when worktrees cannot be listed', async () => {
     global.fetch = vi.fn(async (url) => {
       const target = String(url);

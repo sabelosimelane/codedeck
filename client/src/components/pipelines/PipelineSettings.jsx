@@ -5,6 +5,7 @@ import { useToast } from '../ToastContext';
 import AgentList from './AgentList';
 import WorkflowList from './WorkflowList';
 import { failureMessage } from './definitionForm';
+import { openWorkflowBuilder } from '../../utils/workflowBuilder';
 import './pipeline-settings.css';
 
 /**
@@ -80,6 +81,12 @@ export default function PipelineSettings({ onDirtyChange }) {
               <option value="">No setup agent</option>
               {definitions.agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
             </select>
+          </section>
+
+          <section className="pipeline-section">
+            <h3>Workflow builder</h3>
+            <p className="pipeline-hint">A full screen for building workflows: the steps side by side with the one you are editing, a large prompt editor, and a preview of exactly what the agent is sent.</p>
+            <button type="button" className="pipeline-add" onClick={openWorkflowBuilder}>Open the workflow builder</button>
           </section>
 
           <WorkflowList workflows={definitions.workflows} agents={definitions.agents} templates={definitions.templates} stepPresets={definitions.stepPresets} onChanged={load} onDirtyChange={setWorkflowsDirty} />

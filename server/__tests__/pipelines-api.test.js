@@ -2445,3 +2445,79 @@ describe.each([
     }
   });
 });
+
+describe('pipelines API — what a step\'s agent is sent', () => {
+  const url = `${base}/prompt-previews`;
+  const workflow = (extra = {}) => ({
+    name: 'Draft', agentsDecide: false,
+    nodes: [
+      { name: 'Plan', prompt: '/feature-spec {input}', repeat: { mode: 'once' }, readOnly: true, approval: true },
+      { name: 'Develop', prompt: 'Build what the plan says', repeat: { mode: 'once' } },
+      { name: 'Test', prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 3 } },
+    ],
+    ...extra,
+  });
+
+  it('composes the prompt of an unsaved workflow with the real instruction and guidance', async () => {
+    const ctx = await setup();
+    const response = await request(ctx.app).post(url).send({ workflow: workflow(), nodeIndex: 0, input: 'docs/todos/replies.md' });
+    expect(response.status).toBe(200);
+    expect(response.body.stepName).toBe('Plan');
+    expect(response.body.placeholders).toEqual({ worktreePath: '/path/to/the/task', notesDir: '.codedeck/runs/00000000', identifier: '<pass identifier>' });
+    expect(response.body.skillRewrite).toBe(true);
+    const { prompt } = response.body;
+    expect(prompt.startsWith('/feature-spec docs/todos/replies.md\n\nCodeDeck workflow instruction: perform one pass')).toBe(true);
+    expect(prompt).toContain("Work only inside this run's worktree, /path/to/the/task");
+    expect(prompt).toContain('This step is read-only: change nothing in the worktree except files in the run notes folder, .codedeck/runs/00000000.');
+    expect(prompt).toContain('write your note to .codedeck/runs/00000000/00-plan.md');
+    expect(prompt).toContain('Iteration identifier: <pass identifier>');
+    expect(prompt).not.toContain('The owner is not available');
+    expect(ctx.workflowStore.list()).toEqual([]);
+  });
+
+  it('explains the loop to the step that closes it, and who decides when agents decide', async () => {
+    const ctx = await setup();
+    const response = await request(ctx.app).post(url).send({ workflow: workflow({ agentsDecide: true }), nodeIndex: 2, input: '' });
+    expect(response.status).toBe(200);
+    expect(response.body.prompt).toContain('This step closes a loop: CodeDeck repeats the steps from "Develop" to "Test" in order');
+    expect(response.body.prompt).toContain('The owner is not available during this run.');
+    expect(response.body.skillRewrite).toBe(false);
+    const first = await request(ctx.app).post(url).send({ workflow: workflow(), nodeIndex: 0, input: '' });
+    expect(first.body.prompt.startsWith('/feature-spec {input}\n')).toBe(true);
+  });
+
+  it.each([
+    [{ nodeIndex: 3 }, ['nodeIndex']], [{ nodeIndex: -1 }, ['nodeIndex']], [{ nodeIndex: '0' }, ['nodeIndex']], [{ nodeIndex: 1.5 }, ['nodeIndex']],
+    [{ input: null }, ['input']], [{ input: 'x'.repeat(4097) }, ['input']], [{ input: 'a\nb' }, ['input']],
+    [{ workflow: null }, ['workflow.body']], [{ extra: 1 }, ['extra']],
+  ])('refuses %j', async (patch, fields) => {
+    const ctx = await setup();
+    const response = await request(ctx.app).post(url).send({ workflow: workflow(), nodeIndex: 0, input: 'x', ...patch });
+    expect(response.status).toBe(400);
+    expect(response.type).toBe('application/problem+json');
+    expect(response.body.errors.map(error => error.field)).toEqual(fields);
+  });
+
+  it('names the invalid field of the draft, refuses agents in it, and accepts the limits', async () => {
+    const ctx = await setup();
+    const bad = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', prompt: '', repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x' });
+    expect(bad.body.errors.map(error => error.field)).toEqual(['workflow.nodes[0].prompt']);
+    const withAgent = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', agentId: '7c000000-0000-4000-8000-000000000009', prompt: 'p', repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x' });
+    expect(withAgent.body.errors.map(error => error.field)).toEqual(['workflow.nodes[0].agentId']);
+    expect((await request(ctx.app).post(url).send({ workflow: workflow(), nodeIndex: 2, input: 'x'.repeat(4096) })).status).toBe(200);
+    const tooLong = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', prompt: `${'p'.repeat(8000)} {input} {input} {input}`, repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x'.repeat(4096) });
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.errors.map(error => error.field)).toEqual(['input']);
+    expect((await request(ctx.app).post(url).send([])).status).toBe(400);
+    expect((await request(ctx.app).post(url).set('Content-Type', 'application/json').send('{"workflow":')).status).toBe(400);
+  });
+
+  it('returns hostile text as text and gives the same answer twice', async () => {
+    const ctx = await setup();
+    const body = { workflow: workflow(), nodeIndex: 1, input: "<script>alert(1)</script>'; DROP TABLE x;--" };
+    const [first, second] = await Promise.all([request(ctx.app).post(url).send(body), request(ctx.app).post(url).send(body)]);
+    expect(first.status).toBe(200);
+    expect(first.type).toBe('application/json');
+    expect(first.body).toEqual(second.body);
+  });
+});
