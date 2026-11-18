@@ -16,6 +16,7 @@
 .task-view-main { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .task-step-detail { display: flex; flex-direction: column; gap: 6px; flex: none; max-height: 45%; padding: 8px 12px; overflow-y: auto; border-bottom: 1px solid var(--border); }
 .task-step-detail-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
-.task-step-records-row { display: flex; flex-direction: column; gap: 6px; }
-.task-step-records { display: flex; flex-direction: column; gap: 6px; }
+.task-step-records-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.task-step-records { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.task-step-records:has([aria-expanded="true"]) { flex-basis: 100%; }
 .task-view button.task-step-records-toggle { align-self: flex-start; }
