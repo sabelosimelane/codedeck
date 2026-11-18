@@ -142,10 +142,28 @@ function validateLoops(errors, nodes) {
   });
 }
 
-export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
+/** What a workflow is for. It groups workflows and templates; it never changes how a run behaves. */
+export const WORKFLOW_KINDS = Object.freeze(['build', 'bugfix', 'troubleshoot', 'review', 'other']);
+export const WORKFLOW_KIND_LABELS = Object.freeze({ build: 'Build', bugfix: 'Bug fix', troubleshoot: 'Troubleshoot', review: 'Review', other: 'Other' });
+export const DESCRIPTION_MAX = 280;
+export const ROLE_MAX = 32;
+
+function optionalLine(errors, field, value, max) {
+  if (value !== undefined && (typeof value !== 'string' || value.trim().length > max || SINGLE_LINE.test(value))) {
+    add(errors, field, `Use up to ${max} characters on one line without control characters`);
+  }
+}
+
+/**
+ * A workflow, or with `template: true` a saved template: the same definition without agents,
+ * since agents are chosen when a template is turned into a workflow.
+ */
+export function validateWorkflowBody(body, { revisionRequired = false, template = false } = {}) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['name', 'agentsDecide', 'progressFile', 'nodes', 'revision'])) return errors;
+  if (!rejectUnknown(errors, body, ['name', 'description', 'kind', 'agentsDecide', 'progressFile', 'nodes', 'revision'])) return errors;
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
+  optionalLine(errors, 'description', body.description, DESCRIPTION_MAX);
+  if (body.kind !== undefined && !WORKFLOW_KINDS.includes(body.kind)) add(errors, 'kind', `Choose one of ${WORKFLOW_KINDS.join(', ')}`);
   requireRevision(errors, body.revision, revisionRequired);
   // Whether agents settle their own questions during a run instead of pausing for the owner.
   if (typeof body.agentsDecide !== 'boolean') add(errors, 'agentsDecide', 'Use true or false');
@@ -169,10 +187,12 @@ export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
       return;
     }
     for (const field of Object.keys(node)) {
-      if (!['name', 'agentId', 'prompt', 'repeat', 'readOnly', 'approval'].includes(field)) {
+      if (!['name', 'role', ...(template ? [] : ['agentId']), 'prompt', 'repeat', 'readOnly', 'approval'].includes(field)) {
         add(errors, `${prefix}.${field}`, 'Unknown field');
       }
     }
+    // What the step is there to do (Planner, Reviewer…); shown beside its name, never sent to the agent.
+    optionalLine(errors, `${prefix}.role`, node.role, ROLE_MAX);
     if (typeof node.name !== 'string' || !node.name.trim() || node.name.trim().length > 64 || SINGLE_LINE.test(node.name)) {
       add(errors, `${prefix}.name`, 'Use 1–64 characters on one line without control characters');
     } else {
@@ -180,7 +200,7 @@ export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
       if (seenNames.has(key)) add(errors, `${prefix}.name`, 'Node names must be unique within the workflow');
       seenNames.add(key);
     }
-    if (!isUuid(node.agentId)) add(errors, `${prefix}.agentId`, 'Use a UUID of an existing agent');
+    if (!template && !isUuid(node.agentId)) add(errors, `${prefix}.agentId`, 'Use a UUID of an existing agent');
     if (
       typeof node.prompt !== 'string'
       || !node.prompt.trim()
@@ -197,6 +217,27 @@ export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
   });
   validateLoops(errors, body.nodes);
 
+  return errors;
+}
+
+/** A saved step: a named prompt with its options, copied into a workflow when inserted. */
+export function validateStepPresetBody(body, { revisionRequired = false } = {}) {
+  const errors = [];
+  if (!rejectUnknown(errors, body, ['name', 'role', 'prompt', 'repeat', 'readOnly', 'approval', 'revision'])) return errors;
+  requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
+  optionalLine(errors, 'role', body.role, ROLE_MAX);
+  requireRevision(errors, body.revision, revisionRequired);
+  if (typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 8192 || MULTI_LINE.test(body.prompt)) {
+    add(errors, 'prompt', 'Use 1–8192 characters without terminal control codes');
+  }
+  const repeatErrors = [];
+  validateRepeat(repeatErrors, 'step', body.repeat);
+  // A loop names another step of its workflow, which a step on its own does not have.
+  if (body.repeat?.mode === 'loop_back') add(errors, 'repeat.mode', 'Choose once or until_complete; a loop is set in the workflow');
+  else for (const error of repeatErrors) add(errors, error.field.replace(/^step\./, ''), error.message);
+  for (const flag of ['readOnly', 'approval']) {
+    if (body[flag] !== undefined && typeof body[flag] !== 'boolean') add(errors, flag, 'Use true or false');
+  }
   return errors;
 }
 

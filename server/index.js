@@ -27,6 +27,7 @@ import { createRunStore } from './pipelines/run-store.js';
 import { createDecisionStore } from './pipelines/decision-store.js';
 import { createNoteStore } from './pipelines/note-store.js';
 import { createReviewStore } from './pipelines/review-store.js';
+import { createTemplateStore, createStepPresetStore } from './pipelines/library-store.js';
 import {
   create as createPipelineWorktree,
   remove as removePipelineWorktree,
@@ -1030,6 +1031,8 @@ app.use(createPipelinesRouter({
   decisionStore: pipelineDecisionStore,
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
+  templateStore: createTemplateStore(db),
+  stepPresetStore: createStepPresetStore(db),
   taskStore,
   taskService,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,

@@ -53,7 +53,7 @@ describeLive('pipeline run-worktree live', () => {
     try {
       initRepo(home);
       git(home, ['worktree', 'add', '-b', 'workflow/notes', run]);
-      await prepareNotes({ worktreePath: run, definition: { workflowName: 'Feature', notesDir: '.codedeck/runs/abcdef12', steps: [{ kind: 'node', name: 'Build', agent: { name: 'Codex' } }] }, input: 'x' });
+      await prepareNotes({ worktreePath: run, definition: { workflowName: 'Feature', notesDir: '.codedeck/runs/abcdef12', steps: [{ kind: 'node', role: '', name: 'Build', agent: { name: 'Codex' } }] }, input: 'x' });
       expect(git(run, ['status', '--porcelain'])).toBe('');
       git(home, ['worktree', 'remove', run]);
       expect(existsSync(run)).toBe(false);

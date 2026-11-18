@@ -82,7 +82,7 @@ export default function PipelineSettings({ onDirtyChange }) {
             </select>
           </section>
 
-          <WorkflowList workflows={definitions.workflows} agents={definitions.agents} onChanged={load} onDirtyChange={setWorkflowsDirty} />
+          <WorkflowList workflows={definitions.workflows} agents={definitions.agents} templates={definitions.templates} stepPresets={definitions.stepPresets} onChanged={load} onDirtyChange={setWorkflowsDirty} />
         </>
       )}
     </div>

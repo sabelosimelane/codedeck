@@ -34,7 +34,7 @@ function setup({ worktrees } = {}) {
 }
 
 function run(runStore, overrides = {}) {
-  const steps = [{ kind: 'node', name: 'Develop', readOnly: false, approval: false, prompt: 'Build', repeat: { mode: 'once' }, agent: AGENT }];
+  const steps = [{ kind: 'node', role: '', name: 'Develop', readOnly: false, approval: false, prompt: 'Build', repeat: { mode: 'once' }, agent: AGENT }];
   const status = overrides.status ?? 'stopped';
   return runStore.create({
     requestId: `req-${Math.random().toString(36).slice(2)}`,

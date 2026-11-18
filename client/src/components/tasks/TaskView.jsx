@@ -63,6 +63,7 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
       <div className="task-step-detail-heading">
         <strong className="pipeline-run-primary-text">{step.name}</strong>
         <span>{progress.detail ? `${progress.label} · ${progress.detail}` : progress.label}</span>
+        {step.role && <span className="pipeline-run-muted">{step.role}</span>}
         {step.agentName && <span className="pipeline-run-muted">{step.agentName}</span>}
         {step.readOnly && <span className="pipeline-run-muted">read-only</span>}
         {loopTarget && <span className="pipeline-run-muted">{`loops back to ${loopTarget.name}`}</span>}

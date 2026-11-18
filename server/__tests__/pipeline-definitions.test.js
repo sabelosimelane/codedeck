@@ -5,6 +5,7 @@ import {
   validateAgentBody,
   validateRunStartBody,
   validateSettingsBody,
+  validateStepPresetBody,
   validateWorkflowBody,
 } from '../../shared/pipeline-definitions.mjs';
 
@@ -395,5 +396,62 @@ describe('validateWorkflowBody: looping back to an earlier node', () => {
     expect(validateWorkflowBody(workflow(node('Develop', { mode: 'forever' })))).toEqual([
       { field: 'nodes[0].repeat.mode', message: 'Choose once, until_complete or loop_back' },
     ]);
+  });
+});
+
+describe('workflow kind, description and step roles', () => {
+  const node = (extra = {}) => ({ name: 'Develop', agentId: UUID, prompt: 'Build', repeat: { mode: 'once' }, ...extra });
+  const body = (extra = {}) => ({ name: 'Feature', agentsDecide: false, nodes: [node()], ...extra });
+
+  it('accepts them, and a workflow that names none', () => {
+    expect(validateWorkflowBody(body())).toEqual([]);
+    expect(validateWorkflowBody(body({ kind: 'troubleshoot', description: 'x'.repeat(280), nodes: [node({ role: 'x'.repeat(32) })] }))).toEqual([]);
+    expect(validateWorkflowBody(body({ description: '', nodes: [node({ role: '' })] }))).toEqual([]);
+  });
+
+  it.each([
+    [{ kind: 'deploy' }, 'kind'], [{ kind: null }, 'kind'], [{ kind: 12 }, 'kind'],
+    [{ description: 'x'.repeat(281) }, 'description'], [{ description: 'a\nb' }, 'description'], [{ description: null }, 'description'], [{ description: 12 }, 'description'],
+  ])('rejects %j', (extra, field) => {
+    expect(fields(validateWorkflowBody(body(extra)))).toEqual([field]);
+  });
+
+  it.each([['x'.repeat(33)], ['a\nb'], [null], [12]])('rejects the role %j', role => {
+    expect(fields(validateWorkflowBody(body({ nodes: [node({ role })] })))).toEqual(['nodes[0].role']);
+  });
+
+  it('validates a saved template: the same definition with no agents', () => {
+    const { agentId, ...step } = node({ role: 'Developer' });
+    expect(validateWorkflowBody(body({ nodes: [step] }), { template: true })).toEqual([]);
+    expect(fields(validateWorkflowBody(body(), { template: true }))).toEqual(['nodes[0].agentId']);
+    expect(fields(validateWorkflowBody(body({ nodes: [step] })))).toEqual(['nodes[0].agentId']);
+    expect(fields(validateWorkflowBody(body({ nodes: [{ ...step, prompt: '' }] }), { template: true }))).toEqual(['nodes[0].prompt']);
+  });
+});
+
+describe('validateStepPresetBody', () => {
+  const valid = { name: 'Review', role: 'Reviewer', prompt: 'Review the changes', repeat: { mode: 'once' }, readOnly: true, approval: false };
+
+  it('accepts a step with or without its options, and a bounded repeat', () => {
+    expect(validateStepPresetBody(valid)).toEqual([]);
+    expect(validateStepPresetBody({ name: 'x', prompt: 'p', repeat: { mode: 'until_complete', max: 100 } })).toEqual([]);
+    expect(validateStepPresetBody({ ...valid, name: 'x'.repeat(64), prompt: 'x'.repeat(8192), role: '' })).toEqual([]);
+  });
+
+  it.each([
+    [{ name: '' }, 'name'], [{ name: 'x'.repeat(65) }, 'name'], [{ name: null }, 'name'],
+    [{ role: 'x'.repeat(33) }, 'role'], [{ role: 12 }, 'role'],
+    [{ prompt: '' }, 'prompt'], [{ prompt: '  ' }, 'prompt'], [{ prompt: 'x'.repeat(8193) }, 'prompt'], [{ prompt: 'a\u0007b' }, 'prompt'], [{ prompt: null }, 'prompt'],
+    [{ repeat: { mode: 'loop_back', to: 'Develop', max: 3 } }, 'repeat.mode'], [{ repeat: { mode: 'sometimes' } }, 'repeat.mode'],
+    [{ repeat: { mode: 'until_complete', max: 0 } }, 'repeat.max'], [{ repeat: { mode: 'until_complete', max: 101 } }, 'repeat.max'], [{ repeat: null }, 'repeat'],
+    [{ readOnly: 'yes' }, 'readOnly'], [{ approval: 1 }, 'approval'], [{ agentId: UUID }, 'agentId'],
+  ])('rejects %j', (extra, field) => {
+    expect(fields(validateStepPresetBody({ ...valid, ...extra }))).toEqual([field]);
+  });
+
+  it('requires a revision only when asked, and an object', () => {
+    expect(fields(validateStepPresetBody(valid, { revisionRequired: true }))).toEqual(['revision']);
+    expect(validateStepPresetBody({ ...valid, revision: 2 }, { revisionRequired: true })).toEqual([]);
+    expect(fields(validateStepPresetBody([]))).toEqual(['body']);
   });
 });

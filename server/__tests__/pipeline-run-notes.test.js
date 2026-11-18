@@ -28,8 +28,8 @@ const definition = {
   workflowName: 'General workflow',
   notesDir: '.codedeck/runs/abcdef12',
   steps: [
-    { kind: 'setup', name: 'Setup', agent: { name: 'Claude' } },
-    { kind: 'node', name: 'Build things', agent: { name: 'Codex' } },
+    { kind: 'setup', role: '', name: 'Setup', agent: { name: 'Claude' } },
+    { kind: 'node', role: '', name: 'Build things', agent: { name: 'Codex' } },
   ],
 };
 

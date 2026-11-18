@@ -26,7 +26,7 @@ function definition(overrides = {}) {
     notesDir: null,
     steps: [
       {
-        kind: 'node', readOnly: false, approval: false,
+        kind: 'node', role: '', readOnly: false, approval: false,
         name: 'Develop',
         prompt: 'Implement the feature',
         repeat: { mode: 'once' },
@@ -284,7 +284,7 @@ describe('pipeline run store', () => {
     const def = definition({
       steps: [
         {
-          kind: 'node', readOnly: false, approval: false,
+          kind: 'node', role: '', readOnly: false, approval: false,
           name: 'One',
           prompt: 'one',
           repeat: { mode: 'once' },
@@ -296,7 +296,7 @@ describe('pipeline run store', () => {
           },
         },
         {
-          kind: 'node', readOnly: false, approval: false,
+          kind: 'node', role: '', readOnly: false, approval: false,
           name: 'Two',
           prompt: 'two',
           repeat: { mode: 'until_complete', max: 3 },
@@ -368,7 +368,7 @@ describe('pipeline run store', () => {
     const def = definition({
       steps: [
         {
-          kind: 'node', readOnly: false, approval: false,
+          kind: 'node', role: '', readOnly: false, approval: false,
           name: 'One',
           prompt: 'one',
           repeat: { mode: 'once' },
@@ -380,7 +380,7 @@ describe('pipeline run store', () => {
           },
         },
         {
-          kind: 'node', readOnly: false, approval: false,
+          kind: 'node', role: '', readOnly: false, approval: false,
           name: 'Two',
           prompt: 'two',
           repeat: { mode: 'once' },
@@ -529,7 +529,7 @@ describe('pipeline run store — input request', () => {
 
 describe('pipeline run store — loops and who decides', () => {
   const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
-  const defStep = (name, repeat = { mode: 'once' }, kind = 'node') => ({ kind, readOnly: false, approval: false, name, prompt: `do ${name}`, repeat, agent });
+  const defStep = (name, repeat = { mode: 'once' }, kind = 'node') => ({ kind, role: '', readOnly: false, approval: false, name, prompt: `do ${name}`, repeat, agent });
   const loop = (toStepIndex, max = 20) => ({ mode: 'loop_back', toStepIndex, max });
   const looping = (overrides = {}) => {
     const def = definition({

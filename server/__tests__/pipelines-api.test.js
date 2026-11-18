@@ -12,6 +12,7 @@ import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createReviewStore } from '../pipelines/review-store.js';
+import { createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
@@ -66,6 +67,8 @@ async function setup(overrides = {}) {
   const decisionStore = createDecisionStore(db);
   const noteStore = createNoteStore(db);
   const reviewStore = createReviewStore(db);
+  const templateStore = createTemplateStore(db);
+  const stepPresetStore = createStepPresetStore(db);
 
   const engineStarts = [];
   const engine = {
@@ -215,6 +218,8 @@ async function setup(overrides = {}) {
     decisionStore,
     noteStore,
     reviewStore,
+    templateStore,
+    stepPresetStore,
     taskStore,
     taskService,
     findProject,
@@ -580,7 +585,7 @@ describe('pipelines API — preflight and runs', () => {
     expect(started.body.steps).toHaveLength(2);
     expect(started.body.steps[0]).toMatchObject({
       index: 0,
-      kind: 'setup', readOnly: false, approval: false,
+      kind: 'setup', role: '', readOnly: false, approval: false,
       name: 'Setup',
       agentName: 'codex-sol-high',
       status: 'pending',
@@ -588,7 +593,7 @@ describe('pipelines API — preflight and runs', () => {
     });
     expect(started.body.steps[1]).toMatchObject({
       index: 1,
-      kind: 'node', readOnly: false, approval: false,
+      kind: 'node', role: '', readOnly: false, approval: false,
       name: 'Develop',
       agentName: 'codex-sol-high',
       status: 'pending',
@@ -763,7 +768,7 @@ describe('pipelines API — preflight and runs', () => {
           progressFile: null,
           notesDir: null,
           steps: [{
-            kind: 'node', readOnly: false, approval: false,
+            kind: 'node', role: '', readOnly: false, approval: false,
             name: 'Develop',
             prompt: 'Implement x',
             repeat: { mode: 'once' },
@@ -800,6 +805,8 @@ describe('pipelines API — preflight and runs', () => {
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
+      templateStore: createTemplateStore(db),
+      stepPresetStore: createStepPresetStore(db),
       taskStore: createTaskStore(db),
       taskService: { plan: async () => { throw new Error('unused'); }, createPlanned: async () => { throw new Error('unused'); } },
       findProject: () => PROJECT,
@@ -1106,6 +1113,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       decisionStore: ctx.decisionStore,
       noteStore: ctx.noteStore,
       reviewStore: ctx.reviewStore,
+      templateStore: createTemplateStore(ctx.db),
+      stepPresetStore: createStepPresetStore(ctx.db),
       taskStore: ctx.taskStore,
       taskService: ctx.taskService,
       findProject: name => ctx.projects.get(name) ?? null,
@@ -1993,7 +2002,9 @@ describe('pipelines API — decisions agents made', () => {
   it('requires the task store and service', () => {
     const base = { agentStore: {}, workflowStore: {}, settingsStore: {}, runStore: {}, decisionStore: {}, noteStore: {}, findProject: () => null };
     expect(() => createPipelinesRouter(base)).toThrow('pipelines router: reviewStore is required');
-    const stores = { ...base, reviewStore: { list() {} } };
+    expect(() => createPipelinesRouter({ ...base, reviewStore: { list() {} } })).toThrow('pipelines router: templateStore is required');
+    expect(() => createPipelinesRouter({ ...base, reviewStore: { list() {} }, templateStore: { list() {} } })).toThrow('pipelines router: stepPresetStore is required');
+    const stores = { ...base, reviewStore: { list() {} }, templateStore: { list() {} }, stepPresetStore: { list() {} } };
     expect(() => createPipelinesRouter(stores)).toThrow('pipelines router: taskStore is required');
     expect(() => createPipelinesRouter({ ...stores, taskStore: { get() {} } })).toThrow('pipelines router: taskService is required');
   });
@@ -2344,5 +2355,93 @@ describe('pipelines API — runs in tasks', () => {
     const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ worktreePath: PROJECT.path }));
     expect(started.status).toBe(201);
     expect(started.body.taskId).toBeNull();
+  });
+});
+
+describe('pipelines API — kind, description and step roles', () => {
+  it('saves and returns them on a workflow, and shows the role on a run step', async () => {
+    const ctx = await setup();
+    const agent = ctx.agentStore.create(agentBody());
+    ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
+    const created = await request(ctx.app).post(`${base}/workflows`).send({
+      name: 'Hunt', kind: 'troubleshoot', description: ' Find the cause ', agentsDecide: false, nodes: [node(agent.id, { role: ' Investigator ' })],
+    });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ kind: 'troubleshoot', description: 'Find the cause' });
+    expect(created.body.nodes[0].role).toBe('Investigator');
+
+    const plain = await request(ctx.app).post(`${base}/workflows`).send({ name: 'Plain', agentsDecide: false, nodes: [node(agent.id)] });
+    expect(plain.body).toMatchObject({ kind: 'other', description: '' });
+    expect(plain.body.nodes[0].role).toBe('');
+
+    const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'role-run', workflowId: created.body.id, project: 'Demo', input: 'x' });
+    expect(started.status).toBe(201);
+    expect(started.body.steps.map(step => [step.kind, step.role])).toEqual([['setup', ''], ['node', 'Investigator']]);
+
+    for (const [extra, field] of [[{ kind: 'deploy' }, 'kind'], [{ description: 'x'.repeat(281) }, 'description'], [{ nodes: [node(agent.id, { role: 'x'.repeat(33) })] }, 'nodes[0].role']]) {
+      const bad = await request(ctx.app).post(`${base}/workflows`).send({ name: 'Bad', agentsDecide: false, nodes: [node(agent.id)], ...extra });
+      expect(bad.status).toBe(400);
+      expect(bad.body.errors.map(error => error.field)).toEqual([field]);
+    }
+  });
+});
+
+describe.each([
+  ['templates', 'Template', () => ({ name: 'My build', kind: 'build', description: 'Plan then build', agentsDecide: false, nodes: [{ name: 'Plan', role: 'Planner', prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true }] }), { nodes: [] }, 'nodes'],
+  ['step-presets', 'Saved step', () => ({ name: 'Review', role: 'Reviewer', prompt: 'Review the changes', repeat: { mode: 'once' }, readOnly: true }), { prompt: '' }, 'prompt'],
+])('pipelines API — saved %s', (segment, entity, body, invalid, invalidField) => {
+  const url = `${base}/${segment}`;
+
+  it('creates, reads, lists in the page envelope, updates and removes', async () => {
+    const ctx = await setup();
+    const created = await request(ctx.app).post(url).send(body());
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ ...body(), revision: 1, id: expect.any(String), createdAt: expect.any(String) });
+    expect((await request(ctx.app).get(`${url}/${created.body.id}`)).body).toEqual(created.body);
+
+    await request(ctx.app).post(url).send({ ...body(), name: 'Another' });
+    const listed = await request(ctx.app).get(url).query({ size: 1 });
+    expect(listed.status).toBe(200);
+    expect(listed.body.data.map(item => item.name)).toEqual(['Another']);
+    expect(listed.body.page).toEqual({ currentPage: 0, size: 1, totalElements: 2, totalPages: 2, hasNextPage: true });
+    expect((await request(ctx.app).get(url).query({ size: 1, page: 1, sort: 'name,asc' })).body.data.map(item => item.name)).toEqual([body().name]);
+
+    const updated = await request(ctx.app).put(`${url}/${created.body.id}`).send({ ...body(), name: 'Renamed', revision: 1 });
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({ name: 'Renamed', revision: 2 });
+    expect((await request(ctx.app).put(`${url}/${created.body.id}`).send({ ...body(), name: 'Late', revision: 1 })).status).toBe(409);
+
+    expect((await request(ctx.app).delete(`${url}/${created.body.id}`)).status).toBe(204);
+    expect((await request(ctx.app).get(`${url}/${created.body.id}`)).status).toBe(404);
+    expect((await request(ctx.app).delete(`${url}/${created.body.id}`)).status).toBe(404);
+  });
+
+  it('refuses invalid, duplicate, unknown and hostile requests with problem details', async () => {
+    const ctx = await setup();
+    const bad = await request(ctx.app).post(url).send({ ...body(), ...invalid });
+    expect(bad.status).toBe(400);
+    expect(bad.type).toBe('application/problem+json');
+    expect(bad.body.errors.map(error => error.field)).toEqual([invalidField]);
+    expect(bad.body.traceId).toBe(bad.headers['x-trace-id']);
+    for (const payload of [{}, [], { ...body(), agentId: 'x' }, { ...body(), name: '' }, { ...body(), name: null }]) {
+      expect((await request(ctx.app).post(url).send(payload)).status).toBe(400);
+    }
+    expect((await request(ctx.app).post(url).set('Content-Type', 'application/json').send('{"name":')).status).toBe(400);
+
+    const first = await request(ctx.app).post(url).send(body());
+    const again = await request(ctx.app).post(url).send(body());
+    expect([first.status, again.status]).toEqual([201, 409]);
+    expect(again.body.message).toBe(`A ${entity.toLowerCase()} with this name already exists`);
+
+    const hostile = await request(ctx.app).post(url).send({ ...body(), name: "<script>'; DROP TABLE x;--" });
+    expect(hostile.status).toBe(201);
+    expect(hostile.type).toBe('application/json');
+
+    expect((await request(ctx.app).put(`${url}/${first.body.id}`).send(body())).body.errors.map(error => error.field)).toEqual(['revision']);
+    expect((await request(ctx.app).get(`${url}/not-a-uuid`)).status).toBe(404);
+    expect((await request(ctx.app).put(`${url}/7c000000-0000-4000-8000-000000000009`).send({ ...body(), revision: 1 })).status).toBe(404);
+    for (const query of [{ size: 0 }, { size: 101 }, { page: -1 }, { sort: 'body,asc' }, { name: 'x' }]) {
+      expect((await request(ctx.app).get(url).query(query)).status).toBe(400);
+    }
   });
 });

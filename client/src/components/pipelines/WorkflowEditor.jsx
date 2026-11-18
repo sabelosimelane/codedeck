@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
-import { loopTargetIndex, validateWorkflowBody } from '../../../../shared/pipeline-definitions.mjs';
-import { createWorkflow, getWorkflow, updateWorkflow } from '../../utils/pipelinesApi';
+import { ArrowDown, ArrowUp, BookmarkPlus, Plus, Trash2 } from 'lucide-react';
+import { loopTargetIndex, validateWorkflowBody, validateStepPresetBody, WORKFLOW_KINDS, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { createStepPreset, createTemplate, createWorkflow, getWorkflow, updateWorkflow } from '../../utils/pipelinesApi';
 import { parseWorkflow } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
 import { OtherErrors, SelectField, TextField, diagnoseSaveFailure, errorsByField, failureMessage } from './definitionForm';
@@ -14,15 +14,20 @@ const nextNodeKey = () => `node-${++lastNodeKey}`;
 
 // `loopTo` is the key of the node a loop returns to, so the loop follows that node when it is
 // renamed or moved; the name is filled in when the workflow is saved.
-const blankNode = () => ({ key: nextNodeKey(), name: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '', readOnly: false, approval: false });
+const blankNode = () => ({ key: nextNodeKey(), name: '', role: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '', readOnly: false, approval: false });
+
+// A saved step becomes a node of its own: a copy, so editing it here never changes the saved one.
+const nodeFromPreset = preset => ({ ...blankNode(), name: preset.name, role: preset.role, prompt: preset.prompt, mode: preset.repeat.mode, max: preset.repeat.mode === 'once' ? '' : String(preset.repeat.max), readOnly: preset.readOnly, approval: preset.approval });
 
 function toDraft(workflow, roleHints = null) {
-  if (workflow === null) return { id: null, revision: null, name: '', agentsDecide: false, progressFile: '', nodes: [blankNode()] };
+  if (workflow === null) return { id: null, revision: null, name: '', kind: 'other', description: '', agentsDecide: false, progressFile: '', nodes: [blankNode()] };
   const keys = workflow.nodes.map(nextNodeKey);
   return {
     id: workflow.id,
     revision: workflow.revision,
     name: workflow.name,
+    kind: workflow.kind ?? 'other',
+    description: workflow.description ?? '',
     agentsDecide: workflow.agentsDecide,
     progressFile: workflow.progressFile ?? '',
     nodes: workflow.nodes.map((node, index) => ({
@@ -30,7 +35,7 @@ function toDraft(workflow, roleHints = null) {
       name: node.name,
       agentId: node.agentId,
       prompt: node.prompt,
-      role: roleHints?.[index] ?? null,
+      role: node.role ?? roleHints?.[index] ?? '',
       readOnly: node.readOnly,
       approval: node.approval,
       mode: node.repeat.mode,
@@ -53,10 +58,13 @@ function toRepeat(nodes, node) {
 function toFields(draft) {
   return {
     name: draft.name,
+    kind: draft.kind,
+    description: draft.description,
     agentsDecide: draft.agentsDecide,
     progressFile: draft.progressFile.trim() || null,
     nodes: draft.nodes.map(node => ({
       name: node.name,
+      role: node.role,
       agentId: node.agentId,
       prompt: node.prompt,
       readOnly: node.readOnly,
@@ -67,16 +75,16 @@ function toFields(draft) {
 }
 
 function shownFields(nodeCount) {
-  const fields = ['name', 'agentsDecide', 'progressFile'];
+  const fields = ['name', 'kind', 'description', 'agentsDecide', 'progressFile'];
   for (let index = 0; index < nodeCount; index++) {
     const prefix = `nodes[${index}]`;
-    fields.push(`${prefix}.name`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.readOnly`, `${prefix}.approval`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
+    fields.push(`${prefix}.name`, `${prefix}.role`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.readOnly`, `${prefix}.approval`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
   }
   return fields;
 }
 
 /** Editor for one workflow: a draft of its name and ordered nodes, saved as a whole. */
-export default function WorkflowEditor({ workflow, agents, roleHints = null, prefilled = false, onSaved, onChanged, onCancel, onDirtyChange }) {
+export default function WorkflowEditor({ workflow, agents, stepPresets = [], roleHints = null, prefilled = false, onSaved, onChanged, onCancel, onDirtyChange, onLibraryChanged = async () => {} }) {
   const { showToast } = useToast();
   const [draft, setDraft] = useState(() => toDraft(workflow, roleHints));
   const [loaded, setLoaded] = useState(() => prefilled ? toDraft(null) : toDraft(workflow, roleHints));
@@ -138,10 +146,58 @@ export default function WorkflowEditor({ workflow, agents, roleHints = null, pre
     }
   };
 
+  /** Saves the definition without its agents, to start other workflows from. */
+  const saveAsTemplate = async () => {
+    const fields = toFields(draft);
+    const body = { ...fields, nodes: fields.nodes.map(({ agentId: _agentId, ...node }) => node) };
+    const invalid = validateWorkflowBody(body, { template: true });
+    if (invalid.length > 0) {
+      setErrors(errorsByField(invalid));
+      showToast({ type: 'error', message: 'Fix the marked fields before saving this as a template.' });
+      return;
+    }
+    setBusy(true);
+    try {
+      await createTemplate(body);
+      showToast({ type: 'success', message: `Template "${body.name.trim()}" saved` });
+      await onLibraryChanged();
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Saves one step for reuse. A loop names another step of this workflow, so it cannot be saved alone. */
+  const saveStep = async (node) => {
+    const body = { name: node.name, role: node.role, prompt: node.prompt, repeat: node.mode === 'until_complete' ? { mode: node.mode, max: maximum(node) } : { mode: 'once' }, readOnly: node.readOnly, approval: node.approval };
+    const invalid = validateStepPresetBody(body);
+    if (invalid.length > 0) {
+      showToast({ type: 'error', message: `This step cannot be saved yet: ${invalid[0].message}` });
+      return;
+    }
+    setBusy(true);
+    try {
+      await createStepPreset(body);
+      showToast({ type: 'success', message: `Step "${body.name.trim()}" saved` });
+      await onLibraryChanged();
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className="pipeline-form" aria-label="Workflow editor">
       <h4>{draft.id === null ? 'New workflow' : 'Edit workflow'}</h4>
       <TextField label="Workflow name" caption="Name" value={draft.name} onChange={name => setDraft(current => ({ ...current, name }))} error={errors.name} maxLength={64} placeholder="e.g. Bug fix" />
+      <div className="pipeline-node-row">
+        <SelectField label="Workflow kind" caption="Kind — what it is for; it only groups workflows" value={draft.kind} onChange={kind => setDraft(current => ({ ...current, kind }))} error={errors.kind}>
+          {WORKFLOW_KINDS.map(kind => <option key={kind} value={kind}>{WORKFLOW_KIND_LABELS[kind]}</option>)}
+        </SelectField>
+        <TextField label="Workflow description" caption="Description (optional)" value={draft.description} onChange={description => setDraft(current => ({ ...current, description }))} error={errors.description} maxLength={280} placeholder="One line on what this workflow does" />
+      </div>
       <label className="pipeline-check">
         <input type="checkbox" aria-label="Let agents decide" checked={draft.agentsDecide} disabled={busy} onChange={event => setDraft(current => ({ ...current, agentsDecide: event.target.checked }))} />
         <span>Let agents decide — an agent that asks a question is told to go with its own recommendation instead of pausing the run; each one is recorded on the run. Setup still asks you.</span>
@@ -166,6 +222,9 @@ export default function WorkflowEditor({ workflow, agents, roleHints = null, pre
                   <button type="button" aria-label={`Move node ${number} down`} title="Move down" disabled={busy || index === draft.nodes.length - 1} onClick={() => moveNode(index, 1)}>
                     <ArrowDown size={13} />
                   </button>
+                  <button type="button" aria-label={`Save node ${number} as a reusable step`} title={loops ? 'A step that loops back cannot be saved on its own' : 'Save as a reusable step'} disabled={busy || loops} onClick={() => saveStep(node)}>
+                    <BookmarkPlus size={13} />
+                  </button>
                   <button type="button" className="pipeline-danger" aria-label={`Remove node ${number}`} title="Remove" disabled={busy || draft.nodes.length === 1} onClick={() => restructureNodes(nodes => nodes.filter((_node, at) => at !== index))}>
                     <Trash2 size={13} />
                   </button>
@@ -177,7 +236,7 @@ export default function WorkflowEditor({ workflow, agents, roleHints = null, pre
                   <option value="">Choose an agent</option>
                   {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                 </SelectField>
-                {node.role && !node.agentId && <span className="pipeline-role-hint">{node.role}</span>}
+                <TextField label={`Node ${number} role`} caption="Role (optional)" value={node.role} onChange={setNodeField(index, 'role')} error={errors[`${prefix}.role`]} maxLength={32} placeholder="e.g. Reviewer" />
               </div>
               <TextField multiline rows={3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="What this step should do. {input} is replaced with what you type when starting a run." />
               <label className="pipeline-check">
@@ -223,7 +282,17 @@ export default function WorkflowEditor({ workflow, agents, roleHints = null, pre
         <button type="button" disabled={busy || draft.nodes.length >= MAX_NODES} onClick={() => setNodes(nodes => [...nodes, blankNode()])}>
           <Plus size={12} /> Add node
         </button>
+        {stepPresets.length > 0 && (
+          <select aria-label="Insert a saved step" value="" disabled={busy || draft.nodes.length >= MAX_NODES} onChange={(event) => {
+            const preset = stepPresets.find(candidate => candidate.id === event.target.value);
+            if (preset) setNodes(nodes => [...nodes, nodeFromPreset(preset)]);
+          }}>
+            <option value="">Insert a saved step…</option>
+            {stepPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.role ? `${preset.name} (${preset.role})` : preset.name}</option>)}
+          </select>
+        )}
         <span className="pipeline-spacer" />
+        <button type="button" disabled={busy} onClick={saveAsTemplate} title="Save this workflow without its agents, to start others from">Save as template</button>
         <button type="button" className="pipeline-primary" disabled={busy} onClick={save}>Save workflow</button>
         <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>

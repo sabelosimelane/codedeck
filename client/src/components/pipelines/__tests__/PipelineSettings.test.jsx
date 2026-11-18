@@ -18,13 +18,15 @@ const cursor = () => ({ id: A2, name: 'cursor-fable', launchCommand: 'command ag
 const feature = () => ({
   id: W1,
   name: 'Feature',
+  kind: 'other',
+  description: '',
   agentsDecide: false,
   progressFile: null,
   revision: 3,
   ...STAMPS,
   nodes: [
-    { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false },
-    { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+    { name: 'Develop', role: '', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false },
+    { name: 'Test', role: '', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
   ],
 });
 
@@ -34,6 +36,8 @@ function createBackend(seed = {}) {
     agents: seed.agents ?? [],
     workflows: seed.workflows ?? [],
     settings: seed.settings ?? { setupAgentId: null, revision: 1 },
+    templates: seed.templates ?? [],
+    'step-presets': seed.stepPresets ?? [],
   };
   const requests = [];
   const failures = [];
@@ -579,13 +583,16 @@ describe('PipelineSettings workflows', () => {
     expect(screen.getByLabelText('Node 1 read-only step').checked).toBe(true);
     expect(screen.getByLabelText('Node 1 wait for my approval').checked).toBe(true);
     expect(screen.getByLabelText('Node 1 agent').value).toBe('');
-    expect(screen.getByText('Investigator')).toBeTruthy();
+    // What each step is for comes with the template, and can be edited.
+    expect(screen.getByLabelText('Node 1 role').value).toBe('Investigator');
+    expect(screen.getByLabelText('Workflow kind').value).toBe('bugfix');
     expect(lastDirty()).toBe(true);
     for (let index = 1; index <= 6; index++) type(`Node ${index} agent`, A1);
     click('Save workflow');
     await waitFor(() => expect(backend.mutations()).toHaveLength(1));
     expect(backend.mutations()[0].body.nodes[4].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 5 });
-    expect(backend.mutations()[0].body.nodes[0].role).toBeUndefined();
+    expect(backend.mutations()[0].body.nodes[0].role).toBe('Investigator');
+    expect(backend.mutations()[0].body).toMatchObject({ kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.' });
   });
 
   it('duplicates as a new workflow with agents and unique bounded name', async () => {
@@ -632,11 +639,13 @@ describe('PipelineSettings workflows', () => {
       path: '/workflows',
       body: {
         name: 'Release',
+        kind: 'other',
+        description: '',
         agentsDecide: false,
         progressFile: null,
         nodes: [
-          { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false },
-          { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+          { name: 'Develop', role: '', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false },
+          { name: 'Test', role: '', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
         ],
       },
     }]);
@@ -716,12 +725,14 @@ describe('PipelineSettings workflows', () => {
       path: `/workflows/${W1}`,
       body: {
         name: 'Feature',
+        kind: 'other',
+        description: '',
         agentsDecide: false,
         progressFile: null,
         revision: 3,
         nodes: [
-          { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
-          { name: 'Test', agentId: A1, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+          { name: 'Develop', role: '', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+          { name: 'Test', role: '', agentId: A1, prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
         ],
       },
     }]);
@@ -882,9 +893,9 @@ describe('PipelineSettings workflows — loops and who decides', () => {
     ...feature(),
     agentsDecide: true,
     nodes: [
-      { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
-      { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 }, readOnly: false, approval: false },
-      { name: 'Review', agentId: A1, prompt: '/review', repeat: { mode: 'once' }, readOnly: false, approval: false },
+      { name: 'Develop', role: '', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+      { name: 'Test', role: '', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 }, readOnly: false, approval: false },
+      { name: 'Review', role: '', agentId: A1, prompt: '/review', repeat: { mode: 'once' }, readOnly: false, approval: false },
     ],
   });
   const options = label => [...screen.getByLabelText(label).options].map(option => option.textContent);
@@ -908,11 +919,13 @@ describe('PipelineSettings workflows — loops and who decides', () => {
     await waitFor(() => toast('success', 'Workflow "Build" added'));
     expect(savedBody()).toEqual({
       name: 'Build',
+      kind: 'other',
+      description: '',
       agentsDecide: true,
       progressFile: null,
       nodes: [
-        { name: 'Develop', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
-        { name: 'Test', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 }, readOnly: false, approval: false },
+        { name: 'Develop', role: '', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+        { name: 'Test', role: '', agentId: A2, prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 20 }, readOnly: false, approval: false },
       ],
     });
   });
@@ -1046,5 +1059,116 @@ describe('PipelineSettings workflows — loops and who decides', () => {
     click('Save workflow');
     expect(await screen.findByText('Loops cannot share a node; this one overlaps the loop that ends at Test')).toBeTruthy();
     expect(screen.getByText('Use true or false')).toBeTruthy();
+  });
+});
+
+describe('PipelineSettings — reuse: saved templates and saved steps', () => {
+  const savedTemplate = () => ({
+    id: '44444444-4444-4444-8444-444444444444', name: 'My hunt', kind: 'troubleshoot', description: 'Mine', agentsDecide: true, progressFile: null, revision: 1, ...STAMPS,
+    nodes: [{ name: 'Look', role: 'Investigator', prompt: 'Look at {input}', repeat: { mode: 'once' }, readOnly: true, approval: false }],
+  });
+  const savedStep = () => ({ id: '55555555-5555-4555-8555-555555555555', name: 'Security review', role: 'Reviewer', prompt: 'Review for security problems', repeat: { mode: 'until_complete', max: 2 }, readOnly: true, approval: false, revision: 1, ...STAMPS });
+
+  it('offers the built-in Troubleshoot and Review only templates', async () => {
+    await renderSettings({ agents: [codex()] });
+    fireEvent.click(screen.getByRole('button', { name: 'Add workflow' }));
+    expect(screen.getByRole('button', { name: /Review only.*report findings/ })).toBeTruthy();
+    click(/Troubleshoot.*Gather evidence/);
+    expect(screen.getByLabelText('Workflow kind').value).toBe('troubleshoot');
+    expect(screen.getByLabelText('Node 5 loops back to').selectedOptions[0].textContent).toBe('Node 4: Fix');
+    expect(screen.getByLabelText('Node 2 wait for my approval').checked).toBe(true);
+  });
+
+  it('starts a workflow from a template the owner saved, with no agents chosen yet', async () => {
+    await renderSettings({ agents: [codex()], templates: [savedTemplate()] });
+    fireEvent.click(screen.getByRole('button', { name: 'Add workflow' }));
+    click(/My hunt.*Mine/);
+    expect(screen.getByLabelText('Workflow name').value).toBe('My hunt');
+    expect(screen.getByLabelText('Workflow kind').value).toBe('troubleshoot');
+    expect(screen.getByLabelText('Workflow description').value).toBe('Mine');
+    expect(screen.getByLabelText('Node 1 role').value).toBe('Investigator');
+    expect(screen.getByLabelText('Node 1 agent').value).toBe('');
+    expect(screen.getByLabelText('Let agents decide').checked).toBe(true);
+  });
+
+  it('saves the open workflow as a template without its agents', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    click('Edit workflow Feature');
+    type('Workflow description', 'Build and test');
+    click('Save as template');
+    await waitFor(() => toast('success', 'Template "Feature" saved'));
+    expect(backend.mutations()).toEqual([{ method: 'POST', path: '/templates', body: {
+      name: 'Feature', kind: 'other', description: 'Build and test', agentsDecide: false, progressFile: null,
+      nodes: [
+        { name: 'Develop', role: '', prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false },
+        { name: 'Test', role: '', prompt: '/feature-test {input}', repeat: { mode: 'once' }, readOnly: false, approval: false },
+      ],
+    } }]);
+    expect(screen.getByRole('region', { name: 'Workflow editor' })).toBeTruthy();
+  });
+
+  it('reports a template that could not be saved and one that is not valid yet', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    click('Edit workflow Feature');
+    backend.failNext('POST', 'templates', { status: 409, message: 'A template with this name already exists' });
+    click('Save as template');
+    await waitFor(() => toast('error', 'A template with this name already exists'));
+    type('Node 1 prompt', '');
+    click('Save as template');
+    await waitFor(() => toast('error', 'Fix the marked fields before saving this as a template.'));
+    expect(backend.mutations()).toHaveLength(1);
+  });
+
+  it('deletes a saved template after confirmation', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await renderSettings({ agents: [codex()], templates: [savedTemplate()] });
+    fireEvent.click(screen.getByRole('button', { name: 'Add workflow' }));
+    click('Delete saved template My hunt');
+    await waitFor(() => toast('success', 'Saved template "My hunt" deleted'));
+    expect(backend.mutations()).toEqual([{ method: 'DELETE', path: `/templates/${savedTemplate().id}`, body: undefined }]);
+  });
+
+  it('saves a step for reuse, and refuses one that loops or has no prompt', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    click('Edit workflow Feature');
+    type('Node 1 role', 'Developer');
+    click('Save node 1 as a reusable step');
+    await waitFor(() => toast('success', 'Step "Develop" saved'));
+    expect(backend.mutations()).toEqual([{ method: 'POST', path: '/step-presets', body: { name: 'Develop', role: 'Developer', prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false } }]);
+    type('Node 2 prompt', '');
+    click('Save node 2 as a reusable step');
+    await waitFor(() => toast('error', 'This step cannot be saved yet: Use 1–8192 characters without terminal control codes'));
+    type('Node 2 repeat', 'loop_back');
+    expect(screen.getByRole('button', { name: 'Save node 2 as a reusable step' }).disabled).toBe(true);
+    expect(backend.mutations()).toHaveLength(1);
+  });
+
+  it('inserts a saved step as a copy at the end of the workflow', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()], stepPresets: [savedStep()] });
+    click('Edit workflow Feature');
+    expect([...screen.getByLabelText('Insert a saved step').options].map(option => option.textContent)).toEqual(['Insert a saved step…', 'Security review (Reviewer)']);
+    type('Insert a saved step', savedStep().id);
+    expect(nodeNames()).toEqual(['Develop', 'Test', 'Security review']);
+    expect(screen.getByLabelText('Node 3 role').value).toBe('Reviewer');
+    expect(screen.getByLabelText('Node 3 prompt').value).toBe('Review for security problems');
+    expect(screen.getByLabelText('Node 3 read-only step').checked).toBe(true);
+    expect(screen.getByLabelText('Node 3 maximum passes').value).toBe('2');
+    expect(screen.getByLabelText('Node 3 agent').value).toBe('');
+    expect(backend.mutations()).toEqual([]);
+  });
+
+  it('lists saved steps and deletes one after confirmation', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await renderSettings({ agents: [codex()], stepPresets: [savedStep()] });
+    expect(screen.getByText('Saved steps (1)')).toBeTruthy();
+    click('Delete saved step Security review');
+    await waitFor(() => toast('success', 'Saved step "Security review" deleted'));
+    expect(backend.mutations()).toEqual([{ method: 'DELETE', path: `/step-presets/${savedStep().id}`, body: undefined }]);
+  });
+
+  it('shows a workflow’s kind and description in the list', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [{ ...feature(), kind: 'build', description: 'Plan, build, test' }] });
+    expect(workflows().getByText('Build')).toBeTruthy();
+    expect(workflows().getByText('Plan, build, test')).toBeTruthy();
   });
 });

@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
-import { deleteWorkflow } from '../../utils/pipelinesApi';
+import { deleteStepPreset, deleteTemplate, deleteWorkflow } from '../../utils/pipelinesApi';
+import { WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { WORKFLOW_TEMPLATES, buildTemplateDraft } from '../../../../shared/workflow-templates.mjs';
 import { useToast } from '../ToastContext';
 import WorkflowEditor from './WorkflowEditor';
@@ -28,7 +29,7 @@ function uniqueName(name, workflows) {
 }
 
 /** Workflows list; one workflow at a time is open in the editor. */
-export default function WorkflowList({ workflows, agents, onChanged, onDirtyChange }) {
+export default function WorkflowList({ workflows, agents, templates = [], stepPresets = [], onChanged, onDirtyChange }) {
   const { showToast } = useToast();
   // `opened` counts editor openings so each one starts from a fresh draft.
   const [editing, setEditing] = useState(null);
@@ -54,8 +55,27 @@ export default function WorkflowList({ workflows, agents, onChanged, onDirtyChan
     const draft = buildTemplateDraft(template.id);
     open({ ...draft, id: null, revision: null, name: uniqueName(draft.name, workflows) }, template.nodes.map(node => node.role), true);
   };
+  // A saved template is the owner's own: the same definition without agents.
+  const chooseSaved = template => open({
+    id: null, revision: null, name: uniqueName(template.name, workflows), kind: template.kind, description: template.description,
+    agentsDecide: template.agentsDecide, progressFile: template.progressFile,
+    nodes: template.nodes.map(node => ({ ...node, agentId: '', repeat: { ...node.repeat } })),
+  }, null, true);
+  const removeSaved = async (label, name, action) => {
+    if (!window.confirm(`Delete the saved ${label} "${name}"? Workflows already made from it are not affected.`)) return;
+    setBusy(true);
+    try {
+      await action();
+      showToast({ type: 'success', message: `Saved ${label} "${name}" deleted` });
+      await onChanged();
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+    } finally {
+      setBusy(false);
+    }
+  };
   const duplicate = (workflow) => open({
-    id: null, revision: null, name: uniqueName(`Copy of ${workflow.name}`, workflows),
+    id: null, revision: null, name: uniqueName(`Copy of ${workflow.name}`, workflows), kind: workflow.kind, description: workflow.description,
     agentsDecide: workflow.agentsDecide, progressFile: workflow.progressFile,
     nodes: workflow.nodes.map(node => ({ ...node, repeat: { ...node.repeat } })),
   }, null, true);
@@ -87,7 +107,8 @@ export default function WorkflowList({ workflows, agents, onChanged, onDirtyChan
         {workflows.map(workflow => (
           <li key={workflow.id} className="pipeline-item">
             <div className="pipeline-item-text">
-              <span className="pipeline-item-name">{workflow.name}</span>
+              <span className="pipeline-item-name">{workflow.name}{workflow.kind !== 'other' && <span className="pipeline-kind">{WORKFLOW_KIND_LABELS[workflow.kind]}</span>}</span>
+              {workflow.description && <span className="pipeline-item-meta">{workflow.description}</span>}
               <span className="pipeline-item-meta">{summary(workflow)}</span>
             </div>
             <div className="pipeline-item-actions">
@@ -113,7 +134,31 @@ export default function WorkflowList({ workflows, agents, onChanged, onDirtyChan
             {WORKFLOW_TEMPLATES.map(template => <button type="button" key={template.id} onClick={() => chooseTemplate(template)}>
               <strong>{template.name}</strong><span>{template.description}</span>
             </button>)}
+            {templates.map(template => <span key={template.id} className="pipeline-saved-template">
+              <button type="button" onClick={() => chooseSaved(template)}>
+                <strong>{template.name}</strong><span>{template.description || 'Saved by you'}</span>
+              </button>
+              <button type="button" className="pipeline-danger" aria-label={`Delete saved template ${template.name}`} title="Delete this saved template" disabled={busy} onClick={() => removeSaved('template', template.name, () => deleteTemplate(template.id))}><Trash2 size={13} /></button>
+            </span>)}
           </div>}
+          {stepPresets.length > 0 && (
+            <details className="pipeline-saved-steps">
+              <summary>{`Saved steps (${stepPresets.length})`}</summary>
+              <ul className="pipeline-list">
+                {stepPresets.map(preset => (
+                  <li key={preset.id} className="pipeline-item">
+                    <div className="pipeline-item-text">
+                      <span className="pipeline-item-name">{preset.name}{preset.role && <span className="pipeline-kind">{preset.role}</span>}</span>
+                      <span className="pipeline-item-meta">{preset.prompt.length > 120 ? `${preset.prompt.slice(0, 120)}…` : preset.prompt}</span>
+                    </div>
+                    <div className="pipeline-item-actions">
+                      <button type="button" className="pipeline-danger" aria-label={`Delete saved step ${preset.name}`} title="Delete this saved step" disabled={busy} onClick={() => removeSaved('step', preset.name, () => deleteStepPreset(preset.id))}><Trash2 size={13} /></button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           {agents.length === 0 && <p className="pipeline-hint">Add an agent before creating a workflow.</p>}
         </>
       ) : (
@@ -123,6 +168,8 @@ export default function WorkflowList({ workflows, agents, onChanged, onDirtyChan
           roleHints={editing.roleHints}
           prefilled={editing.prefilled}
           agents={agents}
+          stepPresets={stepPresets}
+          onLibraryChanged={onChanged}
           onSaved={async () => { close(); await onChanged(); }}
           onChanged={onChanged}
           onCancel={close}

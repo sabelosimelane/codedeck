@@ -22,7 +22,7 @@ function definition(overrides = {}) {
     notesDir: null,
     steps: [
       {
-        kind: 'node', readOnly: false, approval: false,
+        kind: 'node', role: '', readOnly: false, approval: false,
         name: 'Develop',
         // Snapshot prompts are already composed at POST /runs.
         prompt: 'Implement ship it',
@@ -829,7 +829,7 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'node', readOnly: false, approval: false,
+          kind: 'node', role: '', readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'Implement ship it',
           repeat: { mode: 'until_complete', max: 7 },
@@ -920,6 +920,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     return definition({
       steps: names.map((name, index) => ({
         kind: index === 0 ? 'setup' : 'node',
+        role: '',
         readOnly: false,
         approval: false,
         name,
@@ -1017,7 +1018,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const def = definition({
       steps: [
         {
-          kind: 'node', readOnly: false, approval: false,
+          kind: 'node', role: '', readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'do it',
           repeat: { mode: 'until_complete', max: 2 },
@@ -1029,7 +1030,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
           },
         },
         {
-          kind: 'node', readOnly: false, approval: false,
+          kind: 'node', role: '', readOnly: false, approval: false,
           name: 'Review',
           prompt: 'review it',
           repeat: { mode: 'once' },
@@ -1082,7 +1083,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'node', readOnly: false, approval: false,
+          kind: 'node', role: '', readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'do it',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1188,7 +1189,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'setup', readOnly: false, approval: false,
+          kind: 'setup', role: '', readOnly: false, approval: false,
           name: 'Setup',
           prompt: 'setup',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1473,7 +1474,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       definition: definition({
         steps: [
           {
-            kind: 'setup', readOnly: false, approval: false,
+            kind: 'setup', role: '', readOnly: false, approval: false,
             name: 'Setup',
             prompt: 'setup',
             repeat: { mode: 'until_complete', max: 3 },
@@ -1485,7 +1486,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
             },
           },
           {
-            kind: 'node', readOnly: false, approval: false,
+            kind: 'node', role: '', readOnly: false, approval: false,
             name: 'Develop',
             prompt: 'do it',
             repeat: { mode: 'once' },
@@ -1521,7 +1522,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'setup', readOnly: false, approval: false,
+          kind: 'setup', role: '', readOnly: false, approval: false,
           name: 'Setup',
           prompt: 'setup',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1842,7 +1843,7 @@ describe('createRunEngine — a loop of steps', () => {
     Review: 'c410a1b2-3456-4789-8abc-def012345612',
   };
   const defStep = (name, repeat = { mode: 'once' }) => ({
-    kind: 'node', readOnly: false, approval: false,
+    kind: 'node', role: '', readOnly: false, approval: false,
     name,
     prompt: `do ${name}`,
     repeat,
@@ -2266,7 +2267,7 @@ describe('createRunEngine — agents decide', () => {
   });
 
   it('pauses for the owner when Setup asks, even when agents decide', async () => {
-    const { ctx, loop, run } = await startAsking({ kind: 'setup' });
+    const { ctx, loop, run } = await startAsking({ kind: 'setup', role: '' });
     await vi.advanceTimersByTimeAsync(200);
     expect(ctx.runStore.get(run.id).status).toBe('needs_input');
     expect(ctx.decisionStore.count(run.id)).toBe(0);
@@ -2435,7 +2436,7 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
 describe('createRunEngine — a step reuses the terminal of its agent', () => {
   const CODEX = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
   const FABLE = { id: 'c410a1b2-3456-4789-8abc-def0123456f0', name: 'fable', launchCommand: 'claude --model fable', resetCommand: '/clear' };
-  const node = (name, agent) => ({ kind: 'node', readOnly: false, approval: false, name, prompt: `do ${name}`, repeat: { mode: 'once' }, agent });
+  const node = (name, agent) => ({ kind: 'node', role: '', readOnly: false, approval: false, name, prompt: `do ${name}`, repeat: { mode: 'once' }, agent });
   const WORKTREE = '/tmp/worktrees/backend-specs';
 
   beforeEach(() => {

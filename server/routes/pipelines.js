@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   validateAgentBody,
   validateWorkflowBody,
+  validateStepPresetBody,
   validateSettingsBody,
   validateRunStartBody,
   validateRunAnswerBody,
@@ -119,6 +120,7 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
         index,
         kind: defStep.kind,
         name: defStep.name,
+        role: defStep.role,
         readOnly: defStep.readOnly,
         approval: defStep.approval,
         agentName: defStep.agent.name,
@@ -290,6 +292,7 @@ function buildDefinitionSnapshot({
     return {
       kind: 'node',
       name: node.name,
+      role: node.role,
       readOnly: node.readOnly,
       approval: node.approval,
       prompt,
@@ -308,6 +311,7 @@ function buildDefinitionSnapshot({
   const setupSteps = withSetup ? [{
     kind: 'setup',
     name: 'Setup',
+    role: '',
     readOnly: false,
     approval: false,
     prompt: buildSetupPrompt(homePath, worktreePath),
@@ -362,6 +366,8 @@ export function createPipelinesRouter(deps) {
     decisionStore,
     noteStore,
     reviewStore,
+    templateStore,
+    stepPresetStore,
     taskStore,
     taskService,
     findProject,
@@ -384,6 +390,8 @@ export function createPipelinesRouter(deps) {
   if (!decisionStore) throw new Error('pipelines router: decisionStore is required');
   if (!noteStore) throw new Error('pipelines router: noteStore is required');
   if (typeof reviewStore?.list !== 'function') throw new Error('pipelines router: reviewStore is required');
+  if (typeof templateStore?.list !== 'function') throw new Error('pipelines router: templateStore is required');
+  if (typeof stepPresetStore?.list !== 'function') throw new Error('pipelines router: stepPresetStore is required');
   if (typeof taskStore?.get !== 'function') throw new Error('pipelines router: taskStore is required');
   if (typeof taskService?.plan !== 'function' || typeof taskService?.createPlanned !== 'function') throw new Error('pipelines router: taskService is required');
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
@@ -529,6 +537,43 @@ export function createPipelinesRouter(deps) {
     workflowStore.remove(workflow.id);
     res.status(204).end();
   }));
+
+  // --- What the owner saved for reuse: workflow templates and steps ---
+  // Both are copied when used, so removing one never affects a workflow or a run.
+
+  function mountLibrary(segment, store, entity, validate) {
+    const notFound = () => new PipelineError(`${entity} not found`, 404);
+    router.get(`${BASE}/${segment}`, route((req, res) => {
+      const query = parseCollectionQuery(req.query, { sortFields: WORKFLOW_SORT, defaultSort: 'name,asc' });
+      res.json(paginate(store.list(), query));
+    }));
+    router.post(`${BASE}/${segment}`, route((req, res) => {
+      const errors = validate(req.body, { revisionRequired: false });
+      if (errors.length) throw fieldErrors(errors);
+      try { res.status(201).json(store.create(req.body)); }
+      catch (err) { mapMutationError(err, entity); }
+    }));
+    router.get(`${BASE}/${segment}/:id`, route((req, res) => {
+      const record = isUuid(req.params.id) ? store.get(req.params.id) : null;
+      if (!record) throw notFound();
+      res.json(record);
+    }));
+    router.put(`${BASE}/${segment}/:id`, route((req, res) => {
+      if (!isUuid(req.params.id)) throw notFound();
+      const errors = validate(req.body, { revisionRequired: true });
+      if (errors.length) throw fieldErrors(errors);
+      try { res.json(store.update(req.params.id, req.body)); }
+      catch (err) { mapMutationError(err, entity); }
+    }));
+    router.delete(`${BASE}/${segment}/:id`, route((req, res) => {
+      const record = isUuid(req.params.id) ? store.get(req.params.id) : null;
+      if (!record) throw notFound();
+      store.remove(record.id);
+      res.status(204).end();
+    }));
+  }
+  mountLibrary('templates', templateStore, 'Template', (body, options) => validateWorkflowBody(body, { ...options, template: true }));
+  mountLibrary('step-presets', stepPresetStore, 'Saved step', validateStepPresetBody);
 
   // --- Settings ---
 

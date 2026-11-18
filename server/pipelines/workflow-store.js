@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { validateWorkflowBody, isProgressFileTemplate, isUuid, loopTargetIndex } from '../../shared/pipeline-definitions.mjs';
+import { validateWorkflowBody, isProgressFileTemplate, isUuid, loopTargetIndex, WORKFLOW_KINDS, DESCRIPTION_MAX } from '../../shared/pipeline-definitions.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
@@ -42,6 +42,18 @@ function requireProgressFile(id, value) {
   return value;
 }
 
+function requireKind(id, value) {
+  if (!WORKFLOW_KINDS.includes(value)) fieldError(id, 'kind', `must be one of ${WORKFLOW_KINDS.join(', ')}`);
+  return value;
+}
+
+function requireDescription(id, value) {
+  if (typeof value !== 'string' || value.length > DESCRIPTION_MAX || SINGLE_LINE.test(value) || value.trim() !== value) {
+    fieldError(id, 'description', `must be up to ${DESCRIPTION_MAX} trimmed single-line characters`);
+  }
+  return value;
+}
+
 function parseNodes(id, raw) {
   let nodes;
   try {
@@ -54,6 +66,7 @@ function parseNodes(id, raw) {
   if (nodeErrors.length) {
     fieldError(id, 'nodes', nodeErrors[0].message);
   }
+  nodes.forEach((node, index) => { if (typeof node.role !== 'string') fieldError(id, `nodes[${index}].role`, 'must be a string'); });
   return nodes;
 }
 
@@ -71,6 +84,8 @@ function hydrate(row) {
   return {
     id,
     name: requireName(id, row.name),
+    description: requireDescription(id, row.description),
+    kind: requireKind(id, row.kind),
     agentsDecide: requireFlag(id, 'agents_decide', row.agents_decide),
     progressFile: requireProgressFile(id, row.progress_file),
     nodes: parseNodes(id, row.nodes),
@@ -95,6 +110,7 @@ function normalizeRepeat(nodes, index) {
 function normalizeNodes(nodes) {
   return nodes.map((node, index) => ({
     name: node.name.trim(),
+    role: (node.role ?? '').trim(),
     agentId: node.agentId,
     prompt: node.prompt,
     repeat: normalizeRepeat(nodes, index),
@@ -114,7 +130,9 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       agents_decide INTEGER NOT NULL DEFAULT 0,
-      progress_file TEXT
+      progress_file TEXT,
+      kind TEXT NOT NULL DEFAULT 'other',
+      description TEXT NOT NULL DEFAULT ''
     );
     CREATE UNIQUE INDEX IF NOT EXISTS pipeline_workflows_name_ci
       ON pipeline_workflows (lower(name));
@@ -127,15 +145,24 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     db.exec('ALTER TABLE pipeline_workflows ADD COLUMN progress_file TEXT');
   }
 
+  // Workflows saved before kinds and descriptions existed have neither.
+  if (!db.prepare('PRAGMA table_info(pipeline_workflows)').all().some(column => column.name === 'kind')) {
+    db.exec("ALTER TABLE pipeline_workflows ADD COLUMN kind TEXT NOT NULL DEFAULT 'other'");
+  }
+  if (!db.prepare('PRAGMA table_info(pipeline_workflows)').all().some(column => column.name === 'description')) {
+    db.exec("ALTER TABLE pipeline_workflows ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+  }
+
   const upgradeNodes = db.transaction(() => {
     const save = db.prepare('UPDATE pipeline_workflows SET nodes = ? WHERE id = ?');
     for (const row of db.prepare('SELECT id, nodes FROM pipeline_workflows').all()) {
       let nodes;
       try { nodes = JSON.parse(row.nodes); } catch { fieldError(row.id, 'nodes', 'must be valid JSON'); }
       if (!Array.isArray(nodes)) fieldError(row.id, 'nodes', 'must be an array');
-      if (nodes.some(node => node && typeof node === 'object' && !Array.isArray(node) && (!Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval')))) {
+      // Nodes saved before a step could have a role have none.
+      if (nodes.some(node => node && typeof node === 'object' && !Array.isArray(node) && (!Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || !Object.hasOwn(node, 'role')))) {
         save.run(JSON.stringify(nodes.map(node => node && typeof node === 'object' && !Array.isArray(node)
-          ? { ...node, ...(!Object.hasOwn(node, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(node, 'approval') ? { approval: false } : {}) }
+          ? { ...node, ...(!Object.hasOwn(node, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(node, 'approval') ? { approval: false } : {}), ...(!Object.hasOwn(node, 'role') ? { role: '' } : {}) }
           : node)), row.id);
       }
     }
@@ -146,12 +173,12 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
   const readAll = db.prepare('SELECT * FROM pipeline_workflows ORDER BY lower(name), id');
   const insert = db.prepare(`
     INSERT INTO pipeline_workflows
-      (id, name, nodes, revision, created_at, updated_at, agents_decide, progress_file)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (id, name, nodes, revision, created_at, updated_at, agents_decide, progress_file, kind, description)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_workflows
-    SET name = ?, nodes = ?, revision = ?, updated_at = ?, agents_decide = ?, progress_file = ?
+    SET name = ?, nodes = ?, revision = ?, updated_at = ?, agents_decide = ?, progress_file = ?, kind = ?, description = ?
     WHERE id = ? AND revision = ?
   `);
   const removeStmt = db.prepare('DELETE FROM pipeline_workflows WHERE id = ?');
@@ -179,7 +206,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       const name = body.name.trim();
       const nodes = normalizeNodes(body.nodes);
       try {
-        insert.run(id, name, JSON.stringify(nodes), 1, stamp, stamp, body.agentsDecide ? 1 : 0, body.progressFile?.trim() ?? null);
+        insert.run(id, name, JSON.stringify(nodes), 1, stamp, stamp, body.agentsDecide ? 1 : 0, body.progressFile?.trim() ?? null, body.kind ?? 'other', (body.description ?? '').trim());
       } catch (err) {
         if (isUniqueConflict(err)) {
           throw new Error('pipeline_workflows: name already exists');
@@ -201,7 +228,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       const stamp = now();
       let result;
       try {
-        result = updateStmt.run(name, JSON.stringify(nodes), current.revision + 1, stamp, body.agentsDecide ? 1 : 0, body.progressFile?.trim() ?? null, id, body.revision);
+        result = updateStmt.run(name, JSON.stringify(nodes), current.revision + 1, stamp, body.agentsDecide ? 1 : 0, body.progressFile?.trim() ?? null, body.kind ?? 'other', (body.description ?? '').trim(), id, body.revision);
       } catch (err) {
         if (isUniqueConflict(err)) {
           throw new Error('pipeline_workflows: name already exists');

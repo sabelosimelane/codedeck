@@ -94,6 +94,32 @@ export function deleteWorkflow(id, { signal } = {}) {
   return request(itemPath('workflows', id), { method: 'DELETE', signal });
 }
 
+/** Workflow templates the owner saved; the built-in ones are shared code, not records. */
+export function listTemplates({ signal } = {}) {
+  return listAll('/templates', { signal });
+}
+
+export function createTemplate(fields, { signal } = {}) {
+  return request('/templates', { method: 'POST', body: fields, signal });
+}
+
+export function deleteTemplate(id, { signal } = {}) {
+  return request(itemPath('templates', id), { method: 'DELETE', signal });
+}
+
+/** Steps the owner saved for reuse; inserting one copies it into a workflow. */
+export function listStepPresets({ signal } = {}) {
+  return listAll('/step-presets', { signal });
+}
+
+export function createStepPreset(fields, { signal } = {}) {
+  return request('/step-presets', { method: 'POST', body: fields, signal });
+}
+
+export function deleteStepPreset(id, { signal } = {}) {
+  return request(itemPath('step-presets', id), { method: 'DELETE', signal });
+}
+
 export function getPipelineSettings({ signal } = {}) {
   return request('/settings', { signal });
 }
