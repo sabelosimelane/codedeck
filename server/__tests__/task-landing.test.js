@@ -317,3 +317,147 @@ describe('describeRemote', () => {
 it('requires its dependencies', () => {
   expect(() => createTaskLanding({})).toThrow('taskStore is required');
 });
+
+// Audit b2bd312, items B01 and B02: landing must not lose work that Git's ordinary status does not show.
+describe('task landing — work that ordinary status does not show', () => {
+  const tracing = trace => (file, args, options, callback) => execFile(file, args, options, (error, stdout, stderr) => {
+    trace.push({ command: args.slice(2).join(' '), ok: !error });
+    callback(error, stdout, stderr);
+  });
+  const ran = (trace, prefix) => trace.some(call => call.ok && call.command.startsWith(prefix));
+  const refs = repo => git(repo, ['for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads']).split('\n');
+  const fingerprint = (dir, file) => (existsSync(path.join(dir, file)) ? git(dir, ['hash-object', file]) : null);
+  const registered = (repo, wt) => git(repo, ['worktree', 'list', '--porcelain']).split('\n').includes(`worktree ${wt}`);
+  const outcome = promise => promise.then(
+    result => ({ refused: false, status: null, reasons: [], state: result.task.state }),
+    error => ({ refused: true, status: error.status, reasons: error.extra?.reasons ?? [], state: null }),
+  );
+
+  it('Close preserves a unique ignored owner file', async () => {
+    const trace = [];
+    const { wt, repo, landing, taskStore } = await setup({ exec: tracing(trace) });
+    write(wt, '.gitignore', 'owner.local\n');
+    commitAll(wt, 'ignore the owner file');
+    write(wt, 'owner.local', 'unique fixture, exists nowhere else\n');
+    // The conditions of the stated cause: ordinary status is empty, the ignored listing is not, Main has no copy.
+    expect(git(wt, ['status', '--porcelain'])).toBe('');
+    expect(git(wt, ['status', '--porcelain', '--ignored'])).toBe('!! owner.local');
+    expect(existsSync(path.join(repo, 'owner.local'))).toBe(false);
+    const before = fingerprint(wt, 'owner.local');
+
+    const closed = await outcome(landing.close(ID));
+
+    expect({
+      refused: closed.refused, status: closed.status, taskState: taskStore.get(ID).state,
+      worktreeRemoved: ran(trace, 'worktree remove'), checkoutExists: existsSync(wt), ownerFile: fingerprint(wt, 'owner.local'),
+    }).toEqual({ refused: true, status: 409, taskState: 'active', worktreeRemoved: false, checkoutExists: true, ownerFile: before });
+    expect(closed.reasons).toHaveLength(1);
+    expect(closed.reasons[0].message).toContain('owner.local');
+    expect((await landing.status(ID)).blockers.close.map(item => item.code)).toEqual([closed.reasons[0].code]);
+  });
+
+  it('Merge refuses a task whose checkout switched branches', async () => {
+    const trace = [];
+    const { wt, repo, landing, taskStore, task } = await setup({ exec: tracing(trace) });
+    git(wt, ['switch', '-c', 'other']);
+    write(wt, 'desired.txt', 'requested work\n');
+    commitAll(wt, 'requested work');
+    const commit = git(wt, ['rev-parse', 'HEAD']);
+    const before = { refs: refs(repo), fixture: fingerprint(wt, 'desired.txt') };
+    // The conditions of the stated cause: the saved branch is still at Main, the work is on another branch.
+    expect(git(repo, ['rev-parse', task.branch])).toBe(git(repo, ['rev-parse', 'main']));
+    expect(git(repo, ['branch', '--contains', commit, '--format=%(refname:short)'])).toBe('other');
+
+    const merged = await outcome(landing.merge(ID));
+
+    expect({
+      refused: merged.refused, status: merged.status, taskState: taskStore.get(ID).state,
+      mergeRan: ran(trace, 'merge '), worktreeRemoved: ran(trace, 'worktree remove'),
+      refs: refs(repo), registered: registered(repo, wt), fixture: fingerprint(wt, 'desired.txt'),
+    }).toEqual({
+      refused: true, status: 409, taskState: 'active', mergeRan: false, worktreeRemoved: false,
+      refs: before.refs, registered: true, fixture: before.fixture,
+    });
+    expect(merged.reasons).toHaveLength(1);
+    expect(merged.reasons[0].message).toContain('other');
+    expect(merged.reasons[0].message).toContain(task.branch);
+  });
+
+  it('Merge lands the work but keeps a folder holding a unique ignored owner file, and says so', async () => {
+    const trace = [];
+    const { wt, repo, landing, taskStore, task } = await setup({ exec: tracing(trace) });
+    write(wt, '.gitignore', 'owner.local\n');
+    write(wt, 'feature.txt', 'work\n');
+    commitAll(wt, 'feature');
+    write(wt, 'owner.local', 'unique fixture, exists nowhere else\n');
+    const before = fingerprint(wt, 'owner.local');
+
+    const result = await landing.merge(ID);
+
+    expect({
+      taskState: taskStore.get(ID).state, mainHasFeature: existsSync(path.join(repo, 'feature.txt')),
+      worktreeRemoved: ran(trace, 'worktree remove'), registered: registered(repo, wt), ownerFile: fingerprint(wt, 'owner.local'),
+      filesRemoved: result.filesRemoved, branchDeleted: result.branchDeleted, branchKept: refs(repo).some(ref => ref.startsWith(`${task.branch} `)),
+    }).toEqual({
+      taskState: 'merged', mainHasFeature: true, worktreeRemoved: false, registered: true, ownerFile: before,
+      filesRemoved: false, branchDeleted: false, branchKept: true,
+    });
+    expect(result.filesDetail).toContain('owner.local');
+  });
+
+  it('Close refuses an ignored file whose name is in Main but whose bytes differ', async () => {
+    const { wt, repo, landing, taskStore } = await setup();
+    write(wt, '.gitignore', 'owner.local\n');
+    commitAll(wt, 'ignore the owner file');
+    write(wt, 'owner.local', 'task copy\n');
+    write(repo, 'owner.local', 'home copy\n');
+    const before = fingerprint(wt, 'owner.local');
+
+    const closed = await outcome(landing.close(ID));
+
+    expect({ refused: closed.refused, status: closed.status, taskState: taskStore.get(ID).state, ownerFile: fingerprint(wt, 'owner.local') })
+      .toEqual({ refused: true, status: 409, taskState: 'active', ownerFile: before });
+    expect(closed.reasons.map(item => item.code)).toEqual(['ignored_files']);
+  });
+
+  it('Close lets disposable ignored folders and byte-identical copies of Main go with the folder', async () => {
+    const { wt, repo, landing } = await setup();
+    write(wt, '.gitignore', 'node_modules/\ndist/\nbuild/\n.codedeck/\nsame.local\n');
+    commitAll(wt, 'ignore');
+    for (const dir of ['node_modules', 'dist', 'build', '.codedeck']) { mkdirSync(path.join(wt, dir)); write(path.join(wt, dir), 'x.txt', 'x\n'); }
+    write(wt, 'same.local', 'identical\n');
+    write(repo, 'same.local', 'identical\n');
+
+    expect((await landing.status(ID)).blockers.close).toEqual([]);
+    expect((await landing.close(ID)).task.state).toBe('closed');
+    expect(existsSync(wt)).toBe(false);
+  });
+
+  it('Status reports an ignored file whose name is a folder in Main instead of failing', async () => {
+    const { wt, repo, landing } = await setup();
+    write(wt, '.gitignore', 'conf\n');
+    commitAll(wt, 'ignore conf');
+    write(wt, 'conf', 'a file in the task\n');
+    mkdirSync(path.join(repo, 'conf'));
+    write(path.join(repo, 'conf'), 'inner.txt', 'a folder in Main\n');
+
+    expect(codes((await landing.status(ID)).blockers.close)).toEqual(['ignored_files']);
+  });
+
+  it.each([
+    ['another branch', wt => git(wt, ['switch', '-c', 'other'])],
+    ['a detached HEAD', wt => git(wt, ['switch', '--detach'])],
+  ])('Close refuses a task whose checkout is on %s', async (_label, move) => {
+    const trace = [];
+    const { wt, landing, taskStore } = await setup({ exec: tracing(trace) });
+    move(wt);
+    write(wt, 'desired.txt', 'requested work\n');
+    commitAll(wt, 'requested work');
+
+    const closed = await outcome(landing.close(ID));
+
+    expect({ refused: closed.refused, status: closed.status, taskState: taskStore.get(ID).state, worktreeRemoved: ran(trace, 'worktree remove'), checkoutExists: existsSync(wt) })
+      .toEqual({ refused: true, status: 409, taskState: 'active', worktreeRemoved: false, checkoutExists: true });
+    expect(closed.reasons.map(item => item.code)).toEqual(['branch_switched']);
+  });
+});

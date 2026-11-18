@@ -2561,3 +2561,48 @@ describe('pipelines API — what a step\'s agent is sent', () => {
     expect(first.body).toEqual(second.body);
   });
 });
+
+// Audit b2bd312, item B03: two starts for one worktree must not both be admitted.
+describe('POST /api/pipelines/runs — one worktree, two starts at once', () => {
+  it('Exactly one concurrent start acquires the worktree', async () => {
+    const wt = mkdtempSync(path.join(os.tmpdir(), 'codedeck-occupancy-'));
+    cleanup.push(() => rmSync(wt, { recursive: true, force: true }));
+    mkdirSync(path.join(wt, 'docs'));
+    writeFileSync(path.join(wt, 'docs/todo.md'), '# Progress\n');
+    // Both requests are held at the read that precedes the occupancy check, so each finds the
+    // checkout free before the other has inserted its run; the progress-file check then runs.
+    let held = 0;
+    let release;
+    const bothArrived = new Promise(resolve => { release = resolve; });
+    const readWorktreeChanges = async () => {
+      if (++held === 2) release();
+      if (held <= 2) await bothArrived;
+      return { readable: true, dirty: false };
+    };
+    const ctx = await setup({ routerDeps: {
+      listWorktrees: async () => [{ path: wt, branch: 'task/x', head: 'a'.repeat(40), missing: false }], readWorktreeChanges,
+    } });
+    const agent = ctx.agentStore.create(agentBody());
+    ctx.settingsStore.update({ setupAgentId: agent.id, revision: 1 });
+    const workflow = ctx.workflowStore.create({ name: 'Occupancy', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
+    const post = id => request(ctx.app).post(`${base}/runs`).send({ requestId: `start-${id}`, workflowId: workflow.id, project: 'Demo', input: 'feature', worktreePath: wt });
+    const occupying = () => ctx.db.prepare("SELECT request_id FROM pipeline_runs WHERE worktree_path = ? AND worktree_state != 'released'").all(wt).length;
+
+    const responses = await Promise.all([post(1), post(2)]);
+    expect(held).toBe(2);
+    ctx.flushStart();
+
+    expect({
+      statuses: responses.map(response => response.status).sort(), occupyingRows: occupying(), engineStarts: ctx.engine.start.mock.calls.length,
+    }).toEqual({ statuses: [201, 409], occupyingRows: 1, engineStarts: 1 });
+    const loser = responses.find(response => response.status === 409);
+    expect(loser.type).toBe('application/problem+json');
+    expect(loser.body.reasons).toEqual([{ code: 'in_use', message: 'An open workflow run is using this worktree.' }]);
+
+    // The existing reuse rule: once the winner is finished, the worktree can be used again.
+    const winner = responses.find(response => response.status === 201);
+    ctx.runStore.update(winner.body.id, { status: 'complete', finishedAt: new Date().toISOString() });
+    expect((await post(3)).status).toBe(201);
+    expect(occupying()).toBe(1);
+  });
+});

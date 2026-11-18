@@ -920,6 +920,13 @@ export function createPipelinesRouter(deps) {
       }
     }
 
+    // The checks above awaited, so another start may have taken this worktree since. This check and
+    // the insert below are synchronous, so no other request can run between them.
+    if (worktree) {
+      const taken = worktreeRefusal(worktree, { readable: true }, runStore.list());
+      if (taken) throw new PipelineError(taken.message, 409, undefined, { reasons: [taken] });
+    }
+
     let run;
     try {
       run = runStore.create({
