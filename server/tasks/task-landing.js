@@ -5,7 +5,9 @@
  * branch is deleted only once Git agrees it is merged.
  */
 
-import { lstat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
 import { listDirtyPaths, remove as removeWorktree, resolveHomeRepoPath } from '../pipelines/run-worktree.js';
@@ -52,6 +54,14 @@ function run(execFile, file, args, { cwd, timeout = GIT_TIMEOUT_MS } = {}) {
 }
 
 const git = (execFile, cwd, args, options) => run(execFile, 'git', ['-C', cwd, ...args], options);
+
+/** The SHA-256 of a file's bytes, read as a stream so a large file is never held in memory. */
+function digest(file) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    createReadStream(file).on('error', reject).on('data', chunk => hash.update(chunk)).on('end', () => resolve(hash.digest('hex')));
+  });
+}
 const firstLine = text => String(text ?? '').trim().split('\n')[0].slice(0, 300);
 
 /** Which hosting CLI opens a pull request for a remote URL, and the repository it names. */
@@ -96,7 +106,8 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
   }
 
   async function sameBytes(worktreePath, homePath, file) {
-    if (file.endsWith('/')) return false;
+    // Git lists a wholly ignored folder as one entry; it is a copy when everything in it is.
+    if (file.endsWith('/')) return sameFolder(path.join(worktreePath, file), path.join(homePath, file));
     // Only a regular file in Main can hold the same bytes; a folder or link of that name cannot.
     const home = await lstat(path.join(homePath, file)).catch(error => {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
@@ -105,6 +116,36 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     if (!home?.isFile()) return false;
     const hash = async cwd => (await git(execFile, cwd, ['hash-object', '--no-filters', '--', file])).stdout.trim();
     return (await hash(worktreePath)) === (await hash(homePath));
+  }
+
+  /**
+   * Whether removing the task's folder loses nothing: every regular file in it, at any depth,
+   * is a regular file of the same bytes at the same place in Main. A link or any other kind of
+   * entry cannot be shown to be a copy, so it counts as one that would be lost. Disposable
+   * folders inside are not looked into, as at the top level. Stops at the first difference.
+   */
+  async function sameFolder(taskDir, homeDir) {
+    for (const entry of await readdir(taskDir, { withFileTypes: true })) {
+      if (DISPOSABLE.has(entry.name)) continue;
+      const inTask = path.join(taskDir, entry.name);
+      const inHome = path.join(homeDir, entry.name);
+      if (entry.isDirectory()) {
+        if (!(await sameFolder(inTask, inHome))) return false;
+      } else if (!entry.isFile() || !(await sameFile(inTask, inHome))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async function sameFile(inTask, inHome) {
+    const home = await lstat(inHome).catch(error => {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+      throw error;
+    });
+    if (!home?.isFile() || home.size !== (await lstat(inTask)).size) return false;
+    const [task, main] = await Promise.all([digest(inTask), digest(inHome)]);
+    return task === main;
   }
 
   /** Ignored files in the task that removing its folder would lose: not disposable, and not copied byte for byte in Main. */
