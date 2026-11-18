@@ -148,6 +148,14 @@ export default function TaskView({
   const selectedIndex = picked !== null && run.steps.some(step => step.index === picked) ? picked : currentIndex;
   const selected = run.steps.find(step => step.index === selectedIndex) ?? run.steps[0];
   const current = run.steps.find(step => step.index === currentIndex) ?? run.steps[0];
+  // The terminal follows the run: when the run starts working in another step's terminal, that
+  // terminal is shown. It fires once per move, so a tab the owner then picks stays put, and a run
+  // that is no longer working moves nothing.
+  const working = !['complete', 'stopped', 'error', 'interrupted'].includes(run.status);
+  const followSessionId = working && current.sessionId && openSessionIds.has(current.sessionId) ? current.sessionId : null;
+  useEffect(() => {
+    if (followSessionId) onActivateStep(followSessionId);
+  }, [run.id, currentIndex, followSessionId, onActivateStep]);
   const status = describeRunStatus(run);
   const progress = progressLine(run.progress);
   const blockedCleanup = run.worktree?.state === 'removal_blocked' && run.worktree.detail ? describeBlockedCleanup(run.worktree.detail) : null;

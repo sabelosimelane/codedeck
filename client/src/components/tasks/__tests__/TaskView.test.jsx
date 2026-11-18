@@ -68,8 +68,31 @@ describe('TaskView', () => {
     expect(screen.getByText('loops back to Develop')).toBeTruthy();
   });
 
+  it('shows the terminal of the step the run is working on, and follows the run to the next one', () => {
+    const moved = (overrides = {}) => run({ currentStepIndex: 2, steps: run().steps.map(item => (item.index === 2 ? { ...item, status: 'running', sessionId: 'Demo-3', attempt: 1, iteration: 1 } : item.index === 1 ? { ...item, status: 'complete' } : item)), ...overrides });
+    const props = { title: 'WhatsApp replies' };
+    const { rerender, h } = view();
+    expect(h.onActivateStep.mock.calls).toEqual([['Demo-2']]);
+
+    // The same step again (a poll) does not pull the owner back from a tab they chose.
+    rerender(<TaskView {...props} run={run()} openSessionIds={new Set(['Demo-1', 'Demo-2'])} {...h} />);
+    expect(h.onActivateStep).toHaveBeenCalledTimes(1);
+
+    // The run moved on, but the next step's terminal is not open in this browser yet.
+    rerender(<TaskView {...props} run={moved()} openSessionIds={new Set(['Demo-1', 'Demo-2'])} {...h} />);
+    expect(h.onActivateStep).toHaveBeenCalledTimes(1);
+    rerender(<TaskView {...props} run={moved()} openSessionIds={new Set(['Demo-1', 'Demo-2', 'Demo-3'])} {...h} />);
+    expect(h.onActivateStep.mock.calls).toEqual([['Demo-2'], ['Demo-3']]);
+  });
+
+  it.each(['complete', 'stopped', 'error', 'interrupted'])('leaves the owner where they are when the run is %s', status => {
+    const { h } = view({ run: run({ status }) });
+    expect(h.onActivateStep).not.toHaveBeenCalled();
+  });
+
   it('says when a step has no terminal yet or its terminal was closed, and offers one', () => {
     const { h } = view({ openSessionIds: new Set(['Demo-2']) });
+    h.onActivateStep.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Test: Not started, round 1 of 12' }));
     expect(screen.getByText('This step has not started, so it has no terminal yet.')).toBeTruthy();
     expect(h.onActivateStep).not.toHaveBeenCalled();
