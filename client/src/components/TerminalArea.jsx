@@ -6,7 +6,7 @@ import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, E
 import NewTaskDialog from './tasks/NewTaskDialog.jsx';
 import { createTask, openTaskTerminal } from '../utils/tasksApi.js';
 import TerminalInspector from './TerminalInspector';
-import PipelineRunsBar from './pipelines/PipelineRunsBar';
+import TaskView from './tasks/TaskView.jsx';
 import { useToast } from './ToastContext';
 import {
   shouldPersistLayout,
@@ -310,6 +310,13 @@ function getPaneStatusTitle(sessionId, status, session) {
     : baseTitle;
 }
 
+/** With a run, the terminals sit inside its task view; without one they fill the area as before. */
+function TaskFrame({ run, group, children, ...handlers }) {
+  if (!run) return <>{children}</>;
+  const described = group ? describeWorktreeGroup(group) : { title: run.workflowName, tooltip: undefined };
+  return <TaskView title={described.title} tooltip={described.tooltip} run={run} {...handlers}>{children}</TaskView>;
+}
+
 export default function TerminalArea({
   project,
   worktreeBySession = new Map(),
@@ -339,6 +346,9 @@ export default function TerminalArea({
   onAnswerPipelineRun = async () => null,
   onLoadPipelineRunDecisions = async () => null,
   onLoadPipelineRunNotes = async () => null,
+  onLoadPipelineRunReviews = async () => null,
+  onApprovePipelineRun,
+  onSendBackPipelineRun,
   onTasksChanged = () => {},
 }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
@@ -381,6 +391,10 @@ export default function TerminalArea({
   const requestedGroup = selectedWorktree ?? localWorktreeSelection;
   const visibleGroup = groups.some(group => group.key === requestedGroup) ? requestedGroup : 'main';
   const displayTabs = orderTabsForDisplay(groups.length > 1 ? tabs.filter(tab => tabGroupKey(tab) === visibleGroup) : tabs, waitingSessionIds);
+  // The run shown is the newest open run of the place the owner is looking at.
+  const visibleRun = pipelineRuns
+    .filter(run => !worktreeGroups || (run.worktree.path === project.path ? 'main' : run.worktree.path) === visibleGroup)
+    .reduce((newest, run) => (!newest || String(run.createdAt ?? '') > String(newest.createdAt ?? '') ? run : newest), null);
   const lastActiveByGroupRef = useRef(new Map());
   // Opening a terminal reads where the owner is now, without re-creating the callbacks on every poll.
   const groupsRef = useRef(groups);
@@ -1137,18 +1151,6 @@ export default function TerminalArea({
         </span>
       </div>
 
-      <PipelineRunsBar
-        runs={worktreeGroups ? pipelineRuns.filter(run => (run.worktree.path === project.path ? 'main' : run.worktree.path) === visibleGroup) : pipelineRuns}
-        onStop={onStopPipelineRun}
-        onResume={onResumePipelineRun}
-        onContinue={onContinuePipelineRun}
-        onCleanup={onCleanupPipelineRun}
-        onAnswer={onAnswerPipelineRun}
-        onLoadDecisions={onLoadPipelineRunDecisions}
-        onLoadNotes={onLoadPipelineRunNotes}
-        onActivateStep={activatePipelineSession}
-      />
-
       {groups.length > 1 && <div className="worktree-switcher" aria-label="Worktrees">
         {groups.map(group => {
           const count = tabs.filter(tab => tabGroupKey(tab) === group.key).length;
@@ -1157,6 +1159,12 @@ export default function TerminalArea({
           return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
         })}
       </div>}
+      <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}
+        openSessionIds={new Set(tabs.flatMap(tab => tab.panes.map(pane => pane.sessionId)))}
+        onActivateStep={activatePipelineSession} onOpenTerminal={addTab}
+        onStop={onStopPipelineRun} onResume={onResumePipelineRun} onContinue={onContinuePipelineRun} onCleanup={onCleanupPipelineRun}
+        onAnswer={onAnswerPipelineRun} onLoadNotes={onLoadPipelineRunNotes} onLoadDecisions={onLoadPipelineRunDecisions}
+        onLoadReviews={onLoadPipelineRunReviews} onApprove={onApprovePipelineRun} onSendBack={onSendBackPipelineRun}>
       <TerminalTabBar tabs={displayTabs} renderTab={tab => {
             const tabLabel = getTerminalTabLabel(tab.panes, tab.label, sessionTitles);
             const isActive = tab.id === activeTabId;
@@ -1656,6 +1664,8 @@ export default function TerminalArea({
           </div>
         );
       })}
+
+      </TaskFrame>
 
       {showWorktreeDialog && <NewTaskDialog projectName={project.name} onCreate={createTaskTab} onClose={() => setShowWorktreeDialog(false)} />}
 

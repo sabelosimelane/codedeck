@@ -47,7 +47,7 @@ function chipLabel(step) {
   return pass ? `${step.name} ${step.status} · ${pass}` : `${step.name} ${step.status}`;
 }
 
-function ApprovalPanel({ run, onLoadNotes, onApprove, onSendBack }) {
+export function ApprovalPanel({ run, onLoadNotes, onApprove, onSendBack }) {
   const { showToast } = useToast();
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
@@ -105,7 +105,7 @@ function ApprovalPanel({ run, onLoadNotes, onApprove, onSendBack }) {
  * What a run is waiting for and, when the agent signalled it, a way to answer without
  * opening the terminal. The answer is typed into the agent's terminal by the backend.
  */
-function InputRequestPanel({ run, onAnswer }) {
+export function InputRequestPanel({ run, onAnswer }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const request = run.inputRequest;

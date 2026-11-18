@@ -173,10 +173,24 @@ export function answerRun(runId, answer, { signal } = {}) {
 const DECISIONS_PAGE_SIZE = 50;
 
 /** One page of the requests a run's agents settled themselves, in the order they were settled. */
-export function listRunDecisions(runId, page, { signal } = {}) {
+const requireStepIndex = stepIndex => {
+  if (stepIndex !== undefined && (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex > 32)) throw new PipelineApiError('stepIndex must be an integer from 0 to 32');
+};
+
+export function listRunDecisions(runId, page, { signal, stepIndex } = {}) {
   if (!Number.isSafeInteger(page) || page < 0) throw new PipelineApiError('page must be a whole number of 0 or more');
+  requireStepIndex(stepIndex);
   const params = new URLSearchParams({ page: String(page), size: String(DECISIONS_PAGE_SIZE), sort: 'createdAt,asc' });
+  if (stepIndex !== undefined) params.set('stepIndex', String(stepIndex));
   return request(`/runs/${encodeURIComponent(runId)}/decisions?${params}`, { signal });
+}
+
+/** The owner's approvals and send-backs of a run, oldest first; `stepIndex` narrows them to one step. */
+export function listRunReviews(runId, { signal, stepIndex } = {}) {
+  requireStepIndex(stepIndex);
+  const params = new URLSearchParams({ page: '0', size: '100', sort: 'createdAt,asc' });
+  if (stepIndex !== undefined) params.set('stepIndex', String(stepIndex));
+  return request(`/runs/${encodeURIComponent(runId)}/reviews?${params}`, { signal });
 }
 
 /** One page of notes reported by a run's steps, newest first. */

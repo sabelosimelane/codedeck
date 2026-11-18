@@ -11,7 +11,7 @@ const toast = vi.hoisted(() => vi.fn());
 const tasksApi = vi.hoisted(() => ({ openTaskTerminal: vi.fn(), createTask: vi.fn() }));
 vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
 vi.mock('../../utils/tasksApi.js', () => tasksApi);
-vi.mock('../pipelines/PipelineRunsBar', () => ({ default: ({ runs, onActivateStep }) => <div data-testid="visible-runs">{runs.map(run => <React.Fragment key={run.id}>{run.id}{run.steps?.map(step => <button key={step.sessionId} onClick={() => onActivateStep(step.sessionId)}>Step {step.sessionId}</button>)}</React.Fragment>)}</div> }));
+vi.mock('../tasks/TaskView.jsx', () => ({ default: ({ run, onActivateStep, children }) => <div><span data-testid="visible-runs">{run.id}</span>{run.steps?.map(step => <button key={step.sessionId} onClick={() => onActivateStep(step.sessionId)}>Step {step.sessionId}</button>)}{children}</div> }));
 
 const project = { name: 'Demo', path: '/tmp/demo' };
 const sessions = [

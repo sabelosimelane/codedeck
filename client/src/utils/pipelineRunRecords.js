@@ -237,3 +237,28 @@ export function parseDecisionPage(body) {
   guard(typeof hasNextPage === 'boolean', 'page.hasNextPage');
   return { decisions: body.data.map(parseDecision), hasNextPage, total: totalElements };
 }
+
+/** The owner's reviews of a run's steps: each an approval, or a send-back with its comment. */
+export function parseReviewPage(body) {
+  const guard = (condition, field) => { if (!condition) throw new PipelineApiError(`Invalid reviews response field ${field}`); };
+  guard(object(body), 'body');
+  guard(Array.isArray(body.data), 'data');
+  guard(object(body.page), 'page');
+  guard(typeof body.page.hasNextPage === 'boolean', 'page.hasNextPage');
+  guard(integer(body.page.totalElements), 'page.totalElements');
+  return {
+    reviews: body.data.map((review, index) => {
+      const field = name => `data[${index}].${name}`;
+      guard(object(review), `data[${index}]`);
+      guard(Number.isSafeInteger(review.id) && review.id >= 1, field('id'));
+      guard(integer(review.stepIndex) && review.stepIndex <= 32, field('stepIndex'));
+      guard(text(review.stepName) && review.stepName.length <= 64, field('stepName'));
+      guard(integer(review.attempt) && review.attempt >= 1, field('attempt'));
+      guard(['approved', 'sent_back'].includes(review.verdict), field('verdict'));
+      guard(review.verdict === 'approved' ? review.comment === null : text(review.comment) && review.comment.length <= 4000, field('comment'));
+      guard(stamp(review.createdAt), field('createdAt'));
+      return { id: review.id, stepIndex: review.stepIndex, stepName: review.stepName, attempt: review.attempt, verdict: review.verdict, comment: review.comment, createdAt: review.createdAt };
+    }),
+    total: body.page.totalElements,
+  };
+}

@@ -9,11 +9,12 @@ import {
   listOpenRuns,
   listRunDecisions as apiListRunDecisions,
   listRunNotes as apiListRunNotes,
+  listRunReviews as apiListRunReviews,
   resumeRun as apiResumeRun,
   startRun as apiStartRun,
   stopRun as apiStopRun,
 } from '../utils/pipelinesApi';
-import { parseDecisionPage, parseNotePage, parseInputRequest, parseRunAutonomy } from '../utils/pipelineRunRecords';
+import { parseDecisionPage, parseNotePage, parseReviewPage, parseInputRequest, parseRunAutonomy } from '../utils/pipelineRunRecords';
 import { describeBlockedCleanup } from '../utils/pipelineWorktreeCleanup';
 
 // What the runs bar shows of a run is checked before the run is shown.
@@ -238,10 +239,19 @@ export function usePipelineRuns({ projectName, showToast }) {
     (runId, comment) => runAction(run => `${run.workflowName || 'Workflow'} sent back`, id => apiSendBackRun(id, comment), runId),
     [runAction],
   );
-  /** One page of the requests a run's agents settled themselves, or null when it could not be loaded. */
-  const loadRunDecisions = useCallback(async (runId, page) => {
+  /** The owner's reviews of one step, or null when they could not be loaded. */
+  const loadRunReviews = useCallback(async (runId, stepIndex) => {
     try {
-      return parseDecisionPage(await apiListRunDecisions(runId, page));
+      return parseReviewPage(await apiListRunReviews(runId, { stepIndex }));
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+      return null;
+    }
+  }, [showToast]);
+  /** One page of the requests a run's agents settled themselves, or null when it could not be loaded. */
+  const loadRunDecisions = useCallback(async (runId, page, stepIndex) => {
+    try {
+      return parseDecisionPage(await apiListRunDecisions(runId, page, { stepIndex }));
     } catch (failure) {
       showToast({ type: 'error', message: failureMessage(failure) });
       return null;
@@ -300,6 +310,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     approveRun,
     sendBackRun,
     loadRunDecisions,
+    loadRunReviews,
     loadRunNotes,
     cleanupRun,
   };

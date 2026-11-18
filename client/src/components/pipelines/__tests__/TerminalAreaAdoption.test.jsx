@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('lucide-react', () => {
   const Icon = () => null;
   return {
+    Check: Icon, CircleDot: Icon, Circle: Icon, Repeat: Icon, TriangleAlert: Icon, Square: Icon,
     Plus: Icon,
     X: Icon,
     Columns: Icon,
