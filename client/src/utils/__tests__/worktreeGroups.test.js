@@ -9,7 +9,7 @@ describe('describeWorktreeGroup', () => {
   const main = { key: 'main', path: '/repo/demo', label: 'Main checkout', branch: null, isMain: true, run: null };
   const plain = { key: '/repo/demo-topic', path: '/repo/demo-topic', label: 'demo-topic', branch: 'feature/topic', isMain: false, run: null };
   it('describes main, a plain worktree and a run with one consistent tooltip', () => {
-    expect(describeWorktreeGroup(main)).toEqual({ title: 'Main checkout', detail: null, tooltip: 'demo\n/repo/demo' });
+    expect(describeWorktreeGroup(main)).toEqual({ title: 'Main', detail: null, tooltip: 'demo\n/repo/demo' });
     expect(describeWorktreeGroup(plain)).toEqual({ title: 'demo-topic', detail: null, tooltip: 'demo-topic\nfeature/topic\n/repo/demo-topic' });
     expect(describeWorktreeGroup({ ...plain, run: { id: '57f488b5-1234', workflowName: 'Medium Feature Build' } })).toEqual({ title: 'Medium Feature Build · 57f488b5', detail: null, tooltip: 'demo-topic\nfeature/topic\n/repo/demo-topic' });
   });
@@ -65,7 +65,7 @@ describe('buildWorktreeGroups', () => {
   });
   it('always includes an empty main checkout', () => {
     expect(buildWorktreeGroups({ project, sessions: [], runs: [] })).toEqual([
-      { key: 'main', path: '/repo/demo', label: 'Main checkout', branch: null, isMain: true, sessionIds: [], run: null },
+      { key: 'main', path: '/repo/demo', label: 'Main', branch: null, isMain: true, sessionIds: [], run: null, task: null },
     ]);
   });
 
@@ -112,5 +112,33 @@ describe('buildWorktreeGroups', () => {
     [{ project, sessions: [], runs: [{ ...run('r', '/repo/r', 'feature', '2026-01-01'), steps: [{ status: 'running', name: 'Build', sessionId: null, note: undefined }] }] }, 'step.note'],
   ])('rejects invalid edge fields', (args, field) => {
     expect(() => buildWorktreeGroups(args)).toThrow(field);
+  });
+});
+
+describe('tasks as groups', () => {
+  const task = (id, worktreePath, title, createdAt = '2026-11-18T10:00:00.000Z') => ({ id, project: 'Demo', title, state: 'active', worktreePath, branch: `task/${id}`, createdAt });
+  it('names a group after its task and keeps the branch and folder for the tooltip only', () => {
+    const group = { key: '/repo/wt-a', path: '/repo/wt-a', label: 'wt-a', branch: 'task/a', isMain: false, run: { id: '57f488b5-1234', workflowName: 'Feature build' }, task: task('a', '/repo/wt-a', 'WhatsApp replies') };
+    expect(describeWorktreeGroup(group)).toEqual({ title: 'WhatsApp replies', detail: null, tooltip: 'wt-a\ntask/a\n/repo/wt-a' });
+    expect(() => describeWorktreeGroup({ ...group, task: { id: 'a' } })).toThrow(/task.title/);
+    expect(() => describeWorktreeGroup({ ...group, task: 'a' })).toThrow(/task/);
+  });
+  it('shows an open task even before it has a terminal or a run, newest task first among empty ones', () => {
+    const groups = buildWorktreeGroups({ project, sessions: [session('Demo-1', '/repo/wt-b', '2026-11-18T09:00:00.000Z')], runs: [],
+      tasks: [task('a', '/repo/wt-a', 'Older', '2026-11-18T08:00:00.000Z'), task('c', '/repo/wt-c', 'Newer', '2026-11-18T11:00:00.000Z'), task('b', '/repo/wt-b', 'Has terminal'), { ...task('x', '/repo/wt-x', 'Foreign'), project: 'Other' }] });
+    expect(groups.map(group => [group.key, group.task?.title ?? null, group.branch])).toEqual([
+      ['main', null, null], ['/repo/wt-b', 'Has terminal', 'task/b'], ['/repo/wt-c', 'Newer', 'task/c'], ['/repo/wt-a', 'Older', 'task/a'],
+    ]);
+  });
+  it('attaches the task to the group of its run', () => {
+    const active = run('r', '/repo/wt-a', 'task/a', '2026-01-02');
+    const [, group] = buildWorktreeGroups({ project, sessions: [], runs: [active], tasks: [task('a', '/repo/wt-a', 'Replies')] });
+    expect(group).toMatchObject({ key: '/repo/wt-a', run: { id: 'r' }, task: { id: 'a', title: 'Replies' } });
+  });
+  it('rejects malformed tasks', () => {
+    expect(() => buildWorktreeGroups({ project, sessions: [], runs: [], tasks: 'x' })).toThrow(/tasks/);
+    expect(() => buildWorktreeGroups({ project, sessions: [], runs: [], tasks: [{ ...task('a', 'relative', 'T') }] })).toThrow(/task.worktreePath/);
+    expect(() => buildWorktreeGroups({ project, sessions: [], runs: [], tasks: [{ ...task('a', '/repo/wt-a', '') }] })).toThrow(/task.title/);
+    expect(() => buildWorktreeGroups({ project, sessions: [], runs: [], tasks: [{ ...task('a', '/repo/wt-a', 'T'), createdAt: '' }] })).toThrow(/task.createdAt/);
   });
 });

@@ -111,7 +111,7 @@ describe('Sidebar waiting tab count', () => {
       worktreeGroupsByProject: groups, selectedWorktreeByProject: { Alpha: 'main' }, onSelectWorktree,
       sessionStatus: [{ sessionId: 'Alpha-1', alive: true }, { sessionId: 'Alpha-2', alive: true }],
     });
-    expect(view.getByText('Main checkout')).toBeTruthy();
+    expect(view.getByText('Main')).toBeTruthy();
     expect(view.getByText('Build · 57f488b5')).toBeTruthy();
     expect(view.getByText('Phase 2 of 4')).toBeTruthy();
     expect(view.getByText('needs your input')).toBeTruthy();

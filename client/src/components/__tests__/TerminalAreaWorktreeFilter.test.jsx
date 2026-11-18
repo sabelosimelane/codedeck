@@ -7,7 +7,10 @@ import { buildWorktreeGroups, resolveSessionWorktrees } from '../../utils/worktr
 vi.mock('../Terminal', () => ({ default: ({ sessionId }) => <span data-testid={`mounted-${sessionId}`} /> }));
 vi.mock('../PaneDivider', () => ({ default: () => null }));
 vi.mock('../TerminalInspector', () => ({ default: () => null }));
-vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: vi.fn() }) }));
+const toast = vi.hoisted(() => vi.fn());
+const tasksApi = vi.hoisted(() => ({ openTaskTerminal: vi.fn(), createTask: vi.fn() }));
+vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
+vi.mock('../../utils/tasksApi.js', () => tasksApi);
 vi.mock('../pipelines/PipelineRunsBar', () => ({ default: ({ runs, onActivateStep }) => <div data-testid="visible-runs">{runs.map(run => <React.Fragment key={run.id}>{run.id}{run.steps?.map(step => <button key={step.sessionId} onClick={() => onActivateStep(step.sessionId)}>Step {step.sessionId}</button>)}</React.Fragment>)}</div> }));
 
 const project = { name: 'Demo', path: '/tmp/demo' };
@@ -19,8 +22,13 @@ const groups = [
   { key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Demo-1'], run: null },
   { key: '/tmp/demo-feature', path: '/tmp/demo-feature', label: 'demo-feature', branch: 'feature', isMain: false, sessionIds: ['Demo-2'], run: { id: '57f488b5-1234', workflowName: 'Build', status: 'needs_input', worktree: { path: '/tmp/demo-feature' } } },
 ];
+const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'Replies', state: 'active', worktreePath: '/tmp/demo-feature', branch: 'feature', createdAt: '2026-01-02T00:00:00.000Z' };
+const taskGroups = [groups[0], { ...groups[1], run: null, task: TASK }];
 const originalFetch = global.fetch;
 beforeEach(() => {
+  toast.mockReset();
+  tasksApi.openTaskTerminal.mockReset();
+  tasksApi.createTask.mockReset();
   localStorage.clear();
   global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : sessions }));
 });
@@ -69,18 +77,59 @@ describe('TerminalArea worktree view', () => {
     await waitFor(() => expect(view.getAllByTestId('terminal-tab')).toHaveLength(1));
     fireEvent.click(view.getByRole('button', { name: 'Build · 57f488b5 (2)' }));
     fireEvent.click(view.getAllByTestId('terminal-tab').find(tab => tab.getAttribute('data-session-id') === 'Demo-2'));
-    fireEvent.click(view.getByRole('button', { name: 'Main checkout (1)' }));
+    fireEvent.click(view.getByRole('button', { name: 'Main (1)' }));
     fireEvent.click(view.getByRole('button', { name: 'Build · 57f488b5 (2)' }));
     await waitFor(() => expect(view.getAllByTestId('terminal-tab').find(tab => tab.getAttribute('data-active') === 'true')?.getAttribute('data-session-id')).toBe('Demo-2'));
   });
-  it('opens a plain new terminal in main and switches there from a worktree', async () => {
+  it('opens a new terminal in Main when Main is selected', async () => {
     const select = vi.fn();
     global.fetch = vi.fn(async (url, options) => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : options?.method === 'POST' ? { sessionId: 'Demo-3' } : sessions }));
-    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={groups} selectedWorktree="/tmp/demo-feature" onSelectWorktree={select} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={taskGroups} selectedWorktree="main" onSelectWorktree={select} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    await waitFor(() => expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-1'));
+    fireEvent.click(view.getByRole('button', { name: 'New terminal' }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith('/api/terminal', expect.objectContaining({ method: 'POST', body: JSON.stringify({ projectName: 'Demo' }) })));
+    expect(tasksApi.openTaskTerminal).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
+  });
+  it('opens a new terminal inside the selected task and stays there', async () => {
+    const select = vi.fn();
+    tasksApi.openTaskTerminal.mockResolvedValue({ sessionId: 'Demo-3', taskId: TASK.id, project: 'Demo' });
+    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={taskGroups} selectedWorktree="/tmp/demo-feature" onSelectWorktree={select} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
     await waitFor(() => expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2'));
     fireEvent.click(view.getByRole('button', { name: 'New terminal' }));
-    await waitFor(() => expect(select).toHaveBeenCalledWith('main'));
-    expect(global.fetch).toHaveBeenCalledWith('/api/terminal', expect.objectContaining({ method: 'POST', body: JSON.stringify({ projectName: 'Demo' }) }));
+    await waitFor(() => expect(view.getAllByTestId('terminal-tab').map(tab => tab.getAttribute('data-session-id'))).toEqual(['Demo-2', 'Demo-3']));
+    expect(tasksApi.openTaskTerminal).toHaveBeenCalledWith(TASK.id);
+    expect(global.fetch).not.toHaveBeenCalledWith('/api/terminal', expect.anything());
+    expect(select).not.toHaveBeenCalledWith('main');
+    expect(view.getByRole('button', { name: 'Replies (2)' }).getAttribute('aria-pressed')).toBe('true');
+  });
+  it('splits a task tab into another terminal of the same task', async () => {
+    tasksApi.openTaskTerminal.mockResolvedValue({ sessionId: 'Demo-3', taskId: TASK.id, project: 'Demo' });
+    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={taskGroups} selectedWorktree="/tmp/demo-feature" worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    await waitFor(() => expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2'));
+    fireEvent.click(view.getByRole('button', { name: 'Split right' }));
+    await waitFor(() => expect(view.getByTestId('mounted-Demo-3')).toBeTruthy());
+    expect(tasksApi.openTaskTerminal).toHaveBeenCalledWith(TASK.id);
+  });
+  it('reports a task terminal that could not open and adds no tab', async () => {
+    tasksApi.openTaskTerminal.mockRejectedValue(new Error('This task is finished.'));
+    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={taskGroups} selectedWorktree="/tmp/demo-feature" worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    await waitFor(() => expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2'));
+    fireEvent.click(view.getByRole('button', { name: 'New terminal' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({ type: 'error', message: 'This task is finished.' }));
+    expect(view.getAllByTestId('terminal-tab')).toHaveLength(1);
+  });
+  it('refuses to open a terminal in a folder that is not a task', async () => {
+    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={groups} selectedWorktree="/tmp/demo-feature" worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    await waitFor(() => expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2'));
+    fireEvent.click(view.getByRole('button', { name: 'New terminal' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringContaining('not a task yet') })));
+    expect(global.fetch).not.toHaveBeenCalledWith('/api/terminal', expect.anything());
+  });
+  it('names the selected task on its empty card', async () => {
+    const empty = { key: '/tmp/demo-empty', path: '/tmp/demo-empty', label: 'demo-empty', branch: 'task/e', isMain: false, sessionIds: [], run: null, task: { ...TASK, id: 'e', title: 'Login bug', worktreePath: '/tmp/demo-empty' } };
+    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={[...taskGroups, empty]} selectedWorktree={empty.key} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    await waitFor(() => expect(view.getByText('No terminals are open in Login bug. Open one here.')).toBeTruthy());
   });
   it('closing the active tab activates the nearest tab in the same group', async () => {
     const all = [...sessions, { ...sessions[1], sessionId: 'Demo-3' }, { ...sessions[1], sessionId: 'Demo-4' }];

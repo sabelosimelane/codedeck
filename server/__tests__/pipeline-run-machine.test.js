@@ -350,7 +350,8 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
     const next = applyEvent(state, { type: 'continue', at: AT });
     expect(next.status).toBe('running');
     expect(next.currentStepIndex).toBe(1);
-    expect(next.steps[0].status).toBe('limit_reached');
+    // The owner accepted the limit: the step is over, and says how it ended.
+    expect(next.steps[0].status).toBe('limit_accepted');
     expect(next.steps[1].status).toBe('pending');
     expect(next.finishedAt).toBeNull();
   });
@@ -362,7 +363,7 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
     const next = applyEvent(state, { type: 'continue', at: AT });
     expect(next.status).toBe('complete');
     expect(next.currentStepIndex).toBe(0);
-    expect(next.steps[0].status).toBe('limit_reached');
+    expect(next.steps[0].status).toBe('limit_accepted');
     expect(next.finishedAt).toBe(AT);
   });
 

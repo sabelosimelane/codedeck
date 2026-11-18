@@ -1,4 +1,5 @@
 import { usePipelineRunCounts } from './hooks/usePipelineRunCounts';
+import { useTasks } from './hooks/useTasks';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
@@ -89,6 +90,7 @@ function AppContent() {
     cleanupRun,
   } = usePipelineRuns({ projectName: activeProject?.name || null, showToast });
   const openRunCounts = usePipelineRunCounts(showToast);
+  const { tasks: openTasks, refresh: refreshTasks } = useTasks(showToast);
   const worktreeGroupsByProject = useMemo(() => new Map(projects.map(project => [project.name, buildWorktreeGroups({
     project,
     sessions: sessionStatus.filter(session => doesSessionBelongToProject(session, project)).map(session => ({
@@ -97,7 +99,8 @@ function AppContent() {
       startedAt: session.startedAt ?? null,
     })),
     runs: openRunCounts.runsByProject?.get(project.name) ?? [],
-  })])), [projects, sessionStatus, openRunCounts]);
+    tasks: openTasks,
+  })])), [projects, sessionStatus, openRunCounts, openTasks]);
   const selectedWorktreeByProject = useMemo(() => selectStoredWorktrees(
     projects, worktreeGroupsByProject, worktreeSelection, key => localStorage.getItem(key)
   ), [projects, worktreeGroupsByProject, worktreeSelection]);
@@ -514,6 +517,7 @@ function AppContent() {
             worktreeGroups={worktreeGroupsByProject.get(activeProject.name)}
             selectedWorktree={selectedWorktreeByProject[activeProject.name]}
             onSelectWorktree={key => selectWorktree(activeProject.name, key)}
+            onTasksChanged={refreshTasks}
             worktreeBySession={worktreeBySession}
             sessionStatus={sessionStatus}
             sessionTitles={sessionTitles}
@@ -589,8 +593,19 @@ function AppContent() {
       {showRunWorkflow && activeProject && (
         <RunWorkflowDialog
           projectName={activeProject.name}
+          tasks={openTasks}
+          defaultTaskId={worktreeGroupsByProject.get(activeProject.name)?.find(group => group.key === selectedWorktreeByProject[activeProject.name])?.task?.id ?? null}
           onClose={() => setShowRunWorkflow(false)}
-          onStart={startRun}
+          onStart={async (request) => {
+            const projectName = activeProject.name;
+            const started = await startRun(request);
+            // The run's task is where the owner wants to be next.
+            if (started?.worktree?.path) {
+              await refreshTasks();
+              selectWorktree(projectName, started.worktree.path === activeProject.path ? 'main' : started.worktree.path);
+            }
+            return started;
+          }}
         />
       )}
       {showProjectSwitcher && (

@@ -77,12 +77,64 @@ function validRun(overrides = {}) {
     worktreeState: 'not_created',
     worktreeDetail: null,
     inputRequest: null,
+    taskId: null,
     finishedAt: null,
     ...overrides,
   };
 }
 
 describe('pipeline run store', () => {
+  it('stores a step whose limit the owner accepted', () => {
+    const { store } = setup();
+    const created = store.create(validRun({ status: 'complete', finishedAt: '2026-11-18T10:00:00.000Z', steps: [step({ status: 'limit_accepted', attempt: 1 })] }));
+    expect(created.steps[0].status).toBe('limit_accepted');
+  });
+
+  it('rewrites limits accepted before that was recorded, and leaves a limit still waiting alone', () => {
+    const { db, store } = setup();
+    const two = definition();
+    two.steps = [two.steps[0], { ...two.steps[0], name: 'Second' }];
+    const done = store.create(validRun({ requestId: 'done', status: 'complete', finishedAt: '2026-11-18T10:00:00.000Z', steps: [step({ status: 'limit_reached', attempt: 1 })] }));
+    const moved = store.create(validRun({ requestId: 'moved', definition: two, status: 'running', currentStepIndex: 1,
+      steps: [step({ status: 'limit_reached', attempt: 1 }), step({ status: 'running', attempt: 1, sessionId: 'Demo-1' })] }));
+    const paused = store.create(validRun({ requestId: 'paused', status: 'limit_paused', steps: [step({ status: 'limit_reached', attempt: 1 })] }));
+    const stoppedAtLimit = store.create(validRun({ requestId: 'stopped', status: 'stopped', stopReason: 'user', finishedAt: '2026-11-18T10:00:00.000Z', steps: [step({ status: 'limit_reached', attempt: 1 })] }));
+
+    const reopened = createRunStore(db);
+    expect(reopened.get(done.id).steps[0].status).toBe('limit_accepted');
+    expect(reopened.get(moved.id).steps[0].status).toBe('limit_accepted');
+    expect(reopened.get(paused.id).steps[0].status).toBe('limit_reached');
+    expect(reopened.get(stoppedAtLimit.id).steps[0].status).toBe('limit_reached');
+  });
+
+  it('keeps the task a run belongs to, and null for a run outside any task', () => {
+    const { store } = setup();
+    const taskId = '7a000000-0000-4000-8000-000000000001';
+    expect(store.create(validRun({ requestId: 'in-task', taskId })).taskId).toBe(taskId);
+    expect(store.create(validRun({ requestId: 'no-task' })).taskId).toBeNull();
+    expect(store.list().map(run => run.taskId)).toEqual(expect.arrayContaining([taskId, null]));
+  });
+
+  it.each([[undefined], ['not-a-uuid'], [12], ['']])('refuses a run whose task is %j', taskId => {
+    const { store } = setup();
+    expect(() => store.create(validRun({ taskId }))).toThrow(/field task_id/);
+  });
+
+  it('reads runs stored before tasks existed as belonging to no task', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE pipeline_runs (
+      id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, workflow_id TEXT NOT NULL, project TEXT NOT NULL,
+      input TEXT NOT NULL, status TEXT NOT NULL, stop_reason TEXT, current_step_index INTEGER NOT NULL, error TEXT,
+      definition TEXT NOT NULL, steps TEXT NOT NULL, home_path TEXT NOT NULL, worktree_path TEXT NOT NULL,
+      worktree_branch TEXT NOT NULL, base_commit TEXT, worktree_state TEXT NOT NULL, worktree_detail TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT, input_request TEXT)`);
+    const store = createRunStore(db);
+    expect(store.create(validRun()).taskId).toBeNull();
+    expect(() => db.prepare("UPDATE pipeline_runs SET task_id = 'bogus'").run()).not.toThrow();
+    expect(() => store.list()).toThrow(/field task_id/);
+    db.close();
+  });
+
   it('leaves an approval wait untouched while interrupting a running run on the same restart', () => {
     const { db, store } = setup();
     const waiting = store.create(validRun({ requestId: 'approval-restart', status: 'awaiting_approval',

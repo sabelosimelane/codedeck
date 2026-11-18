@@ -15,7 +15,7 @@ const RUN_STATUSES = new Set([
 ]);
 const STEP_STATUSES = new Set([
   'pending', 'launching', 'running', 'needs_input', 'awaiting_approval',
-  'complete', 'limit_reached', 'failed', 'stopped', 'interrupted',
+  'complete', 'limit_reached', 'limit_accepted', 'failed', 'stopped', 'interrupted',
 ]);
 // `external` is a worktree the owner chose that existed before the run; CodeDeck never removes it.
 // `released` means the run no longer uses that worktree; nothing was removed.
@@ -310,6 +310,9 @@ function validateRunRecord(id, record) {
     fieldError(id, 'input_request', 'must be null unless status is needs_input');
   }
 
+  // The task whose worktree the run works in; null for a run outside any task.
+  if (record.taskId !== null && !isUuid(record.taskId)) fieldError(id, 'task_id', 'must be a UUID, or null when the run belongs to no task');
+
   const finishedAt = requireIso(id, 'finished_at', record.finishedAt, { allowNull: true });
   if (['complete', 'stopped', 'error'].includes(record.status)) {
     if (finishedAt === null) fieldError(id, 'finished_at', 'required for terminal statuses');
@@ -334,6 +337,7 @@ function validateRunRecord(id, record) {
     worktreeState: record.worktreeState,
     worktreeDetail,
     inputRequest,
+    taskId: record.taskId,
     createdAt: requireIso(id, 'created_at', record.createdAt),
     updatedAt: requireIso(id, 'updated_at', record.updatedAt),
     finishedAt,
@@ -381,6 +385,7 @@ function rowToRecord(row) {
     worktreeState: row.worktree_state,
     worktreeDetail: row.worktree_detail,
     inputRequest,
+    taskId: row.task_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at,
@@ -410,6 +415,7 @@ function persistValues(record) {
     record.updatedAt,
     record.finishedAt,
     record.inputRequest === null ? null : JSON.stringify(record.inputRequest),
+    record.taskId,
   ];
 }
 
@@ -441,12 +447,17 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       finished_at TEXT,
-      input_request TEXT
+      input_request TEXT,
+      task_id TEXT
     );
   `);
   // Databases created before input requests have no such column; their runs were not waiting on one.
   if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'input_request')) {
     db.exec('ALTER TABLE pipeline_runs ADD COLUMN input_request TEXT');
+  }
+  // Runs stored before tasks existed belong to none.
+  if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'task_id')) {
+    db.exec('ALTER TABLE pipeline_runs ADD COLUMN task_id TEXT');
   }
 
   // Runs stored before step loops and agent decisions existed: the owner decided, and no loop
@@ -483,6 +494,22 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
   });
   upgradeStored();
 
+  // Continue at a limit used to leave the step reading `limit_reached` for good. A step the
+  // run has moved past, or the last step of a complete run, had its limit accepted.
+  const upgradeAcceptedLimits = db.transaction(() => {
+    const save = db.prepare('UPDATE pipeline_runs SET steps = ? WHERE id = ?');
+    for (const row of db.prepare('SELECT id, status, current_step_index, steps FROM pipeline_runs').all()) {
+      let steps;
+      try { steps = JSON.parse(row.steps); } catch { fieldError(row.id, 'steps', 'must be valid JSON'); }
+      if (!Array.isArray(steps)) fieldError(row.id, 'steps', 'must be an array');
+      const accepted = (step, index) => isPlainObject(step) && step.status === 'limit_reached'
+        && (index < row.current_step_index || row.status === 'complete');
+      if (!steps.some(accepted)) continue;
+      save.run(JSON.stringify(steps.map((step, index) => (accepted(step, index) ? { ...step, status: 'limit_accepted' } : step))), row.id);
+    }
+  });
+  upgradeAcceptedLimits();
+
   const read = db.prepare('SELECT * FROM pipeline_runs WHERE id = ?');
   const readByRequest = db.prepare('SELECT * FROM pipeline_runs WHERE request_id = ?');
   const readAll = db.prepare('SELECT * FROM pipeline_runs ORDER BY created_at DESC, id DESC');
@@ -490,15 +517,15 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
     INSERT INTO pipeline_runs (
       id, request_id, workflow_id, project, input, status, stop_reason, current_step_index,
       error, definition, steps, home_path, worktree_path, worktree_branch, base_commit,
-      worktree_state, worktree_detail, created_at, updated_at, finished_at, input_request
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      worktree_state, worktree_detail, created_at, updated_at, finished_at, input_request, task_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_runs SET
       request_id = ?, workflow_id = ?, project = ?, input = ?, status = ?, stop_reason = ?,
       current_step_index = ?, error = ?, definition = ?, steps = ?, home_path = ?,
       worktree_path = ?, worktree_branch = ?, base_commit = ?, worktree_state = ?,
-      worktree_detail = ?, created_at = ?, updated_at = ?, finished_at = ?, input_request = ?
+      worktree_detail = ?, created_at = ?, updated_at = ?, finished_at = ?, input_request = ?, task_id = ?
     WHERE id = ?
   `);
 

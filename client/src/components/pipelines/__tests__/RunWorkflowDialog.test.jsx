@@ -33,16 +33,19 @@ function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()] } = {}
   });
 }
 
+const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'Replies', worktreePath: '/git/worktrees/demo-feature' };
+const BUSY = { id: '7a000000-0000-4000-8000-000000000002', project: 'Demo', title: 'Busy one', worktreePath: '/git/worktrees/demo-busy' };
+
 async function renderDialog(props = {}) {
   const onStart = props.onStart ?? vi.fn(async () => ({ id: 'r1' }));
   const onClose = props.onClose ?? vi.fn();
-  render(<RunWorkflowDialog projectName="Demo" onClose={onClose} onStart={onStart} />);
+  render(<RunWorkflowDialog projectName="Demo" tasks={props.tasks ?? [TASK]} defaultTaskId={props.defaultTaskId ?? null} onClose={onClose} onStart={onStart} />);
   await waitFor(() => expect(screen.getByRole('combobox', { name: 'Workflow' })).toBeTruthy());
   return { onStart, onClose };
 }
 
-const worktreeSelect = () => screen.getByRole('combobox', { name: 'Worktree' });
-const worktreeOptions = () => [...worktreeSelect().options].map(option => ({ value: option.value, label: option.textContent, disabled: option.disabled }));
+const whereSelect = () => screen.getByRole('combobox', { name: 'Where to work' });
+const whereOptions = () => [...whereSelect().options].map(option => ({ value: option.value, label: option.textContent, disabled: option.disabled }));
 const startButton = () => screen.getByRole('button', { name: 'Start' });
 const requestedWorktrees = () => global.fetch.mock.calls.some(([url]) => String(url).includes('/worktrees'));
 
@@ -67,21 +70,34 @@ describe('RunWorkflowDialog', () => {
       delete workflows[1].progressFile;
     }
   });
-  it('loads workflows and starts a run in a new worktree with the selected input', async () => {
+  it('starts a run in a new task named after the input unless a title is typed', async () => {
     mockApi();
     const { onStart, onClose } = await renderDialog();
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: workflows[0].id } });
+    expect(whereSelect().value).toBe('new');
+    expect(startButton().disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'ship the feature' } });
-    expect(worktreeSelect().value).toBe('');
+    expect(screen.getByLabelText('Task title').value).toBe('ship the feature');
     fireEvent.click(startButton());
-
     await waitFor(() => expect(onStart).toHaveBeenCalledWith({
-      workflowId: workflows[0].id,
-      input: 'ship the feature',
-      requestId: expect.stringMatching(/^[\w-]{1,128}$/),
+      workflowId: workflows[0].id, input: 'ship the feature', requestId: expect.stringMatching(/^[\w-]{1,128}$/),
+      newTask: { title: 'ship the feature' },
     }));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('keeps a typed task title and limits a long one taken from the input', async () => {
+    mockApi();
+    const { onStart } = await renderDialog();
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: `docs/${'x'.repeat(200)}.md` } });
+    expect(screen.getByLabelText('Task title').value).toHaveLength(80);
+    fireEvent.change(screen.getByLabelText('Task title'), { target: { value: '  WhatsApp replies ' } });
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'docs/todos/replies.md' } });
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ input: 'docs/todos/replies.md', newTask: { title: 'WhatsApp replies' } })));
+    expect(onStart.mock.calls[0][0]).not.toHaveProperty('worktreePath');
+    expect(onStart.mock.calls[0][0]).not.toHaveProperty('taskId');
   });
 
   it('blocks Start when preflight is ineligible, lists reasons and does not ask for worktrees', async () => {
@@ -94,62 +110,82 @@ describe('RunWorkflowDialog', () => {
     expect(screen.getByText(/not a git top-level/i)).toBeTruthy();
     expect(startButton().disabled).toBe(true);
     expect(requestedWorktrees()).toBe(false);
-    expect(screen.queryByRole('combobox', { name: 'Worktree' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Where to work' })).toBeNull();
   });
 
-  it('warns about uncommitted changes without blocking Start', async () => {
+  it('warns that uncommitted changes in Main stay out of a new task, without blocking Start', async () => {
     mockApi({ preflight: eligible({ dirty: true }) });
     await renderDialog();
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'x' } });
 
-    expect(screen.getByText(/Uncommitted changes in this checkout will not be in the run's worktree/i)).toBeTruthy();
+    expect(screen.getByText('Uncommitted changes in Main will not be in the task.')).toBeTruthy();
+    expect(screen.getByText(/gets its own copy of the project from main/)).toBeTruthy();
     expect(startButton().disabled).toBe(false);
   });
 
-  it('offers a new worktree first, then the project worktrees with their branch and state', async () => {
+  it('offers a new task first, then the open tasks of this project by title, then Main', async () => {
     mockApi({ worktrees: [
       HOME,
       worktree({ dirty: true }),
       worktree({ path: '/git/worktrees/demo-busy', name: 'demo-busy', branch: 'busy', selectable: false, reason: { code: 'in_use', message: 'An open workflow run is using this worktree.' } }),
-      worktree({ path: '/git/worktrees/demo-detached', name: 'demo-detached', branch: null, selectable: false, reason: { code: 'detached', message: 'No branch is checked out in this worktree.' } }),
     ] });
-    await renderDialog();
+    const gone = { id: '7a000000-0000-4000-8000-000000000003', project: 'Demo', title: 'Vanished', worktreePath: '/git/worktrees/demo-gone' };
+    const foreign = { id: '7a000000-0000-4000-8000-000000000004', project: 'Other', title: 'Elsewhere', worktreePath: '/git/worktrees/other' };
+    await renderDialog({ tasks: [TASK, BUSY, gone, foreign] });
 
-    expect(worktreeOptions()).toEqual([
-      { value: '', label: 'New worktree (new branch from main)', disabled: false },
-      { value: '/git/demo', label: 'demo · main · this checkout', disabled: false },
-      { value: '/git/worktrees/demo-feature', label: 'demo-feature · feature/x · uncommitted changes', disabled: false },
-      { value: '/git/worktrees/demo-busy', label: 'demo-busy · busy — An open workflow run is using this worktree.', disabled: true },
-      { value: '/git/worktrees/demo-detached', label: 'demo-detached · no branch — No branch is checked out in this worktree.', disabled: true },
+    expect(whereOptions()).toEqual([
+      { value: 'new', label: 'A new task', disabled: false },
+      { value: `task:${TASK.id}`, label: 'Replies · uncommitted changes', disabled: false },
+      { value: `task:${BUSY.id}`, label: 'Busy one — An open workflow run is using this worktree.', disabled: true },
+      { value: `task:${gone.id}`, label: 'Vanished — its files are no longer on disk', disabled: true },
+      { value: 'main', label: 'Main', disabled: false },
     ]);
   });
 
-  it('starts a run in the chosen existing worktree and says what that means', async () => {
+  it('starts a run in the chosen open task and says what that means', async () => {
     mockApi({ preflight: eligible({ dirty: true }), worktrees: [HOME, worktree({ dirty: true })] });
     const { onStart } = await renderDialog();
 
-    fireEvent.change(worktreeSelect(), { target: { value: '/git/worktrees/demo-feature' } });
-    expect(screen.getByText('Runs in this worktree as it is: no Setup step, and CodeDeck will not remove it when the run ends.')).toBeTruthy();
-    expect(screen.getByText('This worktree has uncommitted changes.')).toBeTruthy();
-    expect(screen.queryByText(/will not be in the run's worktree/i)).toBeNull();
+    fireEvent.change(whereSelect(), { target: { value: `task:${TASK.id}` } });
+    expect(screen.getByText('Runs in this task as it is, with no Setup step.')).toBeTruthy();
+    expect(screen.getByText('There are uncommitted changes here.')).toBeTruthy();
+    expect(screen.queryByLabelText('Task title')).toBeNull();
+    expect(screen.queryByText(/will not be in the task/)).toBeNull();
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'docs/todos/x.md' } });
     fireEvent.click(startButton());
 
     await waitFor(() => expect(onStart).toHaveBeenCalledWith({
-      workflowId: workflows[0].id,
-      input: 'docs/todos/x.md',
-      requestId: expect.stringMatching(/^[\w-]{1,128}$/),
-      worktreePath: '/git/worktrees/demo-feature',
+      workflowId: workflows[0].id, input: 'docs/todos/x.md', requestId: expect.stringMatching(/^[\w-]{1,128}$/), taskId: TASK.id,
     }));
   });
 
-  it('needs a setup agent only for a new worktree', async () => {
+  it('starts in the task the owner is looking at, and in Main when asked', async () => {
+    mockApi();
+    const { onStart } = await renderDialog({ defaultTaskId: TASK.id });
+    expect(whereSelect().value).toBe(`task:${TASK.id}`);
+    fireEvent.change(whereSelect(), { target: { value: 'main' } });
+    expect(screen.getByText('Runs directly in Main, with no copy of its own and no Setup step.')).toBeTruthy();
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ worktreePath: '/git/demo' })));
+    expect(onStart.mock.calls[0][0]).not.toHaveProperty('newTask');
+  });
+
+  it('falls back to a new task when the task it opened on is no longer open', async () => {
+    mockApi();
+    await renderDialog({ tasks: [], defaultTaskId: TASK.id });
+    expect(whereSelect().value).toBe('new');
+    expect(screen.getByLabelText('Task title')).toBeTruthy();
+  });
+
+  it('needs a setup agent only for a new task', async () => {
     mockApi({ preflight: eligible({ eligible: false, reasons: [SETUP_MISSING] }) });
     await renderDialog();
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'x' } });
 
     expect(screen.getByText(SETUP_MISSING.message)).toBeTruthy();
     expect(startButton().disabled).toBe(true);
 
-    fireEvent.change(worktreeSelect(), { target: { value: '/git/worktrees/demo-feature' } });
+    fireEvent.change(whereSelect(), { target: { value: `task:${TASK.id}` } });
     expect(screen.queryByText(SETUP_MISSING.message)).toBeNull();
     expect(startButton().disabled).toBe(false);
   });

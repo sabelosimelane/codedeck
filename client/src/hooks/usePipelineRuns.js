@@ -185,14 +185,14 @@ export function usePipelineRuns({ projectName, showToast }) {
     }
   }, [refresh, showToast]);
 
-  const startRun = useCallback(async ({ requestId, workflowId, input, worktreePath }) => {
+  const startRun = useCallback(async ({ requestId, workflowId, input, worktreePath, taskId, newTask }) => {
     const project = projectNameRef.current;
     if (!project) {
       showToast({ type: 'error', message: 'Select a project before starting a workflow' });
       return null;
     }
     try {
-      const created = await apiStartRun({ requestId, workflowId, project, input, worktreePath });
+      const created = await apiStartRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask });
       if (!mountedRef.current || projectNameRef.current !== project) return created;
       setLocallyStartedRunIds((current) => {
         const next = new Set(current);

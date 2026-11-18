@@ -122,11 +122,19 @@ export function getRun(runId, { signal } = {}) {
   return request(`/runs/${encodeURIComponent(runId)}`, { signal });
 }
 
-/** `worktreePath` names an existing worktree to run in; without it the run gets a new worktree. */
-export function startRun({ requestId, workflowId, project, input, worktreePath }, { signal } = {}) {
+/**
+ * Where the run works is one of: `newTask` ({ title }, a task created for it), `taskId` (an open
+ * task) or `worktreePath` (an existing working tree, such as Main).
+ */
+export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask }, { signal } = {}) {
   return request('/runs', {
     method: 'POST',
-    body: { requestId, workflowId, project, input, ...(worktreePath === undefined ? {} : { worktreePath }) },
+    body: {
+      requestId, workflowId, project, input,
+      ...(worktreePath === undefined ? {} : { worktreePath }),
+      ...(taskId === undefined ? {} : { taskId }),
+      ...(newTask === undefined ? {} : { newTask }),
+    },
     signal,
   });
 }

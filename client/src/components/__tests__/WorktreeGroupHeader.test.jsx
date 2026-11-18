@@ -35,7 +35,7 @@ describe('WorktreeGroupHeader', () => {
   });
   it('names main and plain worktrees', () => {
     const view = render(<WorktreeGroupHeader group={{ ...base, key: 'main', path: '/repo/main', isMain: true, branch: null }} selected={false} onClick={vi.fn()} />);
-    expect(view.getByText('Main checkout')).toBeTruthy();
+    expect(view.getByText('Main')).toBeTruthy();
     view.rerender(<WorktreeGroupHeader group={base} selected={false} onClick={vi.fn()} />);
     expect(view.getByText('feature')).toBeTruthy();
   });

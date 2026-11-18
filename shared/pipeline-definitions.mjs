@@ -212,7 +212,7 @@ export function validateSettingsBody(body) {
 
 export function validateRunStartBody(body) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath'])) return errors;
+  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask'])) return errors;
   if (typeof body.requestId !== 'string' || !REQUEST_ID_RE.test(body.requestId)) {
     add(errors, 'requestId', 'Use 1–128 letters, digits, underscores or hyphens');
   }
@@ -234,6 +234,21 @@ export function validateRunStartBody(body) {
       add(errors, 'worktreePath', 'Use the absolute path of an existing worktree, 1–4096 characters on one line, or leave it out for a new worktree');
     }
   }
+  // Where the run works: an existing task, a task created for it, or (above) a worktree by path.
+  if (body.taskId !== undefined && !isUuid(body.taskId)) add(errors, 'taskId', 'Use a task UUID');
+  if (body.newTask !== undefined) {
+    const task = body.newTask;
+    if (task === null || typeof task !== 'object' || Array.isArray(task)) {
+      add(errors, 'newTask', 'Use an object with a title');
+    } else {
+      for (const key of Object.keys(task)) if (key !== 'title') add(errors, `newTask.${key}`, 'Unknown field');
+      if (typeof task.title !== 'string' || task.title.trim().length < 1 || task.title.trim().length > 80 || SINGLE_LINE.test(task.title)) {
+        add(errors, 'newTask.title', 'Use 1–80 characters on one line');
+      }
+    }
+  }
+  const places = ['worktreePath', 'taskId', 'newTask'].filter(field => body[field] !== undefined);
+  if (places.length > 1) add(errors, places[1], `Use only one of ${places.join(', ')}`);
   return errors;
 }
 

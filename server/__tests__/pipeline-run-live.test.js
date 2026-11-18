@@ -276,6 +276,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       worktreeState: 'not_created',
       worktreeDetail: null,
       inputRequest: null,
+      taskId: null,
       finishedAt: null,
     });
 
@@ -408,7 +409,7 @@ describeLive('pipeline run live notes', () => {
       definition: { workflowId, workflowName: 'Live notes', workflowRevision: 1, agentsDecide: false, progressFile: null, notesDir, steps },
       steps: steps.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null })),
       homePath: home, worktreePath: home, worktreeBranch: 'master', baseCommit: git(home, ['rev-parse', 'HEAD']),
-      worktreeState: 'external', worktreeDetail: null, inputRequest: null, finishedAt: null,
+      worktreeState: 'external', worktreeDetail: null, inputRequest: null, taskId: null, finishedAt: null,
     });
     let sessionSeq = 0;
     const engine = createRunEngine({
@@ -531,6 +532,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
       worktreeState: 'external',
       worktreeDetail: null,
       inputRequest: null,
+      taskId: null,
       finishedAt: null,
     });
 
@@ -759,6 +761,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
       worktreeState: 'external',
       worktreeDetail: null,
       inputRequest: null,
+      taskId: null,
       finishedAt: null,
     });
 
@@ -931,6 +934,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
       worktreeState: 'external',
       worktreeDetail: null,
       inputRequest: null,
+      taskId: null,
       finishedAt: null,
     });
 
@@ -1086,6 +1090,7 @@ describeLive('pipeline run live — Resume', () => {
       worktreeState: 'external',
       worktreeDetail: null,
       inputRequest: null,
+      taskId: null,
       finishedAt: null,
     });
 

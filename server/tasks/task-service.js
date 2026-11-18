@@ -37,7 +37,8 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
     return project;
   }
 
-  async function createNow({ project: projectName, title } = {}) {
+  /** Checks the request and names the task's branch and folder. Changes nothing. */
+  async function plan({ project: projectName, title } = {}) {
     if (typeof projectName !== 'string' || projectName.length === 0) throw invalid('project', 'A project name is required');
     if (!isTaskTitle(title)) throw invalid('title', TITLE_RULE);
     const project = await resolveProject(projectName);
@@ -55,19 +56,37 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
     const home = await resolveHomeRepoPath({ projectPath: project.path, execFile });
     if (typeof home !== 'string' || !path.isAbsolute(home) || home === path.parse(home).root) throw new Error('Git home repository path is invalid');
     const names = planNames({ runId: id, workflowName: title, homeRepoPath: home, branchPrefix: 'task' });
-
-    const exists = await pathExists(names.worktreePath);
-    if (typeof exists !== 'boolean') throw new Error('pathExists must return a boolean');
-    if (exists) throw new TaskError('A folder for this task already exists. Try again.', 409);
-
-    const created = await createWorktree({ homePath: home, worktreePath: names.worktreePath, branch: names.branch, projectPath: project.path, execFile });
-    return taskStore.create({
+    return {
       id,
       project: project.name,
-      title,
+      projectPath: project.path,
+      title: title.trim(),
+      homePath: home,
       worktreePath: names.worktreePath,
       branch: names.branch,
       baseBranch: eligibility.branch,
+    };
+  }
+
+  /** Creates the worktree and the task a plan describes. */
+  async function createPlannedNow(planned) {
+    if (!planned || typeof planned !== 'object') throw new TypeError('A task plan is required');
+    for (const field of ['id', 'project', 'projectPath', 'title', 'homePath', 'worktreePath', 'branch']) {
+      if (typeof planned[field] !== 'string' || planned[field].length === 0) throw new TypeError(`Task plan ${field} is invalid`);
+    }
+    if (planned.baseBranch !== null && typeof planned.baseBranch !== 'string') throw new TypeError('Task plan baseBranch is invalid');
+    const exists = await pathExists(planned.worktreePath);
+    if (typeof exists !== 'boolean') throw new Error('pathExists must return a boolean');
+    if (exists) throw new TaskError('A folder for this task already exists. Try again.', 409);
+
+    const created = await createWorktree({ homePath: planned.homePath, worktreePath: planned.worktreePath, branch: planned.branch, projectPath: planned.projectPath, execFile });
+    return taskStore.create({
+      id: planned.id,
+      project: planned.project,
+      title: planned.title,
+      worktreePath: planned.worktreePath,
+      branch: planned.branch,
+      baseBranch: planned.baseBranch,
       baseCommit: created?.baseCommit,
     });
   }
@@ -82,8 +101,14 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
   // Git refuses concurrent `worktree add` in one repository, so creations run one at a time.
   let queue = Promise.resolve();
   return {
+    plan,
+    createPlanned(planned) {
+      const run = queue.then(() => createPlannedNow(planned));
+      queue = run.then(() => undefined, () => undefined);
+      return run;
+    },
     create(input) {
-      const run = queue.then(() => createNow(input));
+      const run = queue.then(async () => createPlannedNow(await plan(input)));
       queue = run.then(() => undefined, () => undefined);
       return run;
     },

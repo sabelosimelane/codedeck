@@ -10,6 +10,8 @@ import { createAgentStore } from '../pipelines/agent-store.js';
 import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
+import { createTaskStore } from '../tasks/task-store.js';
+import { createReviewStore } from '../pipelines/review-store.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
@@ -63,6 +65,7 @@ async function setup(overrides = {}) {
   const runStore = createRunStore(db);
   const decisionStore = createDecisionStore(db);
   const noteStore = createNoteStore(db);
+  const reviewStore = createReviewStore(db);
 
   const engineStarts = [];
   const engine = {
@@ -189,6 +192,20 @@ async function setup(overrides = {}) {
   const scheduled = [];
   const scheduleStart = fn => { scheduled.push(fn); };
 
+  // Tasks: the real store; planning and creating a worktree are replaced, as Git is elsewhere here.
+  const taskStore = createTaskStore(db);
+  let plannedTasks = 0;
+  const taskService = overrides.taskService ?? {
+    plan: vi.fn(async ({ project, title }) => {
+      plannedTasks += 1;
+      const id = `7a00000${plannedTasks}-0000-4000-8000-000000000000`;
+      return { id, project, projectPath: PROJECT.path, title: title.trim(), homePath: '/Users/me/git/codedeck',
+        worktreePath: `/Users/me/git/worktrees/codedeck-task-${plannedTasks}`, branch: `task/t-${plannedTasks}`, baseBranch: 'main' };
+    }),
+    createPlanned: vi.fn(async planned => taskStore.create({ id: planned.id, project: planned.project, title: planned.title,
+      worktreePath: planned.worktreePath, branch: planned.branch, baseBranch: planned.baseBranch, baseCommit: 'c'.repeat(40) })),
+  };
+
   const app = express();
   app.use(createPipelinesRouter({
     agentStore,
@@ -197,6 +214,9 @@ async function setup(overrides = {}) {
     runStore,
     decisionStore,
     noteStore,
+    reviewStore,
+    taskStore,
+    taskService,
     findProject,
     engine,
     preflight,
@@ -215,6 +235,9 @@ async function setup(overrides = {}) {
     runStore,
     decisionStore,
     noteStore,
+    reviewStore,
+    taskStore,
+    taskService,
     engine,
     engineStarts,
     scheduled,
@@ -763,6 +786,7 @@ describe('pipelines API — preflight and runs', () => {
         worktreeState: 'not_created',
         worktreeDetail: null,
     inputRequest: null,
+    taskId: null,
         finishedAt: null,
       });
     }
@@ -775,6 +799,9 @@ describe('pipelines API — preflight and runs', () => {
       runStore,
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
+      reviewStore: createReviewStore(db),
+      taskStore: createTaskStore(db),
+      taskService: { plan: async () => { throw new Error('unused'); }, createPlanned: async () => { throw new Error('unused'); } },
       findProject: () => PROJECT,
       engine: { start: () => {} },
       preflight: async () => ({ eligible: true, reasons: [], branch: 'main', head: 'a'.repeat(40), dirty: false }),
@@ -1078,6 +1105,9 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       runStore: reopenedStore,
       decisionStore: ctx.decisionStore,
       noteStore: ctx.noteStore,
+      reviewStore: ctx.reviewStore,
+      taskStore: ctx.taskStore,
+      taskService: ctx.taskService,
       findProject: name => ctx.projects.get(name) ?? null,
       engine: {
         ...ctx.engine,
@@ -1791,6 +1821,49 @@ describe('pipelines API — decisions agents made', () => {
     });
   });
 
+  it('narrows decisions to one step', async () => {
+    const { ctx, id } = await setupRun();
+    record(ctx, id, 1);
+    record(ctx, id, 1, { stepIndex: 0, stepName: 'Setup' });
+    const response = await decisions(ctx, id, { stepIndex: 0 });
+    expect(response.body.data.map(d => d.stepName)).toEqual(['Setup']);
+    expect(response.body.page.totalElements).toBe(1);
+    expect((await decisions(ctx, id, { stepIndex: 5 })).body.data).toEqual([]);
+    for (const stepIndex of ['-1', 'x', '33', '']) {
+      const bad = await decisions(ctx, id, { stepIndex });
+      expect(bad.status).toBe(400);
+      expect(bad.body.errors.map(error => error.field)).toEqual(['stepIndex']);
+    }
+  });
+
+  it('lists the owner reviews of a run with the page envelope, and narrows them to a step', async () => {
+    const { ctx, id } = await setupRun();
+    const reviews = (query = {}) => request(ctx.app).get(`${base}/runs/${id}/reviews`).query(query);
+    expect((await reviews()).body).toEqual({ data: [], page: { currentPage: 0, size: 20, totalElements: 0, totalPages: 0, hasNextPage: false } });
+    const sentBack = ctx.reviewStore.add({ runId: id, stepIndex: 1, stepName: 'Develop', attempt: 1, verdict: 'sent_back', comment: 'Cover the empty case <b>too</b>' });
+    const approved = ctx.reviewStore.add({ runId: id, stepIndex: 1, stepName: 'Develop', attempt: 2, verdict: 'approved', comment: null });
+    ctx.reviewStore.add({ runId: id, stepIndex: 0, stepName: 'Setup', attempt: 1, verdict: 'approved', comment: null });
+    ctx.reviewStore.add({ runId: OTHER, stepIndex: 1, stepName: 'Develop', attempt: 1, verdict: 'approved', comment: null });
+
+    const all = await reviews();
+    expect(all.status).toBe(200);
+    expect(all.body.page).toEqual({ currentPage: 0, size: 20, totalElements: 3, totalPages: 1, hasNextPage: false });
+    expect(all.body.data[0]).toEqual({ id: sentBack.id, stepIndex: 1, stepName: 'Develop', attempt: 1, verdict: 'sent_back', comment: 'Cover the empty case <b>too</b>', createdAt: sentBack.createdAt });
+    expect((await reviews({ stepIndex: 1 })).body.data.map(review => review.id)).toEqual([sentBack.id, approved.id]);
+    expect((await reviews({ stepIndex: 1, sort: 'createdAt,desc', size: 1 })).body).toMatchObject({ data: [{ id: approved.id }], page: { totalElements: 2, totalPages: 2, hasNextPage: true } });
+    expect((await reviews({ stepIndex: 1, sort: 'createdAt,desc', size: 1, page: 1 })).body.data.map(review => review.id)).toEqual([sentBack.id]);
+
+    for (const [query, field] of [[{ stepIndex: 'x' }, 'stepIndex'], [{ size: 0 }, 'size'], [{ size: 101 }, 'size'], [{ sort: 'verdict,asc' }, 'sort'], [{ verdict: 'approved' }, 'verdict']]) {
+      const bad = await reviews(query);
+      expect(bad.status).toBe(400);
+      expect(bad.body.errors.map(error => error.field)).toEqual([field]);
+    }
+    const missing = await request(ctx.app).get(`${base}/runs/${OTHER}/reviews`);
+    expect(missing.status).toBe(404);
+    expect(missing.type).toBe('application/problem+json');
+    expect((await request(ctx.app).get(`${base}/runs/not-a-uuid/reviews`)).status).toBe(404);
+  });
+
   it('returns an empty page for a run whose agents decided nothing', async () => {
     const { ctx, id } = await setupRun();
     const response = await decisions(ctx, id);
@@ -1917,6 +1990,14 @@ describe('pipelines API — decisions agents made', () => {
     expect(JSON.stringify(response.body)).not.toContain('private question');
   });
 
+  it('requires the task store and service', () => {
+    const base = { agentStore: {}, workflowStore: {}, settingsStore: {}, runStore: {}, decisionStore: {}, noteStore: {}, findProject: () => null };
+    expect(() => createPipelinesRouter(base)).toThrow('pipelines router: reviewStore is required');
+    const stores = { ...base, reviewStore: { list() {} } };
+    expect(() => createPipelinesRouter(stores)).toThrow('pipelines router: taskStore is required');
+    expect(() => createPipelinesRouter({ ...stores, taskStore: { get() {} } })).toThrow('pipelines router: taskService is required');
+  });
+
   it('requires the decision store', () => {
     expect(() => createPipelinesRouter({
       agentStore: {}, workflowStore: {}, settingsStore: {}, runStore: {}, findProject: () => null,
@@ -1944,7 +2025,7 @@ describe('pipelines API — progress file', () => {
   it('shows the current phase from an optional run notes plan', async () => {
     const read = vi.fn(async ({ progressFile }) => ({ file: progressFile, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Build', tasksDone: 0, tasksTotal: 2 } }));
     const { started, view } = await startOptionalPlanRun(read);
-    expect((await view()).body.progress).toEqual({ file: `${started.body.notesDir}/plan.md`, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Build', tasksDone: 0, tasksTotal: 2 } });
+    expect((await view()).body.progress).toEqual({ file: `${started.body.notesDir}/plan.md`, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Build', tasksDone: 0, tasksTotal: 2 }, tasksDone: 0, tasksTotal: 2 });
   });
 
   it('hides an optional run notes plan without phase sections', async () => {
@@ -1996,7 +2077,7 @@ describe('pipelines API — progress file', () => {
     const updated = await request(ctx.app).put(`${base}/workflows/${workflow.id}`).send({ ...body, progressFile: 'docs/{input}', revision: 1 });
     expect(updated.status).toBe(200);
     const detail = await request(ctx.app).get(`${base}/runs/${valid.body.id}`);
-    expect(detail.body.progress).toEqual({ file: 'docs/todo.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 1 } });
+    expect(detail.body.progress).toEqual({ file: 'docs/todo.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 1 }, tasksDone: 0, tasksTotal: 1 });
     const listed = await request(ctx.app).get(`${base}/runs`);
     expect(listed.body.data.find(run => run.id === valid.body.id).progress).toEqual(detail.body.progress);
     expect(ctx.runStore.get(valid.body.id).definition.progressFile).toBeNull();
@@ -2036,7 +2117,7 @@ describe('pipelines API — progress file', () => {
       status = wanted;
       const response = await request(ctx.app).get(`${base}/runs/${started.body.id}`);
       expect(response.status).toBe(200);
-      expect(response.body.progress).toEqual({ file: 'docs/todo.md', status: wanted, phaseCount: wanted === 'all_done' ? 1 : null, phase: null });
+      expect(response.body.progress).toEqual({ file: 'docs/todo.md', status: wanted, phaseCount: wanted === 'all_done' ? 1 : null, phase: null, tasksDone: null, tasksTotal: null });
     }
     const changed = await request(ctx.app).put(`${base}/workflows/${created.body.id}`).send({ ...body, progressFile: 'docs/changed.md', revision: 1 });
     expect(changed.status).toBe(200);
@@ -2070,7 +2151,7 @@ describe('pipelines API — progress file', () => {
     expect(started.body.progress).toBeNull();
     ctx.runStore.update(started.body.id, { worktreeState: 'present' });
     const detail = await request(ctx.app).get(`${base}/runs/${started.body.id}`);
-    expect(detail.body.progress).toEqual({ file: 'docs/todos/x.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 3 } });
+    expect(detail.body.progress).toEqual({ file: 'docs/todos/x.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 3 }, tasksDone: 0, tasksTotal: 3 });
     expect((await request(ctx.app).get(`${base}/runs`)).body.data[0].progress).toEqual(detail.body.progress);
     expect(read).toHaveBeenCalled();
     ctx.runStore.update(started.body.id, { worktreeState: 'removed' });
@@ -2093,5 +2174,175 @@ describe('pipelines API — progress file', () => {
       expect(response.status).toBe(400);
       expect(response.body.errors.map(error => error.field)).toContain('input');
     }
+  });
+});
+
+describe('pipelines API — runs in tasks', () => {
+  const HEAD_A = 'a'.repeat(40);
+  const HEAD_T = 'd'.repeat(40);
+  const TASK_ID = '7b000000-0000-4000-8000-000000000001';
+  const TASK_WT = { path: '/tmp/worktrees/demo-git-task', head: HEAD_T, branch: 'task/replies-7b000000', missing: false };
+  const HOME_WT = { path: PROJECT.path, head: HEAD_A, branch: 'main', missing: false };
+
+  async function setupTasks(worktrees = [HOME_WT, TASK_WT], overrides = {}) {
+    const listWorktrees = vi.fn(async () => worktrees);
+    const readWorktreeChanges = vi.fn(async () => ({ readable: true, dirty: false }));
+    const ctx = await setup({ ...overrides, routerDeps: { listWorktrees, readWorktreeChanges, realpath: async value => value, execFile: 'exec-file-stub', ...overrides.routerDeps } });
+    const { workflow } = await seedReady(ctx);
+    const seedTask = (fields = {}) => ctx.taskStore.create({ id: TASK_ID, project: 'Demo', title: 'Replies', worktreePath: TASK_WT.path,
+      branch: TASK_WT.branch, baseBranch: 'main', baseCommit: HEAD_A, ...fields });
+    const body = (extra = {}) => ({ requestId: 'run-task', workflowId: workflow.id, project: 'Demo', input: 'docs/todos/feature.md', ...extra });
+    return { ...ctx, workflow, seedTask, body, listWorktrees };
+  }
+
+  it('starts a run in an existing task: no Setup, the task keeps its worktree', async () => {
+    const ctx = await setupTasks();
+    ctx.seedTask();
+    const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: TASK_ID }));
+
+    expect(started.status).toBe(201);
+    expect(started.body.taskId).toBe(TASK_ID);
+    expect(started.body.worktree).toEqual({ path: TASK_WT.path, branch: TASK_WT.branch, baseCommit: HEAD_T, state: 'external', detail: null });
+    expect(started.body.steps.map(item => item.kind)).toEqual(['node']);
+    expect(ctx.runStore.get(started.body.id).taskId).toBe(TASK_ID);
+    expect(ctx.taskService.plan).not.toHaveBeenCalled();
+  });
+
+  it('creates a task for a run, prepares it with Setup, and never lets the run remove it', async () => {
+    const ctx = await setupTasks();
+    const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: '  WhatsApp replies ' } }));
+
+    expect(started.status).toBe(201);
+    const task = ctx.taskStore.get(started.body.taskId);
+    expect(task).toMatchObject({ title: 'WhatsApp replies', project: 'Demo', state: 'active' });
+    expect(started.body.worktree).toEqual({ path: task.worktreePath, branch: task.branch, baseCommit: task.baseCommit, state: 'external', detail: null });
+    expect(started.body.steps.map(item => item.kind)).toEqual(['setup', 'node']);
+    expect(ctx.runStore.get(started.body.id).definition.steps[0].prompt).toContain(task.worktreePath);
+    ctx.flushStart();
+    expect(ctx.engine.start).toHaveBeenCalledWith(started.body.id);
+  });
+
+  it('replays the same request without creating a second task', async () => {
+    const ctx = await setupTasks();
+    const body = ctx.body({ newTask: { title: 'Once' } });
+    const first = await request(ctx.app).post(`${base}/runs`).send(body);
+    const second = await request(ctx.app).post(`${base}/runs`).send(body);
+    expect([first.status, second.status]).toEqual([201, 200]);
+    expect(second.body.id).toBe(first.body.id);
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    expect((await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'Other' } }))).status).toBe(409);
+    expect((await request(ctx.app).post(`${base}/runs`).send(ctx.body())).status).toBe(409);
+  });
+
+  it('creates no task when the run is refused', async () => {
+    const ctx = await setupTasks();
+    const noInput = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ input: '', newTask: { title: 'Refused' } }));
+    expect(noInput.status).toBe(400);
+    expect(noInput.body.errors.map(error => error.field)).toEqual(['input']);
+    const unknownWorkflow = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ workflowId: '7c000000-0000-4000-8000-000000000009', newTask: { title: 'Refused' } }));
+    expect(unknownWorkflow.status).toBe(404);
+    expect(ctx.taskService.createPlanned).not.toHaveBeenCalled();
+    expect(ctx.taskStore.list()).toEqual([]);
+  });
+
+  it('needs a setup agent for a new task but not for an existing one', async () => {
+    const ctx = await setupTasks([HOME_WT, TASK_WT], {
+      preflight: vi.fn(async () => ({ eligible: false, reasons: [{ code: 'setup_agent_missing', message: 'Choose a setup agent in Settings → Workflows.' }], branch: 'main', head: HEAD_A, dirty: false })),
+    });
+    ctx.seedTask();
+    const fresh = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'Needs setup' } }));
+    expect(fresh.status).toBe(409);
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    expect((await request(ctx.app).post(`${base}/runs`).send(ctx.body({ requestId: 'run-existing-task', taskId: TASK_ID }))).status).toBe(201);
+  });
+
+  it('reports what the task service refuses', async () => {
+    const refuse = (status, errors) => Object.assign(new Error(status === 400 ? 'One or more fields failed validation.' : 'Tasks are only available for local projects.'), { status, errors });
+    const invalid = await setupTasks([HOME_WT], { taskService: { plan: vi.fn(async () => { throw refuse(400, [{ field: 'title', message: 'Use 1–80 characters on one line' }]); }), createPlanned: vi.fn() } });
+    const bad = await request(invalid.app).post(`${base}/runs`).send(invalid.body({ newTask: { title: 'x' } }));
+    expect(bad.status).toBe(400);
+    expect(bad.body.errors).toEqual([{ field: 'newTask.title', message: 'Use 1–80 characters on one line' }]);
+
+    const remote = await setupTasks([HOME_WT], { taskService: { plan: vi.fn(async () => { throw refuse(409); }), createPlanned: vi.fn() } });
+    const refused = await request(remote.app).post(`${base}/runs`).send(remote.body({ newTask: { title: 'x' } }));
+    expect(refused.status).toBe(409);
+    expect(refused.body.message).toBe('Tasks are only available for local projects.');
+
+    const collided = await setupTasks([HOME_WT], { taskService: {
+      plan: vi.fn(async () => ({ worktreePath: '/tmp/worktrees/x', branch: 'task/x' })),
+      createPlanned: vi.fn(async () => { throw Object.assign(new Error('A folder for this task already exists. Try again.'), { status: 409 }); }),
+    } });
+    const collision = await request(collided.app).post(`${base}/runs`).send(collided.body({ newTask: { title: 'x' } }));
+    expect(collision.status).toBe(409);
+    expect(collided.runStore.list()).toEqual([]);
+  });
+
+  it('refuses an unknown, foreign, finished, vanished or busy task', async () => {
+    const ctx = await setupTasks();
+    expect((await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: TASK_ID }))).status).toBe(404);
+
+    ctx.seedTask({ project: 'Elsewhere' });
+    const foreign = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: TASK_ID }));
+    expect(foreign.status).toBe(400);
+    expect(foreign.body.errors.map(error => error.field)).toEqual(['taskId']);
+
+    const gone = await setupTasks([HOME_WT]);
+    gone.seedTask();
+    const vanished = await request(gone.app).post(`${base}/runs`).send(gone.body({ taskId: TASK_ID }));
+    expect(vanished.status).toBe(409);
+    expect(vanished.body.message).toBe("This task's files are no longer on disk.");
+
+    const busy = await setupTasks();
+    busy.seedTask();
+    expect((await request(busy.app).post(`${base}/runs`).send(busy.body({ taskId: TASK_ID }))).status).toBe(201);
+    const second = await request(busy.app).post(`${base}/runs`).send(busy.body({ requestId: 'run-second', taskId: TASK_ID }));
+    expect(second.status).toBe(409);
+    expect(second.body.reasons).toEqual([{ code: 'in_use', message: 'An open workflow run is using this worktree.' }]);
+
+    busy.taskStore.setState(TASK_ID, { state: 'closed' });
+    const finished = await request(busy.app).post(`${base}/runs`).send(busy.body({ requestId: 'run-third', taskId: TASK_ID }));
+    expect(finished.status).toBe(409);
+    expect(finished.body.message).toBe('This task is finished.');
+  });
+
+  it.each([
+    [{ taskId: 'nope' }, ['taskId']],
+    [{ taskId: null }, ['taskId']],
+    [{ newTask: {} }, ['newTask.title']],
+    [{ newTask: { title: '' } }, ['newTask.title']],
+    [{ newTask: { title: 'x'.repeat(81) } }, ['newTask.title']],
+    [{ newTask: [] }, ['newTask']],
+    [{ newTask: { title: 'x', branch: 'main' } }, ['newTask.branch']],
+    [{ taskId: '7b000000-0000-4000-8000-000000000001', newTask: { title: 'x' } }, ['newTask']],
+  ])('refuses a run start with %j', async (extra, fields) => {
+    const ctx = await setupTasks();
+    const response = await request(ctx.app).post(`${base}/runs`).send(ctx.body(extra));
+    expect(response.status).toBe(400);
+    expect(response.body.errors.map(error => error.field)).toEqual(fields);
+    expect(ctx.runStore.list()).toEqual([]);
+  });
+
+  it('lists the runs of a task, closed ones included', async () => {
+    const ctx = await setupTasks();
+    ctx.seedTask();
+    const inTask = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: TASK_ID }));
+    await request(ctx.app).post(`${base}/runs`).send(ctx.body({ requestId: 'run-main', worktreePath: PROJECT.path }));
+    ctx.runStore.update(inTask.body.id, { status: 'complete', worktreeState: 'released', finishedAt: new Date().toISOString(),
+      steps: ctx.runStore.get(inTask.body.id).steps.map(item => ({ ...item, status: 'complete' })) });
+
+    const listed = await request(ctx.app).get(`${base}/runs`).query({ taskId: TASK_ID });
+    expect(listed.status).toBe(200);
+    expect(listed.body.data.map(run => [run.id, run.taskId, run.status])).toEqual([[inTask.body.id, TASK_ID, 'complete']]);
+    expect((await request(ctx.app).get(`${base}/runs`).query({ taskId: TASK_ID, open: 'true' })).body.data).toEqual([]);
+    const bad = await request(ctx.app).get(`${base}/runs`).query({ taskId: 'nope' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.errors.map(error => error.field)).toEqual(['taskId']);
+  });
+
+  it('reports no task for a run outside one', async () => {
+    const ctx = await setupTasks();
+    const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ worktreePath: PROJECT.path }));
+    expect(started.status).toBe(201);
+    expect(started.body.taskId).toBeNull();
   });
 });

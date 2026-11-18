@@ -21,9 +21,15 @@ export function describeWorktreeGroup(group) {
     nonempty(group.run.id, 'group.run.id');
     nonempty(group.run.workflowName, 'group.run.workflowName');
   }
+  if (group.task !== null && group.task !== undefined) {
+    if (typeof group.task !== 'object' || Array.isArray(group.task)) throw new Error('worktree groups: group.task must be an object');
+    nonempty(group.task.id, 'group.task.id');
+    nonempty(group.task.title, 'group.task.title');
+  }
   const folder = group.path.slice(group.path.lastIndexOf('/') + 1);
   nonempty(folder, 'group.path folder');
-  const title = group.isMain ? 'Main checkout' : group.run
+  // A task is known by its title; where it lives on disk is detail for the tooltip.
+  const title = group.isMain ? 'Main' : group.task ? group.task.title : group.run
     ? `${group.run.workflowName} · ${group.run.id.slice(0, 8)}` : folder;
   return { title, detail: null, tooltip: [folder, group.branch, group.path].filter(Boolean).join('\n') };
 }
@@ -109,19 +115,20 @@ export function resolveSessionWorktrees({ project, sessions, runs }) {
   return bySession;
 }
 
-export function buildWorktreeGroups({ project, sessions, runs }) {
+export function buildWorktreeGroups({ project, sessions, runs, tasks = [] }) {
+  if (!Array.isArray(tasks)) throw new Error('worktree groups: tasks must be an array');
   if (!project || typeof project !== 'object' || Array.isArray(project)) throw new Error('worktree groups: project must be an object');
   nonempty(project.name, 'project.name');
   absolute(project.path, 'project.path');
   if (!Array.isArray(sessions)) throw new Error('worktree groups: sessions must be an array');
   if (!Array.isArray(runs)) throw new Error('worktree groups: runs must be an array');
   const sessionGroups = resolveSessionWorktrees({ project, sessions, runs });
-  const main = { key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: [], run: null };
+  const main = { key: 'main', path: project.path, label: 'Main', branch: null, isMain: true, sessionIds: [], run: null, task: null };
   const byKey = new Map([['main', main]]);
   const startByKey = new Map();
   const groupForPath = value => {
     const key = value === null || value === project.path ? 'main' : value;
-    if (!byKey.has(key)) byKey.set(key, { key, path: value, label: value.slice(value.lastIndexOf('/') + 1), branch: null, isMain: false, sessionIds: [], run: null });
+    if (!byKey.has(key)) byKey.set(key, { key, path: value, label: value.slice(value.lastIndexOf('/') + 1), branch: null, isMain: false, sessionIds: [], run: null, task: null });
     return byKey.get(key);
   };
   for (const session of sessions) {
@@ -159,9 +166,26 @@ export function buildWorktreeGroups({ project, sessions, runs }) {
       group.branch = run.worktree.branch;
     }
   }
+  // Every open task of the project is a group, also before it has a terminal or a run.
+  for (const task of tasks) {
+    if (!task || typeof task !== 'object' || Array.isArray(task)) throw new Error('worktree groups: task must be an object');
+    nonempty(task.id, 'task.id');
+    nonempty(task.project, 'task.project');
+    nonempty(task.title, 'task.title');
+    absolute(task.worktreePath, 'task.worktreePath');
+    nonempty(task.branch, 'task.branch');
+    nonempty(task.createdAt, 'task.createdAt');
+    if (task.project !== project.name || task.worktreePath === project.path) continue;
+    const group = groupForPath(task.worktreePath);
+    group.task = task;
+    group.branch = task.branch;
+  }
   return [main, ...[...byKey.values()].filter(group => !group.isMain).sort((a, b) => {
-    const firstA = startByKey.get(a.key) ?? '\uffff';
-    const firstB = startByKey.get(b.key) ?? '\uffff';
-    return firstA.localeCompare(firstB) || a.path.localeCompare(b.path);
+    const firstA = startByKey.get(a.key);
+    const firstB = startByKey.get(b.key);
+    // Groups with terminals keep the order their first terminal opened in; the rest follow, newest task first.
+    if (firstA && firstB) return firstA.localeCompare(firstB) || a.path.localeCompare(b.path);
+    if (firstA || firstB) return firstA ? -1 : 1;
+    return (b.task?.createdAt ?? '').localeCompare(a.task?.createdAt ?? '') || a.path.localeCompare(b.path);
   })];
 }

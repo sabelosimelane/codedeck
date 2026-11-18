@@ -74,6 +74,7 @@ function validRun(overrides = {}) {
     worktreeState: 'not_created',
     worktreeDetail: null,
     inputRequest: null,
+    taskId: null,
     finishedAt: null,
     ...overrides,
   };
@@ -1054,7 +1055,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const finished = ctx.runStore.get(run.id);
     expect(finished.status).toBe('complete');
     expect(finished.currentStepIndex).toBe(1);
-    expect(finished.steps[0].status).toBe('limit_reached');
+    expect(finished.steps[0].status).toBe('limit_accepted');
     expect(finished.steps[1].status).toBe('complete');
   });
 
@@ -1101,7 +1102,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     await ctx.engine.continue(run.id);
     const finished = ctx.runStore.get(run.id);
     expect(finished.status).toBe('complete');
-    expect(finished.steps[0].status).toBe('limit_reached');
+    expect(finished.steps[0].status).toBe('limit_accepted');
     expect(finished.worktreeState).toBe('removed');
   });
 
@@ -1965,7 +1966,7 @@ describe('createRunEngine — a loop of steps', () => {
     await vi.advanceTimersByTimeAsync(0);
     const after = ctx.runStore.get(run.id);
     expect(after.status).toBe('complete');
-    expect(after.steps.map(s => s.status)).toEqual(['complete', 'limit_reached', 'complete']);
+    expect(after.steps.map(s => s.status)).toEqual(['complete', 'limit_accepted', 'complete']);
   });
 
   it('never loops when the limit is one round', async () => {

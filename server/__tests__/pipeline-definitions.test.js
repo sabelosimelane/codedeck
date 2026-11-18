@@ -253,6 +253,23 @@ describe('validateRunStartBody', () => {
     expect(fields(validateRunStartBody({ ...valid, input: 'a\nb' }))).toContain('input');
   });
 
+  it('accepts a run in an existing task or in a task created for it', () => {
+    expect(validateRunStartBody({ ...valid, taskId: UUID2 })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: { title: 'x' } })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: { title: 'x'.repeat(80) } })).toEqual([]);
+  });
+
+  it('rejects a bad task, a bad new task and more than one place to run', () => {
+    expect(fields(validateRunStartBody({ ...valid, taskId: 'nope' }))).toEqual(['taskId']);
+    expect(fields(validateRunStartBody({ ...valid, taskId: null }))).toEqual(['taskId']);
+    for (const newTask of [null, 'x', [], {}, { title: '' }, { title: '  ' }, { title: 12 }, { title: 'x'.repeat(81) }, { title: 'a\nb' }]) {
+      expect(fields(validateRunStartBody({ ...valid, newTask }))[0]).toMatch(/^newTask/);
+    }
+    expect(fields(validateRunStartBody({ ...valid, newTask: { title: 'x', branch: 'y' } }))).toEqual(['newTask.branch']);
+    expect(fields(validateRunStartBody({ ...valid, taskId: UUID2, newTask: { title: 'x' } }))).toEqual(['newTask']);
+    expect(fields(validateRunStartBody({ ...valid, worktreePath: '/tmp/w', taskId: UUID2 }))).toEqual(['taskId']);
+  });
+
   it('rejects unknown fields', () => {
     expect(fields(validateRunStartBody({ ...valid, extra: 1 }))).toContain('extra');
   });

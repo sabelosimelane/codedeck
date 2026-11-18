@@ -3,8 +3,8 @@ import Terminal from './Terminal';
 import TerminalTabBar from './TerminalTabBar';
 import PaneDivider from './PaneDivider';
 import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play, GitBranchPlus } from 'lucide-react';
-import NewWorktreeTerminalDialog from './NewWorktreeTerminalDialog';
-import { createWorktreeTerminal } from '../utils/terminalWorktreesApi';
+import NewTaskDialog from './tasks/NewTaskDialog.jsx';
+import { createTask, openTaskTerminal } from '../utils/tasksApi.js';
 import TerminalInspector from './TerminalInspector';
 import PipelineRunsBar from './pipelines/PipelineRunsBar';
 import { useToast } from './ToastContext';
@@ -339,6 +339,7 @@ export default function TerminalArea({
   onAnswerPipelineRun = async () => null,
   onLoadPipelineRunDecisions = async () => null,
   onLoadPipelineRunNotes = async () => null,
+  onTasksChanged = () => {},
 }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [localWorktreeSelection, setLocalWorktreeSelection] = useState(() => readWorktreeSelection(project.name));
@@ -358,6 +359,8 @@ export default function TerminalArea({
   const terminalRefs = useRef(new Map());
   const intentionalOpenIds = useRef(new Set());
   const createdWorktreePathsRef = useRef(new Map());
+  // A task made here is known before the next poll of the task list reports it.
+  const createdTasksRef = useRef(new Map());
   const attachedAdoptRef = useRef(null);
   const prevProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
@@ -370,15 +373,22 @@ export default function TerminalArea({
   const tabGroupKey = tab => worktreeBySession.get(tab?.panes?.[0]?.sessionId)
     ?? createdWorktreePathsRef.current.get(`${project.name}:${tab?.panes?.[0]?.sessionId}`)
     ?? 'main';
-  const groups = worktreeGroups ? [...worktreeGroups] : [{ key: 'main', label: 'Main checkout', path: project.path, run: null }];
+  const groups = worktreeGroups ? [...worktreeGroups] : [{ key: 'main', label: 'Main', path: project.path, isMain: true, run: null, task: null }];
   for (const tab of (worktreeGroups ? tabs : [])) {
     const key = tabGroupKey(tab);
-    if (!groups.some(group => group.key === key)) groups.push({ key, label: key.split('/').pop(), path: key, run: null });
+    if (!groups.some(group => group.key === key)) groups.push({ key, label: key.split('/').pop(), path: key, isMain: false, run: null, task: createdTasksRef.current.get(key) ?? null });
   }
   const requestedGroup = selectedWorktree ?? localWorktreeSelection;
   const visibleGroup = groups.some(group => group.key === requestedGroup) ? requestedGroup : 'main';
   const displayTabs = orderTabsForDisplay(groups.length > 1 ? tabs.filter(tab => tabGroupKey(tab) === visibleGroup) : tabs, waitingSessionIds);
   const lastActiveByGroupRef = useRef(new Map());
+  // Opening a terminal reads where the owner is now, without re-creating the callbacks on every poll.
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
+  const visibleGroupRef = useRef(visibleGroup);
+  visibleGroupRef.current = visibleGroup;
+  const tabGroupKeyRef = useRef(tabGroupKey);
+  tabGroupKeyRef.current = tabGroupKey;
   // Parked panes drop their pulse and blink everywhere in this view, through the
   // same visual path the eye-icon mute drives — without joining the mute set.
   const quietStatusSessionIds = getQuietStatusSessionIds(
@@ -634,10 +644,31 @@ export default function TerminalArea({
     }
   }, [setSessionsPending, showToast]);
 
-  const requestTerminalSessionId = useCallback(async (successMessage) => {
+  // A terminal opens where the owner is: in Main, or inside the selected task.
+  const requestTerminalSessionId = useCallback(async (successMessage, groupKey = 'main') => {
     if (isTerminalRuntimeBlocked) {
       showToast({ type: 'error', message: terminalRuntimeBlockedMessage });
       return null;
+    }
+
+    if (groupKey !== 'main') {
+      const task = groupsRef.current.find(group => group.key === groupKey)?.task ?? null;
+      if (!task) {
+        showToast({ type: 'error', message: 'This folder is not a task yet. Restart CodeDeck to turn it into one, then open the terminal again.' });
+        return null;
+      }
+      try {
+        const opened = await openTaskTerminal(task.id);
+        createdWorktreePathsRef.current.set(`${project.name}:${opened.sessionId}`, groupKey);
+        const number = getSessionNumber(project.name, opened.sessionId);
+        if (number !== null) sessionCounter = Math.max(sessionCounter, number);
+        unmarkDeletedSessionIds(project.name, [opened.sessionId]);
+        showToast({ type: 'success', message: successMessage || `Opened ${opened.sessionId}` });
+        return opened.sessionId;
+      } catch (error) {
+        showToast({ type: 'error', message: error instanceof Error ? error.message : 'Something went wrong. Please try again.' });
+        return null;
+      }
     }
 
     try {
@@ -669,7 +700,8 @@ export default function TerminalArea({
   // Split right — add pane to active tab, redistribute widths equally
   const splitRight = useCallback(async () => {
     if (!activeTabId) return;
-    const sessionId = await requestTerminalSessionId('Opened terminal split');
+    const activeTabNow = stateRef.current.tabs.find(tab => tab.id === activeTabId);
+    const sessionId = await requestTerminalSessionId('Opened terminal split', tabGroupKeyRef.current(activeTabNow));
     if (!sessionId) return;
     const pane = createPane(sessionId);
     intentionalOpenIds.current.add(sessionId);
@@ -687,9 +719,8 @@ export default function TerminalArea({
 
   // New tab with one pane
   const addTab = useCallback(async () => {
-    const sessionId = await requestTerminalSessionId('Opened terminal');
+    const sessionId = await requestTerminalSessionId('Opened terminal', visibleGroupRef.current);
     if (!sessionId) return;
-    chooseWorktree('main');
     const tab = createTab(sessionId);
     intentionalOpenIds.current.add(sessionId);
     setActivePaneId(tab.panes[0].id);
@@ -699,12 +730,16 @@ export default function TerminalArea({
     }), { persistImmediately: true });
   }, [requestTerminalSessionId, updateTerminalState, onSelectWorktree]);
 
-  const createWorktreeTab = useCallback(async ({ project: projectName, branch }) => {
+  // New task: its own place to work is created, and a first terminal opens inside it.
+  const createTaskTab = useCallback(async ({ project: projectName, title }) => {
     try {
-      const result = await createWorktreeTerminal({ project: projectName, branch });
-      const sessionId = result.sessionId;
-      createdWorktreePathsRef.current.set(`${project.name}:${sessionId}`, result.worktreePath);
-      chooseWorktree(result.worktreePath);
+      const task = await createTask({ project: projectName, title });
+      createdTasksRef.current.set(task.worktreePath, task);
+      onTasksChanged();
+      const opened = await openTaskTerminal(task.id);
+      const sessionId = opened.sessionId;
+      createdWorktreePathsRef.current.set(`${project.name}:${sessionId}`, task.worktreePath);
+      chooseWorktree(task.worktreePath);
       const number = getSessionNumber(project.name, sessionId);
       if (number !== null) sessionCounter = Math.max(sessionCounter, number);
       unmarkDeletedSessionIds(project.name, [sessionId]);
@@ -712,14 +747,14 @@ export default function TerminalArea({
       intentionalOpenIds.current.add(sessionId);
       setActivePaneId(tab.panes[0].id);
       updateTerminalState(previous => ({ tabs: [...previous.tabs, tab], activeTabId: tab.id }), { persistImmediately: true });
-      showToast({ type: 'success', message: `Opened ${sessionId} in ${result.worktreePath}` });
-      return result;
+      showToast({ type: 'success', message: `Started task ${task.title}` });
+      return task;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Something went wrong. Please try again.';
       showToast({ type: 'error', message });
       throw error;
     }
-  }, [project.name, showToast, updateTerminalState, onSelectWorktree]);
+  }, [project.name, showToast, updateTerminalState, onSelectWorktree, onTasksChanged]);
 
   // Backend-confirmed sessions (session search resume + pipeline step tabs)
   // reuse the attach path without calling /api/terminal for a second session ID.
@@ -1289,12 +1324,12 @@ export default function TerminalArea({
             <Plus size={14} />
           </button>
         </ShortcutHint>
-        <ShortcutHint label="New terminal in a new worktree" keys={[]}>
+        <ShortcutHint label="New task" keys={[]}>
           <button
             type="button"
             onClick={() => setShowWorktreeDialog(true)}
-            aria-label="New terminal in a new worktree"
-            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : project.host && project.host !== 'local' ? 'Worktree terminals are only available for local projects.' : 'New terminal in a new worktree'}
+            aria-label="New task"
+            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : project.host && project.host !== 'local' ? 'Tasks are only available for local projects.' : 'New task: work on something in its own copy of the project'}
             disabled={isTerminalRuntimeBlocked || Boolean(project.host && project.host !== 'local')}
             style={{ padding: 4, borderRadius: 4, color: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 'rgba(138, 146, 166, 0.45)' : 'var(--text-muted)', opacity: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 0.5 : 1, cursor: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 'not-allowed' : 'pointer' }}
           ><GitBranchPlus size={14} /></button>
@@ -1343,7 +1378,9 @@ export default function TerminalArea({
             </div>
             <div className="terminal-empty-label">No terminals open</div>
             <div className="terminal-empty-copy">
-              This project has no running terminals. Open one here, or in a new Git worktree on its own branch.
+              {visibleGroup === 'main'
+                ? 'No terminals are open in Main. Open one here, or start a task to work on something in its own copy of the project.'
+                : `No terminals are open in ${describeWorktreeGroup(groups.find(group => group.key === visibleGroup)).title}. Open one here.`}
             </div>
             <div className="terminal-empty-actions">
               <button
@@ -1358,12 +1395,12 @@ export default function TerminalArea({
                 type="button"
                 onClick={() => setShowWorktreeDialog(true)}
                 className="terminal-empty-cta terminal-empty-cta-secondary"
-                aria-label="Open in new worktree"
-                title={project.host && project.host !== 'local' ? 'Worktree terminals are only available for local projects.' : 'Open in new worktree'}
+                aria-label="Start a new task"
+                title={project.host && project.host !== 'local' ? 'Tasks are only available for local projects.' : 'Start a new task'}
                 disabled={Boolean(project.host && project.host !== 'local')}
               >
                 <GitBranchPlus size={14} />
-                <span>Open in new worktree</span>
+                <span>New task</span>
               </button>
             </div>
           </div>
@@ -1620,7 +1657,7 @@ export default function TerminalArea({
         );
       })}
 
-      {showWorktreeDialog && <NewWorktreeTerminalDialog projectName={project.name} onCreate={createWorktreeTab} onClose={() => setShowWorktreeDialog(false)} />}
+      {showWorktreeDialog && <NewTaskDialog projectName={project.name} onCreate={createTaskTab} onClose={() => setShowWorktreeDialog(false)} />}
 
       {inspectingSessionId && (
         <TerminalInspector

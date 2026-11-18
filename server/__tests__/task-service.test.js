@@ -147,6 +147,19 @@ describe('task service', () => {
     expect(() => service.rename('7a000000-0000-4000-8000-00000000000f', { title: 'x', revision: 1 })).toThrow(expect.objectContaining({ status: 404 }));
   });
 
+  it('plans a task without touching disk, then creates exactly what was planned', async () => {
+    const { base, service, taskStore } = setup();
+    const planned = await service.plan({ project: 'Demo', title: ' Planned ' });
+    expect(planned).toMatchObject({ id: ID, project: 'Demo', title: 'Planned', worktreePath: path.join(base, 'worktrees', 'repo-planned-7a000000'), branch: 'task/planned-7a000000', baseBranch: 'main' });
+    expect(existsSync(planned.worktreePath)).toBe(false);
+    expect(taskStore.list()).toEqual([]);
+    const task = await service.createPlanned(planned);
+    expect(task).toMatchObject({ id: ID, worktreePath: planned.worktreePath, branch: planned.branch });
+    expect(await rejection(service.createPlanned(planned))).toMatchObject({ status: 409 });
+    await expect(service.createPlanned({ ...planned, branch: '' })).rejects.toThrow('Task plan branch is invalid');
+    await expect(service.createPlanned(null)).rejects.toThrow('A task plan is required');
+  });
+
   it('requires its dependencies', () => {
     expect(() => createTaskService({})).toThrow('taskStore');
   });

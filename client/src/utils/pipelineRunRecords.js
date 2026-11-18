@@ -2,7 +2,7 @@ import { isUuid, isProgressFilePath } from '../../../shared/pipeline-definitions
 import { PipelineApiError } from './pipelinesApi';
 
 const RUN_STATUSES = ['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval', 'interrupted', 'stopped', 'error', 'complete'];
-const STEP_STATUSES = ['pending', 'launching', 'running', 'needs_input', 'awaiting_approval', 'complete', 'limit_reached', 'failed', 'stopped', 'interrupted'];
+const STEP_STATUSES = ['pending', 'launching', 'running', 'needs_input', 'awaiting_approval', 'complete', 'limit_reached', 'limit_accepted', 'failed', 'stopped', 'interrupted'];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const stamp = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T.*Z$/.test(value) && Number.isFinite(Date.parse(value));

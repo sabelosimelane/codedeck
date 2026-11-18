@@ -11,8 +11,11 @@ function newRequestId() {
   return `run-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-const NEW_WORKTREE = '';
-// Setup prepares a worktree CodeDeck creates, so only a new worktree needs a setup agent.
+// Where a run works: a task created for it, an open task, or directly in Main.
+const NEW_TASK = 'new';
+const MAIN = 'main';
+const TASK_TITLE_MAX = 80;
+// Setup prepares the copy of the project a new task gets, so only a new task needs a setup agent.
 const SETUP_AGENT_MISSING = 'setup_agent_missing';
 const FIELD_STYLE = {
   padding: '8px 10px',
@@ -22,20 +25,21 @@ const FIELD_STYLE = {
   color: 'var(--text-primary)',
 };
 
-function worktreeLabel(worktree) {
-  const parts = [worktree.name, worktree.branch ?? 'no branch'];
-  if (worktree.current) parts.push('this checkout');
+function placeLabel(name, worktree) {
+  if (!worktree) return `${name} — its files are no longer on disk`;
+  const parts = [name];
   if (worktree.dirty) parts.push('uncommitted changes');
   return worktree.reason ? `${parts.join(' · ')} — ${worktree.reason.message}` : parts.join(' · ');
 }
 
-export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
+export default function RunWorkflowDialog({ projectName, tasks = [], defaultTaskId = null, onClose, onStart }) {
   const [workflows, setWorkflows] = useState([]);
   const [workflowId, setWorkflowId] = useState('');
   const [input, setInput] = useState('');
   const [preflight, setPreflight] = useState(null);
   const [worktrees, setWorktrees] = useState([]);
-  const [worktreePath, setWorktreePath] = useState(NEW_WORKTREE);
+  const [place, setPlace] = useState(defaultTaskId ? `task:${defaultTaskId}` : NEW_TASK);
+  const [title, setTitle] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(false);
@@ -59,7 +63,6 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
         setWorkflows(nextWorkflows);
         setPreflight(nextPreflight);
         setWorktrees(nextWorktrees);
-        setWorktreePath(NEW_WORKTREE);
         if (nextWorkflows.length > 0) setWorkflowId(nextWorkflows[0].id);
       } catch (failure) {
         if (!cancelled) setError(failure.message || 'Failed to load workflows');
@@ -78,10 +81,19 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const chosenWorktree = worktrees.find(worktree => worktree.path === worktreePath) ?? null;
-  const reasons = (preflight?.reasons ?? []).filter(reason => !(chosenWorktree && reason.code === SETUP_AGENT_MISSING));
+  const projectTasks = tasks.filter(task => task.project === projectName);
+  const home = worktrees.find(worktree => worktree.current) ?? null;
+  const worktreeOf = task => worktrees.find(worktree => worktree.path === task.worktreePath) ?? null;
+  // A task that was open when the dialog opened may have been finished since; then the run goes to a new one.
+  const chosenTask = place.startsWith('task:') ? projectTasks.find(task => `task:${task.id}` === place) ?? null : null;
+  const where = chosenTask ? 'task' : place === MAIN ? MAIN : NEW_TASK;
+  const chosenWorktree = where === 'task' ? worktreeOf(chosenTask) : where === MAIN ? home : null;
+  // Until the owner types a title, the task is named after what the run is about.
+  const taskTitle = (title ?? input).slice(0, TASK_TITLE_MAX);
+  const reasons = (preflight?.reasons ?? []).filter(reason => !(where !== NEW_TASK && reason.code === SETUP_AGENT_MISSING));
   const listable = (preflight?.reasons ?? []).every(reason => reason.code === SETUP_AGENT_MISSING);
-  const eligible = preflight !== null && reasons.length === 0 && (chosenWorktree === null || chosenWorktree.selectable);
+  const placeUsable = where === NEW_TASK ? taskTitle.trim().length > 0 : Boolean(chosenWorktree?.selectable);
+  const eligible = preflight !== null && reasons.length === 0 && placeUsable;
   const canStart = !loading && !starting && eligible && Boolean(workflowId);
 
   const handleStart = async () => {
@@ -92,7 +104,9 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
         requestId: newRequestId(),
         workflowId,
         input,
-        ...(chosenWorktree ? { worktreePath: chosenWorktree.path } : {}),
+        ...(where === NEW_TASK ? { newTask: { title: taskTitle.trim() } }
+          : where === 'task' ? { taskId: chosenTask.id }
+            : { worktreePath: chosenWorktree.path }),
       });
       if (started) onClose();
     } finally {
@@ -146,22 +160,35 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
 
               {listable && (
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
-                  Worktree
+                  Where to work
                   <select
-                    aria-label="Worktree"
-                    value={worktreePath}
-                    onChange={(event) => setWorktreePath(event.target.value)}
+                    aria-label="Where to work"
+                    value={where === 'task' ? place : where}
+                    onChange={(event) => setPlace(event.target.value)}
                     style={FIELD_STYLE}
                   >
-                    <option value={NEW_WORKTREE}>
-                      {preflight.branch ? `New worktree (new branch from ${preflight.branch})` : 'New worktree (new branch from the current commit)'}
-                    </option>
-                    {worktrees.map((worktree) => (
-                      <option key={worktree.path} value={worktree.path} disabled={!worktree.selectable}>
-                        {worktreeLabel(worktree)}
+                    <option value={NEW_TASK}>A new task</option>
+                    {projectTasks.map((task) => (
+                      <option key={task.id} value={`task:${task.id}`} disabled={!worktreeOf(task)?.selectable}>
+                        {placeLabel(task.title, worktreeOf(task))}
                       </option>
                     ))}
+                    {home && <option value={MAIN} disabled={!home.selectable}>{placeLabel('Main', home)}</option>}
                   </select>
+                </label>
+              )}
+
+              {where === NEW_TASK && (
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                  Task title
+                  <input
+                    aria-label="Task title"
+                    value={taskTitle}
+                    onChange={(event) => setTitle(event.target.value)}
+                    maxLength={TASK_TITLE_MAX}
+                    placeholder="What this task is called in the sidebar"
+                    style={FIELD_STYLE}
+                  />
                 </label>
               )}
 
@@ -173,18 +200,13 @@ export default function RunWorkflowDialog({ projectName, onClose, onStart }) {
                 </div>
               )}
 
-              {chosenWorktree === null && preflight?.dirty && (
-                <div style={{ color: 'var(--warning)', fontSize: 12 }}>
-                  Uncommitted changes in this checkout will not be in the run&apos;s worktree
-                </div>
-              )}
-
-              {chosenWorktree && (
-                <div style={{ color: 'var(--text-secondary)', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span>Runs in this worktree as it is: no Setup step, and CodeDeck will not remove it when the run ends.</span>
-                  {chosenWorktree.dirty && <span style={{ color: 'var(--warning)' }}>This worktree has uncommitted changes.</span>}
-                </div>
-              )}
+              <div style={{ color: 'var(--text-secondary)', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {where === NEW_TASK && <span>The task gets its own copy of the project{preflight?.branch ? ` from ${preflight.branch}` : ''}, prepared by a Setup step, so other work can carry on beside it.</span>}
+                {where === NEW_TASK && preflight?.dirty && <span style={{ color: 'var(--warning)' }}>Uncommitted changes in Main will not be in the task.</span>}
+                {where === 'task' && <span>Runs in this task as it is, with no Setup step.</span>}
+                {where === MAIN && <span>Runs directly in Main, with no copy of its own and no Setup step.</span>}
+                {where !== NEW_TASK && chosenWorktree?.dirty && <span style={{ color: 'var(--warning)' }}>There are uncommitted changes here.</span>}
+              </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
                 <button

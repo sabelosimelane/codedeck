@@ -31,6 +31,7 @@ import {
   create as createPipelineWorktree,
   remove as removePipelineWorktree,
   listDirtyPaths as listPipelineDirtyPaths,
+  listWorktrees as listPipelineWorktrees,
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
 import { setObservedTerminalMuted } from './pipelines/terminal-muting-adapter.js';
@@ -75,6 +76,7 @@ import { createTerminalWorktreesRouter } from './routes/terminal-worktrees.js';
 import { createTaskStore } from './tasks/task-store.js';
 import { createTaskService } from './tasks/task-service.js';
 import { createTasksRouter } from './routes/tasks.js';
+import { adoptWorktrees } from './tasks/task-adoption.js';
 import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
 import { createSessionAttention } from './session-attention.js';
 import { createSessionStateService } from './session-state-service.js';
@@ -992,6 +994,18 @@ const pipelineRunEngine = createRunEngine({
   },
 });
 pipelineRunEngineRef.current = pipelineRunEngine;
+// Worktrees in use from before tasks existed become tasks. A failure here is reported and
+// leaves those worktrees as they were; it must not keep the terminals from starting.
+try {
+  const adopted = await adoptWorktrees({
+    taskStore, runStore: pipelineRunStore, worktreeStore: terminalSessionWorktreeStore,
+    findProject: name => loadProjects().find(project => project.name === name) ?? null,
+    listWorktrees: ({ projectPath }) => listPipelineWorktrees({ projectPath, execFile }),
+  });
+  if (adopted.length) console.log(`[tasks] adopted ${adopted.length} existing worktree(s) as tasks`);
+} catch (error) {
+  console.error('[tasks] adopting existing worktrees failed:', error);
+}
 app.use(createPipelinesRouter({
   agentStore: pipelineAgentStore,
   workflowStore: pipelineWorkflowStore,
@@ -1000,6 +1014,8 @@ app.use(createPipelinesRouter({
   decisionStore: pipelineDecisionStore,
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
+  taskStore,
+  taskService,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   engine: pipelineRunEngine,
   execFile,

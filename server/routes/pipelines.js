@@ -35,6 +35,7 @@ const BASE = '/api/pipelines';
 const OPEN_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', 'external']);
 const WORKTREE_SORT = ['path'];
 const SETUP_AGENT_MISSING = 'setup_agent_missing';
+const OPEN_TASK = new Set(['active', 'pr_open']);
 const WORKTREE_REASONS = {
   missing: 'The worktree directory is missing.',
   unreadable: 'Git cannot read this worktree.',
@@ -47,6 +48,14 @@ const WORKFLOW_SORT = ['name', 'updatedAt'];
 const RUN_SORT = ['createdAt', 'updatedAt', 'status'];
 const DECISION_SORT = ['createdAt'];
 const NOTE_SORT = ['createdAt'];
+const REVIEW_SORT = ['createdAt'];
+const STEP_FILTER = {
+  name: 'stepIndex',
+  parse: value => {
+    if (typeof value !== 'string' || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > 32) throw fieldError('stepIndex', 'Use a non-negative step index');
+    return Number(value);
+  },
+};
 
 class PipelineError extends Error {
   constructor(message, status, errors, extra = {}) {
@@ -90,6 +99,7 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
     id: run.id,
     requestId: run.requestId,
     workflowId: run.workflowId,
+    taskId: run.taskId,
     workflowName: run.definition.workflowName,
     // Whether this run's agents settle their own questions, as the workflow said when it started.
     agentsDecide: run.definition.agentsDecide,
@@ -174,9 +184,16 @@ function decisionView(decision) {
 
 const EXISTING_WORKTREE_STATES = new Set(['external', 'released']);
 
-function sameStartBody(existing, body) {
-  const existingPath = EXISTING_WORKTREE_STATES.has(existing.worktreeState) ? existing.worktreePath : undefined;
-  return existing.workflowId === body.workflowId
+/** `existingTask` is the stored run's task, or null. A replay must ask for the same place to run. */
+function sameStartBody(existing, body, existingTask) {
+  const samePlace = () => {
+    if (body.taskId !== undefined) return existing.taskId === body.taskId;
+    if (body.newTask !== undefined) return existingTask !== null && existingTask.title === body.newTask.title.trim();
+    return existing.taskId === null;
+  };
+  const existingPath = existing.taskId === null && EXISTING_WORKTREE_STATES.has(existing.worktreeState) ? existing.worktreePath : undefined;
+  return samePlace()
+    && existing.workflowId === body.workflowId
     && existing.project === body.project
     && existing.input === body.input
     && existingPath === body.worktreePath;
@@ -344,6 +361,9 @@ export function createPipelinesRouter(deps) {
     runStore,
     decisionStore,
     noteStore,
+    reviewStore,
+    taskStore,
+    taskService,
     findProject,
     engine,
     preflight = defaultPreflight,
@@ -363,11 +383,15 @@ export function createPipelinesRouter(deps) {
   if (!runStore) throw new Error('pipelines router: runStore is required');
   if (!decisionStore) throw new Error('pipelines router: decisionStore is required');
   if (!noteStore) throw new Error('pipelines router: noteStore is required');
+  if (typeof reviewStore?.list !== 'function') throw new Error('pipelines router: reviewStore is required');
+  if (typeof taskStore?.get !== 'function') throw new Error('pipelines router: taskStore is required');
+  if (typeof taskService?.plan !== 'function' || typeof taskService?.createPlanned !== 'function') throw new Error('pipelines router: taskService is required');
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
   const asRunView = async run => {
     const inspected = await readRunProgress({ run, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader });
-    const progress = inspected === null ? null : { file: inspected.file, status: inspected.status, phaseCount: inspected.phaseCount, phase: inspected.phase };
+    // `tasksDone`/`tasksTotal` count every phase; `phase` is the first one with work left.
+    const progress = inspected === null ? null : { file: inspected.file, status: inspected.status, phaseCount: inspected.phaseCount, phase: inspected.phase, tasksDone: inspected.tasksDone, tasksTotal: inspected.tasksTotal };
     return buildRunView(run, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
   };
 
@@ -650,6 +674,13 @@ export function createPipelinesRouter(deps) {
             return value === 'true';
           },
         },
+        {
+          name: 'taskId',
+          parse: value => {
+            if (!isUuid(value)) throw fieldError('taskId', 'Use a task UUID');
+            return value;
+          },
+        },
       ],
     });
 
@@ -659,6 +690,7 @@ export function createPipelinesRouter(deps) {
     if (project !== undefined) records = records.filter(run => run.project === project);
     if (workflowId !== undefined) records = records.filter(run => run.workflowId === workflowId);
     if (open !== undefined) records = records.filter(run => isOpenRun(run) === open);
+    if (query.filters.taskId !== undefined) records = records.filter(run => run.taskId === query.filters.taskId);
 
     const page = paginate(records, query);
     res.json({
@@ -677,12 +709,19 @@ export function createPipelinesRouter(deps) {
       project: req.body.project,
       input: req.body.input,
       worktreePath: req.body.worktreePath,
+      taskId: req.body.taskId,
+      newTask: req.body.newTask,
     };
-    const useExisting = body.worktreePath !== undefined;
+    // A run works in a new worktree of its own, in a worktree named by path, in an existing
+    // task, or in a task created for it. Only a worktree CodeDeck has just created gets Setup.
+    const inTask = body.taskId !== undefined;
+    const forNewTask = body.newTask !== undefined;
+    const useExisting = body.worktreePath !== undefined || inTask;
+    const taskOf = run => (run.taskId === null ? null : taskStore.get(run.taskId));
 
     const existing = runStore.getByRequestId(body.requestId);
     if (existing) {
-      if (sameStartBody(existing, body)) {
+      if (sameStartBody(existing, body, taskOf(existing))) {
         return res.status(200).json(await asRunView(existing));
       }
       throw new PipelineError('This requestId was already used with a different body', 409);
@@ -704,10 +743,29 @@ export function createPipelinesRouter(deps) {
     const runId = randomUUID();
     let names;
     let worktree = null;
-    if (useExisting) {
+    let task = null;
+    let taskPlan = null;
+    if (inTask) {
+      task = taskStore.get(body.taskId);
+      if (!task) throw new PipelineError('Task not found', 404);
+      if (task.project !== project.name) throw fieldError('taskId', 'This task belongs to another project');
+      if (!OPEN_TASK.has(task.state)) throw new PipelineError('This task is finished.', 409);
+    }
+    if (forNewTask) {
+      try {
+        taskPlan = await taskService.plan({ project: project.name, title: body.newTask.title });
+      } catch (err) {
+        if (!Number.isInteger(err?.status)) throw err;
+        if (err.status === 400) throw fieldErrors((err.errors ?? []).map(item => ({ field: item.field === 'title' ? 'newTask.title' : item.field, message: item.message })));
+        throw new PipelineError(err.message, err.status);
+      }
+      names = { worktreePath: taskPlan.worktreePath, branch: taskPlan.branch };
+    } else if (useExisting) {
       // The path is only ever one git itself reported for this project.
+      const wantedPath = inTask ? task.worktreePath : body.worktreePath;
       const worktrees = await listWorktrees({ projectPath: project.path, execFile });
-      worktree = worktrees.find(candidate => candidate.path === body.worktreePath) ?? null;
+      worktree = worktrees.find(candidate => candidate.path === wantedPath) ?? null;
+      if (!worktree && inTask) throw new PipelineError("This task's files are no longer on disk.", 409);
       if (!worktree) throw new PipelineError('Worktree not found for this project', 404);
       const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
       const refusal = worktreeRefusal(worktree, changes, runStore.list());
@@ -749,6 +807,16 @@ export function createPipelinesRouter(deps) {
       }
     }
 
+    // Everything that can refuse the run has been checked; only now is the task's worktree created.
+    if (taskPlan) {
+      try {
+        task = await taskService.createPlanned(taskPlan);
+      } catch (err) {
+        if (!Number.isInteger(err?.status)) throw err;
+        throw new PipelineError(err.message, err.status);
+      }
+    }
+
     let run;
     try {
       run = runStore.create({
@@ -766,16 +834,18 @@ export function createPipelinesRouter(deps) {
         homePath,
         worktreePath: names.worktreePath,
         worktreeBranch: names.branch,
-        baseCommit: worktree ? worktree.head : null,
-        worktreeState: worktree ? 'external' : 'not_created',
+        // A task owns its worktree, so to the run it is one that already existed: never removed by the run.
+        baseCommit: taskPlan ? task.baseCommit : worktree ? worktree.head : null,
+        worktreeState: taskPlan || worktree ? 'external' : 'not_created',
         worktreeDetail: null,
         inputRequest: null,
+        taskId: task ? task.id : null,
         finishedAt: null,
       });
     } catch (err) {
       if (/requestId already exists/i.test(String(err?.message || err))) {
         const raced = runStore.getByRequestId(body.requestId);
-        if (raced && sameStartBody(raced, body)) {
+        if (raced && sameStartBody(raced, body, taskOf(raced))) {
           return res.status(200).json(await asRunView(raced));
         }
         throw new PipelineError('This requestId was already used with a different body', 409);
@@ -865,12 +935,14 @@ export function createPipelinesRouter(deps) {
   // What the run's agents were asked to settle themselves, in the order it happened.
   router.get(`${BASE}/runs/:id/decisions`, route((req, res) => {
     const run = loadRun(req.params.id);
-    const query = parseCollectionQuery(req.query, { sortFields: DECISION_SORT, defaultSort: 'createdAt,asc' });
-    const total = decisionStore.count(run.id);
+    const query = parseCollectionQuery(req.query, { sortFields: DECISION_SORT, defaultSort: 'createdAt,asc', filters: [STEP_FILTER] });
+    const stepIndex = query.filters.stepIndex ?? null;
+    const total = decisionStore.count(run.id, stepIndex);
     const records = decisionStore.list(run.id, {
       offset: query.page * query.size,
       limit: query.size,
       direction: query.direction,
+      stepIndex,
     });
     res.json({
       data: records.map(decisionView),
@@ -881,6 +953,22 @@ export function createPipelinesRouter(deps) {
         totalPages: Math.ceil(total / query.size),
         hasNextPage: (query.page + 1) * query.size < total,
       },
+    });
+  }));
+
+  // The owner's approvals and send-backs, in the order they were given.
+  router.get(`${BASE}/runs/:id/reviews`, route((req, res) => {
+    const run = loadRun(req.params.id);
+    const query = parseCollectionQuery(req.query, { sortFields: REVIEW_SORT, defaultSort: 'createdAt,asc', filters: [STEP_FILTER] });
+    const stepIndex = query.filters.stepIndex;
+    // A run has at most a handful of reviews; the store returns them oldest first.
+    const all = reviewStore.list(run.id).filter(review => stepIndex === undefined || review.stepIndex === stepIndex);
+    const ordered = query.direction === 'desc' ? all.reverse() : all;
+    const total = ordered.length;
+    res.json({
+      data: ordered.slice(query.page * query.size, (query.page + 1) * query.size)
+        .map(({ id, stepIndex: index, stepName, attempt, verdict, comment, createdAt }) => ({ id, stepIndex: index, stepName, attempt, verdict, comment, createdAt })),
+      page: { currentPage: query.page, size: query.size, totalElements: total, totalPages: Math.ceil(total / query.size), hasNextPage: (query.page + 1) * query.size < total },
     });
   }));
 

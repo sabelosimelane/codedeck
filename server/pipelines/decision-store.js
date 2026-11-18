@@ -89,11 +89,14 @@ export function createDecisionStore(db, { now = () => new Date().toISOString() }
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const readOne = db.prepare('SELECT * FROM pipeline_run_decisions WHERE id = ?');
-  const countRun = db.prepare('SELECT COUNT(*) AS total FROM pipeline_run_decisions WHERE run_id = ?');
+  const countRun = db.prepare('SELECT COUNT(*) AS total FROM pipeline_run_decisions WHERE run_id = ? AND (? IS NULL OR step_index = ?)');
   // The id grows with every record, so it is also the order in which decisions were made.
   const page = {
-    asc: db.prepare('SELECT * FROM pipeline_run_decisions WHERE run_id = ? ORDER BY id ASC LIMIT ? OFFSET ?'),
-    desc: db.prepare('SELECT * FROM pipeline_run_decisions WHERE run_id = ? ORDER BY id DESC LIMIT ? OFFSET ?'),
+    asc: db.prepare('SELECT * FROM pipeline_run_decisions WHERE run_id = ? AND (? IS NULL OR step_index = ?) ORDER BY id ASC LIMIT ? OFFSET ?'),
+    desc: db.prepare('SELECT * FROM pipeline_run_decisions WHERE run_id = ? AND (? IS NULL OR step_index = ?) ORDER BY id DESC LIMIT ? OFFSET ?'),
+  };
+  const requireStep = stepIndex => {
+    if (stepIndex !== null && (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex > 32)) throw new Error('pipeline_run_decisions: stepIndex must be null or an integer from 0 to 32');
   };
 
   return {
@@ -112,16 +115,19 @@ export function createDecisionStore(db, { now = () => new Date().toISOString() }
       );
       return hydrate(readOne.get(lastInsertRowid));
     },
-    count(runId) {
+    /** `stepIndex` narrows to one step; null counts the whole run. */
+    count(runId, stepIndex = null) {
       requireRunId(runId);
-      return countRun.get(runId).total;
+      requireStep(stepIndex);
+      return countRun.get(runId, stepIndex, stepIndex).total;
     },
-    list(runId, { offset, limit, direction } = {}) {
+    list(runId, { offset, limit, direction, stepIndex = null } = {}) {
       requireRunId(runId);
+      requireStep(stepIndex);
       if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('pipeline_run_decisions: offset must be an integer ≥ 0');
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('pipeline_run_decisions: limit must be an integer from 1 to 100');
       if (direction !== 'asc' && direction !== 'desc') throw new Error('pipeline_run_decisions: direction must be asc or desc');
-      return page[direction].all(runId, limit, offset).map(hydrate);
+      return page[direction].all(runId, stepIndex, stepIndex, limit, offset).map(hydrate);
     },
   };
 }

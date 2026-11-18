@@ -207,6 +207,8 @@ function applyContinue(run, event) {
   if (run.status !== 'limit_paused') illegal(run.status, event.type);
   const step = currentStep(run);
   if (step.status !== 'limit_reached') illegal(`step:${step.status}`, event.type);
+  // The owner accepted the limit: the step is over, and its status says how it ended.
+  step.status = 'limit_accepted';
   const last = run.currentStepIndex >= run.steps.length - 1;
   if (last) {
     run.status = 'complete';
