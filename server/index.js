@@ -72,6 +72,9 @@ import { createWorktreeSessionStarter } from './terminal-session-worktree-start.
 import { createTerminalWaitingRouter } from './routes/terminal-waiting.js';
 import { createTerminalWorktreeService } from './terminal-worktree-service.js';
 import { createTerminalWorktreesRouter } from './routes/terminal-worktrees.js';
+import { createTaskStore } from './tasks/task-store.js';
+import { createTaskService } from './tasks/task-service.js';
+import { createTasksRouter } from './routes/tasks.js';
 import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
 import { createSessionAttention } from './session-attention.js';
 import { createSessionStateService } from './session-state-service.js';
@@ -856,18 +859,28 @@ const startSessionWithWorktree = createWorktreeSessionStarter({
   store: terminalSessionWorktreeStore,
   now: () => new Date().toISOString(),
 });
+const worktreePathExists = async target => {
+  try { await fs.access(target); return true; }
+  catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+};
 app.use(createTerminalWorktreesRouter({ service: createTerminalWorktreeService({
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   execFile,
   startSession: startSessionWithWorktree,
-  pathExists: async target => {
-    try { await fs.access(target); return true; }
-    catch (error) {
-      if (error?.code === 'ENOENT') return false;
-      throw error;
-    }
-  },
+  pathExists: worktreePathExists,
 }) }));
+const taskStore = createTaskStore(db);
+const taskService = createTaskService({
+  taskStore,
+  findProject: name => loadProjects().find(project => project.name === name) ?? null,
+  execFile,
+  startSession: startSessionWithWorktree,
+  pathExists: worktreePathExists,
+});
+app.use(createTasksRouter({ service: taskService, taskStore }));
 
 const PIPELINE_QUESTION_SCREEN_LINES = 400;
 const pipelineAgentStore = createAgentStore(db);

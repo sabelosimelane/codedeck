@@ -29,10 +29,9 @@ import {
   buildSetupPrompt,
   hasCommittedFile,
 } from '../pipelines/run-worktree.js';
+import { parseCollectionQuery as parseQuery, paginate } from './collection-query.js';
 
 const BASE = '/api/pipelines';
-const DEFAULT_SIZE = 20;
-const MAX_SIZE = 100;
 const OPEN_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', 'external']);
 const WORKTREE_SORT = ['path'];
 const SETUP_AGENT_MISSING = 'setup_agent_missing';
@@ -76,54 +75,7 @@ function rejectUnknownQuery(query, allowed) {
   }
 }
 
-function parseCollectionQuery(query, { sortFields, defaultSort, filters = [] }) {
-  rejectUnknownQuery(query, ['page', 'size', 'sort', ...filters.map(f => f.name)]);
-
-  const page = query.page === undefined ? 0 : Number(query.page);
-  if (!Number.isSafeInteger(page) || page < 0 || page > 100000) {
-    throw fieldError('page', 'Use an integer from 0 to 100000');
-  }
-  const size = query.size === undefined ? DEFAULT_SIZE : Number(query.size);
-  if (!Number.isSafeInteger(size) || size < 1 || size > MAX_SIZE) {
-    throw fieldError('size', `Use an integer from 1 to ${MAX_SIZE}`);
-  }
-
-  const sort = query.sort ?? defaultSort;
-  if (typeof sort !== 'string') throw fieldError('sort', 'Use field,asc or field,desc');
-  const [field, direction, extra] = sort.split(',');
-  if (!sortFields.includes(field) || !['asc', 'desc'].includes(direction) || extra !== undefined) {
-    throw fieldError('sort', `Sort by ${sortFields.join(' or ')} with asc or desc`);
-  }
-
-  const filterValues = {};
-  for (const filter of filters) {
-    const raw = query[filter.name];
-    if (raw === undefined) continue;
-    filterValues[filter.name] = filter.parse(raw);
-  }
-
-  return { page, size, field, direction, filters: filterValues };
-}
-
-function paginate(records, { page, size, field, direction }) {
-  const sorted = [...records].sort((a, b) => {
-    const left = a[field] ?? '';
-    const right = b[field] ?? '';
-    const compared = String(left).localeCompare(String(right));
-    return (direction === 'desc' ? -compared : compared)
-      || String(a.id).localeCompare(String(b.id));
-  });
-  return {
-    data: sorted.slice(page * size, (page + 1) * size),
-    page: {
-      currentPage: page,
-      size,
-      totalElements: records.length,
-      totalPages: Math.ceil(records.length / size) || 0,
-      hasNextPage: (page + 1) * size < records.length,
-    },
-  };
-}
+const parseCollectionQuery = (query, spec) => parseQuery(query, spec, fieldError);
 
 function isOpenRun(run) {
   if (run.status === 'complete') return run.worktreeState === 'removal_blocked';

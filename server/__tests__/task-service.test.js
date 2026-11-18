@@ -1,0 +1,153 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { execFile, execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createTaskStore } from '../tasks/task-store.js';
+import { createTaskService, TaskError } from '../tasks/task-service.js';
+
+const ID = '7a000000-0000-4000-8000-000000000001';
+const cleanups = [];
+afterEach(() => cleanups.splice(0).forEach(fn => fn()));
+
+function git(cwd, args) {
+  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+function setup({ host, startSession } = {}) {
+  const base = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'codedeck-task-')));
+  const repo = path.join(base, 'repo');
+  mkdirSync(repo);
+  git(repo, ['init', '-b', 'main']);
+  git(repo, ['config', 'user.email', 'task@test.local']);
+  git(repo, ['config', 'user.name', 'Task Test']);
+  writeFileSync(path.join(repo, 'README.md'), '# task test\n');
+  git(repo, ['add', 'README.md']);
+  git(repo, ['commit', '-m', 'init']);
+  const db = new Database(':memory:');
+  cleanups.push(() => { db.close(); rmSync(base, { recursive: true, force: true }); });
+  const taskStore = createTaskStore(db);
+  const start = startSession ?? vi.fn(async () => ({ id: 'Demo-3' }));
+  const ids = [ID, '7b000000-0000-4000-8000-000000000002'];
+  const service = createTaskService({
+    taskStore,
+    findProject: name => (name === 'Demo' ? { name: 'Demo', path: repo, ...(host ? { host } : {}) } : null),
+    execFile,
+    startSession: start,
+    pathExists: async target => existsSync(target),
+    newId: () => ids.shift(),
+  });
+  return { base, repo, taskStore, service, start };
+}
+
+async function rejection(promise) {
+  try { await promise; } catch (error) { return error; }
+  throw new Error('expected a rejection');
+}
+
+describe('task service', () => {
+  it('creates a task with its own worktree and branch from the current commit', async () => {
+    const { base, repo, service, taskStore } = setup();
+    const task = await service.create({ project: 'Demo', title: '  WhatsApp replies ' });
+    expect(task).toMatchObject({
+      id: ID,
+      project: 'Demo',
+      title: 'WhatsApp replies',
+      worktreePath: path.join(base, 'worktrees', 'repo-whatsapp-replies-7a000000'),
+      branch: 'task/whatsapp-replies-7a000000',
+      baseBranch: 'main',
+      baseCommit: git(repo, ['rev-parse', 'HEAD']),
+      state: 'active',
+    });
+    expect(git(task.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe(task.branch);
+    expect(taskStore.get(ID)).toEqual(task);
+  });
+
+  it('names a task whose title has no letters or digits by its id', async () => {
+    const { base, service } = setup();
+    const task = await service.create({ project: 'Demo', title: '—' });
+    expect(task.worktreePath).toBe(path.join(base, 'worktrees', 'repo-7a000000'));
+    expect(task.branch).toBe('task/7a000000');
+  });
+
+  it('records no base branch when the main checkout is detached', async () => {
+    const { repo, service } = setup();
+    git(repo, ['checkout', '--detach']);
+    expect((await service.create({ project: 'Demo', title: 'Detached' })).baseBranch).toBeNull();
+  });
+
+  it('runs tasks side by side', async () => {
+    const { service } = setup();
+    const [first, second] = await Promise.all([
+      service.create({ project: 'Demo', title: 'Same title' }),
+      service.create({ project: 'Demo', title: 'Same title' }),
+    ]);
+    expect(first.worktreePath).not.toBe(second.worktreePath);
+    expect(existsSync(first.worktreePath) && existsSync(second.worktreePath)).toBe(true);
+  });
+
+  it.each([
+    [{ project: '', title: 'x' }, 'project'],
+    [{ project: null, title: 'x' }, 'project'],
+    [{ project: 'Demo', title: '' }, 'title'],
+    [{ project: 'Demo', title: 'x'.repeat(81) }, 'title'],
+    [{ project: 'Demo', title: 'a\nb' }, 'title'],
+    [{ project: 'Demo', title: 12 }, 'title'],
+  ])('refuses invalid input %j', async (input, field) => {
+    const { service, taskStore } = setup();
+    const error = await rejection(service.create(input));
+    expect(error).toBeInstanceOf(TaskError);
+    expect(error.status).toBe(400);
+    expect(error.errors.map(item => item.field)).toEqual([field]);
+    expect(taskStore.list()).toEqual([]);
+  });
+
+  it('refuses an unknown project, a remote project and a non-repository', async () => {
+    const { service } = setup();
+    expect(await rejection(service.create({ project: 'Nope', title: 'x' }))).toMatchObject({ status: 404, message: 'Project not found' });
+    const remote = setup({ host: 'devbox' });
+    expect(await rejection(remote.service.create({ project: 'Demo', title: 'x' }))).toMatchObject({ status: 409, message: 'Tasks are only available for local projects.' });
+    const plain = setup();
+    rmSync(path.join(plain.repo, '.git'), { recursive: true, force: true });
+    expect(await rejection(plain.service.create({ project: 'Demo', title: 'x' }))).toMatchObject({ status: 409 });
+  });
+
+  it('opens a terminal in the task worktree', async () => {
+    const { service, start } = setup();
+    const task = await service.create({ project: 'Demo', title: 'Terminal' });
+    expect(await service.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo' });
+    expect(start).toHaveBeenCalledWith('Demo', { cwd: task.worktreePath });
+  });
+
+  it('refuses a terminal for a missing, finished or vanished task', async () => {
+    const { service, taskStore, start } = setup();
+    expect(await rejection(service.openTerminal(ID))).toMatchObject({ status: 404, message: 'Task not found' });
+    const task = await service.create({ project: 'Demo', title: 'Gone' });
+    rmSync(task.worktreePath, { recursive: true, force: true });
+    expect(await rejection(service.openTerminal(ID))).toMatchObject({ status: 409, message: "This task's files are no longer on disk." });
+    taskStore.setState(ID, { state: 'closed' });
+    expect(await rejection(service.openTerminal(ID))).toMatchObject({ status: 409, message: 'This task is finished.' });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('reports a terminal that could not start', async () => {
+    const { service } = setup({ startSession: vi.fn(async () => { throw Object.assign(new Error('tmux missing'), { status: 503 }); }) });
+    await service.create({ project: 'Demo', title: 'No tmux' });
+    expect(await rejection(service.openTerminal(ID))).toMatchObject({ status: 503, message: 'The terminal could not be opened.' });
+  });
+
+  it('renames and reports stale revisions', async () => {
+    const { service } = setup();
+    await service.create({ project: 'Demo', title: 'Before' });
+    expect(service.rename(ID, { title: 'After', revision: 1 })).toMatchObject({ title: 'After', revision: 2 });
+    expect(() => service.rename(ID, { title: 'Late', revision: 1 })).toThrow(expect.objectContaining({ status: 409 }));
+    expect(() => service.rename(ID, { title: '', revision: 2 })).toThrow(expect.objectContaining({ status: 400 }));
+    expect(() => service.rename(ID, { title: 'x', revision: 'two' })).toThrow(expect.objectContaining({ status: 400 }));
+    expect(() => service.rename('7a000000-0000-4000-8000-00000000000f', { title: 'x', revision: 1 })).toThrow(expect.objectContaining({ status: 404 }));
+  });
+
+  it('requires its dependencies', () => {
+    expect(() => createTaskService({})).toThrow('taskStore');
+  });
+});

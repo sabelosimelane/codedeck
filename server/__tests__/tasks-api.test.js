@@ -1,0 +1,227 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import express from 'express';
+import request from 'supertest';
+import Database from 'better-sqlite3';
+import { loopbackTestServer } from './helpers/loopback-test-server.js';
+import { createTasksRouter } from '../routes/tasks.js';
+import { createTaskStore } from '../tasks/task-store.js';
+import { createTaskService, TaskError } from '../tasks/task-service.js';
+
+const base = '/api/tasks';
+const id = n => `7a${String(n).padStart(6, '0')}-0000-4000-8000-000000000000`;
+const databases = [];
+afterEach(() => { vi.restoreAllMocks(); databases.splice(0).forEach(db => db.close()); });
+
+/** Real store and service; only Git and the terminal are replaced. */
+async function setup({ openTerminal } = {}) {
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  const db = new Database(':memory:');
+  databases.push(db);
+  let tick = 0;
+  const taskStore = createTaskStore(db, { now: () => new Date(Date.UTC(2026, 10, 18, 10, 0, tick++)).toISOString() });
+  let created = 0;
+  const real = createTaskService({ taskStore, findProject: () => null, execFile: () => {}, startSession: async () => ({ id: 'Demo-1' }), pathExists: async () => true });
+  const service = {
+    create: vi.fn(async ({ project, title }) => {
+      if (typeof project !== 'string' || !project) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'project', message: 'A project name is required' }]);
+      if (typeof title !== 'string' || !title.trim() || title.length > 80) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'title', message: 'Use 1–80 characters on one line' }]);
+      if (project === 'Nope') throw new TaskError('Project not found', 404);
+      created += 1;
+      return taskStore.create({ id: id(created), project, title, worktreePath: `/tmp/worktrees/t-${created}`, branch: `task/t-${created}`, baseBranch: 'main', baseCommit: 'a'.repeat(40) });
+    }),
+    get: real.get,
+    rename: real.rename,
+    openTerminal: openTerminal ?? real.openTerminal,
+  };
+  const app = express();
+  app.use(createTasksRouter({ service, taskStore }));
+  return { server: await loopbackTestServer(app), service, taskStore };
+}
+
+function expectProblem(response, status, path = base) {
+  expect(response.status).toBe(status);
+  expect(response.type).toBe('application/problem+json');
+  expect(response.body).toMatchObject({ type: 'about:blank', status, path, traceId: response.headers['x-trace-id'], timestamp: expect.any(String), error: expect.any(String), message: expect.any(String), title: expect.any(String), detail: expect.any(String) });
+  expect(JSON.stringify(response.body)).not.toMatch(/at .*\.js:\d+|SELECT |tasks row/);
+}
+
+describe('tasks API', () => {
+  it('creates a task and returns exactly its public fields', async () => {
+    const { server } = await setup();
+    const response = await request(server).post(base).send({ project: 'Demo', title: 'WhatsApp replies' });
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual({
+      id: id(1), project: 'Demo', title: 'WhatsApp replies', state: 'active',
+      worktreePath: '/tmp/worktrees/t-1', branch: 'task/t-1', baseBranch: 'main', baseCommit: 'a'.repeat(40),
+      prUrl: null, revision: 1, createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z', finishedAt: null,
+    });
+    expect((await request(server).get(`${base}/${id(1)}`)).body).toEqual(response.body);
+  });
+
+  it('creates a separate task for each identical request', async () => {
+    const { server } = await setup();
+    const [first, second] = await Promise.all([
+      request(server).post(base).send({ project: 'Demo', title: 'Twice' }),
+      request(server).post(base).send({ project: 'Demo', title: 'Twice' }),
+    ]);
+    expect([first.status, second.status]).toEqual([201, 201]);
+    expect(first.body.id).not.toBe(second.body.id);
+    expect((await request(server).get(base)).body.page.totalElements).toBe(2);
+  });
+
+  it.each([
+    [{}, ['project']],
+    [{ project: null, title: 'x' }, ['project']],
+    [{ project: '', title: 'x' }, ['project']],
+    [{ project: 12, title: 'x' }, ['project']],
+    [{ project: 'Demo' }, ['title']],
+    [{ project: 'Demo', title: '' }, ['title']],
+    [{ project: 'Demo', title: null }, ['title']],
+    [{ project: 'Demo', title: [] }, ['title']],
+    [{ project: 'Demo', title: 'x'.repeat(81) }, ['title']],
+    [{ project: 'Demo', title: 'x', extra: true }, ['extra']],
+    [[], ['body']],
+  ])('refuses invalid create body %j', async (body, fields) => {
+    const { server, taskStore } = await setup();
+    const response = await request(server).post(base).send(body);
+    expectProblem(response, 400);
+    expect(response.body.errors.map(error => error.field)).toEqual(fields);
+    expect(taskStore.list()).toEqual([]);
+  });
+
+  it('accepts a title at the length limit and stores hostile text as text', async () => {
+    const { server } = await setup();
+    expect((await request(server).post(base).send({ project: 'Demo', title: 'x'.repeat(80) })).status).toBe(201);
+    const hostile = "<script>alert(1)</script>'; DROP TABLE tasks;--";
+    const response = await request(server).post(base).send({ project: 'Demo', title: hostile });
+    expect(response.status).toBe(201);
+    expect(response.type).toBe('application/json');
+    expect((await request(server).get(base)).body.data.map(task => task.title)).toContain(hostile);
+  });
+
+  it('refuses malformed JSON and oversized bodies', async () => {
+    const { server } = await setup();
+    expectProblem(await request(server).post(base).set('Content-Type', 'application/json').send('{"project":'), 400);
+    const large = await request(server).post(base).send({ project: 'Demo', title: 'x'.repeat(5000) });
+    expectProblem(large, 413);
+  });
+
+  it('returns 404 for an unknown project, task and path', async () => {
+    const { server } = await setup();
+    expectProblem(await request(server).post(base).send({ project: 'Nope', title: 'x' }), 404);
+    expectProblem(await request(server).get(`${base}/${id(9)}`), 404, `${base}/${id(9)}`);
+    expectProblem(await request(server).get(`${base}/not-a-uuid`), 404, `${base}/not-a-uuid`);
+    expectProblem(await request(server).delete(`${base}/${id(9)}`), 404, `${base}/${id(9)}`);
+  });
+
+  it('lists tasks in a paginated envelope, newest first', async () => {
+    const { server } = await setup();
+    for (const title of ['one', 'two', 'three']) await request(server).post(base).send({ project: 'Demo', title });
+    const first = await request(server).get(`${base}?size=2`);
+    expect(first.status).toBe(200);
+    expect(first.body.data.map(task => task.title)).toEqual(['three', 'two']);
+    expect(first.body.page).toEqual({ currentPage: 0, size: 2, totalElements: 3, totalPages: 2, hasNextPage: true });
+    const second = await request(server).get(`${base}?size=2&page=1`);
+    expect(second.body.data.map(task => task.title)).toEqual(['one']);
+    expect(second.body.page).toEqual({ currentPage: 1, size: 2, totalElements: 3, totalPages: 2, hasNextPage: false });
+    expect((await request(server).get(base)).body.page.size).toBe(20);
+  });
+
+  it('sorts deterministically across a page boundary when values tie', async () => {
+    const { server } = await setup();
+    for (let n = 0; n < 3; n += 1) await request(server).post(base).send({ project: 'Demo', title: 'same' });
+    const pages = await Promise.all([0, 1, 2].map(page => request(server).get(`${base}?sort=title,asc&size=1&page=${page}`)));
+    expect(pages.map(page => page.body.data[0].id)).toEqual([id(1), id(2), id(3)]);
+  });
+
+  it('filters by project, state and open', async () => {
+    const { server, taskStore } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'a' });
+    await request(server).post(base).send({ project: 'Other', title: 'b' });
+    await request(server).post(base).send({ project: 'Demo', title: 'c' });
+    taskStore.setState(id(3), { state: 'merged' });
+    taskStore.setState(id(1), { state: 'pr_open', prUrl: 'https://example.test/pr/1' });
+    const titles = async query => (await request(server).get(`${base}?${query}`)).body.data.map(task => task.title);
+    expect(await titles('project=Demo')).toEqual(['c', 'a']);
+    expect(await titles('state=merged')).toEqual(['c']);
+    expect(await titles('open=true')).toEqual(['b', 'a']);
+    expect(await titles('open=false&project=Demo')).toEqual(['c']);
+    expect(await titles('project=Nobody')).toEqual([]);
+  });
+
+  it.each([
+    ['page=-1', 'page'], ['page=x', 'page'], ['size=0', 'size'], ['size=101', 'size'], ['size=', 'size'],
+    ['sort=branch,asc', 'sort'], ['sort=title', 'sort'], ['sort=title,asc,x', 'sort'],
+    ['state=done', 'state'], ['open=yes', 'open'], ['project=', 'project'], ['worktreePath=/tmp', 'worktreePath'],
+  ])('refuses list query %s', async (query, field) => {
+    const { server } = await setup();
+    const response = await request(server).get(`${base}?${query}`);
+    expectProblem(response, 400);
+    expect(response.body.errors.map(error => error.field)).toEqual([field]);
+  });
+
+  it('accepts the size limits', async () => {
+    const { server } = await setup();
+    expect((await request(server).get(`${base}?size=1`)).status).toBe(200);
+    expect((await request(server).get(`${base}?size=100`)).status).toBe(200);
+  });
+
+  it('renames a task and refuses a stale or invalid rename', async () => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Before' });
+    const url = `${base}/${id(1)}`;
+    const renamed = await request(server).put(url).send({ title: 'After', revision: 1 });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body).toMatchObject({ title: 'After', revision: 2 });
+    expectProblem(await request(server).put(url).send({ title: 'Late', revision: 1 }), 409, url);
+    for (const [body, fields] of [
+      [{ title: '', revision: 2 }, ['title']],
+      [{ title: null, revision: 2 }, ['title']],
+      [{ title: 'x', revision: '2' }, ['revision']],
+      [{ title: 'x' }, ['revision']],
+      [{ title: 'x', revision: 0 }, ['revision']],
+      [{ revision: 'x' }, ['title', 'revision']],
+      [{ title: 'x', revision: 2, state: 'merged' }, ['state']],
+    ]) {
+      const response = await request(server).put(url).send(body);
+      expectProblem(response, 400, url);
+      expect(response.body.errors.map(error => error.field)).toEqual(fields);
+    }
+    expectProblem(await request(server).put(`${base}/${id(9)}`).send({ title: 'x', revision: 1 }), 404, `${base}/${id(9)}`);
+  });
+
+  it('opens a terminal in the task', async () => {
+    const openTerminal = vi.fn(async taskId => ({ sessionId: 'Demo-4', taskId, project: 'Demo' }));
+    const { server } = await setup({ openTerminal });
+    await request(server).post(base).send({ project: 'Demo', title: 'Terminal' });
+    const response = await request(server).post(`${base}/${id(1)}/terminals`);
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual({ sessionId: 'Demo-4', taskId: id(1), project: 'Demo' });
+    expect(openTerminal).toHaveBeenCalledWith(id(1));
+  });
+
+  it('reports terminal refusals and refuses a body', async () => {
+    const { server, taskStore } = await setup();
+    const url = `${base}/${id(1)}/terminals`;
+    expectProblem(await request(server).post(url), 404, url);
+    await request(server).post(base).send({ project: 'Demo', title: 'Terminal' });
+    const withBody = await request(server).post(url).send({ cwd: '/etc' });
+    expectProblem(withBody, 400, url);
+    expect(withBody.body.errors.map(error => error.field)).toEqual(['cwd']);
+    taskStore.setState(id(1), { state: 'closed' });
+    expectProblem(await request(server).post(url), 409, url);
+  });
+
+  it('hides the cause of an unexpected failure', async () => {
+    const { server } = await setup({ openTerminal: async () => { throw new Error('SELECT secret FROM internals'); } });
+    await request(server).post(base).send({ project: 'Demo', title: 'Boom' });
+    const response = await request(server).post(`${base}/${id(1)}/terminals`);
+    expectProblem(response, 500, `${base}/${id(1)}/terminals`);
+    expect(response.body.message).toBe('Task request failed');
+  });
+
+  it('requires its dependencies', () => {
+    expect(() => createTasksRouter({})).toThrow('service.create');
+  });
+});

@@ -43,7 +43,8 @@ function shortIdFromRunId(runId) {
  * Plan worktree path and branch names for a run.
  * `homeRepoPath` is the home repository (parent of absolute `--git-common-dir`).
  */
-export function planNames({ runId, workflowName, homeRepoPath }) {
+export function planNames({ runId, workflowName, homeRepoPath, branchPrefix = 'workflow' }) {
+  if (typeof branchPrefix !== 'string' || !/^[a-z]+$/.test(branchPrefix)) throw new TypeError('branchPrefix must be lowercase letters');
   const shortId = shortIdFromRunId(runId);
   const slug = slugifyWorkflowName(workflowName);
   const homeFolder = path.basename(homeRepoPath);
@@ -54,7 +55,7 @@ export function planNames({ runId, workflowName, homeRepoPath }) {
     slug,
     homeRepoPath,
     worktreePath: path.join(worktreesParent, `${homeFolder}-${nameSuffix}`),
-    branch: `workflow/${nameSuffix}`,
+    branch: `${branchPrefix}/${nameSuffix}`,
   };
 }
 
