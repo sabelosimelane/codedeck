@@ -44,6 +44,7 @@ export function buildStepGuidance(definition, stepIndex, options) {
     parts.push(`This step closes a loop: CodeDeck repeats the steps from "${first.name}" to "${step.name}" in order, round after round. Use COMPLETE only when the whole task is finished and no step of the loop has work left; use CONTINUE when another round is needed.`);
   }
   // Setup follows CodeDeck's own rules for what it may copy and change; it keeps asking.
-  if (definition.agentsDecide && step.kind === 'node') parts.push(DECIDE);
+  // A step marked to always ask the owner is not told to decide for them.
+  if (definition.agentsDecide && step.kind === 'node' && step.askOwner !== true) parts.push(DECIDE);
   return parts.length > 0 ? parts.join(' ') : undefined;
 }

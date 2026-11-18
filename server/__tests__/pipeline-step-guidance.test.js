@@ -26,6 +26,11 @@ describe('buildStepGuidance', () => {
     expect(buildStepGuidance(def, 1, OPTIONS)).toContain(`${BOUNDARY} Run notes: read .codedeck/runs/abcdef12/README.md before you start, and before your final signal write your note to .codedeck/runs/abcdef12/01-build.md.`);
     expect(() => buildStepGuidance({ ...def, notesDir: undefined }, 1, OPTIONS)).toThrow(/notesDir/);
   });
+  it('does not tell a step that always asks the owner to decide for them', () => {
+    const def = definition(true, { ...step('Clarify'), askOwner: true }, step('Fix'));
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(BOUNDARY);
+    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${DECIDE}`);
+  });
   it('gives boundary guidance to a plain node', () => {
     const def = definition(false, step('Develop'), step('Test', { mode: 'until_complete', max: 5 }));
     expect(buildStepGuidance(def, 0, OPTIONS)).toBe(BOUNDARY);

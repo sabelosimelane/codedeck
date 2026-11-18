@@ -9,7 +9,7 @@ const agent = (patch = {}) => ({
   id: A1, name: 'codex', launchCommand: 'codex', resetCommand: '/clear', revision: 1,
   createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z', ...patch,
 });
-const node = (patch = {}) => ({ name: 'Develop', role: '', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, ...patch });
+const node = (patch = {}) => ({ name: 'Develop', role: '', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false, ...patch });
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T12:30:00.000Z' };
 const workflow = (patch = {}) => ({ id: W1, name: 'Feature', kind: 'other', description: '', agentsDecide: false, progressFile: null, revision: 2, nodes: [node()], ...STAMPS, ...patch });
 
@@ -58,7 +58,7 @@ describe('parseAgent', () => {
 
 describe('parseWorkflow', () => {
   it('rejects malformed node flags independently', () => {
-    expect(parseWorkflow(workflow({ nodes: [node({ readOnly: true, approval: true })] })).nodes[0]).toMatchObject({ readOnly: true, approval: true });
+    expect(parseWorkflow(workflow({ nodes: [node({ readOnly: true, approval: true, askOwner: false })] })).nodes[0]).toMatchObject({ readOnly: true, approval: true, askOwner: false });
     for (const flag of ['readOnly', 'approval']) for (const value of [undefined, null, 'true']) {
       rejects(parseWorkflow, workflow({ nodes: [node({ [flag]: value })] }), `nodes[0].${flag}`);
     }
@@ -245,7 +245,7 @@ describe('parsePreflight', () => {
 describe('kind, description, roles and what the owner saved', () => {
   const { agentId, ...templateNode } = node({ role: 'Developer' });
   const template = (patch = {}) => ({ ...workflow({ kind: 'build', description: 'Mine', nodes: [templateNode] }), ...patch });
-  const preset = (patch = {}) => ({ id: W1, name: 'Review', role: 'Reviewer', prompt: 'Review', repeat: { mode: 'until_complete', max: 3 }, readOnly: true, approval: false, revision: 1, ...STAMPS, ...patch });
+  const preset = (patch = {}) => ({ id: W1, name: 'Review', role: 'Reviewer', prompt: 'Review', repeat: { mode: 'until_complete', max: 3 }, readOnly: true, approval: false, askOwner: false, revision: 1, ...STAMPS, ...patch });
 
   it('keeps a workflow’s kind, description and step roles', () => {
     const parsed = parseWorkflow(workflow({ kind: 'troubleshoot', description: 'Find the cause', nodes: [node({ role: 'Investigator' })] }));
@@ -290,5 +290,18 @@ describe('kind, description, roles and what the owner saved', () => {
     await expect(loadDefinitions()).resolves.toMatchObject({ templates: [template()], stepPresets: [preset()] });
     stub([template()], [preset({ prompt: '' })]);
     await expect(loadDefinitions()).rejects.toThrow('Invalid saved step from the pipelines API: prompt');
+  });
+});
+
+describe('a step that always asks the owner', () => {
+  const stepFields = { name: 'Develop', role: '', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false };
+  it('is read from a workflow node and a saved step, and must be a boolean', () => {
+    expect(parseWorkflow(workflow({ nodes: [{ ...stepFields, askOwner: true }] })).nodes[0].askOwner).toBe(true);
+    rejects(parseWorkflow, workflow({ nodes: [stepFields] }), 'nodes[0].askOwner');
+    rejects(parseWorkflow, workflow({ nodes: [{ ...stepFields, askOwner: 'yes' }] }), 'nodes[0].askOwner');
+    const preset = { id: W1, name: 'Clarify', role: '', prompt: 'Ask', repeat: { mode: 'once' }, readOnly: true, approval: false, askOwner: true, revision: 1, ...STAMPS };
+    expect(parseStepPreset(preset).askOwner).toBe(true);
+    const { askOwner, ...without } = preset;
+    rejects(parseStepPreset, without, 'askOwner');
   });
 });

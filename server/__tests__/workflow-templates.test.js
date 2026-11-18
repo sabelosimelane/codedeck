@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { WORKFLOW_TEMPLATES, buildTemplateDraft } from '../../shared/workflow-templates.mjs';
+import { WORKFLOW_TEMPLATES, BUILT_IN_STEPS, buildTemplateDraft } from '../../shared/workflow-templates.mjs';
+import { validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
 import { validateWorkflowBody, WORKFLOW_KINDS } from '../../shared/pipeline-definitions.mjs';
 
 const AGENT = '11111111-1111-4111-8111-111111111111';
@@ -7,9 +8,9 @@ const AGENT = '11111111-1111-4111-8111-111111111111';
 describe('workflow templates', () => {
   it('ships the exact starting workflows and immutable definitions', () => {
     expect(WORKFLOW_TEMPLATES.map(({ id, name, kind, nodes }) => [id, name, kind, nodes.map(node => node.name)])).toEqual([
-      ['bug-fix', 'Bug fix', 'bugfix', ['Analyse', 'Specify', 'Develop', 'Review', 'Test', 'Commit']],
+      ['bug-fix', 'Bug fix', 'bugfix', ['Clarify', 'Analyse', 'Specify', 'Develop', 'Review', 'Test', 'Commit']],
       ['feature-build', 'Feature build', 'build', ['Plan', 'Develop', 'Review', 'Test', 'Commit']],
-      ['troubleshoot', 'Troubleshoot', 'troubleshoot', ['Gather evidence', 'Hypothesise', 'Prove', 'Fix', 'Verify', 'Commit']],
+      ['troubleshoot', 'Troubleshoot', 'troubleshoot', ['Clarify', 'Gather evidence', 'Hypothesise', 'Prove', 'Fix', 'Verify', 'Commit']],
       ['review-only', 'Review only', 'review', ['Survey', 'Review', 'Report']],
     ]);
     expect(Object.isFrozen(WORKFLOW_TEMPLATES)).toBe(true);
@@ -35,11 +36,12 @@ describe('workflow templates', () => {
   it('gates the build and fix workflows on approval and ends them with a commit', () => {
     for (const id of ['bug-fix', 'feature-build']) {
       const template = WORKFLOW_TEMPLATES.find(item => item.id === id);
-      expect(template.nodes[0]).toMatchObject({ readOnly: true, approval: true });
+      // The first step that does the work (after Clarify, where there is one) waits for approval.
+      expect(template.nodes.find(node => node.name !== 'Clarify')).toMatchObject({ readOnly: true, approval: true });
       expect(template.nodes.at(-1)).toMatchObject({ name: 'Commit', repeat: { mode: 'once' } });
       expect(template.nodes.find(node => node.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: id === 'bug-fix' ? 5 : 12 });
     }
-    expect(WORKFLOW_TEMPLATES[0].nodes[1]).toMatchObject({ readOnly: true, approval: true });
+    expect(WORKFLOW_TEMPLATES[0].nodes.find(node => node.name === 'Specify')).toMatchObject({ readOnly: true, approval: true });
     expect(WORKFLOW_TEMPLATES[1].nodes[0].prompt).toContain('plan.md');
   });
 
@@ -53,6 +55,27 @@ describe('workflow templates', () => {
     expect(byName.Fix.prompt).toMatch(/Do not weaken or delete the test/);
     expect(byName.Verify.repeat).toEqual({ mode: 'loop_back', to: 'Fix', max: 5 });
     expect(template.nodes.at(-1).name).toBe('Commit');
+  });
+
+  it('opens the fix and troubleshoot workflows by checking the report, asking the owner only for what is missing', () => {
+    for (const id of ['bug-fix', 'troubleshoot']) {
+      const first = WORKFLOW_TEMPLATES.find(item => item.id === id).nodes[0];
+      expect(first).toMatchObject({ name: 'Clarify', readOnly: true, approval: false, askOwner: true, repeat: { mode: 'once' } });
+      expect(first.prompt).toMatch(/First look for each of these yourself/);
+      expect(first.prompt).toMatch(/Ask nothing you could find out yourself, and when nothing is missing ask nothing/);
+    }
+    for (const id of ['feature-build', 'review-only']) {
+      const template = WORKFLOW_TEMPLATES.find(item => item.id === id);
+      expect(template.nodes.some(node => node.name === 'Clarify')).toBe(false);
+      expect(template.nodes.every(node => node.askOwner === false)).toBe(true);
+    }
+  });
+
+  it('ships Clarify as a step that can be inserted into any workflow', () => {
+    expect(BUILT_IN_STEPS.map(step => [step.id, step.name, step.askOwner, step.readOnly])).toEqual([['clarify', 'Clarify', true, true]]);
+    expect(Object.isFrozen(BUILT_IN_STEPS) && Object.isFrozen(BUILT_IN_STEPS[0])).toBe(true);
+    const { id, ...body } = BUILT_IN_STEPS[0];
+    expect(validateStepPresetBody(body)).toEqual([]);
   });
 
   it('reviews without changing or committing anything', () => {
@@ -91,8 +114,8 @@ describe('workflow templates', () => {
   });
 
   it('uses input in the described steps, no skill invocation, and bounded prompts', () => {
-    const inputSteps = { 'bug-fix': ['Analyse', 'Specify', 'Develop', 'Commit'], 'feature-build': ['Plan', 'Commit'],
-      troubleshoot: ['Gather evidence', 'Hypothesise', 'Prove', 'Commit'], 'review-only': ['Survey'] };
+    const inputSteps = { 'bug-fix': ['Clarify', 'Analyse', 'Specify', 'Develop', 'Commit'], 'feature-build': ['Plan', 'Commit'],
+      troubleshoot: ['Clarify', 'Gather evidence', 'Hypothesise', 'Prove', 'Commit'], 'review-only': ['Survey'] };
     for (const template of WORKFLOW_TEMPLATES) {
       for (const node of template.nodes) {
         expect(node.prompt.includes('{input}'), `${template.name} / ${node.name}`).toBe(inputSteps[template.id].includes(node.name));

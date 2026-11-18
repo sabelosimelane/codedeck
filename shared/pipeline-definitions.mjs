@@ -187,7 +187,7 @@ export function validateWorkflowBody(body, { revisionRequired = false, template 
       return;
     }
     for (const field of Object.keys(node)) {
-      if (!['name', 'role', ...(template ? [] : ['agentId']), 'prompt', 'repeat', 'readOnly', 'approval'].includes(field)) {
+      if (!['name', 'role', ...(template ? [] : ['agentId']), 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner'].includes(field)) {
         add(errors, `${prefix}.${field}`, 'Unknown field');
       }
     }
@@ -210,7 +210,8 @@ export function validateWorkflowBody(body, { revisionRequired = false, template 
       add(errors, `${prefix}.prompt`, 'Use 1–8192 characters without terminal control codes');
     }
     validateRepeat(errors, prefix, node.repeat);
-    for (const flag of ['readOnly', 'approval']) {
+    // `askOwner`: this step's questions always come to the owner, also when agents decide.
+    for (const flag of ['readOnly', 'approval', 'askOwner']) {
       if (node[flag] !== undefined && typeof node[flag] !== 'boolean') add(errors, `${prefix}.${flag}`, 'Use true or false');
     }
     if (node.approval === true && node.repeat?.mode === 'loop_back') add(errors, `${prefix}.approval`, 'A step that closes a loop cannot wait for approval');
@@ -223,7 +224,7 @@ export function validateWorkflowBody(body, { revisionRequired = false, template 
 /** A saved step: a named prompt with its options, copied into a workflow when inserted. */
 export function validateStepPresetBody(body, { revisionRequired = false } = {}) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['name', 'role', 'prompt', 'repeat', 'readOnly', 'approval', 'revision'])) return errors;
+  if (!rejectUnknown(errors, body, ['name', 'role', 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner', 'revision'])) return errors;
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
   optionalLine(errors, 'role', body.role, ROLE_MAX);
   requireRevision(errors, body.revision, revisionRequired);
@@ -235,7 +236,7 @@ export function validateStepPresetBody(body, { revisionRequired = false } = {}) 
   // A loop names another step of its workflow, which a step on its own does not have.
   if (body.repeat?.mode === 'loop_back') add(errors, 'repeat.mode', 'Choose once or until_complete; a loop is set in the workflow');
   else for (const error of repeatErrors) add(errors, error.field.replace(/^step\./, ''), error.message);
-  for (const flag of ['readOnly', 'approval']) {
+  for (const flag of ['readOnly', 'approval', 'askOwner']) {
     if (body[flag] !== undefined && typeof body[flag] !== 'boolean') add(errors, flag, 'Use true or false');
   }
   return errors;

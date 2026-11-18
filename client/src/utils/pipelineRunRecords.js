@@ -238,6 +238,30 @@ export function parseDecisionPage(body) {
   return { decisions: body.data.map(parseDecision), hasNextPage, total: totalElements };
 }
 
+/** What the owner answered when an agent asked; `questions` is null when the agent listed none. */
+export function parseAnswerPage(body) {
+  const guard = (condition, field) => { if (!condition) throw new PipelineApiError(`Invalid answers response field ${field}`); };
+  guard(object(body), 'body');
+  guard(Array.isArray(body.data), 'data');
+  guard(object(body.page), 'page');
+  guard(integer(body.page.totalElements), 'page.totalElements');
+  return {
+    answers: body.data.map((item, index) => {
+      const field = name => `data[${index}].${name}`;
+      guard(object(item), `data[${index}]`);
+      guard(Number.isSafeInteger(item.id) && item.id >= 1, field('id'));
+      guard(integer(item.stepIndex) && item.stepIndex <= 32, field('stepIndex'));
+      guard(text(item.stepName) && item.stepName.length <= 64, field('stepName'));
+      guard(integer(item.pass) && item.pass >= 1, field('pass'));
+      guard(item.questions === null || (text(item.questions) && item.questions.length <= 4000), field('questions'));
+      guard(text(item.answer) && item.answer.length <= 4000, field('answer'));
+      guard(stamp(item.createdAt), field('createdAt'));
+      return { id: item.id, stepIndex: item.stepIndex, stepName: item.stepName, pass: item.pass, questions: item.questions, answer: item.answer, createdAt: item.createdAt };
+    }),
+    total: body.page.totalElements,
+  };
+}
+
 /** The owner's reviews of a run's steps: each an approval, or a send-back with its comment. */
 export function parseReviewPage(body) {
   const guard = (condition, field) => { if (!condition) throw new PipelineApiError(`Invalid reviews response field ${field}`); };

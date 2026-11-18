@@ -219,6 +219,14 @@ export function listRunDecisions(runId, page, { signal, stepIndex } = {}) {
   return request(`/runs/${encodeURIComponent(runId)}/decisions?${params}`, { signal });
 }
 
+/** What the owner answered when an agent asked, oldest first; `stepIndex` narrows it to one step. */
+export function listRunAnswers(runId, { signal, stepIndex } = {}) {
+  requireStepIndex(stepIndex);
+  const params = new URLSearchParams({ page: '0', size: '100', sort: 'createdAt,asc' });
+  if (stepIndex !== undefined) params.set('stepIndex', String(stepIndex));
+  return request(`/runs/${encodeURIComponent(runId)}/answers?${params}`, { signal });
+}
+
 /** The owner's approvals and send-backs of a run, oldest first; `stepIndex` narrows them to one step. */
 export function listRunReviews(runId, { signal, stepIndex } = {}) {
   requireStepIndex(stepIndex);

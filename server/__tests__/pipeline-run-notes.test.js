@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { noteFileName, notePath, feedbackPath, writeFeedback, buildReadme, prepare, readNote } from '../pipelines/run-notes.js';
+import { noteFileName, notePath, feedbackPath, writeFeedback, buildReadme, prepare, readNote, briefPath, buildBrief, writeBrief } from '../pipelines/run-notes.js';
 
 const roots = [];
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
@@ -28,8 +28,8 @@ const definition = {
   workflowName: 'General workflow',
   notesDir: '.codedeck/runs/abcdef12',
   steps: [
-    { kind: 'setup', role: '', name: 'Setup', agent: { name: 'Claude' } },
-    { kind: 'node', role: '', name: 'Build things', agent: { name: 'Codex' } },
+    { kind: 'setup', role: '', askOwner: false, name: 'Setup', agent: { name: 'Claude' } },
+    { kind: 'node', role: '', askOwner: false, name: 'Build things', agent: { name: 'Codex' } },
   ],
 };
 
@@ -260,5 +260,66 @@ describe('run notes', () => {
     await fs.writeFile(path.join(root, notePath(definition, 1)), 'x');
     const fakeFs = { ...fs, readFile: async () => 'x'.repeat(262_145) };
     expect(await readNote({ worktreePath: root, definition, stepIndex: 1, fs: fakeFs })).toEqual({ status: 'present', content: 'x' });
+  });
+});
+
+describe('the run brief', () => {
+  const entries = [
+    { by: 'owner', stepName: 'Clarify', pass: 1, questions: '1. Which page?\nRecommended: login', answer: 'The login page, on mobile', createdAt: '2026-11-18T10:00:00.000Z' },
+    { by: 'agent', stepName: 'Fix', pass: 2, questions: '1. Keep the old column?\nRecommended: yes', answer: 'Proceed with your recommendations.', createdAt: '2026-11-18T10:05:00.000Z' },
+    { by: 'owner', stepName: 'Fix', pass: 3, questions: null, answer: 'Yes', createdAt: '2026-11-18T10:06:00.000Z' },
+  ];
+
+  it('states the request and every question and answer, saying who answered', () => {
+    const brief = buildBrief('Login fails on mobile', entries);
+    expect(brief).toContain('## Request\n\nLogin fails on mobile');
+    expect(brief).toContain('### Clarify, pass 1 — answered by the owner (2026-11-18T10:00:00.000Z)\n\n1. Which page?\nRecommended: login\n\nAnswer: The login page, on mobile');
+    expect(brief).toContain('### Fix, pass 2 — decided by the agent, as the owner allowed');
+    expect(brief).toContain('The agent asked without listing its questions.\n\nAnswer: Yes');
+    expect(brief.indexOf('Clarify, pass 1')).toBeLessThan(brief.indexOf('Fix, pass 2'));
+  });
+
+  it('says when no input was given and leaves out the answers heading when there are none', () => {
+    const brief = buildBrief('', []);
+    expect(brief).toContain('No input was given when this run started.');
+    expect(brief).not.toContain('## Questions and answers');
+  });
+
+  it.each([
+    [['a\nb', []], /input/], [[12, []], /input/], [['x', null], /entries/],
+    [['x', [{ ...entries[0], by: 'someone' }]], /entry.by/], [['x', [{ ...entries[0], stepName: '' }]], /stepName/],
+    [['x', [{ ...entries[0], pass: 0 }]], /pass/], [['x', [{ ...entries[0], questions: 12 }]], /questions/],
+    [['x', [{ ...entries[0], answer: ' ' }]], /answer/], [['x', [{ ...entries[0], createdAt: 'then' }]], /createdAt/],
+  ])('refuses %j', (args, message) => {
+    expect(() => buildBrief(...args)).toThrow(message);
+  });
+
+  it('writes the brief into the run notes folder, replaces it, and is ignored by git', async () => {
+    const root = await repo();
+    await prepare({ worktreePath: root, definition, input: 'Login fails' });
+    expect(briefPath(definition)).toBe('.codedeck/runs/abcdef12/brief.md');
+    expect(await writeBrief({ worktreePath: root, definition, input: 'Login fails', entries: [] })).toBe('.codedeck/runs/abcdef12/brief.md');
+    await writeBrief({ worktreePath: root, definition, input: 'Login fails', entries });
+    const written = await fs.readFile(path.join(root, briefPath(definition)), 'utf8');
+    expect(written).toContain('Answer: The login page, on mobile');
+    expect(await temporaryFiles(root)).toEqual([]);
+    expect(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' })).toBe('');
+  });
+
+  it('does not follow a link out of the worktree, and writes nothing for a run without notes', async () => {
+    const root = await repo();
+    await prepare({ worktreePath: root, definition, input: '' });
+    const outside = path.join(await outsideDir(), 'target');
+    await fs.writeFile(outside, 'outside');
+    await fs.symlink(outside, path.join(root, briefPath(definition)));
+    await writeBrief({ worktreePath: root, definition, input: 'x', entries: [] });
+    expect(await fs.readFile(outside, 'utf8')).toBe('outside');
+    expect(await writeBrief({ worktreePath: root, definition: { ...definition, notesDir: null }, input: 'x', entries: [] })).toBeNull();
+    expect(briefPath({ ...definition, notesDir: null })).toBeNull();
+    await expect(writeBrief({ worktreePath: 'relative', definition, input: 'x', entries: [] })).rejects.toThrow(/worktreePath/);
+  });
+
+  it('tells every step to read the brief', () => {
+    expect(buildReadme(definition, 'x')).toContain("read this file, .codedeck/runs/abcdef12/brief.md (the owner's request and every question answered so far) and every earlier step note");
   });
 });

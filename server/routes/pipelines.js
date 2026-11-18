@@ -122,6 +122,7 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
         kind: defStep.kind,
         name: defStep.name,
         role: defStep.role,
+        askOwner: defStep.askOwner,
         readOnly: defStep.readOnly,
         approval: defStep.approval,
         agentName: defStep.agent.name,
@@ -294,6 +295,7 @@ function buildDefinitionSnapshot({
       kind: 'node',
       name: node.name,
       role: node.role,
+      askOwner: node.askOwner,
       readOnly: node.readOnly,
       approval: node.approval,
       prompt,
@@ -313,6 +315,7 @@ function buildDefinitionSnapshot({
     kind: 'setup',
     name: 'Setup',
     role: '',
+    askOwner: false,
     readOnly: false,
     approval: false,
     prompt: buildSetupPrompt(homePath, worktreePath),
@@ -367,6 +370,7 @@ export function createPipelinesRouter(deps) {
     decisionStore,
     noteStore,
     reviewStore,
+    answerStore,
     templateStore,
     stepPresetStore,
     taskStore,
@@ -391,6 +395,7 @@ export function createPipelinesRouter(deps) {
   if (!decisionStore) throw new Error('pipelines router: decisionStore is required');
   if (!noteStore) throw new Error('pipelines router: noteStore is required');
   if (typeof reviewStore?.list !== 'function') throw new Error('pipelines router: reviewStore is required');
+  if (typeof answerStore?.list !== 'function') throw new Error('pipelines router: answerStore is required');
   if (typeof templateStore?.list !== 'function') throw new Error('pipelines router: templateStore is required');
   if (typeof stepPresetStore?.list !== 'function') throw new Error('pipelines router: stepPresetStore is required');
   if (typeof taskStore?.get !== 'function') throw new Error('pipelines router: taskStore is required');
@@ -605,6 +610,7 @@ export function createPipelinesRouter(deps) {
         // The note path helper wants every step to name its agent; the name is not part of what is sent.
         agent: { name: 'not chosen yet' },
         readOnly: node.readOnly === true,
+        askOwner: node.askOwner === true,
         repeat: node.repeat.mode === 'loop_back' ? { mode: 'loop_back', toStepIndex: loopTargetIndex(nodes, index), max: node.repeat.max } : node.repeat,
       })),
     };
@@ -1045,6 +1051,21 @@ export function createPipelinesRouter(deps) {
         totalPages: Math.ceil(total / query.size),
         hasNextPage: (query.page + 1) * query.size < total,
       },
+    });
+  }));
+
+  // What the owner answered when an agent asked, in the order the answers were given.
+  router.get(`${BASE}/runs/:id/answers`, route((req, res) => {
+    const run = loadRun(req.params.id);
+    const query = parseCollectionQuery(req.query, { sortFields: REVIEW_SORT, defaultSort: 'createdAt,asc', filters: [STEP_FILTER] });
+    // A run has a handful of answers at most; the store returns them oldest first.
+    const all = answerStore.list(run.id, { stepIndex: query.filters.stepIndex ?? null });
+    const ordered = query.direction === 'desc' ? all.reverse() : all;
+    const total = ordered.length;
+    res.json({
+      data: ordered.slice(query.page * query.size, (query.page + 1) * query.size)
+        .map(({ id, stepIndex, stepName, pass, questions, answer, createdAt }) => ({ id, stepIndex, stepName, pass, questions, answer, createdAt })),
+      page: { currentPage: query.page, size: query.size, totalElements: total, totalPages: Math.ceil(total / query.size), hasNextPage: (query.page + 1) * query.size < total },
     });
   }));
 

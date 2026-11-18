@@ -10,11 +10,12 @@ import {
   listRunDecisions as apiListRunDecisions,
   listRunNotes as apiListRunNotes,
   listRunReviews as apiListRunReviews,
+  listRunAnswers as apiListRunAnswers,
   resumeRun as apiResumeRun,
   startRun as apiStartRun,
   stopRun as apiStopRun,
 } from '../utils/pipelinesApi';
-import { parseDecisionPage, parseNotePage, parseReviewPage, parseInputRequest, parseRunAutonomy } from '../utils/pipelineRunRecords';
+import { parseAnswerPage, parseDecisionPage, parseNotePage, parseReviewPage, parseInputRequest, parseRunAutonomy } from '../utils/pipelineRunRecords';
 import { describeBlockedCleanup } from '../utils/pipelineWorktreeCleanup';
 
 // What the runs bar shows of a run is checked before the run is shown.
@@ -239,6 +240,15 @@ export function usePipelineRuns({ projectName, showToast }) {
     (runId, comment) => runAction(run => `${run.workflowName || 'Workflow'} sent back`, id => apiSendBackRun(id, comment), runId),
     [runAction],
   );
+  /** What the owner answered in one step, or null when it could not be loaded. */
+  const loadRunAnswers = useCallback(async (runId, stepIndex) => {
+    try {
+      return parseAnswerPage(await apiListRunAnswers(runId, { stepIndex }));
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+      return null;
+    }
+  }, [showToast]);
   /** The owner's reviews of one step, or null when they could not be loaded. */
   const loadRunReviews = useCallback(async (runId, stepIndex) => {
     try {
@@ -311,6 +321,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     sendBackRun,
     loadRunDecisions,
     loadRunReviews,
+    loadRunAnswers,
     loadRunNotes,
     cleanupRun,
   };

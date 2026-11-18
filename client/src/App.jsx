@@ -91,6 +91,7 @@ function AppContent() {
     answerRun,
     loadRunDecisions,
     loadRunReviews,
+    loadRunAnswers,
     approveRun,
     sendBackRun,
     loadRunNotes,
@@ -561,6 +562,7 @@ function AppContent() {
             onLoadPipelineRunDecisions={loadRunDecisions}
             onLoadPipelineRunNotes={loadRunNotes}
             onLoadPipelineRunReviews={loadRunReviews}
+            onLoadPipelineRunAnswers={loadRunAnswers}
             onApprovePipelineRun={approveRun}
             onSendBackPipelineRun={sendBackRun}
           />

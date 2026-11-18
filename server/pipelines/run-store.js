@@ -123,7 +123,7 @@ function validateDefinitionStep(id, index, step) {
   const prefix = `definition.steps[${index}]`;
   if (!isPlainObject(step)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(step)) {
-    if (!['kind', 'name', 'role', 'prompt', 'repeat', 'agent', 'readOnly', 'approval'].includes(key)) {
+    if (!['kind', 'name', 'role', 'prompt', 'repeat', 'agent', 'readOnly', 'approval', 'askOwner'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
@@ -132,7 +132,8 @@ function validateDefinitionStep(id, index, step) {
   }
   if (typeof step.readOnly !== 'boolean') fieldError(id, `${prefix}.readOnly`, 'must be true or false');
   if (typeof step.approval !== 'boolean') fieldError(id, `${prefix}.approval`, 'must be true or false');
-  if (step.kind === 'setup' && (step.readOnly || step.approval)) fieldError(id, prefix, 'Setup flags must be false');
+  if (typeof step.askOwner !== 'boolean') fieldError(id, `${prefix}.askOwner`, 'must be true or false');
+  if (step.kind === 'setup' && (step.readOnly || step.approval || step.askOwner)) fieldError(id, prefix, 'Setup flags must be false');
   // What the step is there to do, as its workflow named it; empty when it named none.
   if (typeof step.role !== 'string' || step.role.length > 32 || SINGLE_LINE.test(step.role)) fieldError(id, `${prefix}.role`, 'must be up to 32 characters on one line');
   if (step.repeat?.mode === 'loop_back' && step.approval) fieldError(id, `${prefix}.approval`, 'a loop closer cannot wait for approval');
@@ -142,6 +143,7 @@ function validateDefinitionStep(id, index, step) {
     approval: step.approval,
     name: requireString(id, `${prefix}.name`, step.name, { max: 64 }).trim(),
     role: step.role,
+    askOwner: step.askOwner,
     prompt: requireString(id, `${prefix}.prompt`, step.prompt, { max: 16384, singleLine: false }),
     repeat: validateRepeat(id, `${prefix}.repeat`, step.repeat, index),
     agent: validateDefinitionAgent(id, `${prefix}.agent`, step.agent),
@@ -486,10 +488,10 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       const lacksDecide = !Object.hasOwn(definition, 'agentsDecide');
       const lacksProgress = !Object.hasOwn(definition, 'progressFile');
       const lacksNotes = !Object.hasOwn(definition, 'notesDir');
-      const lacksFlags = step => isPlainObject(step) && (!Object.hasOwn(step, 'readOnly') || !Object.hasOwn(step, 'approval') || !Object.hasOwn(step, 'role'));
+      const lacksFlags = step => isPlainObject(step) && (!Object.hasOwn(step, 'readOnly') || !Object.hasOwn(step, 'approval') || !Object.hasOwn(step, 'role') || !Object.hasOwn(step, 'askOwner'));
       if (!lacksDecide && !lacksProgress && !lacksNotes && !steps.some(lacksRounds) && !definition.steps?.some(lacksFlags)) continue;
       save.run(
-        JSON.stringify({ ...definition, ...(lacksDecide ? { agentsDecide: false } : {}), ...(lacksProgress ? { progressFile: null } : {}), ...(lacksNotes ? { notesDir: null } : {}), steps: definition.steps?.map(step => isPlainObject(step) ? { ...step, ...(!Object.hasOwn(step, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(step, 'approval') ? { approval: false } : {}), ...(!Object.hasOwn(step, 'role') ? { role: '' } : {}) } : step) }),
+        JSON.stringify({ ...definition, ...(lacksDecide ? { agentsDecide: false } : {}), ...(lacksProgress ? { progressFile: null } : {}), ...(lacksNotes ? { notesDir: null } : {}), steps: definition.steps?.map(step => isPlainObject(step) ? { ...step, ...(!Object.hasOwn(step, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(step, 'approval') ? { approval: false } : {}), ...(!Object.hasOwn(step, 'role') ? { role: '' } : {}), ...(!Object.hasOwn(step, 'askOwner') ? { askOwner: false } : {}) } : step) }),
         JSON.stringify(steps.map(step => (lacksRounds(step) ? { ...step, roundsCompleted: 0 } : step))),
         row.id,
       );

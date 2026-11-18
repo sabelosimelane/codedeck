@@ -1,13 +1,22 @@
 // Starting points are shared data; choosing agents and saving remain owner actions.
 const once = () => Object.freeze({ mode: 'once' });
 const loop = (max, to = 'Develop') => Object.freeze({ mode: 'loop_back', to, max });
-const node = (name, role, prompt, repeat = once(), readOnly = false, approval = false) =>
-  Object.freeze({ name, role, prompt, repeat, readOnly, approval });
+const node = (name, role, prompt, repeat = once(), readOnly = false, approval = false, askOwner = false) =>
+  Object.freeze({ name, role, prompt, repeat, readOnly, approval, askOwner });
+
+// Checks that the report is enough to work from, and asks the owner only for what it could not
+// find itself. Its questions always come to the owner, also in a workflow whose agents decide.
+const CLARIFY_PROMPT = 'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown.';
+const clarify = () => node('Clarify', 'Investigator', CLARIFY_PROMPT, once(), true, false, true);
+
+/** Steps that ship with CodeDeck and can be inserted into any workflow, beside the owner's saved steps. */
+export const BUILT_IN_STEPS = Object.freeze([Object.freeze({ id: 'clarify', ...clarify() })]);
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
   Object.freeze({
     id: 'bug-fix', name: 'Bug fix', kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
+      clarify(),
       node('Analyse', 'Investigator', 'Investigate {input} and reproduce it where possible. Change no code. In your run note record observations, the root cause and its evidence with files and lines and commands and output, what you ruled out, options for a fix, and your recommendation.', once(), true, true),
       node('Specify', 'Planner', 'Read the Analyse note. In your run note specify the fix for {input}: the behaviour to change, what must stay the same, likely files, and tests that will prove it. Change no code.', once(), true, true),
       node('Develop', 'Developer', 'Implement the Specify note for {input}. Write a failing test first, then make it pass. Keep the change as small as the specification allows. Record what changed and what remains.'),
@@ -29,6 +38,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   Object.freeze({
     id: 'troubleshoot', name: 'Troubleshoot', kind: 'troubleshoot', description: 'Gather evidence, agree on a cause, prove it with a failing test, fix and verify.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
+      clarify(),
       node('Gather evidence', 'Investigator', 'Investigate {input}. Change no code. Collect evidence from three independent angles before forming any opinion: what the logs and error output show, what the data or state shows, and what the code does on the path involved. In your run note record each observation with the command you ran and its output, or the file and line you read. Keep what you saw separate from what you conclude, and list what you could not check.', once(), true),
       node('Hypothesise', 'Investigator', 'Read the Gather evidence note. Change no code. In your run note state the most likely cause of {input}, the evidence for it, the evidence against it, the other causes you ruled out and why, and the single test that would prove or disprove the cause. If the evidence does not support one cause, say so and ask for what is missing.', once(), true, true),
       node('Prove', 'Tester', 'Write the test named in the Hypothesise note so that it fails for the stated cause of {input}, and run it. Change no production code. If the test passes, the hypothesis is wrong: record what you saw and report NEEDS_INPUT. Otherwise record the test and its failing output.'),
@@ -57,6 +67,6 @@ export function buildTemplateDraft(templateId) {
     kind: template.kind,
     agentsDecide: template.agentsDecide,
     progressFile: template.progressFile,
-    nodes: template.nodes.map(({ name, role, prompt, repeat, readOnly, approval }) => ({ name, role, agentId: '', prompt, repeat: { ...repeat }, readOnly, approval })),
+    nodes: template.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, agentId: '', prompt, repeat: { ...repeat }, readOnly, approval, askOwner })),
   };
 }

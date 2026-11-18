@@ -30,9 +30,9 @@ describe('saved workflow templates', () => {
     expect(saved).toEqual({
       id: saved.id, name: 'My build', description: 'Plan then build', kind: 'build', agentsDecide: true, progressFile: null,
       nodes: [
-        { name: 'Plan', role: 'Planner', prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true },
-        { name: 'Develop', role: '', prompt: 'Build', repeat: { mode: 'once' }, readOnly: false, approval: false },
-        { name: 'Test', role: '', prompt: 'Test', repeat: { mode: 'loop_back', to: 'develop', max: 3 }, readOnly: false, approval: false },
+        { name: 'Plan', role: 'Planner', prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true, askOwner: false },
+        { name: 'Develop', role: '', prompt: 'Build', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
+        { name: 'Test', role: '', prompt: 'Test', repeat: { mode: 'loop_back', to: 'develop', max: 3 }, readOnly: false, approval: false, askOwner: false },
       ],
       revision: 1, createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z',
     });
@@ -95,9 +95,10 @@ describe('saved steps', () => {
   it('stores a step trimmed, with defaults spelled out', () => {
     const { store } = setup();
     const saved = store.create(body());
-    expect(saved).toEqual({ id: saved.id, name: 'Review', role: 'Reviewer', prompt: 'Review the changes', repeat: { mode: 'until_complete', max: 3 }, readOnly: true, approval: false,
+    expect(saved).toEqual({ id: saved.id, name: 'Review', role: 'Reviewer', prompt: 'Review the changes', repeat: { mode: 'until_complete', max: 3 }, readOnly: true, approval: false, askOwner: false,
       revision: 1, createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z' });
-    expect(store.create({ name: 'Plain', prompt: 'p', repeat: { mode: 'once' } })).toMatchObject({ role: '', readOnly: false, approval: false, repeat: { mode: 'once' } });
+    expect(store.create({ name: 'Plain', prompt: 'p', repeat: { mode: 'once' } })).toMatchObject({ role: '', readOnly: false, approval: false, askOwner: false, repeat: { mode: 'once' } });
+    expect(store.create({ name: 'Clarify', prompt: 'p', repeat: { mode: 'once' }, askOwner: true }).askOwner).toBe(true);
   });
 
   it('refuses a loop, an agent, a bad prompt and a taken name; updates and removes', () => {

@@ -15,9 +15,9 @@ const agent = { id: A1, name: 'codex-high', launchCommand: 'command codex', rese
 const feature = () => ({
   id: W1, name: 'Feature', kind: 'build', description: 'Plan, build, test', agentsDecide: false, progressFile: null, revision: 3, ...STAMPS,
   nodes: [
-    { name: 'Plan', role: 'Planner', agentId: A1, prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true },
-    { name: 'Develop', role: 'Developer', agentId: A1, prompt: 'Build it', repeat: { mode: 'once' }, readOnly: false, approval: false },
-    { name: 'Test', role: 'Tester', agentId: A1, prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 5 }, readOnly: false, approval: false },
+    { name: 'Plan', role: 'Planner', agentId: A1, prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true, askOwner: false },
+    { name: 'Develop', role: 'Developer', agentId: A1, prompt: 'Build it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
+    { name: 'Test', role: 'Tester', agentId: A1, prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 5 }, readOnly: false, approval: false, askOwner: false },
   ],
 });
 

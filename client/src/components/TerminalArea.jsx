@@ -348,6 +348,7 @@ export default function TerminalArea({
   onLoadPipelineRunDecisions = async () => null,
   onLoadPipelineRunNotes = async () => null,
   onLoadPipelineRunReviews = async () => null,
+  onLoadPipelineRunAnswers = async () => null,
   onApprovePipelineRun,
   onSendBackPipelineRun,
   onTasksChanged = () => {},
@@ -1171,7 +1172,7 @@ export default function TerminalArea({
         onActivateStep={activatePipelineSession} onOpenTerminal={addTab}
         onStop={onStopPipelineRun} onResume={onResumePipelineRun} onContinue={onContinuePipelineRun} onCleanup={onCleanupPipelineRun}
         onAnswer={onAnswerPipelineRun} onLoadNotes={onLoadPipelineRunNotes} onLoadDecisions={onLoadPipelineRunDecisions}
-        onLoadReviews={onLoadPipelineRunReviews} onApprove={onApprovePipelineRun} onSendBack={onSendBackPipelineRun}>
+        onLoadReviews={onLoadPipelineRunReviews} onLoadAnswers={onLoadPipelineRunAnswers} onApprove={onApprovePipelineRun} onSendBack={onSendBackPipelineRun}>
       <TerminalTabBar tabs={displayTabs} renderTab={tab => {
             const tabLabel = getTerminalTabLabel(tab.panes, tab.label, sessionTitles);
             const isActive = tab.id === activeTabId;

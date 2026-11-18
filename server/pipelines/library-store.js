@@ -104,7 +104,7 @@ export function createTemplateStore(db, { now = () => new Date().toISOString() }
       progressFile: body.progressFile?.trim() ?? null,
       nodes: body.nodes.map(node => ({
         name: node.name.trim(), role: (node.role ?? '').trim(), prompt: node.prompt, repeat: normalizeRepeat(node.repeat),
-        readOnly: node.readOnly ?? false, approval: node.approval ?? false,
+        readOnly: node.readOnly ?? false, approval: node.approval ?? false, askOwner: node.askOwner ?? false,
       })),
     }),
   });
@@ -118,7 +118,7 @@ export function createStepPresetStore(db, { now = () => new Date().toISOString()
     validate: validateStepPresetBody,
     normalize: body => ({
       name: body.name.trim(), role: (body.role ?? '').trim(), prompt: body.prompt, repeat: normalizeRepeat(body.repeat),
-      readOnly: body.readOnly ?? false, approval: body.approval ?? false,
+      readOnly: body.readOnly ?? false, approval: body.approval ?? false, askOwner: body.askOwner ?? false,
     }),
   });
 }

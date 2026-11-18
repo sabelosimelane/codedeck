@@ -26,6 +26,7 @@ const handlers = () => ({
   onAnswer: vi.fn(async () => ({})), onApprove: vi.fn(async () => ({})), onSendBack: vi.fn(async () => ({})),
   onLoadNotes: vi.fn(async () => ({ notes: [{ id: 1, pass: 1, attempt: 1, summary: 'Planned three phases', content: 'Full plan text' }] })),
   onLoadDecisions: vi.fn(async () => ({ decisions: [{ id: 4, pass: 1, questions: '1. Use Redis?', answer: 'Proceed with your recommendations.' }] })),
+  onLoadAnswers: vi.fn(async () => ({ answers: [{ id: 3, pass: 1, questions: '1. Which page?', answer: 'The login page' }, { id: 5, pass: 2, questions: null, answer: 'Yes' }] })),
   onLoadReviews: vi.fn(async () => ({ reviews: [{ id: 7, verdict: 'sent_back', comment: 'Cover the empty case' }, { id: 8, verdict: 'approved', comment: null }] })),
 });
 const view = (props = {}) => {
@@ -91,6 +92,18 @@ describe('TaskView', () => {
     expect(h.onLoadReviews).toHaveBeenCalledWith('run-1', 0);
     expect(screen.getByText('Approved')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Decisions' })).toBeNull();
+  });
+
+  it('shows what the step asked the owner and what was answered, and marks a step that always asks', async () => {
+    const { h } = view({ run: run({ steps: run().steps.map(item => (item.index === 1 ? { ...item, askOwner: true } : item)) }) });
+    expect(screen.getByText('always asks you')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Your answers' }));
+    await waitFor(() => expect(screen.getByText('You answered: The login page')).toBeTruthy());
+    expect(h.onLoadAnswers).toHaveBeenCalledWith('run-1', 1);
+    expect(screen.getByText('1. Which page?')).toBeTruthy();
+    expect(screen.getByText('The agent asked without listing its questions.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Plan: Done' }));
+    expect(screen.queryByText('always asks you')).toBeNull();
   });
 
   it('offers decisions only when agents decide, and reviews only on a step that waits for approval', async () => {

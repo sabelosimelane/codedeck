@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
+import { createAnswerStore } from '../pipelines/answer-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createReviewStore } from '../pipelines/review-store.js';
 
@@ -22,7 +23,7 @@ function definition(overrides = {}) {
     notesDir: null,
     steps: [
       {
-        kind: 'node', role: '', readOnly: false, approval: false,
+        kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
         name: 'Develop',
         // Snapshot prompts are already composed at POST /runs.
         prompt: 'Implement ship it',
@@ -153,6 +154,8 @@ function setupEngine(overrides = {}) {
   const setTerminalMuted = overrides.setTerminalMuted ?? vi.fn(() => true);
   const readScreen = overrides.readScreen ?? vi.fn(async () => []);
   const decisionStore = overrides.decisionStore ?? createDecisionStore(db);
+  const answerStore = overrides.answerStore ?? createAnswerStore(db);
+  const writeBrief = overrides.writeBrief ?? vi.fn(async () => '.codedeck/runs/abcdef12/brief.md');
   const noteStore = overrides.noteStore ?? createNoteStore(db);
   const reviewStore = overrides.reviewStore ?? createReviewStore(db);
 
@@ -167,6 +170,8 @@ function setupEngine(overrides = {}) {
     readScreen,
     readProgressCount: overrides.readProgressCount ?? vi.fn(async () => null),
     decisionStore,
+    answerStore,
+    writeBrief,
     noteStore,
     reviewStore,
     removeWorktree,
@@ -199,6 +204,8 @@ function setupEngine(overrides = {}) {
     setTerminalMuted,
     readScreen,
     decisionStore,
+    answerStore,
+    writeBrief,
     noteStore,
     reviewStore,
     writes,
@@ -829,7 +836,7 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'node', role: '', readOnly: false, approval: false,
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'Implement ship it',
           repeat: { mode: 'until_complete', max: 7 },
@@ -921,6 +928,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       steps: names.map((name, index) => ({
         kind: index === 0 ? 'setup' : 'node',
         role: '',
+        askOwner: false,
         readOnly: false,
         approval: false,
         name,
@@ -1018,7 +1026,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const def = definition({
       steps: [
         {
-          kind: 'node', role: '', readOnly: false, approval: false,
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'do it',
           repeat: { mode: 'until_complete', max: 2 },
@@ -1030,7 +1038,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
           },
         },
         {
-          kind: 'node', role: '', readOnly: false, approval: false,
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
           name: 'Review',
           prompt: 'review it',
           repeat: { mode: 'once' },
@@ -1083,7 +1091,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'node', role: '', readOnly: false, approval: false,
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'do it',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1189,7 +1197,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'setup', role: '', readOnly: false, approval: false,
+          kind: 'setup', role: '', askOwner: false, readOnly: false, approval: false,
           name: 'Setup',
           prompt: 'setup',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1474,7 +1482,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       definition: definition({
         steps: [
           {
-            kind: 'setup', role: '', readOnly: false, approval: false,
+            kind: 'setup', role: '', askOwner: false, readOnly: false, approval: false,
             name: 'Setup',
             prompt: 'setup',
             repeat: { mode: 'until_complete', max: 3 },
@@ -1486,7 +1494,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
             },
           },
           {
-            kind: 'node', role: '', readOnly: false, approval: false,
+            kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
             name: 'Develop',
             prompt: 'do it',
             repeat: { mode: 'once' },
@@ -1522,7 +1530,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({
       definition: definition({
         steps: [{
-          kind: 'setup', role: '', readOnly: false, approval: false,
+          kind: 'setup', role: '', askOwner: false, readOnly: false, approval: false,
           name: 'Setup',
           prompt: 'setup',
           repeat: { mode: 'until_complete', max: 3 },
@@ -1764,10 +1772,69 @@ describe('createRunEngine — what the agent needs, and answering it', () => {
     expect(loop.state.inputs).toEqual(['1. the existing schema\n2. yes']);
     expect(answered).toMatchObject({ status: 'running', inputRequest: null });
     expect(ctx.runStore.get(run.id).steps[0].status).toBe('running');
+    // What was asked and answered is kept for the steps that come later.
+    expect(ctx.answerStore.list(run.id)).toEqual([expect.objectContaining({ stepIndex: 0, stepName: 'Develop', pass: 1, answer: '1. the existing schema\n2. yes', questions: expect.stringContaining('1.') })]);
 
     loop.complete();
     await done;
     expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+
+  async function startWaitingWithNotes(overrides = {}) {
+    const loop = askingWorkflow();
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Done' }));
+    const ctx = setupEngine({ readinessQueue: [executionState()], createWorkflow: loop.createWorkflow, readScreen: vi.fn(async () => SCREEN),
+      engineExtras: { prepareNotes: vi.fn(async () => {}), readNote }, ...overrides });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(0);
+    return { ctx, loop, run, done };
+  }
+
+  it('writes the brief when a step starts and again with each answer the owner gives', async () => {
+    const { ctx, loop, run, done } = await startWaitingWithNotes();
+    expect(ctx.writeBrief).toHaveBeenCalledTimes(1);
+    expect(ctx.writeBrief).toHaveBeenLastCalledWith(expect.objectContaining({ input: run.input, entries: [], definition: expect.objectContaining({ notesDir: '.codedeck/runs/abcdef12' }) }));
+
+    const answering = ctx.engine.answer(run.id, 'The login page');
+    await vi.advanceTimersByTimeAsync(100);
+    await answering;
+    expect(ctx.writeBrief).toHaveBeenCalledTimes(2);
+    const { entries } = ctx.writeBrief.mock.calls.at(-1)[0];
+    expect(entries).toEqual([expect.objectContaining({ by: 'owner', stepName: 'Develop', pass: 1, answer: 'The login page', questions: expect.stringContaining('1.') })]);
+    // The record exists before the answer is submitted to the agent.
+    expect(ctx.writes.at(-1)).toBe('\r');
+    loop.complete();
+    await done;
+  });
+
+  it('still delivers the answer and keeps its record when the brief cannot be written', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { ctx, loop, run, done } = await startWaitingWithNotes({ writeBrief: vi.fn(async () => { throw new Error('disk full'); }) });
+    const answering = ctx.engine.answer(run.id, 'Yes');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await answering).toMatchObject({ status: 'running' });
+    expect(loop.state.inputs).toEqual(['Yes']);
+    expect(ctx.answerStore.list(run.id)).toHaveLength(1);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('brief could not be written'), expect.any(Error));
+    error.mockRestore();
+    loop.complete();
+    await done;
+  });
+
+  it('writes no brief for a run without run notes, and requires somewhere to keep answers', async () => {
+    const { ctx, loop, run, done } = await startWaiting();
+    const answering = ctx.engine.answer(run.id, 'Yes');
+    await vi.advanceTimersByTimeAsync(100);
+    await answering;
+    expect(ctx.writeBrief).not.toHaveBeenCalled();
+    expect(ctx.answerStore.list(run.id)).toHaveLength(1);
+    loop.complete();
+    await done;
+    expect(() => setupEngine({ engineExtras: { answerStore: undefined } })).toThrow('createRunEngine: answerStore is required');
+    expect(() => setupEngine({ engineExtras: { writeBrief: null } })).toThrow('createRunEngine: writeBrief is required');
   });
 
   it('stores a second request when the agent asks again after an answer', async () => {
@@ -1843,7 +1910,7 @@ describe('createRunEngine — a loop of steps', () => {
     Review: 'c410a1b2-3456-4789-8abc-def012345612',
   };
   const defStep = (name, repeat = { mode: 'once' }) => ({
-    kind: 'node', role: '', readOnly: false, approval: false,
+    kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
     name,
     prompt: `do ${name}`,
     repeat,
@@ -2165,7 +2232,7 @@ describe('createRunEngine — agents decide', () => {
     return { createWorkflow, state, ask: () => publish('needs_input'), complete: () => publish('complete') };
   }
 
-  async function startAsking({ agentsDecide = true, overrides = {}, kind = 'node', approval = false } = {}) {
+  async function startAsking({ agentsDecide = true, overrides = {}, kind = 'node', approval = false, askOwner = false } = {}) {
     const loop = askingWorkflow();
     const ctx = setupEngine({
       createWorkflow: loop.createWorkflow,
@@ -2175,6 +2242,7 @@ describe('createRunEngine — agents decide', () => {
     const def = definition({ agentsDecide });
     def.steps[0].kind = kind;
     def.steps[0].approval = approval;
+    def.steps[0].askOwner = askOwner;
     const run = ctx.runStore.create(validRun({ definition: def, worktreeState: 'external', baseCommit: BASE_COMMIT }));
     const done = ctx.engine.start(run.id);
     await vi.advanceTimersByTimeAsync(100); // launch Enter
@@ -2200,6 +2268,14 @@ describe('createRunEngine — agents decide', () => {
     loop.complete();
     await done;
     expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+  it('leaves the questions of a step marked to always ask the owner for the owner, also when agents decide', async () => {
+    const { ctx, loop, run } = await startAsking({ askOwner: true });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(loop.state.inputs).toEqual([]);
+    expect(ctx.decisionStore.count(run.id)).toBe(0);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input' });
+    expect(ctx.runStore.get(run.id).inputRequest.questions).toContain('1.');
   });
   it('agents decide still auto-answers a question but waits for owner approval after completion', async () => {
     const { ctx, loop, run, done } = await startAsking({ approval: true });
@@ -2267,7 +2343,7 @@ describe('createRunEngine — agents decide', () => {
   });
 
   it('pauses for the owner when Setup asks, even when agents decide', async () => {
-    const { ctx, loop, run } = await startAsking({ kind: 'setup', role: '' });
+    const { ctx, loop, run } = await startAsking({ kind: 'setup', role: '', askOwner: false });
     await vi.advanceTimersByTimeAsync(200);
     expect(ctx.runStore.get(run.id).status).toBe('needs_input');
     expect(ctx.decisionStore.count(run.id)).toBe(0);
@@ -2436,7 +2512,7 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
 describe('createRunEngine — a step reuses the terminal of its agent', () => {
   const CODEX = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
   const FABLE = { id: 'c410a1b2-3456-4789-8abc-def0123456f0', name: 'fable', launchCommand: 'claude --model fable', resetCommand: '/clear' };
-  const node = (name, agent) => ({ kind: 'node', role: '', readOnly: false, approval: false, name, prompt: `do ${name}`, repeat: { mode: 'once' }, agent });
+  const node = (name, agent) => ({ kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name, prompt: `do ${name}`, repeat: { mode: 'once' }, agent });
   const WORKTREE = '/tmp/worktrees/backend-specs';
 
   beforeEach(() => {

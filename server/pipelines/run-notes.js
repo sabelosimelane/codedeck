@@ -63,6 +63,43 @@ export async function writeFeedback({ worktreePath, definition, stepIndex, revie
   return relative;
 }
 
+/** Where the run's brief is kept: the owner's request and every question answered so far. */
+export function briefPath(definition) {
+  requireDefinition(definition);
+  return definition.notesDir === null ? null : `${definition.notesDir}/brief.md`;
+}
+
+/** `entries`: `{ by: 'owner' | 'agent', stepName, pass, questions, answer, createdAt }`, oldest first. */
+export function buildBrief(input, entries) {
+  if (typeof input !== 'string' || /[\r\n]/.test(input)) throw new TypeError('input must be a one-line string');
+  if (!Array.isArray(entries)) throw new TypeError('entries must be an array');
+  const lines = ['# Brief', '', 'What the owner asked for, and every question answered since. Read this before you start; it is the same for every step.', '', '## Request', '', input.trim() ? input : 'No input was given when this run started.', ''];
+  if (entries.length > 0) lines.push('## Questions and answers', '');
+  for (const entry of entries) {
+    if (!entry || (entry.by !== 'owner' && entry.by !== 'agent')) throw new TypeError('entry.by must be owner or agent');
+    if (typeof entry.stepName !== 'string' || !entry.stepName.trim()) throw new TypeError('entry.stepName must be a non-empty string');
+    if (!Number.isInteger(entry.pass) || entry.pass < 1) throw new TypeError('entry.pass must be a positive integer');
+    if (entry.questions !== null && typeof entry.questions !== 'string') throw new TypeError('entry.questions must be a string or null');
+    if (typeof entry.answer !== 'string' || !entry.answer.trim()) throw new TypeError('entry.answer must be a non-empty string');
+    if (typeof entry.createdAt !== 'string' || Number.isNaN(Date.parse(entry.createdAt))) throw new TypeError('entry.createdAt must be a time');
+    lines.push(`### ${entry.stepName}, pass ${entry.pass} — ${entry.by === 'owner' ? 'answered by the owner' : 'decided by the agent, as the owner allowed'} (${entry.createdAt})`, '',
+      entry.questions ?? 'The agent asked without listing its questions.', '', `Answer: ${entry.answer}`, '');
+  }
+  return lines.join('\n');
+}
+
+/** Writes the brief into the run notes folder. Returns its path, or null for a run without notes. */
+export async function writeBrief({ worktreePath, definition, input, entries, fs = defaultFs } = {}) {
+  requireWorktree(worktreePath);
+  requireFs(fs, ['realpath', 'lstat', 'open', 'writeFile', 'rename', 'rm']);
+  const relative = briefPath(definition);
+  if (relative === null) return null;
+  const content = buildBrief(input, entries);
+  const folder = await verifiedRunFolder(fs, worktreePath, definition.notesDir);
+  await replaceFile(fs, folder, 'brief.md', content);
+  return relative;
+}
+
 export function buildReadme(definition, input) {
   requireDefinition(definition);
   if (typeof definition.workflowName !== 'string' || !definition.workflowName.trim()) throw new TypeError('definition.workflowName must be a non-empty string');
@@ -72,7 +109,7 @@ export function buildReadme(definition, input) {
     const file = notePath(definition, index);
     lines.push(`${String(index).padStart(2, '0')}. ${step.name} — ${step.agent.name} — ${file ?? 'no note'}`);
   });
-  lines.push('', '## How notes work', '', 'Before starting, read this file and every earlier step note that exists.', 'Before your final signal, write or replace your own note.', 'Start your note with one line `# <one-line summary>`. Then record what was done, what was decided and why, what is left, and where things are (paths).', `If the work has phases, keep ${definition.notesDir}/plan.md with ## Phase N: <title> sections and - [ ] or - [x] tasks. CodeDeck shows the current phase from it.`, 'This folder is ignored by git, belongs to this run, and is safe to delete once the run is over.', '');
+  lines.push('', '## How notes work', '', `Before starting, read this file, ${definition.notesDir}/brief.md (the owner's request and every question answered so far) and every earlier step note that exists.`, 'Before your final signal, write or replace your own note.', 'Start your note with one line `# <one-line summary>`. Then record what was done, what was decided and why, what is left, and where things are (paths).', `If the work has phases, keep ${definition.notesDir}/plan.md with ## Phase N: <title> sections and - [ ] or - [x] tasks. CodeDeck shows the current phase from it.`, 'This folder is ignored by git, belongs to this run, and is safe to delete once the run is over.', '');
   return lines.join('\n');
 }
 

@@ -54,7 +54,7 @@ function StepRecords({ label, emptyText, load, resetKey, render }) {
   );
 }
 
-function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnswer, onLoadNotes, onLoadDecisions, onLoadReviews, onApprove, onSendBack }) {
+function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnswer, onLoadNotes, onLoadDecisions, onLoadReviews, onLoadAnswers, onApprove, onSendBack }) {
   const progress = describeStepProgress(step);
   const loopTarget = step.repeat.mode === 'loop_back' ? run.steps.find(target => target.index === step.repeat.toStepIndex) : null;
   const resetKey = `${run.id}:${step.index}:${step.attempt}:${step.iteration}:${step.roundsCompleted}:${step.status}`;
@@ -66,6 +66,7 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
         {step.role && <span className="pipeline-run-muted">{step.role}</span>}
         {step.agentName && <span className="pipeline-run-muted">{step.agentName}</span>}
         {step.readOnly && <span className="pipeline-run-muted">read-only</span>}
+        {step.askOwner && <span className="pipeline-run-muted" title="This step's questions always come to you, also when agents decide">always asks you</span>}
         {loopTarget && <span className="pipeline-run-muted">{`loops back to ${loopTarget.name}`}</span>}
       </div>
       {step.sessionId === null && step.status === 'pending' && <span className="pipeline-run-muted">This step has not started, so it has no terminal yet.</span>}
@@ -86,6 +87,17 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
                 <strong className="pipeline-run-primary-text">{`Pass ${note.pass}${note.attempt > 1 ? `, attempt ${note.attempt}` : ''}`}</strong>
                 {note.summary && <span>{note.summary}</span>}
                 {note.content !== null ? <div className="pipeline-run-pre-wrap">{note.content}</div> : <span className="pipeline-run-warning">No note was written on this pass.</span>}
+              </li>
+            )} />
+        )}
+        {step.kind === 'node' && (
+          <StepRecords label="Your answers" emptyText="This step has not asked you anything." resetKey={`${resetKey}:${run.status}`}
+            load={async () => (await onLoadAnswers(run.id, step.index))?.answers ?? null}
+            render={item => (
+              <li key={item.id} className="pipeline-run-list-item">
+                <strong className="pipeline-run-primary-text">{`Pass ${item.pass}`}</strong>
+                <div className="pipeline-run-pre-wrap">{item.questions ?? 'The agent asked without listing its questions.'}</div>
+                <span>{`You answered: ${item.answer}`}</span>
               </li>
             )} />
         )}
@@ -124,7 +136,7 @@ export default function TaskView({
   title, tooltip, run, openSessionIds, children,
   onActivateStep, onOpenTerminal,
   onStop, onResume, onContinue, onCleanup, onAnswer,
-  onLoadNotes, onLoadDecisions, onLoadReviews, onApprove, onSendBack,
+  onLoadNotes, onLoadDecisions, onLoadReviews, onLoadAnswers = async () => ({ answers: [] }), onApprove, onSendBack,
 }) {
   if (!run || typeof run !== 'object') throw new Error('task view: run is required');
   if (!Array.isArray(run.steps) || run.steps.length === 0) throw new Error('task view: run.steps must be a nonempty array');
@@ -199,7 +211,7 @@ export default function TaskView({
           <StepDetail run={run} step={selected} isCurrent={selected.index === currentIndex}
             terminalOpen={selected.sessionId !== null && openSessionIds.has(selected.sessionId)}
             onOpenTerminal={onOpenTerminal} onAnswer={onAnswer} onLoadNotes={onLoadNotes} onLoadDecisions={onLoadDecisions}
-            onLoadReviews={onLoadReviews} onApprove={onApprove} onSendBack={onSendBack} />
+            onLoadReviews={onLoadReviews} onLoadAnswers={onLoadAnswers} onApprove={onApprove} onSendBack={onSendBack} />
           {children}
         </div>
       </div>

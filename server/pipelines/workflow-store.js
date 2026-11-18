@@ -66,7 +66,10 @@ function parseNodes(id, raw) {
   if (nodeErrors.length) {
     fieldError(id, 'nodes', nodeErrors[0].message);
   }
-  nodes.forEach((node, index) => { if (typeof node.role !== 'string') fieldError(id, `nodes[${index}].role`, 'must be a string'); });
+  nodes.forEach((node, index) => {
+    if (typeof node.role !== 'string') fieldError(id, `nodes[${index}].role`, 'must be a string');
+    if (typeof node.askOwner !== 'boolean') fieldError(id, `nodes[${index}].askOwner`, 'must be true or false');
+  });
   return nodes;
 }
 
@@ -116,6 +119,7 @@ function normalizeNodes(nodes) {
     repeat: normalizeRepeat(nodes, index),
     readOnly: node.readOnly ?? false,
     approval: node.approval ?? false,
+    askOwner: node.askOwner ?? false,
   }));
 }
 
@@ -160,9 +164,9 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       try { nodes = JSON.parse(row.nodes); } catch { fieldError(row.id, 'nodes', 'must be valid JSON'); }
       if (!Array.isArray(nodes)) fieldError(row.id, 'nodes', 'must be an array');
       // Nodes saved before a step could have a role have none.
-      if (nodes.some(node => node && typeof node === 'object' && !Array.isArray(node) && (!Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || !Object.hasOwn(node, 'role')))) {
+      if (nodes.some(node => node && typeof node === 'object' && !Array.isArray(node) && (!Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || !Object.hasOwn(node, 'role') || !Object.hasOwn(node, 'askOwner')))) {
         save.run(JSON.stringify(nodes.map(node => node && typeof node === 'object' && !Array.isArray(node)
-          ? { ...node, ...(!Object.hasOwn(node, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(node, 'approval') ? { approval: false } : {}), ...(!Object.hasOwn(node, 'role') ? { role: '' } : {}) }
+          ? { ...node, ...(!Object.hasOwn(node, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(node, 'approval') ? { approval: false } : {}), ...(!Object.hasOwn(node, 'role') ? { role: '' } : {}), ...(!Object.hasOwn(node, 'askOwner') ? { askOwner: false } : {}) }
           : node)), row.id);
       }
     }

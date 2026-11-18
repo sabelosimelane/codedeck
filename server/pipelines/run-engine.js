@@ -9,7 +9,7 @@ import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
 import { planRunTerminalMuting } from './run-terminal-muting.js';
-import { prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback } from './run-notes.js';
+import { prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
 const DEFAULT_POLL_MS = 1000;
@@ -62,6 +62,8 @@ export function createRunEngine({
   prepareNotes = defaultPrepareNotes,
   readNote = defaultReadNote,
   writeFeedback = defaultWriteFeedback,
+  writeBrief = defaultWriteBrief,
+  answerStore,
   terminalAvailable,
   setTerminalMuted,
   removeWorktree = async () => ({ ok: true }),
@@ -89,6 +91,8 @@ export function createRunEngine({
   if (typeof prepareNotes !== 'function') throw new Error('createRunEngine: prepareNotes is required');
   if (typeof readNote !== 'function') throw new Error('createRunEngine: readNote is required');
   if (typeof writeFeedback !== 'function') throw new Error('createRunEngine: writeFeedback is required');
+  if (typeof writeBrief !== 'function') throw new Error('createRunEngine: writeBrief is required');
+  if (typeof answerStore?.add !== 'function' || typeof answerStore?.list !== 'function') throw new Error('createRunEngine: answerStore is required');
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
   if (typeof setTerminalMuted !== 'function') throw new Error('createRunEngine: setTerminalMuted is required');
 
@@ -199,6 +203,25 @@ export function createRunEngine({
       return current;
     }
     return persistTransition(runId, { type: 'error', error: String(message).slice(0, 2000), at: now() });
+  }
+
+  /**
+   * Rewrites the run's brief: its input and every question answered so far, by the owner
+   * or by an agent allowed to decide. A brief that cannot be written is reported; the
+   * run goes on, because the answer itself has already reached the agent.
+   */
+  async function refreshBrief(runId) {
+    const run = runStore.get(runId);
+    if (!run || run.definition.notesDir === null) return;
+    try {
+      const entries = [
+        ...decisionStore.list(run.id, { offset: 0, limit: 100, direction: 'asc' }).map(item => ({ ...item, by: 'agent' })),
+        ...answerStore.list(run.id).map(item => ({ ...item, by: 'owner' })),
+      ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      await writeBrief({ worktreePath: run.worktreePath, definition: run.definition, input: run.input, entries });
+    } catch (err) {
+      console.error(`[pipeline-run] brief could not be written for ${runId}:`, err);
+    }
   }
 
   /** @returns {boolean} true when Setup left a dirty worktree (or status failed) and the run was failed. */
@@ -414,7 +437,8 @@ export function createRunEngine({
     const stepIndex = run.currentStepIndex;
     const defStep = run.definition.steps[stepIndex];
     // Setup follows CodeDeck's own rules; a request without a list has no recommendation to accept.
-    if (!run.definition.agentsDecide || defStep.kind !== 'node' || inputRequest.questions === null) return false;
+    // A step marked to always ask the owner keeps its questions for the owner.
+    if (!run.definition.agentsDecide || defStep.kind !== 'node' || defStep.askOwner === true || inputRequest.questions === null) return false;
     const handle = getHandle(runId);
     const { workflow, attachment } = handle;
     const identifier = workflow.signalIdentifier();
@@ -439,6 +463,7 @@ export function createRunEngine({
       answer: ACCEPT_RECOMMENDATIONS_ANSWER,
     });
     handle.decidedIdentifier = identifier;
+    await refreshBrief(runId);
     attachment.write('\r');
     workflow.input(ACCEPT_RECOMMENDATIONS_ANSWER);
     return true;
@@ -585,7 +610,10 @@ export function createRunEngine({
       run = runStore.get(runId);
       if (!run || !['pending', 'running'].includes(run.status)) return;
 
-      if (run.definition.notesDir !== null) await prepareNotes({ worktreePath: run.worktreePath, definition: run.definition, input: run.input });
+      if (run.definition.notesDir !== null) {
+        await prepareNotes({ worktreePath: run.worktreePath, definition: run.definition, input: run.input });
+        await refreshBrief(runId);
+      }
       if (handle.stopped) return;
 
       const stepIndex = run.currentStepIndex;
@@ -940,6 +968,17 @@ export function createRunEngine({
         if (handle.workflow !== workflow || workflow.snapshot().status !== 'needs_input') {
           throw unavailable('The agent stopped waiting while the answer was being sent.');
         }
+        // Recorded before it is submitted, so every later step can read what was asked and answered.
+        const asked = runStore.get(runId);
+        answerStore.add({
+          runId,
+          stepIndex: asked.currentStepIndex,
+          stepName: asked.definition.steps[asked.currentStepIndex].name,
+          pass: workflow.snapshot().iteration,
+          questions: asked.inputRequest?.questions ?? null,
+          answer,
+        });
+        await refreshBrief(runId);
         attachment.write('\r');
         // The loop resumes on an answer; its running snapshot moves the run out of needs_input.
         workflow.input(answer);

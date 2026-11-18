@@ -70,7 +70,9 @@ function parseNode(nodes, index, id, kind = 'workflow', withAgent = true) {
   if (!isText(node.prompt)) throw invalid(kind, `${path}.prompt`, id);
   if (typeof node.readOnly !== 'boolean') throw invalid(kind, `${path}.readOnly`, id);
   if (typeof node.approval !== 'boolean' || (node.repeat?.mode === 'loop_back' && node.approval)) throw invalid(kind, `${path}.approval`, id);
-  return { name: node.name, role: node.role, ...(withAgent ? { agentId: node.agentId } : {}), prompt: node.prompt, repeat: parseRepeat(nodes, index, id), readOnly: node.readOnly, approval: node.approval };
+  // Whether this step's questions always come to the owner, also when agents decide.
+  if (typeof node.askOwner !== 'boolean') throw invalid(kind, `${path}.askOwner`, id);
+  return { name: node.name, role: node.role, askOwner: node.askOwner, ...(withAgent ? { agentId: node.agentId } : {}), prompt: node.prompt, repeat: parseRepeat(nodes, index, id), readOnly: node.readOnly, approval: node.approval };
 }
 
 function parseDefinition(record, kind, withAgent) {
@@ -104,7 +106,7 @@ export function parseTemplate(record) {
 export function parseStepPreset(record) {
   const kind = 'saved step';
   if (!isObject(record)) throw invalid(kind, 'step');
-  const { id, name, role, prompt, repeat, readOnly, approval, revision, createdAt, updatedAt } = record;
+  const { id, name, role, prompt, repeat, readOnly, approval, askOwner, revision, createdAt, updatedAt } = record;
   if (!isUuid(id)) throw invalid(kind, 'id');
   if (!isText(name)) throw invalid(kind, 'name', id);
   if (!isLine(role, 32)) throw invalid(kind, 'role', id);
@@ -113,10 +115,11 @@ export function parseStepPreset(record) {
   if (repeat.mode === 'until_complete' && (!Number.isInteger(repeat.max) || repeat.max < 1 || repeat.max > 100)) throw invalid(kind, 'repeat.max', id);
   if (typeof readOnly !== 'boolean') throw invalid(kind, 'readOnly', id);
   if (typeof approval !== 'boolean') throw invalid(kind, 'approval', id);
+  if (typeof askOwner !== 'boolean') throw invalid(kind, 'askOwner', id);
   if (!isRevision(revision)) throw invalid(kind, 'revision', id);
   if (!isTimestamp(createdAt)) throw invalid(kind, 'createdAt', id);
   if (!isTimestamp(updatedAt)) throw invalid(kind, 'updatedAt', id);
-  return { id, name, role, prompt, repeat: repeat.mode === 'once' ? { mode: 'once' } : { mode: 'until_complete', max: repeat.max }, readOnly, approval, revision, createdAt, updatedAt };
+  return { id, name, role, prompt, repeat: repeat.mode === 'once' ? { mode: 'once' } : { mode: 'until_complete', max: repeat.max }, readOnly, approval, askOwner, revision, createdAt, updatedAt };
 }
 
 export function parseSettings(record) {

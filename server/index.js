@@ -27,6 +27,7 @@ import { createRunStore } from './pipelines/run-store.js';
 import { createDecisionStore } from './pipelines/decision-store.js';
 import { createNoteStore } from './pipelines/note-store.js';
 import { createReviewStore } from './pipelines/review-store.js';
+import { createAnswerStore } from './pipelines/answer-store.js';
 import { createTemplateStore, createStepPresetStore } from './pipelines/library-store.js';
 import {
   create as createPipelineWorktree,
@@ -910,6 +911,7 @@ pipelineRunStoreForMobile = pipelineRunStore;
 const pipelineDecisionStore = createDecisionStore(db);
 const pipelineNoteStore = createNoteStore(db);
 const pipelineReviewStore = createReviewStore(db);
+const pipelineAnswerStore = createAnswerStore(db);
 const pipelineProgressReader = createRunProgressReader();
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
@@ -920,6 +922,7 @@ const pipelineRunEngine = createRunEngine({
       ? { tasksDone: progress.tasksDone, tasksTotal: progress.tasksTotal } : null;
   },
   decisionStore: pipelineDecisionStore,
+  answerStore: pipelineAnswerStore,
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
   createWorktree: async (run) => {
@@ -1031,6 +1034,7 @@ app.use(createPipelinesRouter({
   decisionStore: pipelineDecisionStore,
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
+  answerStore: pipelineAnswerStore,
   templateStore: createTemplateStore(db),
   stepPresetStore: createStepPresetStore(db),
   taskStore,

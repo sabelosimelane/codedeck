@@ -16,6 +16,7 @@ import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
 import { createRunProgressReader, readRunProgress, parsePhaseProgress } from '../pipelines/run-progress.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
+import { createAnswerStore } from '../pipelines/answer-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createReviewStore } from '../pipelines/review-store.js';
 import {
@@ -250,14 +251,14 @@ describeLive('pipeline run live (Phase 3)', () => {
         notesDir: `.codedeck/runs/${runId.slice(0, 8)}`,
         steps: [
           {
-            kind: 'setup', role: '', readOnly: false, approval: false,
+            kind: 'setup', role: '', askOwner: false, readOnly: false, approval: false,
             name: 'Setup',
             prompt: buildSetupPrompt(homeRepoPath, names.worktreePath),
             repeat: { mode: 'until_complete', max: 3 },
             agent: agentSnap(setupAgent),
           },
           {
-            kind: 'node', role: '', readOnly: false, approval: false,
+            kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
             name: 'Echo',
             prompt: 'finish now',
             repeat: { mode: 'until_complete', max: 3 },
@@ -288,7 +289,7 @@ describeLive('pipeline run live (Phase 3)', () => {
         return true;
       },
       readProgressCount: async () => null,
-      decisionStore: createDecisionStore(db),
+      decisionStore: createDecisionStore(db), answerStore: createAnswerStore(db),
       noteStore: notes,
       reviewStore: createReviewStore(db),
       readScreen: async () => [],
@@ -400,7 +401,7 @@ describeLive('pipeline run live notes', () => {
     const workflowId = '0d9e4b1a-6666-4666-8666-666666666666';
     const notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
     const steps = ['Analyse', 'Develop'].map((name, index) => ({
-      kind: 'node', role: '', readOnly: index === 0, approval: index === 0, name, prompt: `do ${name}`, repeat: { mode: 'once' },
+      kind: 'node', role: '', askOwner: false, readOnly: index === 0, approval: index === 0, name, prompt: `do ${name}`, repeat: { mode: 'once' },
       agent: { id: `0d9e4b1a-7777-4777-8777-77777777777${index}`, name: `stub-${index}`, launchCommand: commands[index], resetCommand: '/clear' },
     }));
     runs.create({
@@ -415,7 +416,7 @@ describeLive('pipeline run live notes', () => {
     const engine = createRunEngine({
       runStore: runs,
       setTerminalMuted: () => true,
-      readProgressCount: async () => null, decisionStore: createDecisionStore(db), noteStore: notes, reviewStore: createReviewStore(db),
+      readProgressCount: async () => null, decisionStore: createDecisionStore(db), answerStore: createAnswerStore(db), noteStore: notes, reviewStore: createReviewStore(db),
       createWorktree: async () => { throw new Error('existing worktree must be reused'); },
       startSession: async ({ cwd }) => {
         const sessionId = `codedeck-${++sessionSeq}`;
@@ -515,7 +516,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         progressFile: null,
         notesDir: null,
         steps: [{
-          kind: 'node', role: '', readOnly: false, approval: false,
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
           name: 'Develop',
           prompt: 'migrate the schema',
           repeat: { mode: 'once' },
@@ -547,7 +548,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
       runStore: runs,
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
-      decisionStore: createDecisionStore(db),
+      decisionStore: createDecisionStore(db), answerStore: createAnswerStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
       readScreen,
@@ -749,8 +750,8 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         progressFile: progressMode === null ? null : 'todo.md',
         notesDir: null,
         steps: [
-          { kind: 'node', role: '', readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
-          { kind: 'node', role: '', readOnly: false, approval: false, name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 5 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
+          { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
+          { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 5 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
         ],
       },
       steps: [pending(), pending()],
@@ -779,7 +780,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         const progress = await readRunProgress({ run, workflowProgressFile: null, progressReader: createRunProgressReader() });
         return progress?.phaseCount > 0 ? { tasksDone: progress.tasksDone, tasksTotal: progress.tasksTotal } : null;
       },
-      decisionStore: decisions,
+      decisionStore: decisions, answerStore: createAnswerStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
       readScreen,
@@ -923,7 +924,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
         progressFile: null,
         notesDir: null,
         steps: [
-          { kind: 'node', role: '', readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: { id: '0d9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'dialog-stub', launchCommand: stub, resetCommand: '/clear' } },
+          { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: { id: '0d9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'dialog-stub', launchCommand: stub, resetCommand: '/clear' } },
         ],
       },
       steps: [{ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null }],
@@ -962,7 +963,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
       runStore: runs,
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
-      decisionStore: decisions,
+      decisionStore: decisions, answerStore: createAnswerStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
       readScreen,
@@ -1079,7 +1080,7 @@ describeLive('pipeline run live — Resume', () => {
         progressFile: null,
         notesDir: null,
         steps: stepNames.map(name => (
-          { kind: 'node', role: '', readOnly: false, approval: false, name, prompt: `do the ${name} step`, repeat: { mode: 'once' }, agent: { id: '0e9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'resume-stub', launchCommand: stub, resetCommand: '/clear' } }
+          { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name, prompt: `do the ${name} step`, repeat: { mode: 'once' }, agent: { id: '0e9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'resume-stub', launchCommand: stub, resetCommand: '/clear' } }
         )),
       },
       steps: stepNames.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null })),
@@ -1120,7 +1121,7 @@ describeLive('pipeline run live — Resume', () => {
       runStore: runs,
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
-      decisionStore: createDecisionStore(db),
+      decisionStore: createDecisionStore(db), answerStore: createAnswerStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
       readScreen,

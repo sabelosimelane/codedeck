@@ -1,5 +1,5 @@
-import { expect, it } from 'vitest';
-import { parseDecision, parseDecisionPage, parseInputRequest, parseRun, parseRunAutonomy, parseNotePage } from '../pipelineRunRecords';
+import { describe, expect, it } from 'vitest';
+import { parseAnswerPage as parseAnswers, parseDecision, parseDecisionPage, parseInputRequest, parseRun, parseRunAutonomy, parseNotePage } from '../pipelineRunRecords';
 import { validRun } from './pipelineRunFixture';
 it('accepts the complete run response', () => { expect(parseRun(validRun())).toEqual(validRun()); });
 it('accepts no_progress on a stopped run and rejects an unknown reason', () => {
@@ -263,4 +263,23 @@ it.each([
   ['steps[1].roundsCompleted', () => looping({ mode: 'loop_back', toStepIndex: 0, max: 5 }, null)],
 ])('parseRunAutonomy rejects a malformed %s', (field, build) => {
   expect(() => parseRunAutonomy(build())).toThrow(field);
+});
+
+describe('parseAnswerPage', () => {
+  const item = (extra = {}) => ({ id: 1, stepIndex: 0, stepName: 'Clarify', pass: 1, questions: '1. Which page?', answer: 'Login', createdAt: '2026-11-18T10:00:00.000Z', ...extra });
+  const page = data => ({ data, page: { totalElements: data.length } });
+  it('returns exactly the known fields, with null questions allowed', () => {
+    expect(parseAnswers(page([{ ...item(), surprise: 1 }, item({ id: 2, questions: null })]))).toEqual({ answers: [item(), item({ id: 2, questions: null })], total: 2 });
+  });
+  it.each([
+    [{ id: 0 }, 'id'], [{ stepIndex: 33 }, 'stepIndex'], [{ stepName: '' }, 'stepName'], [{ pass: 0 }, 'pass'],
+    [{ questions: '' }, 'questions'], [{ answer: '' }, 'answer'], [{ answer: null }, 'answer'], [{ createdAt: 'then' }, 'createdAt'],
+  ])('refuses an answer with %j', (extra, field) => {
+    expect(() => parseAnswers(page([item(extra)]))).toThrow(`data[0].${field}`);
+  });
+  it('refuses a response without data or a page', () => {
+    expect(() => parseAnswers({ page: { totalElements: 0 } })).toThrow('data');
+    expect(() => parseAnswers({ data: [] })).toThrow('page');
+    expect(() => parseAnswers(null)).toThrow('body');
+  });
 });

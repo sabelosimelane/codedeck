@@ -455,3 +455,15 @@ describe('validateStepPresetBody', () => {
     expect(fields(validateStepPresetBody([]))).toEqual(['body']);
   });
 });
+
+describe('a step that always asks the owner', () => {
+  const node = (extra = {}) => ({ name: 'Clarify', agentId: UUID, prompt: 'Ask', repeat: { mode: 'once' }, ...extra });
+  it('is accepted on a workflow node, a template node and a saved step, and must be a boolean', () => {
+    expect(validateWorkflowBody({ name: 'W', agentsDecide: true, nodes: [node({ askOwner: true })] })).toEqual([]);
+    const { agentId, ...templateNode } = node({ askOwner: true });
+    expect(validateWorkflowBody({ name: 'W', agentsDecide: true, nodes: [templateNode] }, { template: true })).toEqual([]);
+    expect(validateStepPresetBody({ name: 'Clarify', prompt: 'Ask', repeat: { mode: 'once' }, askOwner: true })).toEqual([]);
+    expect(fields(validateWorkflowBody({ name: 'W', agentsDecide: true, nodes: [node({ askOwner: 'yes' })] }))).toEqual(['nodes[0].askOwner']);
+    expect(fields(validateStepPresetBody({ name: 'Clarify', prompt: 'Ask', repeat: { mode: 'once' }, askOwner: 1 }))).toEqual(['askOwner']);
+  });
+});

@@ -12,6 +12,7 @@ import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createReviewStore } from '../pipelines/review-store.js';
+import { createAnswerStore } from '../pipelines/answer-store.js';
 import { createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
@@ -67,6 +68,7 @@ async function setup(overrides = {}) {
   const decisionStore = createDecisionStore(db);
   const noteStore = createNoteStore(db);
   const reviewStore = createReviewStore(db);
+  const answerStore = createAnswerStore(db);
   const templateStore = createTemplateStore(db);
   const stepPresetStore = createStepPresetStore(db);
 
@@ -218,6 +220,7 @@ async function setup(overrides = {}) {
     decisionStore,
     noteStore,
     reviewStore,
+    answerStore,
     templateStore,
     stepPresetStore,
     taskStore,
@@ -241,6 +244,7 @@ async function setup(overrides = {}) {
     decisionStore,
     noteStore,
     reviewStore,
+    answerStore,
     taskStore,
     taskService,
     engine,
@@ -585,7 +589,7 @@ describe('pipelines API — preflight and runs', () => {
     expect(started.body.steps).toHaveLength(2);
     expect(started.body.steps[0]).toMatchObject({
       index: 0,
-      kind: 'setup', role: '', readOnly: false, approval: false,
+      kind: 'setup', role: '', askOwner: false, readOnly: false, approval: false,
       name: 'Setup',
       agentName: 'codex-sol-high',
       status: 'pending',
@@ -593,7 +597,7 @@ describe('pipelines API — preflight and runs', () => {
     });
     expect(started.body.steps[1]).toMatchObject({
       index: 1,
-      kind: 'node', role: '', readOnly: false, approval: false,
+      kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
       name: 'Develop',
       agentName: 'codex-sol-high',
       status: 'pending',
@@ -768,7 +772,7 @@ describe('pipelines API — preflight and runs', () => {
           progressFile: null,
           notesDir: null,
           steps: [{
-            kind: 'node', role: '', readOnly: false, approval: false,
+            kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
             name: 'Develop',
             prompt: 'Implement x',
             repeat: { mode: 'once' },
@@ -805,6 +809,7 @@ describe('pipelines API — preflight and runs', () => {
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
+      answerStore: createAnswerStore(db),
       templateStore: createTemplateStore(db),
       stepPresetStore: createStepPresetStore(db),
       taskStore: createTaskStore(db),
@@ -1113,6 +1118,7 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       decisionStore: ctx.decisionStore,
       noteStore: ctx.noteStore,
       reviewStore: ctx.reviewStore,
+      answerStore: ctx.answerStore,
       templateStore: createTemplateStore(ctx.db),
       stepPresetStore: createStepPresetStore(ctx.db),
       taskStore: ctx.taskStore,
@@ -1873,6 +1879,30 @@ describe('pipelines API — decisions agents made', () => {
     expect((await request(ctx.app).get(`${base}/runs/not-a-uuid/reviews`)).status).toBe(404);
   });
 
+  it('lists what the owner answered, with the page envelope, and narrows it to a step', async () => {
+    const { ctx, id } = await setupRun();
+    const answers = (query = {}) => request(ctx.app).get(`${base}/runs/${id}/answers`).query(query);
+    expect((await answers()).body).toEqual({ data: [], page: { currentPage: 0, size: 20, totalElements: 0, totalPages: 0, hasNextPage: false } });
+    const first = ctx.answerStore.add({ runId: id, stepIndex: 1, stepName: 'Develop', pass: 1, questions: '1. Which page?', answer: 'The <b>login</b> page' });
+    const second = ctx.answerStore.add({ runId: id, stepIndex: 1, stepName: 'Develop', pass: 2, questions: null, answer: 'Yes' });
+    ctx.answerStore.add({ runId: id, stepIndex: 0, stepName: 'Setup', pass: 1, questions: null, answer: 'Go on' });
+    ctx.answerStore.add({ runId: OTHER, stepIndex: 1, stepName: 'Develop', pass: 1, questions: null, answer: 'Elsewhere' });
+
+    const all = await answers();
+    expect(all.status).toBe(200);
+    expect(all.body.page.totalElements).toBe(3);
+    expect(all.body.data[0]).toEqual({ id: first.id, stepIndex: 1, stepName: 'Develop', pass: 1, questions: '1. Which page?', answer: 'The <b>login</b> page', createdAt: first.createdAt });
+    expect((await answers({ stepIndex: 1 })).body.data.map(item => item.id)).toEqual([first.id, second.id]);
+    expect((await answers({ stepIndex: 1, sort: 'createdAt,desc', size: 1 })).body).toMatchObject({ data: [{ id: second.id }], page: { totalElements: 2, totalPages: 2, hasNextPage: true } });
+    for (const [query, field] of [[{ stepIndex: 'x' }, 'stepIndex'], [{ size: 0 }, 'size'], [{ size: 101 }, 'size'], [{ sort: 'answer,asc' }, 'sort'], [{ by: 'owner' }, 'by']]) {
+      const bad = await answers(query);
+      expect(bad.status).toBe(400);
+      expect(bad.body.errors.map(error => error.field)).toEqual([field]);
+    }
+    expect((await request(ctx.app).get(`${base}/runs/${OTHER}/answers`)).status).toBe(404);
+    expect((await request(ctx.app).get(`${base}/runs/nope/answers`)).status).toBe(404);
+  });
+
   it('returns an empty page for a run whose agents decided nothing', async () => {
     const { ctx, id } = await setupRun();
     const response = await decisions(ctx, id);
@@ -2002,9 +2032,11 @@ describe('pipelines API — decisions agents made', () => {
   it('requires the task store and service', () => {
     const base = { agentStore: {}, workflowStore: {}, settingsStore: {}, runStore: {}, decisionStore: {}, noteStore: {}, findProject: () => null };
     expect(() => createPipelinesRouter(base)).toThrow('pipelines router: reviewStore is required');
-    expect(() => createPipelinesRouter({ ...base, reviewStore: { list() {} } })).toThrow('pipelines router: templateStore is required');
-    expect(() => createPipelinesRouter({ ...base, reviewStore: { list() {} }, templateStore: { list() {} } })).toThrow('pipelines router: stepPresetStore is required');
-    const stores = { ...base, reviewStore: { list() {} }, templateStore: { list() {} }, stepPresetStore: { list() {} } };
+    expect(() => createPipelinesRouter({ ...base, reviewStore: { list() {} } })).toThrow('pipelines router: answerStore is required');
+    const withAnswers = { ...base, reviewStore: { list() {} }, answerStore: { list() {} } };
+    expect(() => createPipelinesRouter(withAnswers)).toThrow('pipelines router: templateStore is required');
+    expect(() => createPipelinesRouter({ ...withAnswers, templateStore: { list() {} } })).toThrow('pipelines router: stepPresetStore is required');
+    const stores = { ...withAnswers, templateStore: { list() {} }, stepPresetStore: { list() {} } };
     expect(() => createPipelinesRouter(stores)).toThrow('pipelines router: taskStore is required');
     expect(() => createPipelinesRouter({ ...stores, taskStore: { get() {} } })).toThrow('pipelines router: taskService is required');
   });
