@@ -27,3 +27,23 @@
 .task-landing-link { color: var(--accent); }
 .task-landing-refusal { display: flex; flex-direction: column; gap: 2px; }
 .task-landing-details summary { cursor: pointer; color: var(--text-muted); }
+
+/* Questions: while a step waits for answers they get the room; its terminal keeps a strip below. */
+.task-step-detail[data-asking] { max-height: 78%; }
+.task-questions { display: flex; flex-direction: column; gap: 10px; max-width: 860px; }
+.task-questions-written { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-base); color: var(--text-primary); font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-question { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--border); border-left: 2px solid var(--warning); border-radius: 8px; background: var(--bg-base); }
+.task-question[data-answered="true"] { border-left-color: var(--accent); }
+.task-question-number { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; line-height: 22px; text-align: center; }
+.task-question-body { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
+.task-question-text { margin: 0; color: var(--text-primary); font-size: 14px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.task-question-choices { display: flex; flex-direction: column; gap: 4px; }
+.task-question-choice { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; color: var(--text-secondary); font-size: 13px; line-height: 1.5; cursor: pointer; }
+.task-question-choice[data-chosen="true"] { border-color: var(--border); background: var(--bg-elevated); color: var(--text-primary); }
+.task-question-choice input { flex: none; margin-top: 4px; accent-color: var(--accent); }
+.task-question-choice-label { display: block; color: var(--text-muted); font-size: 11px; letter-spacing: .02em; }
+.task-question-choice[data-chosen="true"] .task-question-choice-label { color: var(--accent); }
+.task-question-recommended { display: block; overflow-wrap: anywhere; }
+.task-questions-footer { display: flex; flex-direction: column; gap: 8px; }
+.task-questions-send { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.task-questions-missing { color: var(--warning); font-size: 12px; }

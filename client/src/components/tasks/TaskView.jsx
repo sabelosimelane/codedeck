@@ -3,7 +3,8 @@ import { Check, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'l
 import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
 import { describeRunStatus, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
 import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
-import { ApprovalPanel, InputRequestPanel } from '../pipelines/PipelineRunsBar';
+import { ApprovalPanel } from '../pipelines/PipelineRunsBar';
+import QuestionsPanel from './QuestionsPanel.jsx';
 import '../pipelines/pipeline-runs.css';
 import './task-view.css';
 
@@ -58,8 +59,9 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
   const progress = describeStepProgress(step);
   const loopTarget = step.repeat.mode === 'loop_back' ? run.steps.find(target => target.index === step.repeat.toStepIndex) : null;
   const resetKey = `${run.id}:${step.index}:${step.attempt}:${step.iteration}:${step.roundsCompleted}:${step.status}`;
+  const asking = isCurrent && run.status === 'needs_input';
   return (
-    <section aria-label={`Step ${step.name}`} className="task-step-detail">
+    <section aria-label={`Step ${step.name}`} className="task-step-detail" data-asking={asking || undefined}>
       <div className="task-step-detail-heading">
         <strong className="pipeline-run-primary-text">{step.name}</strong>
         <span>{progress.detail ? `${progress.label} · ${progress.detail}` : progress.label}</span>
@@ -76,7 +78,8 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
           <button type="button" onClick={onOpenTerminal}>Open a terminal here</button>
         </span>
       )}
-      {isCurrent && run.status === 'needs_input' && <InputRequestPanel run={run} onAnswer={onAnswer} />}
+      {/* Keyed by the request, so a new set of questions starts with fresh answers. */}
+      {asking && <QuestionsPanel key={`${run.id}:${step.index}:${step.iteration}:${run.inputRequest?.questions ?? ''}`} run={run} onAnswer={onAnswer} />}
       {isCurrent && run.status === 'awaiting_approval' && <ApprovalPanel run={run} onLoadNotes={onLoadNotes} onApprove={onApprove} onSendBack={onSendBack} />}
       <div className="task-step-records-row">
         {step.kind === 'node' && run.notesDir !== null && (
