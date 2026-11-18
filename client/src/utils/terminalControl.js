@@ -50,3 +50,13 @@ export function createTerminalControl({dimensions,onState,onError}) {
   revision:()=>controller()?state.controlRevision:null,
  };
 }
+
+/**
+ * What a terminal says about control: nothing while this window controls it (the usual
+ * case needs no label), and how to take control when another window has it.
+ */
+export function describeControlStatus(state) {
+ if (state === null) return null;
+ if (typeof state?.isController !== 'boolean') throw new Error('Terminal control state must say isController.');
+ return state.isController ? null : 'Viewing · tap or type to take control';
+}

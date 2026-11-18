@@ -8,7 +8,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useToast } from './ToastContext';
 import { AlertTriangle, ChevronsDown } from 'lucide-react';
 import { shouldResumeFromSessionHandshake } from '../utils/terminalResume';
-import { createTerminalControl } from '../utils/terminalControl';
+import { createTerminalControl, describeControlStatus } from '../utils/terminalControl';
 import { buildTerminalWebSocketUrl } from '../utils/terminalWsUrl';
 import { reportDesktopActivity } from '../utils/desktopActivity';
 import { isTerminalProtocolReply } from '../utils/terminalProtocolReplies';
@@ -1110,7 +1110,7 @@ const Terminal = forwardRef(function Terminal({ sessionId, cwd, host = 'local', 
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {controlState && <div role="status" className="terminal-control-status">{controlState.isController ? 'You control this terminal' : 'Viewing · tap or type to take control'}</div>}
+      {describeControlStatus(controlState) && <div role="status" className="terminal-control-status">{describeControlStatus(controlState)}</div>}
       {selectionState !== 'idle' && (
         <div role="status" style={{ position: 'absolute', bottom: 8, right: 12, zIndex: 5, pointerEvents: 'none', background: 'var(--bg-base)', color: 'var(--text-primary)', padding: '4px 8px', fontSize: 12 }}>
           Display paused for selection · Cmd+C to copy · Esc to resume

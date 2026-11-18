@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createTerminalControl } from '../terminalControl';
+import { createTerminalControl, describeControlStatus } from '../terminalControl';
 function setup() {
  const sent=[]; const ws={readyState:1,send: v=>sent.push(JSON.parse(v))};
  const c=createTerminalControl({dimensions:()=>({cols:80,rows:24}),onState:vi.fn(),onError:vi.fn()});
@@ -28,3 +28,17 @@ describe('terminal control fencing',()=>{
 });
 
 it('reports queued input as unsent until the live socket send succeeds',()=>{const {c,sent}=setup();c.ready();const delivered=vi.fn();expect(c.input('draft',delivered)).toBe(false);expect(delivered).not.toHaveBeenCalled();c.state({controllerId:'a',controlRevision:1,cols:80,rows:24,requestId:sent[0].requestId});expect(delivered).toHaveBeenCalledTimes(1);});
+
+describe('what a terminal says about who controls it',()=>{
+ it('says nothing when this window controls the terminal, or before the state is known',()=>{
+  expect(describeControlStatus({isController:true})).toBeNull();
+  expect(describeControlStatus(null)).toBeNull();
+ });
+ it('says how to take control when another window has it',()=>{
+  expect(describeControlStatus({isController:false})).toBe('Viewing · tap or type to take control');
+ });
+ it('rejects a state that does not say who controls',()=>{
+  expect(()=>describeControlStatus({})).toThrow('isController');
+  expect(()=>describeControlStatus({isController:'yes'})).toThrow('isController');
+ });
+});
