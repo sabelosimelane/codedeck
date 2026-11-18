@@ -67,6 +67,10 @@ export function isUuid(value) {
   return typeof value === 'string' && UUID_RE.test(value);
 }
 
+export function isRunRequestId(value) {
+  return typeof value === 'string' && REQUEST_ID_RE.test(value);
+}
+
 export function validateAgentBody(body, { revisionRequired = false } = {}) {
   const errors = [];
   if (!rejectUnknown(errors, body, ['name', 'launchCommand', 'resetCommand', 'revision'])) return errors;
@@ -255,7 +259,7 @@ export function validateSettingsBody(body) {
 export function validateRunStartBody(body) {
   const errors = [];
   if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask'])) return errors;
-  if (typeof body.requestId !== 'string' || !REQUEST_ID_RE.test(body.requestId)) {
+  if (!isRunRequestId(body.requestId)) {
     add(errors, 'requestId', 'Use 1–128 letters, digits, underscores or hyphens');
   }
   if (!isUuid(body.workflowId)) add(errors, 'workflowId', 'Use a workflow UUID');

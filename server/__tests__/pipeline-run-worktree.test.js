@@ -263,6 +263,23 @@ describe('preflight', () => {
 });
 
 describe('create', () => {
+  it('adds the worktree at the supplied baseCommit without reading HEAD', async () => {
+    const baseCommit = 'b'.repeat(40);
+    const execFile = vi.fn((_cmd, _args, _options, callback) => callback(null, '', ''));
+    await expect(create({ homePath: '/home', projectPath: '/linked', worktreePath: '/new', branch: 'task/new',
+      baseCommit, execFile, mkdir: async () => {} })).resolves.toEqual({ baseCommit });
+    expect(execFile.mock.calls.map(([, args]) => args)).toEqual([
+      ['-C', '/home', 'worktree', 'add', '/new', '-b', 'task/new', baseCommit],
+    ]);
+  });
+
+  it.each([null, '', '--invalid'])('rejects invalid supplied baseCommit %j before Git', async baseCommit => {
+    const execFile = vi.fn((_cmd, _args, _options, callback) => callback(null, '', ''));
+    await expect(create({ homePath: '/home', projectPath: '/linked', worktreePath: '/new', branch: 'task/new',
+      baseCommit, execFile, mkdir: async () => {} })).rejects.toThrow('baseCommit');
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
   it('reads project HEAD and adds from home when the paths differ', async () => {
     const calls = [];
     const execFile = vi.fn((_cmd, args, _options, callback) => {

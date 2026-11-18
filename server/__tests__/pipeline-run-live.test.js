@@ -602,7 +602,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
 
       await done;
       const finished = runs.get(runId);
-      expect(finished).toMatchObject({ status: 'complete', inputRequest: null, worktreeState: 'released' });
+      expect(finished).toMatchObject({ status: 'complete', inputRequest: null, worktreeState: 'external' });
       // The agent received the answer through its terminal.
       expect((await readScreen('codedeck-1')).join('\n')).toContain('stub agent was answered');
     } finally {
@@ -860,7 +860,11 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
       expect(testScreen).toContain('tested round 2');
       // The step that closes the loop was told what the loop is; both were told to decide.
       expect(testScreen.replace(/\s+/g, ' ')).toContain('This step closes a loop');
-      expect(developScreen.replace(/\s+/g, ' ')).toContain('The owner is not available during this run.');
+      // Join tmux soft wraps before checking guidance that can span rows.
+      const developGuidance = execFileSync('tmux', ['capture-pane', '-p', '-J', '-S', '-400', '-t', 'codedeck-1'], {
+        encoding: 'utf8',
+      });
+      expect(developGuidance).toContain('The owner is not available during this run.');
 
       expect(decisions.list(runId, { offset: 0, limit: 10, direction: 'asc' })).toEqual([expect.objectContaining({
         stepIndex: 1,

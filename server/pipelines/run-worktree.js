@@ -179,7 +179,7 @@ export async function preflight({
 }
 
 /**
- * Create a run worktree at base_commit = HEAD of projectPath.
+ * Create a worktree at the supplied base commit or at HEAD of projectPath.
  * @returns {{ baseCommit: string }}
  */
 export async function create({
@@ -187,13 +187,16 @@ export async function create({
   worktreePath,
   branch,
   projectPath,
+  baseCommit,
   execFile,
   mkdir = (dir, opts) => fs.promises.mkdir(dir, opts),
 } = {}) {
-  const { stdout: headRaw } = await runGit(execFile, [
-    '-C', projectPath, 'rev-parse', 'HEAD',
-  ]);
-  const baseCommit = headRaw.trim();
+  if (baseCommit === undefined) {
+    const { stdout } = await runGit(execFile, ['-C', projectPath, 'rev-parse', 'HEAD']);
+    baseCommit = stdout.trim();
+  } else if (typeof baseCommit !== 'string' || !COMMIT_ID.test(baseCommit)) {
+    throw new TypeError('worktree create: baseCommit must be a commit id');
+  }
   await mkdir(path.dirname(worktreePath), { recursive: true });
   try {
     await runGit(execFile, [

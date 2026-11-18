@@ -7,7 +7,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
-import { create as createWorktree, planNames, preflight, resolveHomeRepoPath } from '../pipelines/run-worktree.js';
+import { create as createWorktree, planNames, preflight, resolveHomeRepoPath, runGit } from '../pipelines/run-worktree.js';
 import { isTaskTitle, TASK_TITLE_MAX } from './task-store.js';
 
 export class TaskError extends Error {
@@ -22,7 +22,7 @@ const invalid = (field, message) => new TaskError('One or more fields failed val
 const TITLE_RULE = `Use 1–${TASK_TITLE_MAX} characters on one line`;
 
 export function createTaskService({ taskStore, findProject, execFile, startSession, pathExists, realpath, newId = randomUUID } = {}) {
-  if (typeof taskStore?.create !== 'function') throw new TypeError('taskStore is required');
+  if (typeof taskStore?.create !== 'function' || typeof taskStore?.remove !== 'function') throw new TypeError('taskStore with create and remove is required');
   for (const [name, value] of Object.entries({ findProject, execFile, startSession, pathExists, newId })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
@@ -71,7 +71,7 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
     };
   }
 
-  /** Creates the worktree and the task a plan describes. */
+  /** Records the task before creating its worktree at the same commit. */
   async function createPlannedNow(planned) {
     if (!planned || typeof planned !== 'object') throw new TypeError('A task plan is required');
     for (const field of ['id', 'project', 'projectPath', 'title', 'homePath', 'worktreePath', 'branch']) {
@@ -83,8 +83,9 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
     if (typeof exists !== 'boolean') throw new Error('pathExists must return a boolean');
     if (exists) throw new TaskError('A folder for this task already exists. Try again.', 409);
 
-    const created = await createWorktree({ homePath: planned.homePath, worktreePath: planned.worktreePath, branch: planned.branch, projectPath: planned.projectPath, execFile });
-    return taskStore.create({
+    const { stdout } = await runGit(execFile, ['-C', planned.projectPath, 'rev-parse', 'HEAD']);
+    const baseCommit = stdout.trim();
+    const task = taskStore.create({
       id: planned.id,
       project: planned.project,
       title: planned.title,
@@ -92,8 +93,17 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
       worktreePath: planned.worktreePath,
       branch: planned.branch,
       baseBranch: planned.baseBranch,
-      baseCommit: created?.baseCommit,
+      baseCommit,
     });
+    try {
+      await createWorktree({ homePath: planned.homePath, worktreePath: planned.worktreePath, branch: planned.branch, baseCommit, execFile });
+    } catch (error) {
+      const folderExists = await pathExists(planned.worktreePath);
+      if (typeof folderExists !== 'boolean') throw new Error('pathExists must return a boolean', { cause: error });
+      if (!folderExists) taskStore.remove(planned.id);
+      throw error;
+    }
+    return task;
   }
 
   function requireTask(id) {

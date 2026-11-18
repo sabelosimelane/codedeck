@@ -3,14 +3,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { createAgentStore } from '../pipelines/agent-store.js';
 import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
+import { createRequestStore } from '../pipelines/request-store.js';
 import { createTaskStore } from '../tasks/task-store.js';
+import { createTaskService } from '../tasks/task-service.js';
 import { createReviewStore } from '../pipelines/review-store.js';
 import { createAnswerStore } from '../pipelines/answer-store.js';
 import { createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
@@ -167,7 +171,7 @@ async function setup(overrides = {}) {
     }),
   };
 
-  const projects = new Map([[PROJECT.name, { ...PROJECT }]]);
+  const projects = new Map([[PROJECT.name, { ...PROJECT, path: overrides.repo ?? PROJECT.path }]]);
   const findProject = name => projects.get(name) ?? null;
 
   const preflight = overrides.preflight ?? vi.fn(async () => ({
@@ -200,7 +204,9 @@ async function setup(overrides = {}) {
   // Tasks: the real store; planning and creating a worktree are replaced, as Git is elsewhere here.
   const taskStore = createTaskStore(db);
   let plannedTasks = 0;
-  const taskService = overrides.taskService ?? {
+  const taskService = overrides.repo
+    ? createTaskService({ taskStore, findProject, execFile, pathExists: async target => existsSync(target), startSession: vi.fn() })
+    : overrides.taskService ?? {
     plan: vi.fn(async ({ project, title, titleSource }) => {
       plannedTasks += 1;
       const id = `7a00000${plannedTasks}-0000-4000-8000-000000000000`;
@@ -211,31 +217,37 @@ async function setup(overrides = {}) {
       titleSource: planned.titleSource, worktreePath: planned.worktreePath, branch: planned.branch, baseBranch: planned.baseBranch, baseCommit: 'c'.repeat(40) })),
   };
 
-  const app = express();
-  app.use(createPipelinesRouter({
-    agentStore,
-    workflowStore,
-    settingsStore,
-    runStore,
-    decisionStore,
-    noteStore,
-    reviewStore,
-    answerStore,
-    templateStore,
-    stepPresetStore,
-    taskStore,
-    taskService,
-    findProject,
-    engine,
-    preflight,
-    planNames,
-    resolveHomeRepoPath,
-    scheduleStart,
-    ...overrides.routerDeps,
-  }));
+  const openApp = () => {
+    const app = express();
+    if (overrides.onRequest) app.use(express.json(), overrides.onRequest);
+    app.use(createPipelinesRouter({
+      agentStore,
+      workflowStore,
+      settingsStore,
+      runStore,
+      requestStore: createRequestStore(db),
+      decisionStore,
+      noteStore,
+      reviewStore,
+      answerStore,
+      templateStore,
+      stepPresetStore,
+      taskStore,
+      taskService,
+      findProject,
+      engine,
+      preflight: overrides.repo ? undefined : preflight,
+      planNames,
+      resolveHomeRepoPath: overrides.repo ? undefined : resolveHomeRepoPath,
+      scheduleStart,
+      ...overrides.routerDeps,
+    }));
+    return loopbackTestServer(app);
+  };
 
   return {
-    app: await loopbackTestServer(app),
+    app: await openApp(),
+    openApp,
     db,
     agentStore,
     workflowStore,
@@ -806,6 +818,7 @@ describe('pipelines API — preflight and runs', () => {
       workflowStore,
       settingsStore,
       runStore,
+      requestStore: createRequestStore(db),
       decisionStore: createDecisionStore(db),
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
@@ -1115,6 +1128,7 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       workflowStore: ctx.workflowStore,
       settingsStore: ctx.settingsStore,
       runStore: reopenedStore,
+      requestStore: createRequestStore(ctx.db),
       decisionStore: ctx.decisionStore,
       noteStore: ctx.noteStore,
       reviewStore: ctx.reviewStore,
@@ -2047,6 +2061,9 @@ describe('pipelines API — decisions agents made', () => {
     const stores = { ...withAnswers, templateStore: { list() {} }, stepPresetStore: { list() {} } };
     expect(() => createPipelinesRouter(stores)).toThrow('pipelines router: taskStore is required');
     expect(() => createPipelinesRouter({ ...stores, taskStore: { get() {} } })).toThrow('pipelines router: taskService is required');
+    expect(() => createPipelinesRouter({
+      ...stores, taskStore: { get() {} }, taskService: { plan() {}, createPlanned() {} },
+    })).toThrow('pipelines router: requestStore is required');
   });
 
   it('requires the decision store', () => {
@@ -2246,6 +2263,198 @@ describe('pipelines API — runs in tasks', () => {
     return { ...ctx, workflow, seedTask, body, listWorktrees };
   }
 
+  async function setupRealTasks(options) {
+    const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'codedeck-api-tasks-')));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const repo = path.join(dir, 'repo');
+    mkdirSync(repo);
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    git('init', '-b', 'main');
+    git('config', 'user.name', 'API Test');
+    git('config', 'user.email', 'api@test.local');
+    git('commit', '--allow-empty', '-m', 'Initial commit');
+    const ctx = await setup({ ...options, repo });
+    const { workflow } = await seedReady(ctx);
+    const body = { requestId: 'real-task', workflowId: workflow.id, project: 'Demo', input: 'Fix login', newTask: { title: 'Login' } };
+    const post = (extra = {}, app = ctx.app) => request(app).post(`${base}/runs`).send({ ...body, ...extra });
+    const expectOneWorktree = () => {
+      const [task] = ctx.taskStore.list();
+      expect(ctx.taskStore.list()).toHaveLength(1);
+      expect(git('branch', '--format=%(refname:short)', '--list', 'task/*')).toBe(task.branch);
+      expect(git('worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree '))).toEqual([
+        `worktree ${repo}`, `worktree ${task.worktreePath}`,
+      ]);
+    };
+    return { ...ctx, body, post, git, expectOneWorktree };
+  }
+
+  it('provisions exactly one task for overlapping identical requests', async () => {
+    const ctx = await setupRealTasks();
+    const responses = await Promise.all([ctx.post(), ctx.post()]);
+    expect(responses.map(response => response.status).sort()).toEqual([200, 201]);
+    expect(responses[0].body.id).toBe(responses[1].body.id);
+    ctx.expectOneWorktree();
+    expect(ctx.runStore.list()).toHaveLength(1);
+    ctx.flushStart();
+    expect(ctx.engineStarts).toEqual([responses[0].body.id]);
+  });
+
+  it('refuses a conflicting request while the first is provisioning', async () => {
+    const ctx = await setupRealTasks();
+    const entered = Promise.withResolvers();
+    const proceed = Promise.withResolvers();
+    const create = ctx.taskService.createPlanned;
+    vi.spyOn(ctx.taskService, 'createPlanned').mockImplementationOnce(async plan => {
+      entered.resolve();
+      await proceed.promise;
+      return create(plan);
+    });
+    const first = ctx.post().then(response => response);
+    await entered.promise;
+    const conflict = await ctx.post({ input: 'Other' }).then(response => response).finally(proceed.resolve);
+    const started = await first;
+    expect([started.status, conflict.status]).toEqual([201, 409]);
+    expect(conflict.body).toMatchObject({ message: 'This requestId was already used with a different body', traceId: conflict.headers['x-trace-id'] });
+    ctx.expectOneWorktree();
+    expect(ctx.runStore.list()).toHaveLength(1);
+  });
+
+  it('shares the first provisioning error with an overlapping replay, then allows a fresh attempt', async () => {
+    const entered = Promise.withResolvers();
+    const proceed = Promise.withResolvers();
+    const ctx = await setupRealTasks({ onRequest(req, _res, next) {
+      next();
+      if (req.get('X-Test-Replay')) setImmediate(proceed.resolve);
+    } });
+    vi.spyOn(ctx.taskService, 'createPlanned').mockImplementationOnce(async () => {
+      entered.resolve();
+      await proceed.promise;
+      throw Object.assign(new Error('Provisioning failed'), { status: 409 });
+    });
+    const first = ctx.post().then(response => response);
+    await entered.promise;
+    const replay = ctx.post().set('X-Test-Replay', 'true');
+    const responses = await Promise.all([first, replay]);
+    for (const response of responses) {
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({ message: 'Provisioning failed', traceId: response.headers['x-trace-id'] });
+    }
+    expect(ctx.taskStore.list()).toEqual([]);
+    expect(ctx.runStore.list()).toEqual([]);
+    expect((await ctx.post({ input: 'Retry with different input' })).status).toBe(201);
+    ctx.expectOneWorktree();
+  });
+
+  it.each([{ title: ' Original ' }, {}])('replays the original request after a rename (%j)', async newTask => {
+    const ctx = await setupTasks();
+    const post = place => request(ctx.app).post(`${base}/runs`).send(ctx.body(place));
+    const first = await post({ newTask });
+    expect(first.status).toBe(201);
+    ctx.taskStore.rename(first.body.taskId, { title: 'Renamed', revision: 1 });
+
+    const replay = await post({ newTask: newTask.title ? { title: 'Original' } : {} });
+    expect(replay.status).toBe(200);
+    expect(replay.body.id).toBe(first.body.id);
+    expect((await post({ newTask: { title: 'Renamed' } })).status).toBe(409);
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    expect(ctx.runStore.list()).toHaveLength(1);
+  });
+
+  it('rejects a replay that switches from a new task to its id', async () => {
+    const ctx = await setupTasks();
+    const first = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: {} }));
+    const replay = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: first.body.taskId }));
+    expect([first.status, replay.status]).toEqual([201, 409]);
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    expect(ctx.runStore.list()).toHaveLength(1);
+  });
+
+  it('rejects a replay of a legacy run without stored start parameters', async () => {
+    const ctx = await setupTasks();
+    const first = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: {} }));
+    expect(first.status).toBe(201);
+    ctx.runStore.create({ ...ctx.runStore.get(first.body.id), id: randomUUID(), requestId: 'legacy' });
+    const replay = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ requestId: 'legacy', newTask: {} }));
+    expect(replay.status).toBe(409);
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    expect(ctx.runStore.list()).toHaveLength(2);
+  });
+
+  it.each([
+    ['open', 201, null],
+    ['missing', 409, "This task's files are no longer on disk."],
+    ['locked and missing', 409, "This task's files are no longer on disk."],
+    ['finished', 409, 'This task is finished.'],
+  ])('replays a start interrupted before run insertion with a %s task', async (state, status, message) => {
+    const ctx = await setupRealTasks();
+    const plan = vi.spyOn(ctx.taskService, 'plan');
+    const createPlanned = vi.spyOn(ctx.taskService, 'createPlanned');
+    vi.spyOn(ctx.runStore, 'create').mockImplementationOnce(() => { throw new Error('Run insert failed'); });
+    expect((await ctx.post()).status).toBe(500);
+    expect(ctx.runStore.list()).toEqual([]);
+    ctx.expectOneWorktree();
+    const [task] = ctx.taskStore.list();
+    const ownerFile = path.join(task.worktreePath, 'owner.txt');
+    if (state === 'open') {
+      ctx.git('-C', task.worktreePath, 'commit', '--allow-empty', '-m', 'Owner commit');
+      writeFileSync(ownerFile, 'Keep this');
+    }
+    if (state === 'missing') ctx.git('worktree', 'remove', task.worktreePath);
+    if (state === 'locked and missing') {
+      ctx.git('worktree', 'lock', task.worktreePath);
+      rmSync(task.worktreePath, { recursive: true });
+    }
+    if (state === 'finished') ctx.taskStore.setState(task.id, { state: 'closed' });
+
+    const restarted = await ctx.openApp();
+    const replay = await ctx.post({}, restarted);
+    expect(replay.status).toBe(status);
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    expect(plan).toHaveBeenCalledTimes(1);
+    expect(createPlanned).toHaveBeenCalledTimes(1);
+    if (state === 'open') {
+      ctx.expectOneWorktree();
+      expect(ctx.runStore.list()).toHaveLength(1);
+      expect(replay.body.taskId).toBe(task.id);
+      expect(replay.body.steps.map(step => step.kind)).toEqual(['setup', 'node']);
+      expect(replay.body.worktree).toMatchObject({ path: task.worktreePath, baseCommit: task.baseCommit, state: 'external' });
+      expect(readFileSync(ownerFile, 'utf8')).toBe('Keep this');
+    } else {
+      expect(replay.body.message).toBe(message);
+      expect(ctx.runStore.list()).toEqual([]);
+      expect((await ctx.post({ input: 'Different' }, restarted)).status).toBe(409);
+    }
+  });
+
+  it('validates a start before reserving an id and stores hostile-looking input as text', async () => {
+    const ctx = await setupTasks();
+    const post = () => request(ctx.app).post(`${base}/runs`);
+    const malformed = await post().type('application/json').send('{"requestId":');
+    expect(malformed.status).toBe(400);
+    expect(malformed.type).toBe('application/problem+json');
+    expect(malformed.body.errors).toEqual([expect.objectContaining({ field: 'body' })]);
+    const invalid = await post().send(ctx.body({ requestId: '', workflowId: undefined, input: null }));
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.traceId).toBe(invalid.headers['x-trace-id']);
+    expect(invalid.body.errors.map(error => error.field)).toEqual(['requestId', 'workflowId', 'input']);
+    const tooLong = await post().send(ctx.body({ requestId: 'a'.repeat(129), input: 'x'.repeat(4097) }));
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.errors.map(error => error.field)).toEqual(['requestId', 'input']);
+    const oversized = await post().send(ctx.body({ input: 'x'.repeat(513 * 1024) }));
+    expect(oversized.status).toBe(413);
+    expect(ctx.db.prepare('SELECT request_id FROM pipeline_run_requests').all()).toEqual([]);
+    expect(ctx.runStore.list()).toEqual([]);
+
+    const input = "'; DROP TABLE pipeline_run_requests; -- <script>".padEnd(4096, 'x');
+    const body = ctx.body({ requestId: 'a'.repeat(128), input });
+    const started = await post().send(body);
+    expect(started.status).toBe(201);
+    expect(started.body.input).toBe(input);
+    const replay = await post().send(body);
+    expect(replay.status).toBe(200);
+    expect(replay.body.id).toBe(started.body.id);
+  });
+
   it('starts a run in an existing task: no Setup, the task keeps its worktree', async () => {
     const ctx = await setupTasks();
     ctx.seedTask();
@@ -2349,7 +2558,7 @@ describe('pipelines API — runs in tasks', () => {
     expect(refused.body.message).toBe('Tasks are only available for local projects.');
 
     const collided = await setupTasks([HOME_WT], { taskService: {
-      plan: vi.fn(async () => ({ worktreePath: '/tmp/worktrees/x', branch: 'task/x' })),
+      plan: vi.fn(async () => ({ id: TASK_ID, worktreePath: '/tmp/worktrees/x', branch: 'task/x' })),
       createPlanned: vi.fn(async () => { throw Object.assign(new Error('A folder for this task already exists. Try again.'), { status: 409 }); }),
     } });
     const collision = await request(collided.app).post(`${base}/runs`).send(collided.body({ newTask: { title: 'x' } }));
