@@ -7,6 +7,7 @@ import NewTaskDialog from './tasks/NewTaskDialog.jsx';
 import { createTask, openTaskTerminal } from '../utils/tasksApi.js';
 import TerminalInspector from './TerminalInspector';
 import TaskView from './tasks/TaskView.jsx';
+import TaskLandingBar from './tasks/TaskLandingBar.jsx';
 import { useToast } from './ToastContext';
 import {
   shouldPersistLayout,
@@ -395,6 +396,7 @@ export default function TerminalArea({
   const visibleRun = pipelineRuns
     .filter(run => !worktreeGroups || (run.worktree.path === project.path ? 'main' : run.worktree.path) === visibleGroup)
     .reduce((newest, run) => (!newest || String(run.createdAt ?? '') > String(newest.createdAt ?? '') ? run : newest), null);
+  const visibleTask = groups.find(group => group.key === visibleGroup)?.task ?? null;
   const lastActiveByGroupRef = useRef(new Map());
   // Opening a terminal reads where the owner is now, without re-creating the callbacks on every poll.
   const groupsRef = useRef(groups);
@@ -1159,6 +1161,7 @@ export default function TerminalArea({
           return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
         })}
       </div>}
+      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged} onFinished={() => chooseWorktree('main')} />}
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}
         openSessionIds={new Set(tabs.flatMap(tab => tab.panes.map(pane => pane.sessionId)))}
         onActivateStep={activatePipelineSession} onOpenTerminal={addTab}

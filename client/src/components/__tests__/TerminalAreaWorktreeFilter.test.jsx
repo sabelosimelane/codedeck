@@ -6,6 +6,7 @@ import { buildWorktreeGroups, resolveSessionWorktrees } from '../../utils/worktr
 
 vi.mock('../Terminal', () => ({ default: ({ sessionId }) => <span data-testid={`mounted-${sessionId}`} /> }));
 vi.mock('../PaneDivider', () => ({ default: () => null }));
+vi.mock('../tasks/TaskLandingBar.jsx', () => ({ default: ({ task }) => <span data-testid="landing-bar">{task.title}</span> }));
 vi.mock('../TerminalInspector', () => ({ default: () => null }));
 const toast = vi.hoisted(() => vi.fn());
 const tasksApi = vi.hoisted(() => ({ openTaskTerminal: vi.fn(), createTask: vi.fn() }));
@@ -125,6 +126,12 @@ describe('TerminalArea worktree view', () => {
     fireEvent.click(view.getByRole('button', { name: 'New terminal' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringContaining('not a task yet') })));
     expect(global.fetch).not.toHaveBeenCalledWith('/api/terminal', expect.anything());
+  });
+  it('shows the landing bar for the selected task, and not in Main', async () => {
+    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={taskGroups} selectedWorktree="/tmp/demo-feature" worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    await waitFor(() => expect(view.getByTestId('landing-bar').textContent).toBe('Replies'));
+    view.rerender(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={taskGroups} selectedWorktree="main" worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    expect(view.queryByTestId('landing-bar')).toBeNull();
   });
   it('names the selected task on its empty card', async () => {
     const empty = { key: '/tmp/demo-empty', path: '/tmp/demo-empty', label: 'demo-empty', branch: 'task/e', isMain: false, sessionIds: [], run: null, task: { ...TASK, id: 'e', title: 'Login bug', worktreePath: '/tmp/demo-empty' } };

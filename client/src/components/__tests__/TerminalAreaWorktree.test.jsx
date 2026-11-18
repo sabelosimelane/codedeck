@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({ showToast: vi.fn(), create: vi.fn(), open: vi.
 const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'new', state: 'active', worktreePath: '/tmp/worktrees/demo-new', branch: 'task/new-7a000000', createdAt: '2026-11-18T10:00:00.000Z' };
 vi.mock('../Terminal', () => ({ default: () => null }));
 vi.mock('../PaneDivider', () => ({ default: () => null }));
+vi.mock('../tasks/TaskLandingBar.jsx', () => ({ default: ({ task }) => <span data-testid="landing-bar">{task.title}</span> }));
 vi.mock('../TerminalInspector', () => ({ default: () => null }));
 vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: mocks.showToast }) }));
 vi.mock('../../utils/tasksApi.js', () => ({ createTask: mocks.create, openTaskTerminal: mocks.open }));

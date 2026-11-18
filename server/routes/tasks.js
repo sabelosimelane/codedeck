@@ -42,11 +42,17 @@ function taskView(task) {
   };
 }
 
-export function createTasksRouter({ service, taskStore } = {}) {
+export function createTasksRouter({ service, taskStore, landing } = {}) {
   for (const method of ['create', 'get', 'rename', 'openTerminal']) {
     if (typeof service?.[method] !== 'function') throw new TypeError(`tasks router requires service.${method}`);
   }
   if (typeof taskStore?.list !== 'function') throw new TypeError('tasks router requires taskStore.list');
+  for (const method of ['status', 'commit', 'merge', 'pullRequest', 'close']) {
+    if (typeof landing?.[method] !== 'function') throw new TypeError(`tasks router requires landing.${method}`);
+  }
+  const noBody = req => {
+    if (req.body !== undefined && Object.keys(requireBody(req.body, [])).length) throw fieldError('body', 'This request takes no body');
+  };
 
   const router = express.Router();
   const route = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch(next);
@@ -87,6 +93,36 @@ export function createTasksRouter({ service, taskStore } = {}) {
     res.status(201).json(await service.openTerminal(req.params.id));
   }));
 
+  // --- Landing: how a task's work gets back into the project ---
+
+  router.get(`${BASE}/:id/landing`, route(async (req, res) => {
+    if (Object.keys(req.query).length) throw fieldError(Object.keys(req.query)[0], 'Unknown query field');
+    res.json(await landing.status(req.params.id));
+  }));
+
+  router.post(`${BASE}/:id/commit`, route(async (req, res) => {
+    const body = requireBody(req.body, ['message']);
+    res.json(await landing.commit(req.params.id, { message: body.message }));
+  }));
+
+  router.post(`${BASE}/:id/merge`, route(async (req, res) => {
+    noBody(req);
+    const result = await landing.merge(req.params.id);
+    res.json({ ...result, task: taskView(result.task) });
+  }));
+
+  router.post(`${BASE}/:id/pull-request`, route(async (req, res) => {
+    const body = requireBody(req.body, ['remote']);
+    const result = await landing.pullRequest(req.params.id, { remote: body.remote });
+    res.json({ ...result, task: taskView(result.task) });
+  }));
+
+  router.post(`${BASE}/:id/close`, route(async (req, res) => {
+    noBody(req);
+    const result = await landing.close(req.params.id);
+    res.json({ ...result, task: taskView(result.task) });
+  }));
+
   router.use(BASE, (_req, _res, next) => next(new TaskError('Tasks endpoint not found', 404)));
 
   router.use((error, req, res, next) => {
@@ -104,6 +140,8 @@ export function createTasksRouter({ service, taskStore } = {}) {
       type: 'about:blank', title, status, detail: message, error: title, message,
       timestamp: new Date().toISOString(), path: req.originalUrl.split('?')[0], traceId,
       ...(status === 400 ? { errors: error.errors?.length ? error.errors : [{ field: 'body', message }] } : {}),
+      // Why an action was refused: `reasons` (each with a code and message) or `conflicts` (file paths).
+      ...(error instanceof TaskError && error.extra ? error.extra : {}),
     });
   });
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createTask, listOpenTasks, openTaskTerminal, parseTask } from '../tasksApi';
+import { closeTask, commitTask, createTask, getTaskLanding, listOpenTasks, mergeTask, openTaskPullRequest, openTaskTerminal, parseLanding, parseTask, renameTask } from '../tasksApi';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
 const task = (overrides = {}) => ({
@@ -76,5 +76,73 @@ describe('tasks API client', () => {
     await expect(listOpenTasks()).rejects.toThrow('Server unreachable');
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, json: async () => { throw new Error('html'); } })));
     await expect(listOpenTasks()).rejects.toThrow('Something went wrong. Please try again.');
+  });
+});
+
+describe('landing API client', () => {
+  const landing = (overrides = {}) => ({
+    taskId: ID, state: 'active', branch: 'task/replies', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
+    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false },
+    remotes: [{ name: 'origin', host: 'gitlab.com', tool: 'glab' }],
+    blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] }, ...overrides,
+  });
+
+  it('reads the landing status and keeps exactly its known fields', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ ...landing(), surprise: 1 })));
+    expect(await getTaskLanding(ID)).toEqual(landing());
+    await expect(getTaskLanding('nope')).rejects.toThrow('taskId');
+  });
+
+  it.each([
+    ['taskId', 'x'], ['state', 'done'], ['branch', ''], ['baseBranch', 12], ['prUrl', 'ftp://x'], ['filesPresent', 'yes'], ['runActive', null],
+    ['uncommitted', 'a.txt'], ['uncommittedCount', 0], ['commitsAhead', -1], ['commitsBehind', 'x'], ['main', null], ['remotes', {}], ['blockers', null],
+  ])('refuses a landing status with an invalid %s', (field, value) => {
+    expect(() => parseLanding(landing({ [field]: value }))).toThrow(`Invalid landing response: ${field}`);
+  });
+
+  it('refuses malformed remotes and blockers', () => {
+    expect(() => parseLanding(landing({ remotes: [{ name: 'origin', host: 'h', tool: 'svn' }] }))).toThrow('remotes.tool');
+    expect(() => parseLanding(landing({ blockers: { ...landing().blockers, merge: [{ code: 'x' }] } }))).toThrow('blockers.merge');
+    expect(() => parseLanding(landing({ blockers: { ...landing().blockers, close: 'none' } }))).toThrow('blockers.close');
+  });
+
+  it('commits, merges, opens a pull request, closes and renames through the backend', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(reply(landing({ uncommitted: [], uncommittedCount: 0 })))
+      .mockResolvedValueOnce(reply({ task: task({ state: 'merged', finishedAt: '2026-11-18T11:00:00.000Z' }), mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true }))
+      .mockResolvedValueOnce(reply({ task: task({ state: 'pr_open', prUrl: 'https://example.test/pr/1' }), prUrl: 'https://example.test/pr/1', remote: 'origin' }))
+      .mockResolvedValueOnce(reply({ task: task({ state: 'closed', finishedAt: '2026-11-18T11:00:00.000Z' }), branchKept: 'task/replies', unmergedCommits: 2 }))
+      .mockResolvedValueOnce(reply(task({ title: 'Renamed', revision: 2 })));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await commitTask(ID, ' Add replies ')).uncommittedCount).toBe(0);
+    expect(await mergeTask(ID)).toMatchObject({ mergedInto: 'main', filesRemoved: true, branchDeleted: true, task: { state: 'merged' } });
+    expect(await openTaskPullRequest(ID, 'origin')).toMatchObject({ prUrl: 'https://example.test/pr/1', remote: 'origin' });
+    expect(await closeTask(ID)).toMatchObject({ branchKept: 'task/replies', unmergedCommits: 2 });
+    expect((await renameTask(ID, { title: ' Renamed ', revision: 1 })).title).toBe('Renamed');
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1].method, call[1].body ?? null])).toEqual([
+      [`/api/tasks/${ID}/commit`, 'POST', JSON.stringify({ message: 'Add replies' })],
+      [`/api/tasks/${ID}/merge`, 'POST', null],
+      [`/api/tasks/${ID}/pull-request`, 'POST', JSON.stringify({ remote: 'origin' })],
+      [`/api/tasks/${ID}/close`, 'POST', null],
+      [`/api/tasks/${ID}`, 'PUT', JSON.stringify({ title: 'Renamed', revision: 1 })],
+    ]);
+  });
+
+  it('refuses blank input before calling the backend, and malformed results after', async () => {
+    const fetchMock = vi.fn(async () => reply({ mergedInto: 'main' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(commitTask(ID, '  ')).rejects.toThrow('message');
+    await expect(openTaskPullRequest(ID, '')).rejects.toThrow('remote');
+    await expect(renameTask(ID, { title: '', revision: 1 })).rejects.toThrow('title');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(mergeTask(ID)).rejects.toThrow('Invalid merge response');
+    await expect(closeTask(ID)).rejects.toThrow('Invalid close response');
+    await expect(openTaskPullRequest(ID, 'origin')).rejects.toThrow('prUrl');
+  });
+
+  it('carries the reasons and conflicting files of a refusal', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ message: 'Nothing was merged.', conflicts: ['shared.txt', 12], reasons: [{ code: 'main_dirty', message: 'Main has uncommitted changes.' }, { code: 'bad' }] }, { ok: false, status: 409 })));
+    const error = await mergeTask(ID).catch(failure => failure);
+    expect(error).toMatchObject({ message: 'Nothing was merged.', status: 409, conflicts: ['shared.txt'], reasons: [{ code: 'main_dirty', message: 'Main has uncommitted changes.' }] });
   });
 });

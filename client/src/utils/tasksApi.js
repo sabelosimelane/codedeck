@@ -46,7 +46,12 @@ async function request(path, { method = 'GET', body, signal } = {}) {
   catch { throw new Error(FALLBACK); }
   if (!response.ok) {
     const field = Array.isArray(payload?.errors) && typeof payload.errors[0]?.message === 'string' ? payload.errors[0].message : null;
-    throw new Error(field ?? (text(payload?.message) ? payload.message : FALLBACK));
+    // A refusal may say why: `reasons` (code and message each) or `conflicts` (file paths).
+    throw Object.assign(new Error(field ?? (text(payload?.message) ? payload.message : FALLBACK)), {
+      status: response.status,
+      reasons: Array.isArray(payload?.reasons) ? payload.reasons.filter(reason => text(reason?.message)).map(reason => ({ code: String(reason.code), message: reason.message })) : [],
+      conflicts: Array.isArray(payload?.conflicts) ? payload.conflicts.filter(text) : [],
+    });
   }
   return payload;
 }
@@ -76,4 +81,91 @@ export async function openTaskTerminal(taskId) {
   if (body.taskId !== taskId) throw new Error('Invalid task terminal response: taskId');
   if (!text(body.project)) throw new Error('Invalid task terminal response: project');
   return { sessionId: body.sessionId, taskId: body.taskId, project: body.project };
+}
+
+const requireTaskId = taskId => { if (typeof taskId !== 'string' || !UUID.test(taskId)) throw new TypeError('taskId must be a task id'); };
+const count = value => Number.isSafeInteger(value) && value >= 0;
+
+function parseBlockers(list, field) {
+  if (!Array.isArray(list)) throw new Error(`Invalid landing response: ${field}`);
+  return list.map(item => {
+    if (!text(item?.code) || !text(item?.message)) throw new Error(`Invalid landing response: ${field}`);
+    return { code: item.code, message: item.message };
+  });
+}
+
+/** How a task stands for landing, as Git reports it now. */
+export function parseLanding(body) {
+  const guard = (condition, field) => { if (!condition) throw new Error(`Invalid landing response: ${field}`); };
+  guard(body !== null && typeof body === 'object' && !Array.isArray(body), 'body');
+  guard(typeof body.taskId === 'string' && UUID.test(body.taskId), 'taskId');
+  guard(STATES.includes(body.state), 'state');
+  guard(text(body.branch), 'branch');
+  guard(body.baseBranch === null || text(body.baseBranch), 'baseBranch');
+  guard(body.prUrl === null || (typeof body.prUrl === 'string' && /^https?:\/\//.test(body.prUrl)), 'prUrl');
+  guard(typeof body.filesPresent === 'boolean', 'filesPresent');
+  guard(typeof body.runActive === 'boolean', 'runActive');
+  guard(Array.isArray(body.uncommitted) && body.uncommitted.every(text), 'uncommitted');
+  guard(count(body.uncommittedCount) && body.uncommittedCount >= body.uncommitted.length, 'uncommittedCount');
+  guard(body.commitsAhead === null || count(body.commitsAhead), 'commitsAhead');
+  guard(body.commitsBehind === null || count(body.commitsBehind), 'commitsBehind');
+  guard(body.main !== null && typeof body.main === 'object' && (body.main.branch === null || text(body.main.branch)) && typeof body.main.dirty === 'boolean', 'main');
+  guard(Array.isArray(body.remotes), 'remotes');
+  guard(body.blockers !== null && typeof body.blockers === 'object', 'blockers');
+  return {
+    taskId: body.taskId, state: body.state, branch: body.branch, baseBranch: body.baseBranch, prUrl: body.prUrl,
+    filesPresent: body.filesPresent, runActive: body.runActive, uncommitted: [...body.uncommitted], uncommittedCount: body.uncommittedCount,
+    commitsAhead: body.commitsAhead, commitsBehind: body.commitsBehind, main: { branch: body.main.branch, dirty: body.main.dirty },
+    remotes: body.remotes.map((remote) => {
+      guard(text(remote?.name), 'remotes.name');
+      guard(remote.host === null || text(remote.host), 'remotes.host');
+      guard(remote.tool === null || remote.tool === 'gh' || remote.tool === 'glab', 'remotes.tool');
+      return { name: remote.name, host: remote.host, tool: remote.tool };
+    }),
+    blockers: {
+      commit: parseBlockers(body.blockers.commit, 'blockers.commit'),
+      merge: parseBlockers(body.blockers.merge, 'blockers.merge'),
+      pullRequest: parseBlockers(body.blockers.pullRequest, 'blockers.pullRequest'),
+      close: parseBlockers(body.blockers.close, 'blockers.close'),
+    },
+  };
+}
+
+export async function getTaskLanding(taskId, { signal } = {}) {
+  requireTaskId(taskId);
+  return parseLanding(await request(`/${taskId}/landing`, { signal }));
+}
+
+export async function commitTask(taskId, message) {
+  requireTaskId(taskId);
+  if (!text(message)) throw new TypeError('message must be a nonempty string');
+  return parseLanding(await request(`/${taskId}/commit`, { method: 'POST', body: { message: message.trim() } }));
+}
+
+export async function mergeTask(taskId) {
+  requireTaskId(taskId);
+  const body = await request(`/${taskId}/merge`, { method: 'POST' });
+  if (!text(body?.mergedInto) || typeof body.filesRemoved !== 'boolean' || typeof body.branchDeleted !== 'boolean') throw new Error('Invalid merge response');
+  return { task: parseTask(body.task), mergedInto: body.mergedInto, filesRemoved: body.filesRemoved, filesDetail: text(body.filesDetail) ? body.filesDetail : null, branchDeleted: body.branchDeleted };
+}
+
+export async function openTaskPullRequest(taskId, remote) {
+  requireTaskId(taskId);
+  if (!text(remote)) throw new TypeError('remote must be a nonempty string');
+  const body = await request(`/${taskId}/pull-request`, { method: 'POST', body: { remote } });
+  if (typeof body?.prUrl !== 'string' || !/^https?:\/\//.test(body.prUrl)) throw new Error('Invalid pull request response: prUrl');
+  return { task: parseTask(body.task), prUrl: body.prUrl, remote: String(body.remote) };
+}
+
+export async function closeTask(taskId) {
+  requireTaskId(taskId);
+  const body = await request(`/${taskId}/close`, { method: 'POST' });
+  if (!text(body?.branchKept) || !count(body.unmergedCommits)) throw new Error('Invalid close response');
+  return { task: parseTask(body.task), branchKept: body.branchKept, unmergedCommits: body.unmergedCommits };
+}
+
+export async function renameTask(taskId, { title, revision }) {
+  requireTaskId(taskId);
+  if (!text(title)) throw new TypeError('title must be a nonempty string');
+  return parseTask(await request(`/${taskId}`, { method: 'PUT', body: { title: title.trim(), revision } }));
 }

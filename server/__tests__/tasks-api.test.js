@@ -13,7 +13,7 @@ const databases = [];
 afterEach(() => { vi.restoreAllMocks(); databases.splice(0).forEach(db => db.close()); });
 
 /** Real store and service; only Git and the terminal are replaced. */
-async function setup({ openTerminal } = {}) {
+async function setup({ openTerminal, landing } = {}) {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   const db = new Database(':memory:');
@@ -35,8 +35,31 @@ async function setup({ openTerminal } = {}) {
     openTerminal: openTerminal ?? real.openTerminal,
   };
   const app = express();
-  app.use(createTasksRouter({ service, taskStore }));
-  return { server: await loopbackTestServer(app), service, taskStore };
+  const refused = (message, extra) => Object.assign(new TaskError(message, 409), { extra });
+  const land = {
+    status: vi.fn(async taskId => { real.get(taskId); return { taskId, state: 'active', uncommittedCount: 0, blockers: { commit: [], merge: [], pullRequest: [], close: [] } }; }),
+    commit: vi.fn(async (taskId, { message }) => {
+      real.get(taskId);
+      if (typeof message !== 'string' || !message.trim() || message.length > 200) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'message', message: 'Use 1–200 characters on one line' }]);
+      return { taskId, uncommittedCount: 0, commitsAhead: 1 };
+    }),
+    merge: vi.fn(async taskId => {
+      const task = real.get(taskId);
+      if (task.title === 'Conflict') throw refused('This task conflicts with main in 1 file. Nothing was merged.', { conflicts: ['shared.txt'] });
+      if (task.title === 'Dirty') throw refused('This task has uncommitted changes. Commit them first.', { reasons: [{ code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }] });
+      return { task: { ...taskStore.setState(taskId, { state: 'merged' }), secretColumn: 'never shown' }, mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true };
+    }),
+    pullRequest: vi.fn(async (taskId, { remote }) => {
+      real.get(taskId);
+      if (typeof remote !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(remote)) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'remote', message: 'Use the name of one of the project remotes' }]);
+      if (remote === 'down') throw new TaskError('The branch could not be pushed to down: timeout', 503);
+      return { task: taskStore.setState(taskId, { state: 'pr_open', prUrl: 'https://example.test/pr/1' }), prUrl: 'https://example.test/pr/1', remote };
+    }),
+    close: vi.fn(async taskId => { real.get(taskId); return { task: taskStore.setState(taskId, { state: 'closed' }), branchKept: 'task/t-1', unmergedCommits: 2 }; }),
+    ...landing,
+  };
+  app.use(createTasksRouter({ service, taskStore, landing: land }));
+  return { server: await loopbackTestServer(app), service, taskStore, landing: land };
 }
 
 function expectProblem(response, status, path = base) {
@@ -219,6 +242,86 @@ describe('tasks API', () => {
     const response = await request(server).post(`${base}/${id(1)}/terminals`);
     expectProblem(response, 500, `${base}/${id(1)}/terminals`);
     expect(response.body.message).toBe('Task request failed');
+  });
+
+  it('reports how a task stands for landing', async () => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Land me' });
+    const url = `${base}/${id(1)}/landing`;
+    const response = await request(server).get(url);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ taskId: id(1), state: 'active', blockers: { merge: [] } });
+    const bad = await request(server).get(`${url}?verbose=1`);
+    expectProblem(bad, 400, url);
+    expect(bad.body.errors.map(error => error.field)).toEqual(['verbose']);
+    expectProblem(await request(server).get(`${base}/${id(9)}/landing`), 404, `${base}/${id(9)}/landing`);
+  });
+
+  it('commits with a message and refuses a bad one', async () => {
+    const { server, landing } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Commit me' });
+    const url = `${base}/${id(1)}/commit`;
+    const done = await request(server).post(url).send({ message: 'Add replies' });
+    expect(done.status).toBe(200);
+    expect(done.body).toEqual({ taskId: id(1), uncommittedCount: 0, commitsAhead: 1 });
+    expect(landing.commit).toHaveBeenCalledWith(id(1), { message: 'Add replies' });
+    expect((await request(server).post(url).send({ message: 'x'.repeat(200) })).status).toBe(200);
+    for (const [body, fields] of [[{}, ['message']], [{ message: '' }, ['message']], [{ message: null }, ['message']], [{ message: 'x'.repeat(201) }, ['message']], [{ message: 'x', amend: true }, ['amend']], [[], ['body']]]) {
+      const response = await request(server).post(url).send(body);
+      expectProblem(response, 400, url);
+      expect(response.body.errors.map(error => error.field)).toEqual(fields);
+    }
+    expectProblem(await request(server).post(`${base}/${id(9)}/commit`).send({ message: 'x' }), 404, `${base}/${id(9)}/commit`);
+  });
+
+  it('merges a task and returns only its public fields', async () => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Merge me' });
+    const url = `${base}/${id(1)}/merge`;
+    const response = await request(server).post(url);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ mergedInto: 'main', filesRemoved: true, branchDeleted: true, task: { id: id(1), state: 'merged' } });
+    expect(response.body.task).not.toHaveProperty('secretColumn');
+    const withBody = await request(server).post(url).send({ force: true });
+    expectProblem(withBody, 400, url);
+    expect(withBody.body.errors.map(error => error.field)).toEqual(['force']);
+  });
+
+  it('says why a merge was refused: the reasons, or the conflicting files', async () => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Dirty' });
+    await request(server).post(base).send({ project: 'Demo', title: 'Conflict' });
+    const dirty = await request(server).post(`${base}/${id(1)}/merge`);
+    expectProblem(dirty, 409, `${base}/${id(1)}/merge`);
+    expect(dirty.body.reasons).toEqual([{ code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }]);
+    const conflict = await request(server).post(`${base}/${id(2)}/merge`);
+    expectProblem(conflict, 409, `${base}/${id(2)}/merge`);
+    expect(conflict.body).toMatchObject({ message: 'This task conflicts with main in 1 file. Nothing was merged.', conflicts: ['shared.txt'] });
+  });
+
+  it('opens a pull request on a named remote and reports an unreachable one as 503', async () => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'PR me' });
+    const url = `${base}/${id(1)}/pull-request`;
+    for (const [body, fields] of [[{}, ['remote']], [{ remote: '' }, ['remote']], [{ remote: '--force' }, ['remote']], [{ remote: 12 }, ['remote']], [{ remote: 'origin', draft: true }, ['draft']]]) {
+      const response = await request(server).post(url).send(body);
+      expectProblem(response, 400, url);
+      expect(response.body.errors.map(error => error.field)).toEqual(fields);
+    }
+    expectProblem(await request(server).post(url).send({ remote: 'down' }), 503, url);
+    const opened = await request(server).post(url).send({ remote: 'origin' });
+    expect(opened.status).toBe(200);
+    expect(opened.body).toMatchObject({ prUrl: 'https://example.test/pr/1', remote: 'origin', task: { state: 'pr_open', prUrl: 'https://example.test/pr/1' } });
+  });
+
+  it('closes a task and says which branch was kept', async () => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Close me' });
+    const response = await request(server).post(`${base}/${id(1)}/close`);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ branchKept: 'task/t-1', unmergedCommits: 2, task: { state: 'closed' } });
+    expect((await request(server).get(`${base}?open=true`)).body.data).toEqual([]);
+    expectProblem(await request(server).post(`${base}/${id(9)}/close`), 404, `${base}/${id(9)}/close`);
   });
 
   it('requires its dependencies', () => {

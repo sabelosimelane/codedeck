@@ -77,6 +77,7 @@ import { createTaskStore } from './tasks/task-store.js';
 import { createTaskService } from './tasks/task-service.js';
 import { createTasksRouter } from './routes/tasks.js';
 import { adoptWorktrees } from './tasks/task-adoption.js';
+import { createTaskLanding } from './tasks/task-landing.js';
 import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
 import { createSessionAttention } from './session-attention.js';
 import { createSessionStateService } from './session-state-service.js';
@@ -882,7 +883,22 @@ const taskService = createTaskService({
   startSession: startSessionWithWorktree,
   pathExists: worktreePathExists,
 });
-app.use(createTasksRouter({ service: taskService, taskStore }));
+const RUN_STILL_WORKING = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
+const taskLanding = createTaskLanding({
+  taskStore,
+  findProject: name => loadProjects().find(project => project.name === name) ?? null,
+  execFile,
+  pathExists: worktreePathExists,
+  // Read when asked: the run store is created below, after the routes are mounted.
+  hasActiveRun: taskId => pipelineRunStore.list().some(run => run.taskId === taskId && RUN_STILL_WORKING.has(run.status)),
+  // A finished task's runs let go of its worktree, which closes them (see run-engine cleanupWorktree).
+  onTaskFinished: task => {
+    for (const run of pipelineRunStore.list()) {
+      if (run.taskId === task.id && run.worktreeState === 'external') pipelineRunStore.update(run.id, { worktreeState: 'released', worktreeDetail: null });
+    }
+  },
+});
+app.use(createTasksRouter({ service: taskService, taskStore, landing: taskLanding }));
 
 const PIPELINE_QUESTION_SCREEN_LINES = 400;
 const pipelineAgentStore = createAgentStore(db);
