@@ -185,7 +185,7 @@ A step the owner continued past its limit has status `limit_accepted`. With no c
 | POST `/runs/:id/cleanup` | Remove a clean worktree without force; retain branch. For a run in an existing worktree it only releases the worktree |
 
 Agents/workflows filter by exact `name`, and runs by `status`, `project`,
-`workflowId`, `taskId`, or `open=true|false`. The runs bar filters by project; sidebar counts
+`workflowId`, `taskId`, or `open=true|false`. The task view filters by project; sidebar counts
 page through all open runs. Definition conflicts and disallowed run actions return
 409. Missing records return 404. Setup's clean-worktree guard and blocked cleanup
 are represented in the returned run; clients must inspect run status even on HTTP 200.

@@ -34,7 +34,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Workflow pipelines — runs work inside a task (a new one, an open one, or Main), with a Setup cleanliness guard for a new task, Setup cleanliness guard, ordered agent steps, bounded repeat passes, one terminal per agent (steps with the same agent share it, a new run reuses the ones an earlier run left in the worktree, and the agent is cleared before each prompt), loops over a group of steps, an optional per-workflow "let agents decide" with a record of every decision, Stop/Resume/Continue and safe cleanup. The per-terminal Workflow bar was removed; only pipeline runs use the loop engine.
 - Task view — a run is shown as its task: status in words, the steps as a rail, and the selected step's questions, approval, notes, decisions and reviews above its terminal
 - Workflow builder — a full screen with workflows, a draggable step rail, a large prompt editor and a backend-composed preview of what the agent is sent; workflow kinds, step roles, built-in templates (Bug fix, Feature build, Troubleshoot, Review only), owner-saved templates and reusable saved steps
-- Pipeline runs bar and sidebar counts — persisted run progress with automatic terminal-tab adoption; backend restarts require explicit Resume
+- Run progress and sidebar counts — persisted run progress with automatic terminal-tab adoption; backend restarts require explicit Resume
 
 ## Domain Model
 - **Project**: a named directory on disk. Stored as `{ name, path }` in SQLite config.
