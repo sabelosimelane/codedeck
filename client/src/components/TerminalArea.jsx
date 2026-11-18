@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import TerminalTabBar from './TerminalTabBar';
 import PaneDivider from './PaneDivider';
-import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play, GitBranchPlus } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play } from 'lucide-react';
 import NewTaskDialog from './tasks/NewTaskDialog.jsx';
 import { createTask, openTaskTerminal } from '../utils/tasksApi.js';
 import TerminalInspector from './TerminalInspector';
@@ -396,6 +396,8 @@ export default function TerminalArea({
   const visibleRun = pipelineRuns
     .filter(run => !worktreeGroups || (run.worktree.path === project.path ? 'main' : run.worktree.path) === visibleGroup)
     .reduce((newest, run) => (!newest || String(run.createdAt ?? '') > String(newest.createdAt ?? '') ? run : newest), null);
+  // Tasks need a local Git project; the backend says so if this one is not a repository.
+  const canStartTask = !project.host || project.host === 'local';
   const visibleTask = groups.find(group => group.key === visibleGroup)?.task ?? null;
   const lastActiveByGroupRef = useRef(new Map());
   // Opening a terminal reads where the owner is now, without re-creating the callbacks on every poll.
@@ -1153,13 +1155,15 @@ export default function TerminalArea({
         </span>
       </div>
 
-      {groups.length > 1 && <div className="worktree-switcher" aria-label="Worktrees">
+      {/* Main and the project's tasks, and the way to start another task. */}
+      {(groups.length > 1 || canStartTask) && <div className="worktree-switcher" aria-label="Main and tasks">
         {groups.map(group => {
           const count = tabs.filter(tab => tabGroupKey(tab) === group.key).length;
           const { title, tooltip } = describeWorktreeGroup(group);
           const waiting = group.run && describeRunStatus(group.run).tone === 'waiting';
           return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
         })}
+        {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked} title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
       </div>}
       {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged} onFinished={() => chooseWorktree('main')} />}
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}
@@ -1335,16 +1339,6 @@ export default function TerminalArea({
             <Plus size={14} />
           </button>
         </ShortcutHint>
-        <ShortcutHint label="New task" keys={[]}>
-          <button
-            type="button"
-            onClick={() => setShowWorktreeDialog(true)}
-            aria-label="New task"
-            title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : project.host && project.host !== 'local' ? 'Tasks are only available for local projects.' : 'New task: work on something in its own copy of the project'}
-            disabled={isTerminalRuntimeBlocked || Boolean(project.host && project.host !== 'local')}
-            style={{ padding: 4, borderRadius: 4, color: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 'rgba(138, 146, 166, 0.45)' : 'var(--text-muted)', opacity: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 0.5 : 1, cursor: isTerminalRuntimeBlocked || (project.host && project.host !== 'local') ? 'not-allowed' : 'pointer' }}
-          ><GitBranchPlus size={14} /></button>
-        </ShortcutHint>
       </TerminalTabBar>
 
       {isTerminalRuntimeBlocked && (
@@ -1390,7 +1384,7 @@ export default function TerminalArea({
             <div className="terminal-empty-label">No terminals open</div>
             <div className="terminal-empty-copy">
               {visibleGroup === 'main'
-                ? 'No terminals are open in Main. Open one here, or start a task to work on something in its own copy of the project.'
+                ? 'No terminals are open in Main. Open one here, or use New task above to work on something in its own copy of the project.'
                 : `No terminals are open in ${describeWorktreeGroup(groups.find(group => group.key === visibleGroup)).title}. Open one here.`}
             </div>
             <div className="terminal-empty-actions">
@@ -1401,17 +1395,6 @@ export default function TerminalArea({
               >
                 <Plus size={14} />
                 <span>Open terminal</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowWorktreeDialog(true)}
-                className="terminal-empty-cta terminal-empty-cta-secondary"
-                aria-label="Start a new task"
-                title={project.host && project.host !== 'local' ? 'Tasks are only available for local projects.' : 'Start a new task'}
-                disabled={Boolean(project.host && project.host !== 'local')}
-              >
-                <GitBranchPlus size={14} />
-                <span>New task</span>
               </button>
             </div>
           </div>

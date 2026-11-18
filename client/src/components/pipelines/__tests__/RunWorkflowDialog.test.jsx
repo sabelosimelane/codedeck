@@ -44,8 +44,9 @@ async function renderDialog(props = {}) {
   return { onStart, onClose };
 }
 
-const whereSelect = () => screen.getByRole('combobox', { name: 'Where to work' });
-const whereOptions = () => [...whereSelect().options].map(option => ({ value: option.value, label: option.textContent, disabled: option.disabled }));
+const where = name => screen.getByRole('radio', { name });
+const chosenPlace = () => screen.getAllByRole('radio').find(radio => radio.getAttribute('aria-checked') === 'true').textContent;
+const taskOptions = () => [...screen.getByRole('combobox', { name: 'Task' }).options].map(option => ({ value: option.value, label: option.textContent, disabled: option.disabled }));
 const startButton = () => screen.getByRole('button', { name: 'Start' });
 const requestedWorktrees = () => global.fetch.mock.calls.some(([url]) => String(url).includes('/worktrees'));
 
@@ -61,10 +62,11 @@ describe('RunWorkflowDialog', () => {
     workflows[1].progressFile = 'docs/todo.md';
     try {
       await renderDialog();
-      expect(screen.getByText('What this run is about: a description of the task, or the path of a file its steps should work from.')).toBeTruthy();
-      expect(screen.getByText('This workflow reads its progress from docs/{input}, so the input must be that file\'s path.')).toBeTruthy();
+      expect(screen.getByText('This workflow reads its progress from docs/{input}, so this must be that file\'s path.')).toBeTruthy();
+      expect(screen.queryByText('A description of the work, or the path of a file its steps should work from.')).toBeNull();
       fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: workflows[1].id } });
-      expect(screen.queryByText(/so the input must be that file/)).toBeNull();
+      expect(screen.queryByText(/so this must be that file/)).toBeNull();
+      expect(screen.getByText('A description of the work, or the path of a file its steps should work from.')).toBeTruthy();
     } finally {
       delete workflows[0].progressFile;
       delete workflows[1].progressFile;
@@ -75,7 +77,7 @@ describe('RunWorkflowDialog', () => {
     const { onStart, onClose } = await renderDialog();
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: workflows[0].id } });
-    expect(whereSelect().value).toBe('new');
+    expect(chosenPlace()).toBe('A new task');
     expect(startButton().disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'ship the feature' } });
     expect(screen.getByLabelText('Task title').value).toBe('ship the feature');
@@ -110,7 +112,7 @@ describe('RunWorkflowDialog', () => {
     expect(screen.getByText(/not a git top-level/i)).toBeTruthy();
     expect(startButton().disabled).toBe(true);
     expect(requestedWorktrees()).toBe(false);
-    expect(screen.queryByRole('combobox', { name: 'Where to work' })).toBeNull();
+    expect(screen.queryByRole('radiogroup', { name: 'Where to work' })).toBeNull();
   });
 
   it('warns that uncommitted changes in Main stay out of a new task, without blocking Start', async () => {
@@ -123,7 +125,7 @@ describe('RunWorkflowDialog', () => {
     expect(startButton().disabled).toBe(false);
   });
 
-  it('offers a new task first, then the open tasks of this project by title, then Main', async () => {
+  it('offers a new task, the open tasks of this project by title, and Main', async () => {
     mockApi({ worktrees: [
       HOME,
       worktree({ dirty: true }),
@@ -133,20 +135,30 @@ describe('RunWorkflowDialog', () => {
     const foreign = { id: '7a000000-0000-4000-8000-000000000004', project: 'Other', title: 'Elsewhere', worktreePath: '/git/worktrees/other' };
     await renderDialog({ tasks: [TASK, BUSY, gone, foreign] });
 
-    expect(whereOptions()).toEqual([
-      { value: 'new', label: 'A new task', disabled: false },
-      { value: `task:${TASK.id}`, label: 'Replies · uncommitted changes', disabled: false },
-      { value: `task:${BUSY.id}`, label: 'Busy one — An open workflow run is using this worktree.', disabled: true },
-      { value: `task:${gone.id}`, label: 'Vanished — its files are no longer on disk', disabled: true },
-      { value: 'main', label: 'Main', disabled: false },
+    expect(screen.getAllByRole('radio').map(radio => [radio.textContent, radio.disabled])).toEqual([['A new task', false], ['An open task', false], ['Main', false]]);
+    fireEvent.click(where('An open task'));
+    expect(taskOptions()).toEqual([
+      { value: TASK.id, label: 'Replies · uncommitted changes', disabled: false },
+      { value: BUSY.id, label: 'Busy one — An open workflow run is using this worktree.', disabled: true },
+      { value: gone.id, label: 'Vanished — its files are no longer on disk', disabled: true },
     ]);
+  });
+
+  it('does not offer an open task when the project has none, or Main when it cannot take a run', async () => {
+    mockApi({ worktrees: [{ ...HOME, selectable: false, reason: { code: 'in_use', message: 'An open workflow run is using this worktree.' } }] });
+    await renderDialog({ tasks: [] });
+    expect(where('An open task').disabled).toBe(true);
+    expect(where('An open task').title).toBe('This project has no open tasks');
+    expect(where('Main').disabled).toBe(true);
+    expect(where('Main').title).toBe('An open workflow run is using this worktree.');
   });
 
   it('starts a run in the chosen open task and says what that means', async () => {
     mockApi({ preflight: eligible({ dirty: true }), worktrees: [HOME, worktree({ dirty: true })] });
     const { onStart } = await renderDialog();
 
-    fireEvent.change(whereSelect(), { target: { value: `task:${TASK.id}` } });
+    fireEvent.click(where('An open task'));
+    expect(screen.getByRole('combobox', { name: 'Task' }).value).toBe(TASK.id);
     expect(screen.getByText('Runs in this task as it is, with no Setup step.')).toBeTruthy();
     expect(screen.getByText('There are uncommitted changes here.')).toBeTruthy();
     expect(screen.queryByLabelText('Task title')).toBeNull();
@@ -162,8 +174,9 @@ describe('RunWorkflowDialog', () => {
   it('starts in the task the owner is looking at, and in Main when asked', async () => {
     mockApi();
     const { onStart } = await renderDialog({ defaultTaskId: TASK.id });
-    expect(whereSelect().value).toBe(`task:${TASK.id}`);
-    fireEvent.change(whereSelect(), { target: { value: 'main' } });
+    expect(chosenPlace()).toBe('An open task');
+    expect(screen.getByRole('combobox', { name: 'Task' }).value).toBe(TASK.id);
+    fireEvent.click(where('Main'));
     expect(screen.getByText('Runs directly in Main, with no copy of its own and no Setup step.')).toBeTruthy();
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ worktreePath: '/git/demo' })));
@@ -173,7 +186,7 @@ describe('RunWorkflowDialog', () => {
   it('falls back to a new task when the task it opened on is no longer open', async () => {
     mockApi();
     await renderDialog({ tasks: [], defaultTaskId: TASK.id });
-    expect(whereSelect().value).toBe('new');
+    expect(chosenPlace()).toBe('A new task');
     expect(screen.getByLabelText('Task title')).toBeTruthy();
   });
 
@@ -185,7 +198,7 @@ describe('RunWorkflowDialog', () => {
     expect(screen.getByText(SETUP_MISSING.message)).toBeTruthy();
     expect(startButton().disabled).toBe(true);
 
-    fireEvent.change(whereSelect(), { target: { value: `task:${TASK.id}` } });
+    fireEvent.click(where('An open task'));
     expect(screen.queryByText(SETUP_MISSING.message)).toBeNull();
     expect(startButton().disabled).toBe(false);
   });

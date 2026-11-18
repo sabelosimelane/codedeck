@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
 import { listWorkflows, listWorktrees, preflightProject } from '../../utils/pipelinesApi';
 import { parsePreflight, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
-import '../session-search.css';
+import { WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { Button, Dialog, Field, Note, SegmentedControl, Select, TextInput } from '../ui/index.jsx';
 
 function newRequestId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -14,17 +14,11 @@ function newRequestId() {
 
 // Where a run works: a task created for it, an open task, or directly in Main.
 const NEW_TASK = 'new';
+const OPEN_TASK = 'task';
 const MAIN = 'main';
 const TASK_TITLE_MAX = 80;
 // Setup prepares the copy of the project a new task gets, so only a new task needs a setup agent.
 const SETUP_AGENT_MISSING = 'setup_agent_missing';
-const FIELD_STYLE = {
-  padding: '8px 10px',
-  borderRadius: 6,
-  border: '1px solid var(--border)',
-  background: 'var(--bg-surface)',
-  color: 'var(--text-primary)',
-};
 
 function placeLabel(name, worktree) {
   if (!worktree) return `${name} — its files are no longer on disk`;
@@ -39,7 +33,8 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
   const [input, setInput] = useState('');
   const [preflight, setPreflight] = useState(null);
   const [worktrees, setWorktrees] = useState([]);
-  const [place, setPlace] = useState(defaultTaskId ? `task:${defaultTaskId}` : NEW_TASK);
+  const [place, setPlace] = useState(defaultTaskId ? OPEN_TASK : NEW_TASK);
+  const [taskId, setTaskId] = useState(defaultTaskId);
   const [title, setTitle] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -74,21 +69,13 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
     return () => { cancelled = true; };
   }, [projectName]);
 
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   const projectTasks = tasks.filter(task => task.project === projectName);
   const home = worktrees.find(worktree => worktree.current) ?? null;
   const worktreeOf = task => worktrees.find(worktree => worktree.path === task.worktreePath) ?? null;
   // A task that was open when the dialog opened may have been finished since; then the run goes to a new one.
-  const chosenTask = place.startsWith('task:') ? projectTasks.find(task => `task:${task.id}` === place) ?? null : null;
-  const where = chosenTask ? 'task' : place === MAIN ? MAIN : NEW_TASK;
-  const chosenWorktree = where === 'task' ? worktreeOf(chosenTask) : where === MAIN ? home : null;
+  const chosenTask = place === OPEN_TASK ? projectTasks.find(task => task.id === taskId) ?? projectTasks.find(task => worktreeOf(task)?.selectable) ?? projectTasks[0] ?? null : null;
+  const where = place === OPEN_TASK ? (chosenTask ? OPEN_TASK : NEW_TASK) : place;
+  const chosenWorktree = where === OPEN_TASK ? worktreeOf(chosenTask) : where === MAIN ? home : null;
   // Until the owner types a title, the task is named after what the run is about.
   const taskTitle = (title ?? input).slice(0, TASK_TITLE_MAX);
   const reasons = (preflight?.reasons ?? []).filter(reason => !(where !== NEW_TASK && reason.code === SETUP_AGENT_MISSING));
@@ -106,7 +93,7 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
         workflowId,
         input,
         ...(where === NEW_TASK ? { newTask: { title: taskTitle.trim() } }
-          : where === 'task' ? { taskId: chosenTask.id }
+          : where === OPEN_TASK ? { taskId: chosenTask.id }
             : { worktreePath: chosenWorktree.path }),
       });
       if (started) onClose();
@@ -115,136 +102,71 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
     }
   };
 
+  const inputHint = selectedWorkflow?.progressFile?.includes('{input}')
+    ? `This workflow reads its progress from ${selectedWorkflow.progressFile}, so this must be that file's path.`
+    : 'A description of the work, or the path of a file its steps should work from.';
+  const ready = !loading && !error;
+
   return (
-    <div
-      className="session-search-overlay"
-      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
-    >
-      <div className="session-search-modal" role="dialog" aria-modal="true" aria-label="Run workflow" style={{ width: 'min(480px, 100%)' }}>
-        <div className="session-search-heading">
-          <span>Run workflow</span>
-          <button type="button" aria-label="Close run workflow" onClick={onClose}><X size={16} /></button>
-        </div>
+    <Dialog title="Run workflow" closeLabel="Close run workflow" onClose={onClose} busy={starting}
+      footer={ready && <>
+        <Button onClick={onClose} disabled={starting}>Cancel</Button>
+        <Button variant="primary" onClick={handleStart} disabled={!canStart}>{starting ? 'Starting…' : 'Start'}</Button>
+      </>}>
+      {loading && <span className="ui-field-hint" role="status">Loading…</span>}
+      {error && <Note tone="danger" role="alert">{error}</Note>}
 
-        <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {loading && <div className="session-search-state">Loading…</div>}
-          {error && <div className="session-search-state" role="alert">{error}</div>}
+      {ready && (
+        <>
+          <Field label="Workflow"
+            action={<Button variant="link" onClick={() => { onClose(); openWorkflowBuilder(); }}>Edit workflows…</Button>}
+            hint={selectedWorkflow?.description || null}>
+            <Select label="Workflow" value={workflowId} onChange={setWorkflowId}>
+              {workflows.map(workflow => (
+                <option key={workflow.id} value={workflow.id}>{workflow.kind && workflow.kind !== 'other' ? `${workflow.name} — ${WORKFLOW_KIND_LABELS[workflow.kind]}` : workflow.name}</option>
+              ))}
+            </Select>
+          </Field>
 
-          {!loading && !error && (
-            <>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
-                Workflow
-                <select
-                  aria-label="Workflow"
-                  value={workflowId}
-                  onChange={(event) => setWorkflowId(event.target.value)}
-                  style={FIELD_STYLE}
-                >
-                  {workflows.map((workflow) => (
-                    <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
-                  ))}
-                </select>
-              </label>
+          <Field label="What is this run about?" hint={inputHint}>
+            <TextInput label="Input" value={input} onChange={setInput} maxLength={4096} placeholder="e.g. docs/todos/replies.md" />
+          </Field>
 
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
-                Input
-                <input
-                  aria-label="Input"
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  maxLength={4096}
-                  style={FIELD_STYLE}
-                />
-              </label>
-              <button type="button" className="run-dialog-link" onClick={() => { onClose(); openWorkflowBuilder(); }}>Edit workflows…</button>
-              <p className="pipeline-hint">What this run is about: a description of the task, or the path of a file its steps should work from.</p>
-              {selectedWorkflow?.progressFile?.includes('{input}') && <p className="pipeline-hint">This workflow reads its progress from {selectedWorkflow.progressFile}, so the input must be that file&apos;s path.</p>}
-
-              {listable && (
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
-                  Where to work
-                  <select
-                    aria-label="Where to work"
-                    value={where === 'task' ? place : where}
-                    onChange={(event) => setPlace(event.target.value)}
-                    style={FIELD_STYLE}
-                  >
-                    <option value={NEW_TASK}>A new task</option>
-                    {projectTasks.map((task) => (
-                      <option key={task.id} value={`task:${task.id}`} disabled={!worktreeOf(task)?.selectable}>
-                        {placeLabel(task.title, worktreeOf(task))}
-                      </option>
-                    ))}
-                    {home && <option value={MAIN} disabled={!home.selectable}>{placeLabel('Main', home)}</option>}
-                  </select>
-                </label>
-              )}
-
+          {listable && (
+            <Field label="Where to work">
+              <SegmentedControl label="Where to work" value={where} onChange={setPlace} options={[
+                { value: NEW_TASK, label: 'A new task' },
+                { value: OPEN_TASK, label: 'An open task', disabled: projectTasks.length === 0, title: projectTasks.length === 0 ? 'This project has no open tasks' : undefined },
+                { value: MAIN, label: 'Main', disabled: !home?.selectable, title: home?.reason?.message },
+              ]} />
               {where === NEW_TASK && (
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
-                  Task title
-                  <input
-                    aria-label="Task title"
-                    value={taskTitle}
-                    onChange={(event) => setTitle(event.target.value)}
-                    maxLength={TASK_TITLE_MAX}
-                    placeholder="What this task is called in the sidebar"
-                    style={FIELD_STYLE}
-                  />
-                </label>
+                <TextInput label="Task title" value={taskTitle} onChange={setTitle} maxLength={TASK_TITLE_MAX} placeholder="Task title — what it is called in the sidebar" />
               )}
-
-              {reasons.length > 0 && (
-                <div role="alert" style={{ color: 'var(--danger)', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {reasons.map((reason) => (
-                    <span key={reason.code || reason.message}>{reason.message}</span>
+              {where === OPEN_TASK && (
+                <Select label="Task" value={chosenTask.id} onChange={setTaskId}>
+                  {projectTasks.map(task => (
+                    <option key={task.id} value={task.id} disabled={!worktreeOf(task)?.selectable}>{placeLabel(task.title, worktreeOf(task))}</option>
                   ))}
-                </div>
+                </Select>
               )}
-
-              <div style={{ color: 'var(--text-secondary)', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <Note>
                 {where === NEW_TASK && <span>The task gets its own copy of the project{preflight?.branch ? ` from ${preflight.branch}` : ''}, prepared by a Setup step, so other work can carry on beside it.</span>}
-                {where === NEW_TASK && preflight?.dirty && <span style={{ color: 'var(--warning)' }}>Uncommitted changes in Main will not be in the task.</span>}
-                {where === 'task' && <span>Runs in this task as it is, with no Setup step.</span>}
+                {where === OPEN_TASK && <span>Runs in this task as it is, with no Setup step.</span>}
                 {where === MAIN && <span>Runs directly in Main, with no copy of its own and no Setup step.</span>}
-                {where !== NEW_TASK && chosenWorktree?.dirty && <span style={{ color: 'var(--warning)' }}>There are uncommitted changes here.</span>}
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-surface)',
-                    color: 'var(--text-secondary)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleStart}
-                  disabled={!canStart}
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: canStart ? 'var(--bg-active)' : 'var(--bg-surface)',
-                    color: canStart ? 'var(--accent)' : 'var(--text-muted)',
-                    cursor: canStart ? 'pointer' : 'not-allowed',
-                  }}
-                >
-                  Start
-                </button>
-              </div>
-            </>
+              </Note>
+              {where === NEW_TASK && preflight?.dirty && <Note tone="warning">Uncommitted changes in Main will not be in the task.</Note>}
+              {where !== NEW_TASK && chosenWorktree?.dirty && <Note tone="warning">There are uncommitted changes here.</Note>}
+              {where === OPEN_TASK && chosenWorktree && !chosenWorktree.selectable && chosenWorktree.reason && <Note tone="warning">{chosenWorktree.reason.message}</Note>}
+            </Field>
           )}
-        </div>
-      </div>
-    </div>
+
+          {reasons.length > 0 && (
+            <Note tone="danger" role="alert">
+              {reasons.map(reason => <span key={reason.code || reason.message}>{reason.message}</span>)}
+            </Note>
+          )}
+        </>
+      )}
+    </Dialog>
   );
 }

@@ -36,10 +36,10 @@ beforeEach(() => {
 afterEach(() => { cleanup(); global.fetch = originalFetch; });
 
 describe('TerminalArea worktree view', () => {
-  it('does not show a switcher or filter tabs when there is only main checkout', async () => {
+  it('shows only Main and New task, and filters no tabs, when the project has no tasks', async () => {
     const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={[groups[0]]} worktreeBySession={new Map()} />);
     await waitFor(() => expect(view.getAllByTestId('terminal-tab')).toHaveLength(2));
-    expect(view.queryByLabelText('Worktrees')).toBeNull();
+    expect([...view.getByLabelText('Main and tasks').querySelectorAll('button')].map(button => button.textContent)).toEqual(['Main2', 'New task']);
   });
   it.each(['needs_input', 'limit_paused', 'awaiting_approval'])('shows label, count and waiting badge for %s', async status => {
     const waitingGroups = [groups[0], { ...groups[1], run: { ...groups[1].run, status } }];

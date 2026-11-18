@@ -24,23 +24,21 @@ beforeEach(() => {
 afterEach(() => { cleanup(); global.fetch = originalFetch; });
 
 describe('TerminalArea new task', () => {
-  it('offers both terminal choices when no terminals are open', () => {
+  it('offers a terminal on the empty card and New task in the strip of Main and tasks', () => {
     render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo' }} sessionStatus={[]} />);
     expect(screen.getByText('No terminals open')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Open terminal' })).toBeTruthy();
-    const worktreeButton = screen.getByRole('button', { name: 'Start a new task' });
-    expect(worktreeButton.type).toBe('button');
-    expect(worktreeButton.classList.contains('terminal-empty-cta-secondary')).toBe(true);
-    expect(worktreeButton.parentElement.classList.contains('terminal-empty-actions')).toBe(true);
-    expect(worktreeButton.querySelector('.lucide-git-branch-plus')).toBeTruthy();
+    const strip = screen.getByLabelText('Main and tasks');
+    expect([...strip.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Main0', 'New task']);
+    expect(screen.getAllByRole('button', { name: 'New task' })).toHaveLength(1);
   });
 
-  it('starts a task with an active terminal from the empty card', async () => {
+  it('starts a task with an active terminal from the strip', async () => {
     mocks.create.mockResolvedValue(TASK);
     const onSessionStatusRefresh = vi.fn();
     render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo' }} sessionStatus={[]} onSessionStatusRefresh={onSessionStatusRefresh} />);
     await waitFor(() => expect(onSessionStatusRefresh).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'Start a new task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
     expect(screen.getByRole('dialog', { name: 'New task' })).toBeTruthy();
     fireEvent.change(screen.getByRole('textbox', { name: 'Task title' }), { target: { value: 'new' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
@@ -49,12 +47,11 @@ describe('TerminalArea new task', () => {
     expect(screen.queryByText('No terminals open')).toBeNull();
   });
 
-  it('disables only the worktree choice for a remote project with no terminals', () => {
+  it('offers no New task for a remote project, which cannot have tasks', () => {
     render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo', host: 'other' }} sessionStatus={[]} />);
     expect(screen.getByRole('button', { name: 'Open terminal' }).disabled).toBe(false);
-    const worktreeButton = screen.getByRole('button', { name: 'Start a new task' });
-    expect(worktreeButton.disabled).toBe(true);
-    expect(worktreeButton.title).toBe('Tasks are only available for local projects.');
+    expect(screen.queryByRole('button', { name: 'New task' })).toBeNull();
+    expect(screen.queryByLabelText('Main and tasks')).toBeNull();
   });
 
   it('opens a new active tab and toasts after creation', async () => {
@@ -187,12 +184,9 @@ describe('TerminalArea new task', () => {
     expect(mocks.showToast).toHaveBeenCalledWith({ type: 'error', message: 'Server unreachable' });
   });
 
-  it('disables the button for remote projects and blocked runtimes', async () => {
-    const { rerender } = render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo', host: 'other' }} sessionStatus={[]} />);
-    expect(screen.getByRole('button', { name: 'New task' }).disabled).toBe(true);
-    expect(screen.getByRole('button', { name: 'New task' }).style.color).toBe('rgba(138, 146, 166, 0.45)');
+  it('disables New task while the terminal runtime is blocked', async () => {
     global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: false } : [] }));
-    rerender(<TerminalArea project={{ name: 'Other', path: '/tmp/other' }} sessionStatus={[]} />);
+    render(<TerminalArea project={{ name: 'Other', path: '/tmp/other' }} sessionStatus={[]} />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'New task' }).disabled).toBe(true));
   });
 });

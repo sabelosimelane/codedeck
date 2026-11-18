@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 
 const toast = vi.hoisted(() => vi.fn());
@@ -26,6 +26,9 @@ const mount = async (state = landing()) => {
   return { onChanged, onFinished };
 };
 
+const dialog = name => within(screen.getByRole('dialog', { name }));
+const typeInto = (label, value) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+
 beforeEach(() => { toast.mockReset(); Object.values(api).forEach(fn => fn.mockReset()); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -35,39 +38,41 @@ describe('TaskLandingBar', () => {
     expect(screen.getByText('2 commits not yet in main')).toBeTruthy();
     const merge = screen.getByRole('button', { name: 'Merge into main' });
     expect(merge.disabled).toBe(false);
-    expect(merge.className).toContain('pipeline-run-primary');
+    expect(merge.dataset.variant).toBe('primary');
     expect(screen.queryByRole('button', { name: 'Commit changes' })).toBeNull();
     expect(screen.getByText('Branch task/replies-7a000000, started from main')).toBeTruthy();
     expect(screen.getByText('/tmp/worktrees/demo-replies')).toBeTruthy();
   });
 
   it('merges after confirmation, then leaves the task', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
     api.mergeTask.mockResolvedValue({ mergedInto: 'main', filesRemoved: true, branchDeleted: true });
     const { onChanged, onFinished } = await mount();
     fireEvent.click(screen.getByRole('button', { name: 'Merge into main' }));
+    expect(dialog('Merge into main').getByText('"Replies" is merged into main. The task\'s own copy of the project is removed afterwards.')).toBeTruthy();
+    fireEvent.click(dialog('Merge into main').getByRole('button', { name: 'Cancel' }));
     expect(api.mergeTask).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Merge into main' }));
+    fireEvent.click(dialog('Merge into main').getByRole('button', { name: 'Merge' }));
     await waitFor(() => expect(onFinished).toHaveBeenCalled());
-    expect(confirm.mock.calls[0][0]).toBe('Merge "Replies" into main? The task\'s own copy of the project is removed afterwards.');
     expect(api.mergeTask).toHaveBeenCalledWith(TASK.id);
     expect(onChanged).toHaveBeenCalled();
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Merged into main' });
   });
 
   it('keeps a refused merge on screen with its conflicting files, and stays on the task', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     api.mergeTask.mockRejectedValue(Object.assign(new Error('This task conflicts with main in 1 file. Nothing was merged.'), { reasons: [], conflicts: ['shared.txt'] }));
     const { onFinished } = await mount();
     fireEvent.click(screen.getByRole('button', { name: 'Merge into main' }));
+    fireEvent.click(dialog('Merge into main').getByRole('button', { name: 'Merge' }));
     await waitFor(() => expect(screen.getByText('shared.txt')).toBeTruthy());
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getAllByRole('alert').some(node => node.textContent.includes('Nothing was merged'))).toBe(true);
     expect(toast).toHaveBeenCalledWith({ type: 'error', message: 'This task conflicts with main in 1 file. Nothing was merged.' });
     expect(onFinished).not.toHaveBeenCalled();
   });
 
   it('offers Commit when files are uncommitted and explains what else blocks the merge', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('  Add replies ');
     api.commitTask.mockResolvedValue(landing({ commitsAhead: 3 }));
     await mount(landing({
       uncommitted: ['a.txt'], uncommittedCount: 4,
@@ -81,44 +86,50 @@ describe('TaskLandingBar', () => {
     expect(merge.title).toBe('This task has uncommitted changes. Commit them first.');
     expect(screen.getByRole('button', { name: 'Close task' }).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Commit changes' }));
+    expect(dialog('Commit changes').getByText('Commits 4 changed files in this task.')).toBeTruthy();
+    expect(screen.getByLabelText('Commit message').value).toBe('Replies');
+    typeInto('Commit message', '  Add replies ');
+    fireEvent.click(dialog('Commit changes').getByRole('button', { name: 'Commit' }));
     await waitFor(() => expect(screen.getByText('3 commits not yet in main')).toBeTruthy());
-    expect(api.commitTask).toHaveBeenCalledWith(TASK.id, '  Add replies ');
-    expect(window.prompt.mock.calls[0][1]).toBe('Replies');
+    expect(api.commitTask).toHaveBeenCalledWith(TASK.id, 'Add replies');
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Changes committed' });
   });
 
-  it('does nothing when the commit message or the new title is cancelled or blank', async () => {
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValueOnce(null).mockReturnValueOnce('   ').mockReturnValueOnce(null).mockReturnValueOnce('Replies');
+  it('does nothing when the commit or the rename is cancelled, blank or unchanged', async () => {
     await mount(landing({ uncommittedCount: 1, uncommitted: ['a.txt'], blockers: { ...landing().blockers, commit: [] } }));
     fireEvent.click(screen.getByRole('button', { name: 'Commit changes' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Commit changes' }));
+    typeInto('Commit message', '   ');
+    expect(dialog('Commit changes').getByRole('button', { name: 'Commit' }).disabled).toBe(true);
+    fireEvent.click(dialog('Commit changes').getByRole('button', { name: 'Cancel' }));
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
-    expect(prompt).toHaveBeenCalledTimes(4);
+    expect(dialog('Rename task').getByRole('button', { name: 'Rename' }).disabled).toBe(true);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(api.commitTask).not.toHaveBeenCalled();
     expect(api.renameTask).not.toHaveBeenCalled();
   });
 
   it('renames the task with its revision', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('Companion tag watch');
     api.renameTask.mockResolvedValue({ title: 'Companion tag watch' });
     const { onChanged } = await mount();
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    typeInto('Task title', 'Companion tag watch');
+    fireEvent.click(dialog('Rename task').getByRole('button', { name: 'Rename' }));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(api.renameTask).toHaveBeenCalledWith(TASK.id, { title: 'Companion tag watch', revision: 3 });
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Renamed to Companion tag watch' });
   });
 
   it('opens a pull request on the chosen remote after naming where the branch is published', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     api.openTaskPullRequest.mockResolvedValue({ prUrl: 'https://github.com/team/demo/pull/3', remote: 'github' });
     const { onChanged, onFinished } = await mount(landing({ remotes: [{ name: 'origin', host: 'gitlab.com', tool: 'glab' }, { name: 'github', host: 'github.com', tool: 'gh' }, { name: 'mirror', host: 'git.example.test', tool: null }] }));
     const select = screen.getByRole('combobox', { name: 'Remote for the pull request' });
     expect([...select.options].map(option => option.value)).toEqual(['origin', 'github']);
     fireEvent.change(select, { target: { value: 'github' } });
     fireEvent.click(screen.getByRole('button', { name: 'Open a pull request' }));
+    expect(dialog('Open a pull request').getByText('task/replies-7a000000 is pushed to github (github.com) and a pull request into main is opened. Pushing publishes the branch.')).toBeTruthy();
+    fireEvent.click(dialog('Open a pull request').getByRole('button', { name: 'Push and open' }));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(confirm.mock.calls[0][0]).toBe('Push task/replies-7a000000 to github (github.com) and open a pull request into main? Pushing publishes the branch.');
     expect(api.openTaskPullRequest).toHaveBeenCalledWith(TASK.id, 'github');
     expect(onFinished).not.toHaveBeenCalled();
   });
@@ -133,12 +144,14 @@ describe('TaskLandingBar', () => {
   });
 
   it('warns that unmerged commits stay on the branch before closing', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     api.closeTask.mockResolvedValue({ branchKept: 'task/replies-7a000000', unmergedCommits: 2 });
     const { onFinished } = await mount();
     fireEvent.click(screen.getByRole('button', { name: 'Close task' }));
+    const confirmClose = dialog('Close task');
+    expect(confirmClose.getByText('"Replies" is closed and its copy of the project is removed. Its 2 commits stay on the branch task/replies-7a000000, not merged.')).toBeTruthy();
+    expect(confirmClose.getByRole('button', { name: 'Close task' }).dataset.variant).toBe('danger');
+    fireEvent.click(confirmClose.getByRole('button', { name: 'Close task' }));
     await waitFor(() => expect(onFinished).toHaveBeenCalled());
-    expect(confirm.mock.calls[0][0]).toBe('Close "Replies"? Its copy of the project is removed. Its 2 commits stay on the branch task/replies-7a000000, not merged.');
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Task closed. Branch task/replies-7a000000 was kept.' });
   });
 
