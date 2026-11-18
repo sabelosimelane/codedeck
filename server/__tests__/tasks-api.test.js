@@ -47,7 +47,7 @@ async function setup({ openTerminal, landing } = {}) {
       const task = real.get(taskId);
       if (task.title === 'Conflict') throw refused('This task conflicts with main in 1 file. Nothing was merged.', { conflicts: ['shared.txt'] });
       if (task.title === 'Dirty') throw refused('This task has uncommitted changes. Commit them first.', { reasons: [{ code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }] });
-      return { task: { ...taskStore.setState(taskId, { state: 'merged' }), secretColumn: 'never shown' }, mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true };
+      return { task: { ...taskStore.setState(taskId, { state: 'merged' }), secretColumn: 'never shown' }, mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true, terminalsClosed: ['Demo-2'], terminalsNotClosed: [] };
     }),
     pullRequest: vi.fn(async (taskId, { remote }) => {
       real.get(taskId);
@@ -55,7 +55,7 @@ async function setup({ openTerminal, landing } = {}) {
       if (remote === 'down') throw new TaskError('The branch could not be pushed to down: timeout', 503);
       return { task: taskStore.setState(taskId, { state: 'pr_open', prUrl: 'https://example.test/pr/1' }), prUrl: 'https://example.test/pr/1', remote };
     }),
-    close: vi.fn(async taskId => { real.get(taskId); return { task: taskStore.setState(taskId, { state: 'closed' }), branchKept: 'task/t-1', unmergedCommits: 2 }; }),
+    close: vi.fn(async taskId => { real.get(taskId); return { task: taskStore.setState(taskId, { state: 'closed' }), branchKept: 'task/t-1', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'] }; }),
     ...landing,
   };
   app.use(createTasksRouter({ service, taskStore, landing: land }));
@@ -280,7 +280,7 @@ describe('tasks API', () => {
     const url = `${base}/${id(1)}/merge`;
     const response = await request(server).post(url);
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ mergedInto: 'main', filesRemoved: true, branchDeleted: true, task: { id: id(1), state: 'merged' } });
+    expect(response.body).toMatchObject({ mergedInto: 'main', filesRemoved: true, branchDeleted: true, terminalsClosed: ['Demo-2'], terminalsNotClosed: [], task: { id: id(1), state: 'merged' } });
     expect(response.body.task).not.toHaveProperty('secretColumn');
     const withBody = await request(server).post(url).send({ force: true });
     expectProblem(withBody, 400, url);
@@ -319,7 +319,7 @@ describe('tasks API', () => {
     await request(server).post(base).send({ project: 'Demo', title: 'Close me' });
     const response = await request(server).post(`${base}/${id(1)}/close`);
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ branchKept: 'task/t-1', unmergedCommits: 2, task: { state: 'closed' } });
+    expect(response.body).toMatchObject({ branchKept: 'task/t-1', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'], task: { state: 'closed' } });
     expect((await request(server).get(`${base}?open=true`)).body.data).toEqual([]);
     expectProblem(await request(server).post(`${base}/${id(9)}/close`), 404, `${base}/${id(9)}/close`);
   });

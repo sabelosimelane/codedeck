@@ -74,12 +74,24 @@ export default function TaskLandingBar({ task, onChanged, onFinished }) {
     if (next && alive.current) setLanding(next);
   };
 
+  // A finished task's terminals are closed with it; the result says which, and which were not.
+  const withClosed = (message, result) => (result.terminalsClosed.length === 0 ? message
+    : `${message}${message.endsWith('.') ? '' : '.'} ${plural(result.terminalsClosed.length, 'terminal')} closed.`);
+  const finished = result => {
+    if (!result) return;
+    if (result.terminalsNotClosed.length > 0) {
+      showToast({ type: 'error', message: `${plural(result.terminalsNotClosed.length, 'terminal')} could not be closed: ${result.terminalsNotClosed.join(', ')}. Close ${result.terminalsNotClosed.length === 1 ? 'it from its tab' : 'them from their tabs'}.` });
+    }
+    onChanged();
+    onFinished(result);
+  };
+
   const merge = async () => {
-    const merged = await act('merge', () => mergeTask(task.id), result => (result.filesRemoved
+    const merged = await act('merge', () => mergeTask(task.id), result => withClosed(result.filesRemoved
       ? `Merged into ${result.mergedInto}`
-      : `Merged into ${result.mergedInto}, but the task's folder could not be removed`));
+      : `Merged into ${result.mergedInto}, but the task's folder could not be removed`, result));
     setAsking(null);
-    if (merged) { onChanged(); onFinished(); }
+    finished(merged);
   };
 
   const tools = landing ? landing.remotes.filter(candidate => candidate.tool !== null) : [];
@@ -91,9 +103,9 @@ export default function TaskLandingBar({ task, onChanged, onFinished }) {
   };
 
   const close = async () => {
-    const closed = await act('close', () => closeTask(task.id), result => (result.unmergedCommits > 0 ? `Task closed. Branch ${result.branchKept} was kept.` : 'Task closed'));
+    const closed = await act('close', () => closeTask(task.id), result => withClosed(result.unmergedCommits > 0 ? `Task closed. Branch ${result.branchKept} was kept.` : 'Task closed', result));
     setAsking(null);
-    if (closed) { onChanged(); onFinished(); }
+    finished(closed);
   };
   const unmerged = landing?.commitsAhead ?? 0;
 
@@ -155,7 +167,7 @@ export default function TaskLandingBar({ task, onChanged, onFinished }) {
       {asking === 'commit' && <PromptDialog title="Commit changes" subtitle={`Commits ${plural(landing.uncommittedCount, 'changed file')} in this task.`} label="Commit message" initialValue={task.title} maxLength={200} confirmLabel="Commit" onSubmit={commit} onCancel={() => setAsking(null)} />}
       {asking === 'merge' && (
         <ConfirmDialog title={`Merge into ${landing.baseBranch}`} confirmLabel="Merge" onConfirm={merge} onCancel={() => setAsking(null)}>
-          {`"${task.title}" is merged into ${landing.baseBranch}. The task's own copy of the project is removed afterwards.`}
+          {`"${task.title}" is merged into ${landing.baseBranch}. The task's own copy of the project is removed afterwards and its terminals are closed.`}
         </ConfirmDialog>
       )}
       {asking === 'pullRequest' && (
@@ -165,7 +177,7 @@ export default function TaskLandingBar({ task, onChanged, onFinished }) {
       )}
       {asking === 'close' && (
         <ConfirmDialog title="Close task" confirmLabel="Close task" tone={unmerged > 0 && landing.state !== 'pr_open' ? 'danger' : 'primary'} onConfirm={close} onCancel={() => setAsking(null)}>
-          {`"${task.title}" is closed and its copy of the project is removed.${unmerged > 0 && landing.state !== 'pr_open' ? ` Its ${plural(unmerged, 'commit')} stay on the branch ${landing.branch}, not merged.` : ''}`}
+          {`"${task.title}" is closed, its copy of the project is removed and its terminals are closed.${unmerged > 0 && landing.state !== 'pr_open' ? ` Its ${plural(unmerged, 'commit')} stay on the branch ${landing.branch}, not merged.` : ''}`}
         </ConfirmDialog>
       )}
     </div>

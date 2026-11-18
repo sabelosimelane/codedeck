@@ -91,9 +91,9 @@ Start one with **New task** and a title. Uncommitted changes in Main and files G
 The bar above a task's terminals says how it stands in Git, read every few seconds: uncommitted files, commits not yet in the branch it started from, and whether that branch has moved on. From there:
 
 - **Commit changes** commits everything in the task with the message you give.
-- **Merge into `<branch>`** merges the task into the branch it started from, in Main. It is offered only when the task is committed, Main is clean and on that branch, and no workflow run is still working in the task; otherwise the bar says what is in the way. A merge that conflicts is aborted, the conflicting files are listed, and both sides are left as they were. After a merge the task's folder is removed and its merged branch deleted.
+- **Merge into `<branch>`** merges the task into the branch it started from, in Main. It is offered only when the task is committed, Main is clean and on that branch, and no workflow run is still working in the task; otherwise the bar says what is in the way. A merge that conflicts is aborted, the conflicting files are listed, and both sides are left as they were. After a merge the task's folder is removed, its merged branch deleted and its terminals closed.
 - **Open a pull request** pushes the task's branch to the remote you choose and opens a pull request with the GitHub CLI (`gh`) or a merge request with the GitLab CLI (`glab`), which must be installed and signed in. It asks first, because pushing publishes the branch. The task stays open for review fixes and links to the request.
-- **Close task** removes a clean task's folder. Its branch is kept, and you are told how many commits on it are not merged.
+- **Close task** removes a clean task's folder and closes its terminals. Its branch is kept, and you are told how many commits on it are not merged.
 
 Nothing is forced: a task with uncommitted work is never removed, and a branch is deleted only once Git agrees it is merged. Worktrees CodeDeck was already using when tasks were introduced (those of open workflow runs, and ones a terminal was opened in) became tasks at the next start.
 

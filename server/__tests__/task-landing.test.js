@@ -34,11 +34,12 @@ async function setup({ exec = execFile, activeRun = false } = {}) {
   const pathExists = async target => existsSync(target);
   const ids = [ID, '7b000000-0000-4000-8000-000000000002'];
   const service = createTaskService({ taskStore, findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists, newId: () => ids.shift() });
-  const state = { activeRun };
+  const state = { activeRun, terminals: { closed: [], notClosed: [] } };
   const onTaskFinished = vi.fn();
-  const landing = createTaskLanding({ taskStore, findProject, execFile: exec, pathExists, hasActiveRun: () => state.activeRun, onTaskFinished });
+  const closeTerminals = vi.fn(async () => state.terminals);
+  const landing = createTaskLanding({ taskStore, findProject, execFile: exec, pathExists, hasActiveRun: () => state.activeRun, onTaskFinished, closeTerminals });
   const task = await service.create({ project: 'Demo', title: 'Replies' });
-  return { base, repo, taskStore, service, landing, task, wt: task.worktreePath, state, onTaskFinished };
+  return { base, repo, taskStore, service, landing, task, wt: task.worktreePath, state, onTaskFinished, closeTerminals };
 }
 
 async function rejection(promise) {
@@ -137,12 +138,15 @@ describe('task landing — commit', () => {
 
 describe('task landing — merge', () => {
   it('merges the task into its base branch, removes its files and deletes the merged branch', async () => {
-    const { landing, repo, wt, task, taskStore, onTaskFinished } = await setup();
+    const { landing, repo, wt, task, taskStore, onTaskFinished, closeTerminals, state } = await setup();
     write(wt, 'feature.txt', 'work\n');
     commitAll(wt, 'feature');
+    state.terminals = { closed: ['Demo-2', 'Demo-3'], notClosed: ['Demo-4'] };
     const result = await landing.merge(ID);
     expect(onTaskFinished).toHaveBeenCalledWith(expect.objectContaining({ id: ID, state: 'merged' }));
-    expect(result).toMatchObject({ mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true, task: { state: 'merged' } });
+    // The task's terminals are closed with it: their folder is gone.
+    expect(closeTerminals).toHaveBeenCalledWith(expect.objectContaining({ id: ID, state: 'merged' }));
+    expect(result).toMatchObject({ mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true, task: { state: 'merged' }, terminalsClosed: ['Demo-2', 'Demo-3'], terminalsNotClosed: ['Demo-4'] });
     expect(existsSync(path.join(repo, 'feature.txt'))).toBe(true);
     expect(existsSync(wt)).toBe(false);
     expect(git(repo, ['branch', '--list', task.branch])).toBe('');
@@ -151,7 +155,7 @@ describe('task landing — merge', () => {
   });
 
   it('aborts a conflicting merge, names the files and leaves both sides untouched', async () => {
-    const { landing, repo, wt, taskStore, onTaskFinished } = await setup();
+    const { landing, repo, wt, taskStore, onTaskFinished, closeTerminals } = await setup();
     write(wt, 'shared.txt', 'task side\n');
     commitAll(wt, 'task change');
     write(repo, 'shared.txt', 'main side\n');
@@ -160,6 +164,7 @@ describe('task landing — merge', () => {
     const refused = await rejection(landing.merge(ID));
     expect(refused).toMatchObject({ status: 409, message: 'This task conflicts with main in 1 file. Nothing was merged.' });
     expect(refused.extra.conflicts).toEqual(['shared.txt']);
+    expect(closeTerminals).not.toHaveBeenCalled();
     expect(git(repo, ['rev-parse', 'HEAD'])).toBe(before);
     expect(git(repo, ['status', '--porcelain'])).toBe('');
     expect(existsSync(wt)).toBe(true);
@@ -269,12 +274,14 @@ describe('task landing — pull request', () => {
 
 describe('task landing — close', () => {
   it('removes a clean task, keeps its unmerged branch and says so', async () => {
-    const { landing, repo, wt, task, onTaskFinished } = await setup();
+    const { landing, repo, wt, task, onTaskFinished, closeTerminals, state } = await setup();
     write(wt, 'feature.txt', 'work\n');
     commitAll(wt, 'feature');
+    state.terminals = { closed: ['Demo-2'], notClosed: [] };
     const result = await landing.close(ID);
     expect(onTaskFinished).toHaveBeenCalledWith(expect.objectContaining({ id: ID, state: 'closed' }));
-    expect(result).toMatchObject({ task: { state: 'closed' }, branchKept: task.branch, unmergedCommits: 1 });
+    expect(closeTerminals).toHaveBeenCalledWith(expect.objectContaining({ id: ID, state: 'closed' }));
+    expect(result).toMatchObject({ task: { state: 'closed' }, branchKept: task.branch, unmergedCommits: 1, terminalsClosed: ['Demo-2'], terminalsNotClosed: [] });
     expect(existsSync(wt)).toBe(false);
     expect(git(repo, ['branch', '--list', task.branch])).toContain(task.branch);
   });

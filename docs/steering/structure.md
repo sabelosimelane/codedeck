@@ -53,6 +53,7 @@ codedeck/
 │   │   ├── task-store.js     # SQLite store for tasks: title, worktree, branch, base, state, PR URL
 │   │   ├── task-service.js   # Plans and creates a task's worktree; opens terminals in it; renames
 │   │   ├── task-landing.js   # Live Git status and commit, merge, pull request and close; nothing forced
+│   │   ├── task-terminals.js # Closes a finished task's terminals: those opened in it and those its runs used
 │   │   └── task-adoption.js  # At startup, worktrees already in use become tasks
 │   ├── routes/
 │   │   ├── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)

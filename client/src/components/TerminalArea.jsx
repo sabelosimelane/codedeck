@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Terminal from './Terminal';
 import TerminalTabBar from './TerminalTabBar';
 import PaneDivider from './PaneDivider';
+import { removeSessionsFromLayout } from '../utils/closedSessions.js';
 import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play } from 'lucide-react';
 import NewTaskDialog from './tasks/NewTaskDialog.jsx';
 import { createTask, openTaskTerminal } from '../utils/tasksApi.js';
@@ -591,6 +592,14 @@ export default function TerminalArea({
     if (activeTabId !== (preferred?.id ?? null)) updateTerminalState(previous => ({ ...previous, activeTabId: preferred?.id ?? null }));
   }, [visibleGroup, tabs, activeTabId, project.name, worktreeBySession]);
 
+  // The backend closed these terminals (their task was merged or closed); their tabs go with them.
+  const removeClosedSessions = sessionIds => {
+    if (sessionIds.length === 0) return;
+    markDeletedSessionIds(project.name, sessionIds);
+    for (const sessionId of sessionIds) createdWorktreePathsRef.current.delete(`${project.name}:${sessionId}`);
+    updateTerminalState(previous => removeSessionsFromLayout(previous, sessionIds), { persistImmediately: true });
+  };
+
   const selectGroup = key => {
     chooseWorktree(key);
     const candidates = tabs.filter(tab => tabGroupKey(tab) === key);
@@ -1166,7 +1175,7 @@ export default function TerminalArea({
         })}
         {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked} title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
       </div>}
-      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged} onFinished={() => chooseWorktree('main')} />}
+      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }} />}
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}
         openSessionIds={new Set(tabs.flatMap(tab => tab.panes.map(pane => pane.sessionId)))}
         onActivateStep={activatePipelineSession} onOpenTerminal={addTab}

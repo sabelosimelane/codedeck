@@ -139,9 +139,9 @@ revision, createdAt, updatedAt, finishedAt}`. `state` is `active`, `pr_open`, `m
 | POST `/:id/terminals` | No body. Opens a terminal in the task and returns 201 `{sessionId, taskId, project}`; 409 when the task is finished or its files are gone, 503 when the terminal runtime is unavailable |
 | GET `/:id/landing` | Read live from Git: `filesPresent`, `runActive`, `uncommitted` (at most 50 paths) and `uncommittedCount`, `commitsAhead`, `commitsBehind`, `main {branch, dirty}`, `remotes [{name, host, tool}]` (`tool` is `gh`, `glab` or null), `prUrl`, and `blockers {commit, merge, pullRequest, close}`, each a list of `{code, message}` that is empty when the action is allowed |
 | POST `/:id/commit` | `{message}` (1–200 characters on one line). Commits every change in the task and returns the landing status; 409 with `reasons` when refused |
-| POST `/:id/merge` | No body. Merges the task's branch into its base branch in the project's checkout, removes the worktree and deletes the merged branch; returns `{task, mergedInto, filesRemoved, filesDetail, branchDeleted}`. 409 with `reasons`, or with `conflicts` after an aborted merge |
+| POST `/:id/merge` | No body. Merges the task's branch into its base branch in the project's checkout, removes the worktree and deletes the merged branch; returns `{task, mergedInto, filesRemoved, filesDetail, branchDeleted, terminalsClosed, terminalsNotClosed}` (the last two are session ids: the task's terminals that were closed, and those that could not be). 409 with `reasons`, or with `conflicts` after an aborted merge |
 | POST `/:id/pull-request` | `{remote}`. Pushes the branch and opens a pull or merge request with `gh` or `glab`; returns `{task, prUrl, remote}` and the task becomes `pr_open`. 409 when the host is unsupported or its CLI is missing, 503 when the push or the request fails |
-| POST `/:id/close` | No body. Removes a clean worktree, keeps the branch; returns `{task, branchKept, unmergedCommits}` |
+| POST `/:id/close` | No body. Removes a clean worktree, keeps the branch; returns `{task, branchKept, unmergedCommits, terminalsClosed, terminalsNotClosed}` |
 
 The pull-request action calls a remote host with explicit timeouts (90 seconds for the push
 and for the request) and reports failure as 503. It has no circuit breaker: it is a single

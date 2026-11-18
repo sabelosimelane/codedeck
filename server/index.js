@@ -80,6 +80,7 @@ import { createTaskService } from './tasks/task-service.js';
 import { createTasksRouter } from './routes/tasks.js';
 import { adoptWorktrees } from './tasks/task-adoption.js';
 import { createTaskLanding } from './tasks/task-landing.js';
+import { createTaskTerminalCloser } from './tasks/task-terminals.js';
 import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
 import { createSessionAttention } from './session-attention.js';
 import { createSessionStateService } from './session-state-service.js';
@@ -899,6 +900,13 @@ const taskLanding = createTaskLanding({
       if (run.taskId === task.id && run.worktreeState === 'external') pipelineRunStore.update(run.id, { worktreeState: 'released', worktreeDetail: null });
     }
   },
+  // Its folder is gone, so a terminal left in it has nothing to work in.
+  closeTerminals: createTaskTerminalCloser({
+    listWorktreeRecords: () => terminalSessionWorktreeStore.all(),
+    listRuns: () => pipelineRunStore.list(),
+    isOpen: sessionId => sessions.has(sessionId) || terminalRuntime.isSessionRecoverable(sessionId),
+    deleteSession: deleteTerminalSession,
+  }),
 });
 app.use(createTasksRouter({ service: taskService, taskStore, landing: taskLanding }));
 

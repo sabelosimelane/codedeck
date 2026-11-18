@@ -57,9 +57,9 @@ export function describeRemote(url) {
   return { host, repository, tool: host === 'github.com' || host.endsWith('.github.com') ? 'gh' : host.includes('gitlab') ? 'glab' : null };
 }
 
-export function createTaskLanding({ taskStore, findProject, execFile, pathExists, hasActiveRun, onTaskFinished } = {}) {
+export function createTaskLanding({ taskStore, findProject, execFile, pathExists, hasActiveRun, onTaskFinished, closeTerminals } = {}) {
   if (typeof taskStore?.get !== 'function' || typeof taskStore?.setState !== 'function') throw new TypeError('taskStore is required');
-  for (const [name, value] of Object.entries({ findProject, execFile, pathExists, hasActiveRun, onTaskFinished })) {
+  for (const [name, value] of Object.entries({ findProject, execFile, pathExists, hasActiveRun, onTaskFinished, closeTerminals })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
 
@@ -164,6 +164,16 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
   const withExtra = (error, extra) => Object.assign(error, { extra });
   const refuse = blockers => withExtra(new TaskError(blockers[0].message, 409), { reasons: blockers });
 
+  /** The finished task's runs are released and its terminals closed; says how the terminals went. */
+  async function finish(task) {
+    onTaskFinished(task);
+    const result = await closeTerminals(task);
+    for (const field of ['closed', 'notClosed']) {
+      if (!Array.isArray(result?.[field]) || result[field].some(id => typeof id !== 'string' || id.length === 0)) throw new TypeError(`closeTerminals: ${field} must be an array of session ids`);
+    }
+    return { terminalsClosed: result.closed, terminalsNotClosed: result.notClosed };
+  }
+
   async function finishWorktree(task, project) {
     const home = await resolveHomeRepoPath({ projectPath: project.path, execFile });
     const removed = await removeWorktree({ homePath: home, worktreePath: task.worktreePath, execFile });
@@ -227,9 +237,9 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
           }
         }
         const finished = taskStore.setState(task.id, { state: 'merged' });
-        // Runs that worked in the task have nothing left to work in; they are closed with it.
-        onTaskFinished(finished);
-        return { task: finished, mergedInto: task.baseBranch, filesRemoved: removed.ok, filesDetail: removed.ok ? null : removed.detail, branchDeleted };
+        // Runs and terminals that worked in the task have nothing left to work in; they are closed with it.
+        const terminals = await finish(finished);
+        return { task: finished, mergedInto: task.baseBranch, filesRemoved: removed.ok, filesDetail: removed.ok ? null : removed.detail, branchDeleted, ...terminals };
       });
     },
 
@@ -282,8 +292,8 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
         }
         // The branch stays: it may hold commits that are not merged anywhere.
         const finished = taskStore.setState(task.id, { state: 'closed' });
-        onTaskFinished(finished);
-        return { task: finished, branchKept: task.branch, unmergedCommits: view.commitsAhead ?? 0 };
+        const terminals = await finish(finished);
+        return { task: finished, branchKept: task.branch, unmergedCommits: view.commitsAhead ?? 0, ...terminals };
       });
     },
   };

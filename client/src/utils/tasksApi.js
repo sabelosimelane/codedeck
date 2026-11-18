@@ -142,11 +142,19 @@ export async function commitTask(taskId, message) {
   return parseLanding(await request(`/${taskId}/commit`, { method: 'POST', body: { message: message.trim() } }));
 }
 
+/** Which of the finished task's terminals the backend closed, and which it could not. */
+function parseTerminals(body, action) {
+  for (const field of ['terminalsClosed', 'terminalsNotClosed']) {
+    if (!Array.isArray(body[field]) || !body[field].every(text)) throw new Error(`Invalid ${action} response: ${field}`);
+  }
+  return { terminalsClosed: [...body.terminalsClosed], terminalsNotClosed: [...body.terminalsNotClosed] };
+}
+
 export async function mergeTask(taskId) {
   requireTaskId(taskId);
   const body = await request(`/${taskId}/merge`, { method: 'POST' });
   if (!text(body?.mergedInto) || typeof body.filesRemoved !== 'boolean' || typeof body.branchDeleted !== 'boolean') throw new Error('Invalid merge response');
-  return { task: parseTask(body.task), mergedInto: body.mergedInto, filesRemoved: body.filesRemoved, filesDetail: text(body.filesDetail) ? body.filesDetail : null, branchDeleted: body.branchDeleted };
+  return { task: parseTask(body.task), mergedInto: body.mergedInto, filesRemoved: body.filesRemoved, filesDetail: text(body.filesDetail) ? body.filesDetail : null, branchDeleted: body.branchDeleted, ...parseTerminals(body, 'merge') };
 }
 
 export async function openTaskPullRequest(taskId, remote) {
@@ -161,7 +169,7 @@ export async function closeTask(taskId) {
   requireTaskId(taskId);
   const body = await request(`/${taskId}/close`, { method: 'POST' });
   if (!text(body?.branchKept) || !count(body.unmergedCommits)) throw new Error('Invalid close response');
-  return { task: parseTask(body.task), branchKept: body.branchKept, unmergedCommits: body.unmergedCommits };
+  return { task: parseTask(body.task), branchKept: body.branchKept, unmergedCommits: body.unmergedCommits, ...parseTerminals(body, 'close') };
 }
 
 export async function renameTask(taskId, { title, revision }) {

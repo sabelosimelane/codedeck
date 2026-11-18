@@ -109,15 +109,15 @@ describe('landing API client', () => {
   it('commits, merges, opens a pull request, closes and renames through the backend', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(reply(landing({ uncommitted: [], uncommittedCount: 0 })))
-      .mockResolvedValueOnce(reply({ task: task({ state: 'merged', finishedAt: '2026-11-18T11:00:00.000Z' }), mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true }))
+      .mockResolvedValueOnce(reply({ task: task({ state: 'merged', finishedAt: '2026-11-18T11:00:00.000Z' }), mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true, terminalsClosed: ['Demo-2'], terminalsNotClosed: [] }))
       .mockResolvedValueOnce(reply({ task: task({ state: 'pr_open', prUrl: 'https://example.test/pr/1' }), prUrl: 'https://example.test/pr/1', remote: 'origin' }))
-      .mockResolvedValueOnce(reply({ task: task({ state: 'closed', finishedAt: '2026-11-18T11:00:00.000Z' }), branchKept: 'task/replies', unmergedCommits: 2 }))
+      .mockResolvedValueOnce(reply({ task: task({ state: 'closed', finishedAt: '2026-11-18T11:00:00.000Z' }), branchKept: 'task/replies', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'] }))
       .mockResolvedValueOnce(reply(task({ title: 'Renamed', revision: 2 })));
     vi.stubGlobal('fetch', fetchMock);
     expect((await commitTask(ID, ' Add replies ')).uncommittedCount).toBe(0);
-    expect(await mergeTask(ID)).toMatchObject({ mergedInto: 'main', filesRemoved: true, branchDeleted: true, task: { state: 'merged' } });
+    expect(await mergeTask(ID)).toMatchObject({ mergedInto: 'main', filesRemoved: true, branchDeleted: true, terminalsClosed: ['Demo-2'], terminalsNotClosed: [], task: { state: 'merged' } });
     expect(await openTaskPullRequest(ID, 'origin')).toMatchObject({ prUrl: 'https://example.test/pr/1', remote: 'origin' });
-    expect(await closeTask(ID)).toMatchObject({ branchKept: 'task/replies', unmergedCommits: 2 });
+    expect(await closeTask(ID)).toMatchObject({ branchKept: 'task/replies', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'] });
     expect((await renameTask(ID, { title: ' Renamed ', revision: 1 })).title).toBe('Renamed');
     expect(fetchMock.mock.calls.map(call => [call[0], call[1].method, call[1].body ?? null])).toEqual([
       [`/api/tasks/${ID}/commit`, 'POST', JSON.stringify({ message: 'Add replies' })],

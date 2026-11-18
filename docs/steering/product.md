@@ -59,6 +59,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Terminal durability depends on tmux — when tmux is unavailable, the UI must block terminal creation and ask the user to install it
 - A tab's waiting mark is cleared by the backend when its session is deleted — session ids are reused, and a stale mark would silence a new terminal
 - A task with uncommitted work is never removed, and merging requires Main to be clean and on the task's base branch
+- Merging or closing a task closes its terminals — the ones opened in it and the ones its runs used — because their folder is removed
 - The backend is the source of truth for all state — frontend never holds authoritative state
 - Every user action that modifies state must round-trip through the backend
 

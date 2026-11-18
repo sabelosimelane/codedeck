@@ -45,10 +45,10 @@ describe('TaskLandingBar', () => {
   });
 
   it('merges after confirmation, then leaves the task', async () => {
-    api.mergeTask.mockResolvedValue({ mergedInto: 'main', filesRemoved: true, branchDeleted: true });
+    api.mergeTask.mockResolvedValue({ mergedInto: 'main', filesRemoved: true, branchDeleted: true, terminalsClosed: ['Demo-2', 'Demo-3'], terminalsNotClosed: [] });
     const { onChanged, onFinished } = await mount();
     fireEvent.click(screen.getByRole('button', { name: 'Merge into main' }));
-    expect(dialog('Merge into main').getByText('"Replies" is merged into main. The task\'s own copy of the project is removed afterwards.')).toBeTruthy();
+    expect(dialog('Merge into main').getByText('"Replies" is merged into main. The task\'s own copy of the project is removed afterwards and its terminals are closed.')).toBeTruthy();
     fireEvent.click(dialog('Merge into main').getByRole('button', { name: 'Cancel' }));
     expect(api.mergeTask).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -57,7 +57,8 @@ describe('TaskLandingBar', () => {
     await waitFor(() => expect(onFinished).toHaveBeenCalled());
     expect(api.mergeTask).toHaveBeenCalledWith(TASK.id);
     expect(onChanged).toHaveBeenCalled();
-    expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Merged into main' });
+    expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Merged into main. 2 terminals closed.' });
+    expect(onFinished).toHaveBeenCalledWith(expect.objectContaining({ terminalsClosed: ['Demo-2', 'Demo-3'] }));
   });
 
   it('keeps a refused merge on screen with its conflicting files, and stays on the task', async () => {
@@ -170,15 +171,17 @@ describe('TaskLandingBar', () => {
   });
 
   it('warns that unmerged commits stay on the branch before closing', async () => {
-    api.closeTask.mockResolvedValue({ branchKept: 'task/replies-7a000000', unmergedCommits: 2 });
+    api.closeTask.mockResolvedValue({ branchKept: 'task/replies-7a000000', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'] });
     const { onFinished } = await mount();
     fireEvent.click(screen.getByRole('button', { name: 'Close task' }));
     const confirmClose = dialog('Close task');
-    expect(confirmClose.getByText('"Replies" is closed and its copy of the project is removed. Its 2 commits stay on the branch task/replies-7a000000, not merged.')).toBeTruthy();
+    expect(confirmClose.getByText('"Replies" is closed, its copy of the project is removed and its terminals are closed. Its 2 commits stay on the branch task/replies-7a000000, not merged.')).toBeTruthy();
     expect(confirmClose.getByRole('button', { name: 'Close task' }).dataset.variant).toBe('danger');
     fireEvent.click(confirmClose.getByRole('button', { name: 'Close task' }));
     await waitFor(() => expect(onFinished).toHaveBeenCalled());
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Task closed. Branch task/replies-7a000000 was kept.' });
+    expect(toast).toHaveBeenCalledWith({ type: 'error', message: '1 terminal could not be closed: Demo-3. Close it from its tab.' });
+    expect(onFinished).toHaveBeenCalledWith(expect.objectContaining({ terminalsClosed: [] }));
   });
 
   it('has no merge for a task started without a branch, and says when nothing has changed', async () => {
