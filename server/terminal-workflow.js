@@ -48,6 +48,9 @@ export function createTerminalWorkflow({ write, notify }) {
   let error = null;
   let request = null;
   let identifier = null;
+  // Every identifier given out in the pass in progress, and one composed into an answer not yet submitted.
+  let passIdentifiers = new Set();
+  let pendingIdentifier = null;
   let rawOutput = '';
   let phase = 'waiting';
   let pass = 0;
@@ -96,14 +99,20 @@ export function createTerminalWorkflow({ write, notify }) {
       enterTimer = setTimeout(() => submit('\r'), SUBMIT_DELAY_MS);
     }
   }
+  // Short enough to copy; the counter prevents reuse within this session.
+  function issueIdentifier() {
+    const issued = `${randomUUID().slice(0, 8)}-${(issuedIdentifiers.size + 1).toString(36)}`;
+    issuedIdentifiers.add(issued);
+    return issued;
+  }
   function iteration() {
     cancelTimers();
     status = 'running';
     phase = 'waiting';
     pass += 1;
-    // Short enough to copy; the counter prevents reuse within this session.
-    identifier = `${randomUUID().slice(0, 8)}-${(issuedIdentifiers.size + 1).toString(36)}`;
-    issuedIdentifiers.add(identifier);
+    identifier = issueIdentifier();
+    passIdentifiers = new Set([identifier]);
+    pendingIdentifier = null;
     rawOutput = '';
     publish();
     pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance));
@@ -159,9 +168,26 @@ export function createTerminalWorkflow({ write, notify }) {
       }
     },
     stop() { finish('stopped'); },
+    /**
+     * What to type for the agent as the answer to its request: the answer, and a new identifier
+     * for the rest of the pass. The terminal can send the answered request again at any time (a
+     * browser pane attaching or resizing redraws the screen); under the old identifier it is
+     * recognised as old, and only a request under the new one is the agent asking again.
+     */
+    answerText(answer) {
+      if (typeof answer !== 'string' || !answer.trim()) throw new Error('Workflow answer must be a non-empty string.');
+      if (status !== 'needs_input') throw new Error('The agent is not waiting for an answer.');
+      pendingIdentifier ??= issueIdentifier();
+      return `${answer}\n\nCodeDeck: from here on in this pass, use the iteration identifier ${pendingIdentifier} in your signal and your questions marker, in place of the earlier one.`;
+    },
     input(data) {
       if (typeof data !== 'string') throw new Error('Workflow input must be a string.');
       if (status !== 'needs_input' || !isAnswer(data)) return;
+      if (pendingIdentifier !== null) {
+        identifier = pendingIdentifier;
+        passIdentifiers.add(identifier);
+        pendingIdentifier = null;
+      }
       status = 'running';
       rawOutput = '';
       publish();
@@ -184,9 +210,11 @@ export function createTerminalWorkflow({ write, notify }) {
       // an invalid result, not a reason to wait forever or accept a near match.
       const match = [...text.matchAll(/\[\[CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]/g)]
         .filter(candidate => !(status === 'needs_input' && candidate[1] === identifier && candidate[2] === 'NEEDS_INPUT'))
-        .find(candidate => candidate[1] === identifier || !issuedIdentifiers.has(candidate[1]));
+        // A request for input counts only under the current identifier: under an earlier one of
+        // this pass it is the answered request, redrawn. The end of the pass counts under any of them.
+        .find(candidate => (candidate[2] === 'NEEDS_INPUT' ? candidate[1] === identifier : passIdentifiers.has(candidate[1])) || !issuedIdentifiers.has(candidate[1]));
       if (!match) return;
-      if (match[1] !== identifier) {
+      if (!issuedIdentifiers.has(match[1])) {
         finish('error', 'Workflow signal identifier does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.');
         return;
       }

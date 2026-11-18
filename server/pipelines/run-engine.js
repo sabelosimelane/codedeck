@@ -445,7 +445,9 @@ export function createRunEngine({
     // An agent that asks again in the same pass was not helped by the first answer.
     if (handle.decidedIdentifier === identifier) return false;
 
-    attachment.write(`\x1b[200~${ACCEPT_RECOMMENDATIONS_ANSWER}\x1b[201~`);
+    // The loop adds a new identifier for the rest of the pass, so the answered request is never read again as a new one.
+    const typed = workflow.answerText(ACCEPT_RECOMMENDATIONS_ANSWER);
+    attachment.write(`\x1b[200~${typed}\x1b[201~`);
     await delay(launchEnterDelayMs, setTimeoutFn);
     // Stop, a closed terminal or the agent moving on ends the wait; nothing is submitted then.
     if (handle.stopped || handle.workflow !== workflow || workflow.snapshot().status !== 'needs_input'
@@ -462,10 +464,11 @@ export function createRunEngine({
       truncated: inputRequest.truncated,
       answer: ACCEPT_RECOMMENDATIONS_ANSWER,
     });
-    handle.decidedIdentifier = identifier;
     await refreshBrief(runId);
     attachment.write('\r');
-    workflow.input(ACCEPT_RECOMMENDATIONS_ANSWER);
+    workflow.input(typed);
+    // The identifier the agent now signals under: asking again under it is asking again in this pass.
+    handle.decidedIdentifier = workflow.signalIdentifier();
     return true;
   }
 
@@ -963,7 +966,9 @@ export function createRunEngine({
       handle.answering = true;
       try {
         // One bracketed paste, then a separate Enter, as the loop submits its own prompts.
-        attachment.write(`\x1b[200~${answer}\x1b[201~`);
+        // The loop adds a new identifier for the rest of the pass, so the answered request is never read again as a new one.
+        const typed = workflow.answerText(answer);
+        attachment.write(`\x1b[200~${typed}\x1b[201~`);
         await delay(launchEnterDelayMs, setTimeoutFn);
         if (handle.workflow !== workflow || workflow.snapshot().status !== 'needs_input') {
           throw unavailable('The agent stopped waiting while the answer was being sent.');
@@ -981,7 +986,7 @@ export function createRunEngine({
         await refreshBrief(runId);
         attachment.write('\r');
         // The loop resumes on an answer; its running snapshot moves the run out of needs_input.
-        workflow.input(answer);
+        workflow.input(typed);
         await handle.transitions;
       } finally {
         handle.answering = false;

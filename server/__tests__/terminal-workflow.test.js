@@ -135,6 +135,51 @@ describe('terminal workflow', () => {
     expect(workflow.snapshot().status).toBe(status === 'COMPLETE' ? 'complete' : 'resetting');
   });
 
+  it('gives the agent a new identifier with an answer, so the answered request redrawn by the terminal is not a new one', () => {
+    const { workflow, write, notify } = setup();
+    workflow.start(request);
+    const id = token(write);
+    workflow.output(signal(id, 'NEEDS_INPUT'));
+    const typed = workflow.answerText('Use the existing schema');
+    const next = /identifier (\S+) in/.exec(typed)[1];
+    expect(typed.startsWith('Use the existing schema\n\n')).toBe(true);
+    expect(next).not.toBe(id);
+    // Composing the answer changes nothing until it is submitted.
+    expect(workflow.signalIdentifier()).toBe(id);
+    workflow.input(typed);
+    expect(workflow.snapshot().status).toBe('running');
+    expect(workflow.signalIdentifier()).toBe(next);
+
+    // A browser pane attaching or resizing makes tmux send the old lines again.
+    const published = notify.mock.calls.length;
+    workflow.output(`${signal(id, 'QUESTIONS')}\n1. Which schema?\n${signal(id, 'NEEDS_INPUT')}`);
+    expect(workflow.snapshot().status).toBe('running');
+    expect(notify.mock.calls.length).toBe(published);
+
+    // Asking again uses the new identifier.
+    workflow.output(signal(next, 'NEEDS_INPUT'));
+    expect(workflow.snapshot().status).toBe('needs_input');
+  });
+
+  it.each(['CONTINUE', 'COMPLETE'])('accepts %s under the identifier the pass started with after an answer', status => {
+    const { workflow, write } = setup();
+    workflow.start(request);
+    const id = token(write);
+    workflow.output(signal(id, 'NEEDS_INPUT'));
+    workflow.input(workflow.answerText('yes'));
+    workflow.output(signal(id, status));
+    expect(workflow.snapshot().status).toBe(status === 'COMPLETE' ? 'complete' : 'resetting');
+  });
+
+  it('composes an answer only while the agent waits, and only from text', () => {
+    const { workflow, write } = setup();
+    expect(() => workflow.answerText('yes')).toThrow('not waiting for an answer');
+    workflow.start(request);
+    expect(() => workflow.answerText('yes')).toThrow('not waiting for an answer');
+    workflow.output(signal(token(write), 'NEEDS_INPUT'));
+    expect(() => workflow.answerText('  ')).toThrow('non-empty string');
+  });
+
   it('can pause again after resuming when the agent needs another answer', () => {
     const { workflow, write } = setup();
     workflow.start(request);

@@ -1713,6 +1713,7 @@ describe('createRunEngine — what the agent needs, and answering it', () => {
         start() { queueMicrotask(() => publish('needs_input')); },
         stop() { state.status = 'stopped'; },
         snapshot: () => snap(state.status),
+        answerText: text => text,
         input(data) { state.inputs.push(data); publish('running'); },
       };
       if (signalIdentifier !== undefined) workflow.signalIdentifier = signalIdentifier;
@@ -1757,6 +1758,20 @@ describe('createRunEngine — what the agent needs, and answering it', () => {
   it('stores a request without questions when the agent did not state any', async () => {
     const { ctx, run } = await startWaiting({ readScreen: vi.fn(async () => ['I am blocked.', `[[CDW:${ID}:NEEDS_INPUT]]`]) });
     expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: { questions: null, truncated: false } });
+  });
+
+  it('types what the loop composes for the answer, and records the owner’s own words', async () => {
+    const { ctx, loop, run, done } = await startWaiting();
+    loop.createWorkflow.mock.results.at(-1).value.answerText = text => `${text}\n\nCodeDeck: use identifier next-2`;
+    const before = ctx.writes.length;
+    const answering = ctx.engine.answer(run.id, 'The login page');
+    await vi.advanceTimersByTimeAsync(100);
+    await answering;
+    expect(ctx.writes.slice(before)).toEqual(['\x1b[200~The login page\n\nCodeDeck: use identifier next-2\x1b[201~', '\r']);
+    expect(loop.state.inputs).toEqual(['The login page\n\nCodeDeck: use identifier next-2']);
+    expect(ctx.answerStore.list(run.id).map(item => item.answer)).toEqual(['The login page']);
+    loop.complete();
+    await done;
   });
 
   it('types the answer into the agent terminal as one paste, submits it and returns the run to running', async () => {
@@ -2225,6 +2240,7 @@ describe('createRunEngine — agents decide', () => {
         start(args) { state.starts.push(args); queueMicrotask(() => publish('needs_input')); },
         stop() { state.status = 'stopped'; },
         snapshot: () => snap(state.status),
+        answerText: text => text,
         input(data) { state.inputs.push(data); publish('running'); },
         signalIdentifier: () => state.identifier,
       };
@@ -2401,6 +2417,7 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
         stop() { state.status = 'stopped'; },
         snapshot: () => snap(state.status),
         signalIdentifier: () => 'abc-1',
+        answerText: text => text,
         input() { publish('running'); },
       };
     });
