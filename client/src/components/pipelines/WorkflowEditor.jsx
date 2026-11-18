@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Button, IconButton } from '../ui/index.jsx';
 import { ArrowDown, ArrowUp, BookmarkPlus, Plus, Trash2 } from 'lucide-react';
 import { loopTargetIndex, validateWorkflowBody, validateStepPresetBody, WORKFLOW_KINDS, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { createStepPreset, createTemplate, createWorkflow, getWorkflow, previewPrompt, updateWorkflow } from '../../utils/pipelinesApi';
@@ -262,19 +263,19 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
             <li key={node.key} className="pipeline-node" aria-label={`Node ${number}`}>
               <div className="pipeline-node-heading">
                 <span>Node {number}</span>
-                <div className="pipeline-item-actions">
-                  <button type="button" aria-label={`Move node ${number} up`} title="Move up" disabled={busy || index === 0} onClick={() => moveNode(index, -1)}>
+                <div className="pipeline-item-actions ui-item-actions">
+                  <IconButton aria-label={`Move node ${number} up`} title="Move up" disabled={busy || index === 0} onClick={() => moveNode(index, -1)}>
                     <ArrowUp size={13} />
-                  </button>
-                  <button type="button" aria-label={`Move node ${number} down`} title="Move down" disabled={busy || index === draft.nodes.length - 1} onClick={() => moveNode(index, 1)}>
+                  </IconButton>
+                  <IconButton aria-label={`Move node ${number} down`} title="Move down" disabled={busy || index === draft.nodes.length - 1} onClick={() => moveNode(index, 1)}>
                     <ArrowDown size={13} />
-                  </button>
-                  <button type="button" aria-label={`Save node ${number} as a reusable step`} title={loops ? 'A step that loops back cannot be saved on its own' : 'Save as a reusable step'} disabled={busy || loops} onClick={() => saveStep(node)}>
+                  </IconButton>
+                  <IconButton aria-label={`Save node ${number} as a reusable step`} title={loops ? 'A step that loops back cannot be saved on its own' : 'Save as a reusable step'} disabled={busy || loops} onClick={() => saveStep(node)}>
                     <BookmarkPlus size={13} />
-                  </button>
-                  <button type="button" className="pipeline-danger" aria-label={`Remove node ${number}`} title="Remove" disabled={busy || draft.nodes.length === 1} onClick={() => restructureNodes(nodes => nodes.filter((_node, at) => at !== index))}>
+                  </IconButton>
+                  <IconButton tone="danger" aria-label={`Remove node ${number}`} title="Remove" disabled={busy || draft.nodes.length === 1} onClick={() => restructureNodes(nodes => nodes.filter((_node, at) => at !== index))}>
                     <Trash2 size={13} />
-                  </button>
+                  </IconButton>
                 </div>
               </div>
               <div className="pipeline-node-row">
@@ -359,7 +360,7 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
               {Object.keys(errors).some(field => field.startsWith(`nodes[${index}].`)) && <span className="pipeline-field-error" aria-label="This step has an invalid field">!</span>}
             </button>
           ))}
-          <button type="button" className="workflow-rail-add" disabled={busy || draft.nodes.length >= MAX_NODES} onClick={() => addNode(blankNode())}><Plus size={12} /> Add step</button>
+          <Button variant="accent" size="small" disabled={busy || draft.nodes.length >= MAX_NODES} onClick={() => addNode(blankNode())}><Plus size={12} /> Add step</Button>
         </nav>
       )}
       <ol className="pipeline-nodes">
@@ -370,12 +371,12 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
 
       <div className="pipeline-form-actions">
         {!builder && (
-          <button type="button" disabled={busy || draft.nodes.length >= MAX_NODES} onClick={() => addNode(blankNode())}>
+          <Button disabled={busy || draft.nodes.length >= MAX_NODES} onClick={() => addNode(blankNode())}>
             <Plus size={12} /> Add node
-          </button>
+          </Button>
         )}
         {stepPresets.length > 0 && (
-          <select aria-label="Insert a saved step" value="" disabled={busy || draft.nodes.length >= MAX_NODES} onChange={(event) => {
+          <select className="ui-input workflow-insert-step" aria-label="Insert a saved step" value="" disabled={busy || draft.nodes.length >= MAX_NODES} onChange={(event) => {
             const preset = stepPresets.find(candidate => candidate.id === event.target.value);
             if (preset) addNode(nodeFromPreset(preset));
           }}>
@@ -384,9 +385,9 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
           </select>
         )}
         <span className="pipeline-spacer" />
-        <button type="button" disabled={busy} onClick={saveAsTemplate} title="Save this workflow without its agents, to start others from">Save as template</button>
-        <button type="button" className="pipeline-primary" disabled={busy} onClick={save}>Save workflow</button>
-        <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+        <Button disabled={busy} onClick={saveAsTemplate} title="Save this workflow without its agents, to start others from">Save as template</Button>
+        <Button variant="primary" disabled={busy} onClick={save}>Save workflow</Button>
+        <Button disabled={busy} onClick={onCancel}>Cancel</Button>
       </div>
     </section>
   );

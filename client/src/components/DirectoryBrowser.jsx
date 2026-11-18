@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Button, IconButton } from './ui/index.jsx';
 import {
   Folder,
   File,
@@ -127,9 +128,9 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
               Browse Filesystem
             </span>
           </div>
-          <button onClick={onCancel} style={iconBtnStyle} title="Cancel">
+          <IconButton aria-label="Cancel" onClick={onCancel}  title="Cancel">
             <X size={16} />
-          </button>
+          </IconButton>
         </div>
 
         {/* Path bar */}
@@ -146,25 +147,19 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
             ))}
           </select>
           <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 4px' }} />
-          <button
+          <IconButton aria-label="Go up"
             onClick={() => parent && browse(parent)}
             disabled={!parent}
-            style={{
-              ...iconBtnStyle,
-              opacity: parent ? 1 : 0.3,
-              cursor: parent ? 'pointer' : 'default',
-            }}
             title="Go up"
           >
             <ArrowUp size={14} />
-          </button>
-          <button
+          </IconButton>
+          <IconButton aria-label="Go home"
             onClick={() => browse('')}
-            style={iconBtnStyle}
             title="Go home"
           >
             <Home size={14} />
-          </button>
+          </IconButton>
           <form onSubmit={handlePathSubmit} style={{ flex: 1, display: 'flex' }}>
             <input
               value={pathInput}
@@ -304,17 +299,16 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
             Double-click to navigate • Select a folder
           </span>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={onCancel} style={cancelBtnStyle} title="Cancel folder selection">
+            <Button onClick={onCancel}  title="Cancel folder selection">
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button variant="primary"
               onClick={() => onSelect(current, selectedHost)}
-              style={selectBtnStyle}
               title="Select folder"
             >
               <Check size={14} />
               Select Folder
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -442,37 +436,8 @@ const footerStyle = {
   background: 'var(--bg-sidebar)',
 };
 
-const iconBtnStyle = {
-  padding: 6,
-  borderRadius: 6,
-  color: 'var(--text-muted)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  transition: 'color 0.1s, background 0.1s',
-};
 
-const cancelBtnStyle = {
-  padding: '6px 16px',
-  borderRadius: 6,
-  fontSize: '12px',
-  fontWeight: 500,
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border)',
-};
 
-const selectBtnStyle = {
-  padding: '6px 16px',
-  borderRadius: 6,
-  fontSize: '12px',
-  fontWeight: 600,
-  color: 'var(--accent-contrast)',
-  background: 'var(--accent)',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 6,
-};
 
 const spinnerStyle = {
   width: 20,

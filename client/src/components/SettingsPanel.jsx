@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Button, IconButton } from './ui/index.jsx';
 import { X, Settings, FolderOpen, RotateCcw, Save } from 'lucide-react';
 import DirectoryBrowser from './DirectoryBrowser';
 import HostsSection from './HostsSection';
@@ -164,9 +165,9 @@ export default function SettingsPanel({ onClose, onSaved }) {
               <Settings size={15} style={{ color: 'var(--accent)' }} />
               <span style={headerTitleStyle}>settings</span>
             </div>
-            <button onClick={requestClose} style={closeBtnStyle} title="Close settings" aria-label="Close settings">
+            <IconButton onClick={requestClose}  title="Close settings" aria-label="Close settings">
               <X size={14} />
-            </button>
+            </IconButton>
           </div>
 
           <div role="tablist" aria-label="Settings sections" style={tabListStyle}>
@@ -209,15 +210,14 @@ export default function SettingsPanel({ onClose, onSaved }) {
                     onChange={e => setDefaultPath(e.target.value)}
                     placeholder="~ (home directory)"
                     spellCheck={false}
-                    style={inputStyle}
+                    className="ui-input"
                   />
-                  <button
+                  <IconButton tone="boxed" aria-label="Browse"
                     onClick={() => setShowBrowser(true)}
-                    style={browseBtnStyle}
                     title="Browse"
                   >
                     <FolderOpen size={13} />
-                  </button>
+                  </IconButton>
                 </div>
               </div>
 
@@ -234,7 +234,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
                     onChange={e => setEditorCommand(e.target.value)}
                     placeholder="code -r"
                     spellCheck={false}
-                    style={inputStyle}
+                    className="ui-input"
                   />
                   <span style={hintStyle}>
                     Examples: <code style={inlineCodeStyle}>code -r</code>, <code style={inlineCodeStyle}>cursor -r</code>, <code style={inlineCodeStyle}>windsurf -r</code>
@@ -259,7 +259,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
                     onChange={e => setTerminalFinishCooldownSeconds(e.target.value)}
                     placeholder={String(DEFAULT_NOTIFICATION_COOLDOWN_SECONDS)}
                     spellCheck={false}
-                    style={inputStyle}
+                    className="ui-input"
                   />
                   <span style={hintStyle}>
                     Leave blank for the default of <code style={inlineCodeStyle}>{DEFAULT_NOTIFICATION_COOLDOWN_SECONDS}</code> seconds.
@@ -292,7 +292,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
               )}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-                <button
+                <Button
                   onClick={() => {
                     namingRef.current.revert();
                     setDefaultPath(savedPath);
@@ -300,29 +300,19 @@ export default function SettingsPanel({ onClose, onSaved }) {
                     setTerminalFinishCooldownSeconds(savedTerminalFinishCooldownSeconds);
                   }}
                 disabled={!anyDirty || namingState.busy || saving}
-                style={{
-                  ...actionBtnStyle,
-                  opacity: anyDirty ? 1 : 0.3,
-                  cursor: anyDirty ? 'pointer' : 'default',
-                }}
                 title="Revert"
               >
                 <RotateCcw size={12} />
                 Revert
-              </button>
-              <button
+              </Button>
+              <Button variant="primary"
                 onClick={handleSave}
                 disabled={!anyDirty || cannotSave}
                 title={saving ? 'Saving settings' : 'Save settings'}
-                style={{
-                  ...saveBtnStyle,
-                  opacity: anyDirty && !cannotSave ? 1 : 0.4,
-                  cursor: anyDirty && !cannotSave ? 'pointer' : 'default',
-                }}
               >
                 <Save size={12} />
                 {saving ? 'Saving...' : 'Save'}
-              </button>
+              </Button>
             </div>
           </div>}
         </div>
@@ -390,14 +380,6 @@ const headerTitleStyle = {
   color: 'var(--text-primary)',
 };
 
-const closeBtnStyle = {
-  padding: 6,
-  borderRadius: 6,
-  color: 'var(--text-muted)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-};
 
 const contentStyle = {
   flex: 1,
@@ -495,17 +477,6 @@ const valueColumnStyle = {
   gap: 6,
 };
 
-const inputStyle = {
-  flex: 1,
-  background: 'var(--bg-base)',
-  border: '1px solid var(--border)',
-  borderRadius: 6,
-  padding: '7px 10px',
-  fontSize: '12px',
-  fontFamily: 'var(--font-mono)',
-  color: 'var(--text-primary)',
-  outline: 'none',
-};
 
 const hintStyle = {
   fontSize: '11px',
@@ -520,18 +491,6 @@ const inlineCodeStyle = {
   color: 'var(--text-secondary)',
 };
 
-const browseBtnStyle = {
-  padding: '7px 10px',
-  borderRadius: 6,
-  border: '1px solid var(--border)',
-  background: 'var(--bg-base)',
-  color: 'var(--text-secondary)',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 4,
-  fontSize: '11px',
-  fontFamily: 'var(--font-mono)',
-};
 
 const footerStyle = {
   padding: '12px 16px',
@@ -553,29 +512,4 @@ const unsavedStyle = {
   letterSpacing: '0.2px',
 };
 
-const actionBtnStyle = {
-  padding: '6px 12px',
-  borderRadius: 6,
-  fontSize: '11px',
-  fontWeight: 500,
-  fontFamily: 'var(--font-mono)',
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border)',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 5,
-};
 
-const saveBtnStyle = {
-  padding: '6px 14px',
-  borderRadius: 6,
-  fontSize: '11px',
-  fontWeight: 600,
-  fontFamily: 'var(--font-mono)',
-  color: 'var(--accent-contrast)',
-  background: 'var(--accent)',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 5,
-};

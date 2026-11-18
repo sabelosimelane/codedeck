@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Button, IconButton } from './ui/index.jsx';
 import { Server, Plus, Trash2, Pencil, Check, X, Wifi } from 'lucide-react';
 import { useToast } from './ToastContext';
 
@@ -180,22 +181,22 @@ export default function HostsSection({ onDirtyChange }) {
                     onChange={e => setEditing({ ...editing, name: e.target.value })}
                     placeholder="host name"
                     spellCheck={false}
-                    style={inputStyle}
+                    className="ui-input"
                   />
                   <input
                     value={editing.sshTarget}
                     onChange={e => setEditing({ ...editing, sshTarget: e.target.value })}
                     placeholder="ssh target (alias or user@host)"
                     spellCheck={false}
-                    style={inputStyle}
+                    className="ui-input"
                   />
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={handleSaveEdit} style={primaryBtnStyle} title="Save">
+                    <Button variant="primary" onClick={handleSaveEdit}  title="Save">
                       <Check size={12} /> Save
-                    </button>
-                    <button onClick={() => setEditing(null)} style={ghostBtnStyle} title="Cancel">
+                    </Button>
+                    <Button onClick={() => setEditing(null)}  title="Cancel">
                       <X size={12} /> Cancel
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : (
@@ -214,28 +215,25 @@ export default function HostsSection({ onDirtyChange }) {
                     </div>
                     {!host.builtIn && (
                       <div style={{ display: 'flex', gap: 4 }}>
-                        <button
+                        <IconButton aria-label="Test connection"
                           onClick={() => handleTest(host.name)}
-                          style={iconBtnStyle}
                           title="Test connection"
                           disabled={result?.testing}
                         >
                           <Wifi size={13} />
-                        </button>
-                        <button
+                        </IconButton>
+                        <IconButton aria-label="Rename / edit"
                           onClick={() => setEditing({ original: host.name, name: host.name, sshTarget: host.sshTarget })}
-                          style={iconBtnStyle}
                           title="Rename / edit"
                         >
                           <Pencil size={13} />
-                        </button>
-                        <button
+                        </IconButton>
+                        <IconButton tone="danger" aria-label="Delete host"
                           onClick={() => handleDelete(host.name)}
-                          style={{ ...iconBtnStyle, color: 'var(--danger)' }}
                           title="Delete host"
                         >
                           <Trash2 size={13} />
-                        </button>
+                        </IconButton>
                       </div>
                     )}
                   </div>
@@ -274,23 +272,22 @@ export default function HostsSection({ onDirtyChange }) {
             onChange={e => setNewName(e.target.value)}
             placeholder="name (e.g. devbox)"
             spellCheck={false}
-            style={inputStyle}
+            className="ui-input"
           />
           <input
             value={newTarget}
             onChange={e => setNewTarget(e.target.value)}
             placeholder="ssh target (~/.ssh/config alias or user@host)"
             spellCheck={false}
-            style={inputStyle}
+            className="ui-input"
           />
-          <button
+          <Button variant="primary" style={{ alignSelf: 'flex-start' }}
             onClick={handleAdd}
             disabled={adding}
-            style={{ ...primaryBtnStyle, opacity: adding ? 0.4 : 1, alignSelf: 'flex-start' }}
             title="Add host"
           >
             <Plus size={12} /> {adding ? 'Adding…' : 'Add host'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -352,17 +349,6 @@ const descStyle = {
 
 const valueColumnStyle = { display: 'flex', flexDirection: 'column', gap: 6 };
 
-const inputStyle = {
-  flex: 1,
-  background: 'var(--bg-base)',
-  border: '1px solid var(--border)',
-  borderRadius: 6,
-  padding: '7px 10px',
-  fontSize: '12px',
-  fontFamily: 'var(--font-mono)',
-  color: 'var(--text-primary)',
-  outline: 'none',
-};
 
 const hostHeaderStyle = {
   display: 'flex',
@@ -417,43 +403,8 @@ const testResultStyle = {
   color: 'var(--text-muted)',
 };
 
-const iconBtnStyle = {
-  padding: 5,
-  borderRadius: 6,
-  border: '1px solid var(--border)',
-  background: 'var(--bg-base)',
-  color: 'var(--text-secondary)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-};
 
-const primaryBtnStyle = {
-  padding: '6px 12px',
-  borderRadius: 6,
-  fontSize: '11px',
-  fontWeight: 600,
-  fontFamily: 'var(--font-mono)',
-  color: 'var(--accent-contrast)',
-  background: 'var(--accent)',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 5,
-};
 
-const ghostBtnStyle = {
-  padding: '6px 12px',
-  borderRadius: 6,
-  fontSize: '11px',
-  fontWeight: 500,
-  fontFamily: 'var(--font-mono)',
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border)',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 5,
-};
 
 const emptyStyle = {
   fontFamily: 'var(--font-mono)',

@@ -7,6 +7,12 @@ export function Button({ variant = 'secondary', size = 'medium', type = 'button'
   return <button type={type} className={className ? `ui-button ${className}` : 'ui-button'} data-variant={variant} data-size={size} {...rest}>{children}</button>;
 }
 
+/** A button that is only an icon. `aria-label` is required: it is the button's only name. */
+export function IconButton({ tone = 'plain', type = 'button', children, ...rest }) {
+  if (typeof rest['aria-label'] !== 'string' || rest['aria-label'].trim() === '') throw new Error('icon button: aria-label is required');
+  return <button type={type} className="ui-icon-button" data-tone={tone} {...rest}>{children}</button>;
+}
+
 /**
  * A modal dialog: closes on Escape and on a click outside, unless `busy`. `footer` holds its
  * actions; `width` is its widest size in pixels.

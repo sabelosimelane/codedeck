@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { IconButton } from './ui/index.jsx';
 import { ChevronRight, ChevronDown, ExternalLink, File, Folder, FolderOpen, X } from 'lucide-react';
 import { useToast } from './ToastContext';
 import FileContextMenu from './FileContextMenu';
@@ -196,9 +197,9 @@ export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
               {project.name}
             </span>
           </div>
-          <button onClick={onClose} style={iconBtnStyle} title="Close">
+          <IconButton aria-label="Close" onClick={onClose}  title="Close">
             <X size={16} />
-          </button>
+          </IconButton>
         </div>
 
         {/* Path bar */}
@@ -215,12 +216,12 @@ export default function FileBrowserPanel({ project, onPreviewFile, onClose }) {
             {project.path}
           </span>
           <div style={treeControlsStyle}>
-            <button type="button" style={treeControlBtnStyle} onClick={handleExpandAll} title="Expand all folders">
+            <IconButton aria-label="Expand all folders"  onClick={handleExpandAll} title="Expand all folders">
               Expand all
-            </button>
-            <button type="button" style={treeControlBtnStyle} onClick={handleFoldAll} title="Fold all folders">
+            </IconButton>
+            <IconButton aria-label="Fold all folders"  onClick={handleFoldAll} title="Fold all folders">
               Fold all
-            </button>
+            </IconButton>
           </div>
         </div>
 
@@ -350,27 +351,7 @@ const footerStyle = {
   background: 'var(--bg-sidebar)',
 };
 
-const iconBtnStyle = {
-  padding: 6,
-  borderRadius: 6,
-  color: 'var(--text-muted)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  transition: 'color 0.1s, background 0.1s',
-};
 
-const treeControlBtnStyle = {
-  border: '1px solid var(--border)',
-  background: 'var(--glass-bg)',
-  color: 'var(--text-secondary)',
-  borderRadius: 6,
-  padding: '4px 8px',
-  fontSize: '11px',
-  fontFamily: 'var(--font-mono)',
-  cursor: 'pointer',
-  whiteSpace: 'nowrap',
-};
 
 const spinnerStyle = {
   width: 20,

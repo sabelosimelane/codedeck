@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from 'react';
+import { Button, IconButton } from '../ui/index.jsx';
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
 import { deleteStepPreset, deleteTemplate, deleteWorkflow } from '../../utils/pipelinesApi';
 import { WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
@@ -111,14 +112,14 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
               {workflow.description && <span className="pipeline-item-meta">{workflow.description}</span>}
               <span className="pipeline-item-meta">{summary(workflow)}</span>
             </div>
-            <div className="pipeline-item-actions">
-              <button type="button" aria-label={`Duplicate workflow ${workflow.name}`} title="Duplicate" disabled={busy} onClick={() => duplicate(workflow)}><Copy size={13} /></button>
-              <button type="button" aria-label={`Edit workflow ${workflow.name}`} title="Edit" disabled={busy} onClick={() => open(workflow)}>
+            <div className="pipeline-item-actions ui-item-actions">
+              <IconButton aria-label={`Duplicate workflow ${workflow.name}`} title="Duplicate" disabled={busy} onClick={() => duplicate(workflow)}><Copy size={13} /></IconButton>
+              <IconButton aria-label={`Edit workflow ${workflow.name}`} title="Edit" disabled={busy} onClick={() => open(workflow)}>
                 <Pencil size={13} />
-              </button>
-              <button type="button" className="pipeline-danger" aria-label={`Delete workflow ${workflow.name}`} title="Delete" disabled={busy} onClick={() => remove(workflow)}>
+              </IconButton>
+              <IconButton tone="danger" aria-label={`Delete workflow ${workflow.name}`} title="Delete" disabled={busy} onClick={() => remove(workflow)}>
                 <Trash2 size={13} />
-              </button>
+              </IconButton>
             </div>
           </li>
         ))}
@@ -126,19 +127,19 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
 
       {editing === null ? (
         <>
-          <button type="button" className="pipeline-add" disabled={busy || agents.length === 0} aria-expanded={choosing} onClick={() => setChoosing(value => !value)}>
+          <Button variant="accent" disabled={busy || agents.length === 0} aria-expanded={choosing} onClick={() => setChoosing(value => !value)}>
             <Plus size={12} /> Add workflow
-          </button>
+          </Button>
           {choosing && <div className="pipeline-template-chooser" aria-label="Workflow starting point">
-            <button type="button" onClick={() => open(null)}>Blank</button>
-            {WORKFLOW_TEMPLATES.map(template => <button type="button" key={template.id} onClick={() => chooseTemplate(template)}>
+            <Button onClick={() => open(null)}>Blank</Button>
+            {WORKFLOW_TEMPLATES.map(template => <Button key={template.id} onClick={() => chooseTemplate(template)}>
               <strong>{template.name}</strong><span>{template.description}</span>
-            </button>)}
+            </Button>)}
             {templates.map(template => <span key={template.id} className="pipeline-saved-template">
-              <button type="button" onClick={() => chooseSaved(template)}>
+              <Button onClick={() => chooseSaved(template)}>
                 <strong>{template.name}</strong><span>{template.description || 'Saved by you'}</span>
-              </button>
-              <button type="button" className="pipeline-danger" aria-label={`Delete saved template ${template.name}`} title="Delete this saved template" disabled={busy} onClick={() => removeSaved('template', template.name, () => deleteTemplate(template.id))}><Trash2 size={13} /></button>
+              </Button>
+              <IconButton tone="danger" aria-label={`Delete saved template ${template.name}`} title="Delete this saved template" disabled={busy} onClick={() => removeSaved('template', template.name, () => deleteTemplate(template.id))}><Trash2 size={13} /></IconButton>
             </span>)}
           </div>}
           {stepPresets.length > 0 && (
@@ -151,8 +152,8 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
                       <span className="pipeline-item-name">{preset.name}{preset.role && <span className="pipeline-kind">{preset.role}</span>}</span>
                       <span className="pipeline-item-meta">{preset.prompt.length > 120 ? `${preset.prompt.slice(0, 120)}…` : preset.prompt}</span>
                     </div>
-                    <div className="pipeline-item-actions">
-                      <button type="button" className="pipeline-danger" aria-label={`Delete saved step ${preset.name}`} title="Delete this saved step" disabled={busy} onClick={() => removeSaved('step', preset.name, () => deleteStepPreset(preset.id))}><Trash2 size={13} /></button>
+                    <div className="pipeline-item-actions ui-item-actions">
+                      <IconButton tone="danger" aria-label={`Delete saved step ${preset.name}`} title="Delete this saved step" disabled={busy} onClick={() => removeSaved('step', preset.name, () => deleteStepPreset(preset.id))}><Trash2 size={13} /></IconButton>
                     </div>
                   </li>
                 ))}

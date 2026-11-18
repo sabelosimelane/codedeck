@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { Button } from '../ui/index.jsx';
 import { updatePipelineSettings } from '../../utils/pipelinesApi';
 import { loadDefinitions, parseSettings } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
@@ -57,7 +58,7 @@ export default function PipelineSettings({ onDirtyChange }) {
       {loadError && (
         <div className="pipeline-load-error">
           <span role="alert">{loadError}</span>
-          <button type="button" onClick={load}>Retry</button>
+          <Button onClick={load}>Retry</Button>
         </div>
       )}
       {definitions === null && !loadError && <p className="pipeline-empty" role="status">Loading…</p>}
@@ -73,6 +74,7 @@ export default function PipelineSettings({ onDirtyChange }) {
               A small, fast model is enough. A run cannot start until one is chosen.
             </p>
             <select
+              className="ui-input"
               aria-label="Setup agent"
               value={definitions.settings.setupAgentId ?? ''}
               disabled={savingSetupAgent}
@@ -86,7 +88,7 @@ export default function PipelineSettings({ onDirtyChange }) {
           <section className="pipeline-section">
             <h3>Workflow builder</h3>
             <p className="pipeline-hint">A full screen for building workflows: the steps side by side with the one you are editing, a large prompt editor, and a preview of exactly what the agent is sent.</p>
-            <button type="button" className="pipeline-add" onClick={openWorkflowBuilder}>Open the workflow builder</button>
+            <Button variant="accent" onClick={openWorkflowBuilder}>Open the workflow builder</Button>
           </section>
 
           <WorkflowList workflows={definitions.workflows} agents={definitions.agents} templates={definitions.templates} stepPresets={definitions.stepPresets} onChanged={load} onDirtyChange={setWorkflowsDirty} />

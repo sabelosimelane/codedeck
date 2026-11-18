@@ -1,4 +1,5 @@
 import React, { useId } from 'react';
+import '../ui/ui.css';
 
 export function failureMessage(failure) {
   if (failure instanceof TypeError) return 'Server unreachable';
@@ -33,10 +34,10 @@ export async function diagnoseSaveFailure(failure, revision, fetchLatest) {
 
 function Field({ caption, error, errorId, children }) {
   return (
-    <div className="pipeline-field">
-      <span className="pipeline-field-caption" aria-hidden="true">{caption}</span>
+    <div className="pipeline-field ui-field">
+      <span className="pipeline-field-caption ui-field-hint" aria-hidden="true">{caption}</span>
       {children}
-      {error && <span id={errorId} className="pipeline-field-error">{error}</span>}
+      {error && <span id={errorId} className="pipeline-field-error ui-field-error">{error}</span>}
     </div>
   );
 }
@@ -55,7 +56,7 @@ export function TextField({ label, caption, value, onChange, error, multiline = 
   const Control = multiline ? 'textarea' : 'input';
   return (
     <Field caption={caption} error={error} errorId={errorId}>
-      <Control value={value} spellCheck={false} {...controlProps(label, error, errorId, onChange)} {...rest} />
+      <Control className="ui-input" value={value} spellCheck={false} {...controlProps(label, error, errorId, onChange)} {...rest} />
     </Field>
   );
 }
@@ -64,7 +65,7 @@ export function SelectField({ label, caption, value, onChange, error, children, 
   const errorId = useId();
   return (
     <Field caption={caption} error={error} errorId={errorId}>
-      <select value={value} {...controlProps(label, error, errorId, onChange)} {...rest}>{children}</select>
+      <select className="ui-input" value={value} {...controlProps(label, error, errorId, onChange)} {...rest}>{children}</select>
     </Field>
   );
 }

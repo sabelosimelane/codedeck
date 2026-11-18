@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Button, IconButton } from '../ui/index.jsx';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
 import { AGENT_PRESETS, buildLaunchCommand, parseLaunchCommand } from '../../../../shared/agent-presets.mjs';
 import { validateAgentBody } from '../../../../shared/pipeline-definitions.mjs';
@@ -140,13 +141,13 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
               <code>{agent.launchCommand}</code>
               <span className="pipeline-item-meta">reset with <code>{agent.resetCommand}</code></span>
             </div>
-            <div className="pipeline-item-actions">
-              <button type="button" aria-label={`Edit agent ${agent.name}`} title="Edit" disabled={busy} onClick={() => requestForm(agent)}>
+            <div className="pipeline-item-actions ui-item-actions">
+              <IconButton aria-label={`Edit agent ${agent.name}`} title="Edit" disabled={busy} onClick={() => requestForm(agent)}>
                 <Pencil size={13} />
-              </button>
-              <button type="button" className="pipeline-danger" aria-label={`Delete agent ${agent.name}`} title="Delete" disabled={busy} onClick={() => remove(agent)}>
+              </IconButton>
+              <IconButton tone="danger" aria-label={`Delete agent ${agent.name}`} title="Delete" disabled={busy} onClick={() => remove(agent)}>
                 <Trash2 size={13} />
-              </button>
+              </IconButton>
             </div>
           </li>
         ))}
@@ -154,9 +155,9 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
       {deleteError && <p role="alert" className="pipeline-field-error">{deleteError}</p>}
 
       {form === null ? (
-        <button type="button" className="pipeline-add" disabled={busy} onClick={() => showForm(NEW_AGENT)}>
+        <Button variant="accent" disabled={busy} onClick={() => showForm(NEW_AGENT)}>
           <Plus size={12} /> Add agent
-        </button>
+        </Button>
       ) : (
         <div className="pipeline-form">
           <h4>{form.id === null ? 'New agent' : 'Edit agent'}</h4>
@@ -196,8 +197,8 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
           <TextField label="Reset command" caption="Reset command (clears context between passes)" value={form.resetCommand} onChange={setField('resetCommand')} error={errors.resetCommand} maxLength={256} />
           <OtherErrors errors={errors} shownFields={SHOWN_FIELDS} />
           <div className="pipeline-form-actions">
-            <button type="button" className="pipeline-primary" disabled={busy} onClick={save}>Save agent</button>
-            <button type="button" disabled={busy} onClick={closeForm}>Cancel</button>
+            <Button variant="primary" disabled={busy} onClick={save}>Save agent</Button>
+            <Button disabled={busy} onClick={closeForm}>Cancel</Button>
           </div>
         </div>
       )}

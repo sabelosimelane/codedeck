@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { Button, IconButton } from '../../ui/index.jsx';
 import { X } from 'lucide-react';
 import { loadDefinitions } from '../../../utils/pipelineRecords';
 import { useToast } from '../../ToastContext';
@@ -45,13 +46,13 @@ export default function WorkflowsScreen({ onClose }) {
       <header className="workflows-screen-header">
         <strong>Workflow builder</strong>
         <span className="pipeline-hint">Agents and the setup agent are in Settings → Workflows.</span>
-        <button type="button" aria-label="Close the workflow builder" onClick={close}><X size={16} /></button>
+        <IconButton aria-label="Close the workflow builder" onClick={close}><X size={16} /></IconButton>
       </header>
       <div className="workflows-screen-body pipeline-settings">
         {loadError && (
           <div className="pipeline-load-error">
             <span role="alert">{loadError}</span>
-            <button type="button" onClick={load}>Retry</button>
+            <Button onClick={load}>Retry</Button>
           </div>
         )}
         {definitions === null && !loadError && <p className="pipeline-empty" role="status">Loading…</p>}
