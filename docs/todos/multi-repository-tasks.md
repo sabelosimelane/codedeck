@@ -1,7 +1,7 @@
 # Multi-repository Tasks
 
 **Spec**: `docs/specifications/multi-repository-tasks.md`
-**Status**: Not started. Waiting for the owner's answers to the four questions in Spec §10.
+**Status**: In Progress
 **Last completed**: none
 **Created**: 2026-11-19
 
@@ -16,8 +16,6 @@
 > do not merge into `main`, and do not restart or reload the live instance without the owner's
 > explicit go-ahead: a change under `server/` in that checkout reloads the live backend and
 > interrupts working runs.
-> The phases assume the recommended answers in Spec §10. If the owner answers otherwise, change the
-> spec first, then the tasks marked (Q1)–(Q4).
 
 ## Phase 1: Task Worktrees in the Database
 > The riskiest piece: it changes where every existing task keeps its worktree, in the live database,
@@ -44,13 +42,13 @@
 > **Closed when:** the owner can open a project's Repositories dialog, add the repositories beside it with one click, and see each one's branch and state; a project without the field behaves as before
 
 - [ ] `server/project-repositories.js` (new, pure where possible): validate an entry (absolute path, exists, top level of a working tree, a repository different from the own and from the others, derived unique `name`, at most 8, local project only); red tests first for each rule (Spec §3.1)
-- [ ] `server/project-repositories.js`: `listCandidates` scans the direct children of the own repository's parent folder for Git repositories, skips `worktrees` and the ones already listed, and never recurses (Q1)
+- [ ] `server/project-repositories.js`: `listCandidates` scans the direct children of the own repository's parent folder for Git repositories, skips `worktrees` and the ones already listed, and never recurses
 - [ ] `server/project-config.js`: `normalizeProject` supplies `repositories: []`; a guard for every field of a stored entry when the list is read
 - [ ] `server/routes/project-repositories.js` (new): `GET /api/projects/:name/repositories` and `GET …/repository-candidates` (paged, sort `name`, stable tiebreaker), `POST …/repositories`, `DELETE …/repositories/:repository`; RFC 9457 errors with `traceId`; all six test dimensions (Spec §7)
 - [ ] `server/index.js`: mount the router; `docs/steering/api-standards.md`: a section for these endpoints
 - [ ] `client/src/utils/projectRepositoriesApi.js` (new): validated client, one guard per field read
 - [ ] `client/src/components/ProjectRepositoriesDialog.jsx` (new): the project's repositories with branch and state, Remove, "Add the repositories beside it" from the candidates, Add by folder with `DirectoryBrowser`; toasts for success and failure
-- [ ] `client/src/components/Sidebar.jsx`: an entry on the project row that opens the dialog; `client/src/App.jsx` carries the list (Q2: no automatic linking)
+- [ ] `client/src/components/Sidebar.jsx`: an entry on the project row that opens the dialog; `client/src/App.jsx` carries the list; nothing is linked automatically (Spec §10, answer 2)
 
 ## Phase 3: A Task Across Repositories
 > A task is created with worktrees in several repositories, in one folder, and its terminals open in any of them.
@@ -58,8 +56,8 @@
 > **Outputs:** planning and creation per repository with undo; the task folder layout; terminals per worktree; grouping by task; Close task over every worktree
 > **Closed when:** from the New task dialog the owner creates a task in two repositories, sees one task with terminals in each, and Close task removes both worktrees or neither
 
-- [ ] `server/pipelines/run-worktree.js`: `planTaskFolder({ taskId, title, ownHomePath, repositories })` returns the task folder and one path and branch per repository; `planNames` is unchanged for a project without other repositories (Spec §3.3, Q3)
-- [ ] `server/tasks/task-service.js`: `plan` takes `repositories` (first is where the task starts; absent means the own repository) and runs the Git check for each; it changes nothing (Spec §3.2, Q4)
+- [ ] `server/pipelines/run-worktree.js`: `planTaskFolder({ taskId, title, ownHomePath, repositories })` returns the task folder and one path and branch per repository; `planNames` is unchanged for a project without other repositories (Spec §3.3)
+- [ ] `server/tasks/task-service.js`: `plan` takes `repositories` (first is where the task starts; absent means the own repository) and runs the Git check for each; it changes nothing (Spec §3.2)
 - [ ] `server/tasks/task-service.js`: `createPlanned` creates the worktrees one after another; when one fails, the ones made for this task are removed without force and their branches deleted with `git branch -d`; the error names the repository; when the undo is refused the task is kept with what exists (Spec §3.2)
 - [ ] `server/routes/tasks.js`: `POST /api/tasks` accepts `repositories`; `POST /api/tasks/:id/terminals` accepts `{ worktreeId }`; both stay valid without the new fields (Spec §7)
 - [ ] `server/tasks/task-landing.js`: Close task checks every open worktree first, closes all or none, reports a removal refused midway, and removes the empty task folder with a plain `rmdir` (Spec §3.5, §3.3)
@@ -128,7 +126,7 @@
 ### Session — 2026-11-19 (specification and todo)
 **Completed**: the specification and this todo. No code.
 **Key decisions** (Spec §4): the project path stays the project's own repository; a run's directory is one repository's worktree; a repository not in the task is readable only; one unfinished run per task; landing per repository with no "merge all"; old `tasks` columns kept for one release; guidance limit 4000.
-**Waiting on the owner** (Spec §10): how repositories are declared (Q1), what happens to the 31 existing group projects (Q2), the folder layout of tasks (Q3), which repositories a new task includes (Q4).
+**Owner's answers** (Spec §10): repositories are listed per project; the grouping is virtual and nothing is linked automatically; one folder per task; a new task includes the repository it starts in plus the ones ticked. Open with the owner: whether two separately registered projects of one group should also be shown as one sidebar row (not built).
 **Key files read**: `server/tasks/*.js`, `server/routes/tasks.js`, `server/routes/pipelines.js` (`POST /runs`, `:812-996`), `server/pipelines/step-guidance.js`, `run-worktree.js`, `run-notes.js`, `run-progress.js`, `run-engine.js` (`:226-280`, `:375-398`, `:605-719`), `client/src/utils/worktreeGroups.js`, `client/src/components/tasks/`, `client/src/mobile/nowView.js`.
 **Not read**: `server/project-deletion-service.js`, `server/pipelines/run-machine.js`, `client/src/components/TerminalTabBar.jsx`, `client/src/mobile/MobileApp.jsx`, most of `TerminalArea.jsx`, `Sidebar.jsx` and `App.jsx`. Read them before Phase 3.
 **Quirks**:
@@ -136,4 +134,4 @@
 - A session may already start in any absolute directory (`server/mobile-session-start.js:10-22`), so terminals in another repository's worktree need no transport change.
 - At `26380fc` the worktree is created before the task row (`server/tasks/task-service.js:86-87`). An audit fix that writes the row first (item R01) may land on `main` from another branch; rebase and follow its order in Phase 1.
 - `planNames` uses only the id and the title for a folder's suffix (`server/pipelines/run-worktree.js:46-59`).
-**Next**: the owner's answers; then Phase 1.
+**Next**: Phase 1.

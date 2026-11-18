@@ -1,7 +1,7 @@
 # Multi-repository tasks: specification
 
 **Date:** 2026-11-19
-**Status:** Draft. Four questions for the owner are open (§10); everything else is decided here.
+**Status:** Decided. The owner answered the four questions on 2026-11-19 (§10); the rest is decided in §4.
 **Todo:** `docs/todos/multi-repository-tasks.md`
 **Read at:** commit `26380fc` of this repository. Every file and line cited below was read at that commit.
 
@@ -192,11 +192,14 @@ A project has its **own repository** (its `path`, unchanged) and a list of **oth
   ] }
 ```
 
-How the list is filled is question 1 in §10. The recommended answer: the owner lists them per
-project, and the dialog offers the repositories found beside the project's own (direct children of
-its parent folder that are Git repositories, `worktrees` excepted) to add with one click. Nothing is
-guessed: 30 of the owner's projects sit directly under `~/git` beside hundreds of unrelated
-repositories, so "everything in the parent folder" cannot be a rule.
+The owner lists them per project (§10, answer 1). The dialog offers the repositories found beside the
+project's own (direct children of its parent folder that are Git repositories, `worktrees` excepted)
+to add with one click. Nothing is guessed: 30 of the owner's projects sit directly under `~/git`
+beside hundreds of unrelated repositories, so "everything in the parent folder" cannot be a rule.
+
+The grouping is virtual (§10, answer 2): it is a list in CodeDeck's own configuration. No repository
+is moved, re-registered or changed to belong to a group, no existing project is linked
+automatically, and a project with other repositories is still one project on screen.
 
 Rules for an entry, each a field error when broken:
 
@@ -228,8 +231,8 @@ projects and may also be a project of its own.
 
 - **One worktree and one branch per repository it includes**, each with its own base branch, base
   commit and landing state.
-- **Which repositories:** the one the task starts in, plus the ones ticked when it is created. Which
-  are ticked by default is question 4 in §10 (recommended: none beyond the one it starts in). A task
+- **Which repositories:** the one the task starts in, plus the ones ticked when it is created; none
+  is ticked by default (§10, answer 4). The rest stay readable and can be added later. A task
   made by hand starts in the project's own repository unless that is unticked; a task made for a run
   starts in the run's "Start in" repository (§3.4).
 - **The first worktree** of a task is the one it started in. It supplies the task's top-level
@@ -260,10 +263,8 @@ repository's worktrees, `task-adoption.js:52-66`), `client/src/components/tasks/
 
 ### 3.3 Where the worktrees live, and how references resolve
 
-The folder layout is question 3 in §10, because the recommended answer departs from the owner's
-written rule `worktrees/<repo>-<purpose>`.
-
-**Recommended: one folder per task, for projects with several repositories.**
+**One folder per task, for projects with several repositories** (§10, answer 3). This departs, for
+these tasks only, from the owner's written rule `worktrees/<repo>-<purpose>`.
 
 ```
 /Users/sabside/git/mlondolozi/
@@ -291,12 +292,6 @@ written rule `worktrees/<repo>-<purpose>`.
 does not include has no worktree, so `../../frontend` finds nothing in the task's folder. The run is
 told where each such repository's own checkout is and that it may be read there and never changed
 (§3.4). No symbolic links are created: a write through a link would change a main checkout unseen.
-
-**If the owner chooses the flat layout instead** (`worktrees/backend-<slug>-<id8>` beside
-`worktrees/mobile-app-<slug>-<id8>`), relative references between repositories do not resolve on
-disk anywhere in a task. The guidance then carries a path for every repository, and scripts or build
-files that use a sibling by relative path break inside tasks. Everything else in this specification
-is unchanged.
 
 **Files:** `server/pipelines/run-worktree.js` (`planTaskFolder` beside `planNames`),
 `server/tasks/task-service.js`, `server/tasks/task-landing.js` (removing the empty folder).
@@ -587,18 +582,19 @@ re-adding a repository that was merged or closed in the same task; dropping the 
 - Whether released phone build 1.8 bundles its client code or loads it from the instance was not
   checked; the design assumes the stricter case and removes no field.
 
-## 10. Questions for the owner
+## 10. The owner's answers (2026-11-19)
 
 1. **How a project's repositories are declared.** Listed per project, with the repositories beside
-   it offered to add in one click (recommended); or automatically everything in the parent folder; or
-   projects re-registered at the group folder.
-2. **The 31 existing projects that sit in a group folder.** Nothing changes until needed: the New
-   task and Run workflow dialogs show the project's repositories and open the list where its
-   neighbours are one click away (recommended); or a one-time screen that lists all 31 with their
-   neighbours to confirm in bulk; or link them all automatically at upgrade.
+   it offered to add in one click.
+2. **The 31 existing projects that sit in a group folder.** In the owner's words: "no actual changes,
+   codedeck wraps the view as one project", and, asked which reading was meant, "grouping should be
+   virtual not the actual repos". Read here as: nothing is linked or changed automatically, the
+   grouping exists only in CodeDeck's configuration, and a project with other repositories is one
+   project on screen with its repositories inside its tasks, runs and landing bar. Not built on this
+   reading: merging two separately registered projects of one group (for example `backend` and the
+   `mobile-app` project added by hand) into one sidebar row. The owner has not confirmed or ruled
+   that out.
 3. **Folder layout for tasks of projects with several repositories.** One folder per task,
-   `worktrees/<task>/<repo>`, so `../../backend/…` resolves inside a task (recommended); or flat,
-   `worktrees/<repo>-<task>`, which is your written rule and breaks relative references.
-4. **Which repositories a new task includes.** The one it starts in plus the ones you tick; the rest
-   stay readable and can be added later with one click (recommended); or every repository of the
-   project unless you untick it, which also means Setup prepares every one.
+   `worktrees/<task>/<repo>`.
+4. **Which repositories a new task includes.** The one it starts in plus the ones ticked; the rest
+   stay readable and can be added later.
