@@ -14,8 +14,8 @@ Developers who juggle multiple codebases daily. The core pain points are:
 **Implemented:**
 - Project management — add, rename, delete projects (directories on disk)
 - Terminal multiplexing — multiple terminal tabs per project, N side-by-side panes with draggable dividers
-- New worktree terminal — create a new branch and Git worktree from a local project's current commit and open its terminal as an active tab; CodeDeck does not remove it
-- Worktree groups — each project displays a main checkout group and groups for worktrees with terminals or open runs; the selected group scopes the terminal tabs and run header, and can be chosen in the sidebar or tab switcher
+- Tasks — a titled piece of work with its own Git worktree and branch, created from a title alone; listed by title under its project beside Main, in the sidebar and the tab switcher. Terminals, splits and workflow runs open in the task being looked at
+- Landing — each task shows live from Git its uncommitted files and commits not yet in its base branch, and offers Commit changes, Merge (aborted and reported on conflict), Open a pull request (`gh`/`glab`), Close task and Rename; nothing is forced
 - File tree browsing — view project files, click to open in system editor (VS Code, etc.)
 - Per-project file browsing — scoped file tree panel decoupled from active project
 - Directory browser — filesystem navigator for adding projects
@@ -31,11 +31,14 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Truthful durable terminals — tmux is required, reconnects reseed from fresh snapshots, and degraded preserved history is warned explicitly instead of silently bluffing
 - Optional sleep prevention — `CODEDECK_CAFFEINATE=1` wraps startup under macOS `caffeinate`
 
-- Workflow pipelines — isolated Git worktree per run, Setup cleanliness guard, ordered agent steps, bounded repeat passes, one terminal per agent (steps with the same agent share it, a new run reuses the ones an earlier run left in the worktree, and the agent is cleared before each prompt), loops over a group of steps, an optional per-workflow "let agents decide" with a record of every decision, Stop/Resume/Continue and safe cleanup. The per-terminal Workflow bar was removed; only pipeline runs use the loop engine.
+- Workflow pipelines — runs work inside a task (a new one, an open one, or Main), with a Setup cleanliness guard for a new task, Setup cleanliness guard, ordered agent steps, bounded repeat passes, one terminal per agent (steps with the same agent share it, a new run reuses the ones an earlier run left in the worktree, and the agent is cleared before each prompt), loops over a group of steps, an optional per-workflow "let agents decide" with a record of every decision, Stop/Resume/Continue and safe cleanup. The per-terminal Workflow bar was removed; only pipeline runs use the loop engine.
+- Task view — a run is shown as its task: status in words, the steps as a rail, and the selected step's questions, approval, notes, decisions and reviews above its terminal
+- Workflow builder — a full screen with workflows, a draggable step rail, a large prompt editor and a backend-composed preview of what the agent is sent; workflow kinds, step roles, built-in templates (Bug fix, Feature build, Troubleshoot, Review only), owner-saved templates and reusable saved steps
 - Pipeline runs bar and sidebar counts — persisted run progress with automatic terminal-tab adoption; backend restarts require explicit Resume
 
 ## Domain Model
 - **Project**: a named directory on disk. Stored as `{ name, path }` in SQLite config.
+- **Task**: a titled piece of work in a project, stored in SQLite with its worktree path, branch, base branch and commit, state (`active`, `pr_open`, `merged`, `closed`) and pull request URL. Its Git facts are read live, never stored. A workflow run may belong to one task.
 - **Terminal session**: a tmux-backed PTY attachment keyed by `${projectName}-N`. Live browser attachments are tracked in server memory, while the underlying tmux session survives WebSocket reconnects, browser closes, and server restarts.
 - **Config**: generic key-value store in SQLite. Currently holds `projects` list and `defaultPath` setting.
 
@@ -45,6 +48,8 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - **Pane**: a visible terminal within a tab (multiple panes = side-by-side split)
 - **Tab**: a group of panes within a project's terminal area
 - **Cockpit**: the sidebar view showing ambient status across all projects
+- **Main**: the project's own checkout, as opposed to a task's copy of it
+- **Landing**: getting a task's work back into the project: commit, merge, pull request or close
 - **Waiting (tab)**: a user-set mark on a tab, keyed to its first pane's session, meaning "an agent is working here — stay quiet until it lands". Distinct from project waiting (which parks a whole project) and from status muting (which is permanent until undone).
 
 ## Business Rules
@@ -53,8 +58,10 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Deleting a project closes all of its terminal sessions before removing it from the saved list
 - Terminal durability depends on tmux — when tmux is unavailable, the UI must block terminal creation and ask the user to install it
 - A tab's waiting mark is cleared by the backend when its session is deleted — session ids are reused, and a stale mark would silence a new terminal
+- A task with uncommitted work is never removed, and merging requires Main to be clean and on the task's base branch
 - The backend is the source of truth for all state — frontend never holds authoritative state
 - Every user action that modifies state must round-trip through the backend
 
-Pipeline definitions and run snapshots are persisted in SQLite. Completed clean worktrees
-are removed without forcing; branches remain. Open runs include cleanup that needs attention.
+Pipeline definitions and run snapshots are persisted in SQLite. A task owns its worktree: a
+run never removes it. The folder goes when the task is merged or closed, never by force;
+a merged branch is deleted, an unmerged one is kept. Finishing a task closes its runs.

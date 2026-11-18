@@ -48,10 +48,17 @@ codedeck/
 │   ├── terminal-waiting-store.js # SQLite store for per-tab waiting marks
 │   ├── terminal-session-worktree-store.js # Durable spawn-worktree mapping per session id
 │   ├── terminal-session-worktree-start.js # Shared detached-session start wrapper
-│   ├── terminal-worktree-service.js # Validates and creates a branch/worktree, then starts its terminal
+│   ├── terminal-worktree-service.js # Older endpoint's service: branch + worktree + terminal (the client now uses tasks)
+│   ├── tasks/
+│   │   ├── task-store.js     # SQLite store for tasks: title, worktree, branch, base, state, PR URL
+│   │   ├── task-service.js   # Plans and creates a task's worktree; opens terminals in it; renames
+│   │   ├── task-landing.js   # Live Git status and commit, merge, pull request and close; nothing forced
+│   │   └── task-adoption.js  # At startup, worktrees already in use become tasks
 │   ├── routes/
 │   │   ├── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)
-│   │   ├── terminal-worktrees.js # POST new worktree terminal with Problem Details errors
+│   │   ├── terminal-worktrees.js # POST new worktree terminal (kept for older clients)
+│   │   ├── tasks.js              # Tasks: list, create, rename, terminals, landing (RFC 9457 errors)
+│   │   ├── collection-query.js   # Shared page/size/sort/filter parsing and the page envelope
 │   │   └── agent-sessions.js     # Paginated local agent conversations + resume API
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
@@ -68,8 +75,11 @@ codedeck/
 │       │   ├── TerminalArea.jsx      # Tab bar, N-pane layout, localStorage persistence
 │       │   ├── TerminalTabBar.jsx    # Tab row container and actions
 │       │   ├── SidebarSessionRows.jsx # Per-project session details
-│       │   └── WorktreeGroupHeader.jsx # Worktree label, run status and progress
-│       │   ├── NewWorktreeTerminalDialog.jsx # Branch input and worktree creation feedback
+│       │   └── WorktreeGroupHeader.jsx # Sidebar row for Main or a task: title, run status and progress
+│       │   ├── tasks/
+│       │   │   ├── NewTaskDialog.jsx  # Title input for a new task
+│       │   │   ├── TaskLandingBar.jsx # How a task stands in Git, and Commit / Merge / PR / Close / Rename
+│       │   │   └── TaskView.jsx       # A run as its task: header, step rail, step detail above the terminals
 │       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, snapshot hydration, transport replay, visibility recovery
 │       │   ├── TerminalInspector.jsx # Debug inspector: health, timeline, recovery actions, snapshot copy
 │       │   ├── PaneDivider.jsx       # Draggable vertical divider between terminal panes
@@ -81,12 +91,14 @@ codedeck/
 │       │   ├── ToastContext.jsx      # Toast notification context, hook, and container
 │       │   └── SettingsPanel.jsx     # Settings modal
 │       ├── hooks/
+│       │   ├── useTasks.js           # Open tasks from the backend, polled every two seconds
 │       │   └── useWaitingSessions.js # Backend-confirmed waiting marks (no optimistic dimming) + app-wide auto-clear
 │       ├── utils/
 │       │   ├── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules, quiet indicator sets
-│       │   ├── worktreeGroups.js    # Pure project/worktree grouping, shared display name and session edge guard
+│       │   ├── worktreeGroups.js    # Pure grouping of a project into Main and its tasks, display name and session edge guard
+│       │   ├── tasksApi.js          # Validated client for tasks and landing
+│       │   ├── workflowBuilder.js   # Window event that asks the app to open the workflow builder
 │       │   ├── pipelineRunStatus.js # Pure run and step display states
-│       │   └── terminalWorktreesApi.js # Validated POST client for new worktree terminals
 │       └── styles/
 │           └── global.css            # CSS custom properties theme
 ├── docs/
@@ -184,7 +196,16 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 - `server/pipelines/review-store.js`: append-only owner approval and send-back reviews (`pipeline_run_reviews`); `run-notes.js` writes their comments to the step feedback file.
 - `server/routes/pipelines.js`: definitions, settings, preflight and owner actions;
   transport validation and RFC 9457 errors. See `api-standards.md` for the contract.
-- `client/src/components/pipelines/`: definition editors, Run dialog and runs bar.
+- `client/src/components/pipelines/`: definition editors and the Run dialog. `PipelineRunsBar.jsx`
+  is no longer rendered; its question and approval panels are used by the task view.
+- `client/src/components/pipelines/builder/WorkflowsScreen.jsx`: the full-screen workflow builder.
+  It renders `WorkflowList` and `WorkflowEditor` with `variant="builder"`: a step rail with drag
+  reorder, one open step, and a preview from `POST /api/pipelines/prompt-previews`. The same two
+  components with `variant="form"` are the older editor still shown in Settings → Workflows.
+- `server/pipelines/library-store.js`: owner-saved workflow templates (`pipeline_workflow_templates`)
+  and saved steps (`pipeline_step_presets`); both are copied when used and never referenced by a run.
+- `shared/pipeline-definitions.mjs` also holds the workflow kinds, the template mode of the
+  workflow validator and the saved-step validator.
 - `client/src/components/pipelines/pipeline-runs.css`: run status, actions, connected step sequence and panels.
 - `client/src/hooks/usePipelineRuns.js`: active-project runs and action feedback.
 - `client/src/hooks/usePipelineRunCounts.js`: all-project open-run counts, polled
@@ -193,3 +214,23 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 - `SettingsPanel.jsx` keeps tab panels mounted; Hosts/Workflows save per item and
   report dirty drafts for close confirmation. Sidebar renders counts for active,
   waiting and shelved project rows, including compact active rows.
+
+## Tasks
+
+A task owns a Git worktree and a branch; a workflow run only works in one. `pipeline_runs.task_id`
+links a run to its task (null for a run in Main or in a worktree named by path). To the run
+engine a task's worktree is one that already existed (`worktreeState: 'external'`), so the engine
+never creates or removes it; a run in a task created for it still gets the Setup step.
+
+- `server/tasks/task-service.js` splits creation into `plan` (validates and names, changes
+  nothing) and `createPlanned`, so `POST /api/pipelines/runs` can refuse a run before any
+  worktree exists.
+- `server/tasks/task-landing.js` reads everything from Git when asked. Merge runs in the
+  project's own checkout and aborts on conflict. Finishing a task releases its runs
+  (`onTaskFinished` in `server/index.js`).
+- `server/tasks/task-adoption.js` runs once at startup; a failure is logged and does not stop
+  the server.
+- The client groups a project into Main and its open tasks by worktree path
+  (`utils/worktreeGroups.js`); a worktree with sessions or a run but no task still appears, by
+  folder name, and terminals cannot be opened in it from the UI.
+- A step whose pass or round limit the owner continued past has the status `limit_accepted`.

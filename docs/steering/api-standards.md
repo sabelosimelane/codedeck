@@ -96,6 +96,9 @@ absolute directory where that session started, or `null` for the project's main
 checkout. It does not follow later shell `cd` commands. Older sessions have no
 recorded worktree and appear under the main checkout until closed.
 
+The CodeDeck client no longer calls the endpoint below; it creates tasks instead (see
+**Tasks**). The endpoint is kept for older clients.
+
 `POST /api/terminal-worktrees` accepts exactly `{project: string, branch: string}` and
 returns 201 with `{sessionId, project, branch, worktreePath, baseCommit}`. The project
 must be local and its path a Git working tree root. The branch must be new, 1–100
@@ -114,9 +117,39 @@ retained worktree path.
 
 Coverage: `server/__tests__/terminal-worktree-service.test.js`,
 `server/__tests__/terminal-worktrees-api.test.js`,
-`client/src/utils/__tests__/terminalWorktreesApi.test.js`,
-`client/src/components/__tests__/NewWorktreeTerminalDialog.test.jsx`, and
-`client/src/components/__tests__/TerminalAreaWorktree.test.jsx`.
+and `client/src/components/__tests__/TerminalAreaWorktree.test.jsx` (now the New task flow).
+
+## Tasks
+
+All paths are under `/api/tasks`; the router owns a 4 KB JSON parser. Errors are RFC 9457
+problem documents with `message`, field `errors` on 400, `traceId` and a matching
+`X-Trace-Id`. A refused landing action (409) may add `reasons` (`[{code, message}]`) or
+`conflicts` (file paths). Unknown body and query fields are 400.
+
+A task is `{id, project, title, state, worktreePath, branch, baseBranch, baseCommit, prUrl,
+revision, createdAt, updatedAt, finishedAt}`. `state` is `active`, `pr_open`, `merged` or
+`closed`; `baseBranch` is null for a task started from a detached checkout.
+
+| Method and path | Contract |
+| --- | --- |
+| GET `/` | Paginated tasks. Filters `project` (exact), `state`, `open=true\|false` (open is `active` or `pr_open`). Sort `createdAt`, `updatedAt` or `title` with `asc\|desc` (default `createdAt,desc`, id tiebreaker); `size` 1–100, default 20 |
+| POST `/` | `{project, title}` (title 1–80 characters on one line). Creates the worktree and branch and returns 201 with the task. Each request creates a task; 404 unknown project, 409 remote project or not a Git repository root |
+| GET `/:id` | The task; 404 when unknown |
+| PUT `/:id` | `{title, revision}`; 409 on a stale revision |
+| POST `/:id/terminals` | No body. Opens a terminal in the task and returns 201 `{sessionId, taskId, project}`; 409 when the task is finished or its files are gone, 503 when the terminal runtime is unavailable |
+| GET `/:id/landing` | Read live from Git: `filesPresent`, `runActive`, `uncommitted` (at most 50 paths) and `uncommittedCount`, `commitsAhead`, `commitsBehind`, `main {branch, dirty}`, `remotes [{name, host, tool}]` (`tool` is `gh`, `glab` or null), `prUrl`, and `blockers {commit, merge, pullRequest, close}`, each a list of `{code, message}` that is empty when the action is allowed |
+| POST `/:id/commit` | `{message}` (1–200 characters on one line). Commits every change in the task and returns the landing status; 409 with `reasons` when refused |
+| POST `/:id/merge` | No body. Merges the task's branch into its base branch in the project's checkout, removes the worktree and deletes the merged branch; returns `{task, mergedInto, filesRemoved, filesDetail, branchDeleted}`. 409 with `reasons`, or with `conflicts` after an aborted merge |
+| POST `/:id/pull-request` | `{remote}`. Pushes the branch and opens a pull or merge request with `gh` or `glab`; returns `{task, prUrl, remote}` and the task becomes `pr_open`. 409 when the host is unsupported or its CLI is missing, 503 when the push or the request fails |
+| POST `/:id/close` | No body. Removes a clean worktree, keeps the branch; returns `{task, branchKept, unmergedCommits}` |
+
+The pull-request action calls a remote host with explicit timeouts (90 seconds for the push
+and for the request) and reports failure as 503. It has no circuit breaker: it is a single
+owner-initiated action, not a path other requests depend on.
+
+Coverage: `server/__tests__/task-store.test.js`, `task-service.test.js`, `task-landing.test.js`
+(real throwaway repositories), `task-adoption.test.js`, `tasks-api.test.js`, and
+`client/src/utils/__tests__/tasksApi.test.js`.
 
 ## Workflow pipelines
 
@@ -128,16 +161,20 @@ stable identity tiebreaker; unknown filters and sorts are rejected.
 | Method and path | Contract |
 | --- | --- |
 | GET/POST `/agents`, GET/PUT/DELETE `/agents/:id` | Named launch/reset definitions; PUT requires revision; referenced agents cannot be deleted |
-| GET/POST `/workflows`, GET/PUT/DELETE `/workflows/:id` | Named ordered nodes, agent references, prompt and repeat rules (`once`, `until_complete` with `max`, or `loop_back` with `to` — the name of an earlier node — and `max` rounds; loops may not share a node) and `agentsDecide` (boolean, required); optional per-node booleans `readOnly` and `approval` default to false; `approval: true` is invalid on a loop-closing node; optional `progressFile` is null or a 1–300 character relative POSIX Markdown path inside the run worktree; PUT requires revision |
+| GET/POST `/workflows`, GET/PUT/DELETE `/workflows/:id` | Optional `kind` (`build`, `bugfix`, `troubleshoot`, `review`, `other`; default `other`) and `description` (up to 280 characters on one line); each node may name a `role` (up to 32 characters). Named ordered nodes, agent references, prompt and repeat rules (`once`, `until_complete` with `max`, or `loop_back` with `to` — the name of an earlier node — and `max` rounds; loops may not share a node) and `agentsDecide` (boolean, required); optional per-node booleans `readOnly` and `approval` default to false; `approval: true` is invalid on a loop-closing node; optional `progressFile` is null or a 1–300 character relative POSIX Markdown path inside the run worktree; PUT requires revision |
+| GET/POST `/templates`, GET/PUT/DELETE `/templates/:id` | Owner-saved workflow templates: a workflow body whose nodes name no `agentId` (naming one is 400). Same list, revision and name-conflict rules as workflows |
+| GET/POST `/step-presets`, GET/PUT/DELETE `/step-presets/:id` | Owner-saved steps: `{name, role?, prompt, repeat, readOnly?, approval?}` with `repeat` `once` or `until_complete`; `loop_back` is 400 |
+| POST `/prompt-previews` | `{workflow, nodeIndex, input}` with `workflow` in template form (no agents). Returns 200 `{stepName, prompt, placeholders, skillRewrite}`: the prompt a run would send for that node, with placeholders for the task's folder, the run notes folder and the pass identifier. Saves nothing |
 | GET/PUT `/settings` | Setup agent selection with revision |
 | GET `/preflight?project=...` | Eligibility reasons and dirty-checkout warning for a local Git repository root |
 | GET `/worktrees?project=...` | Paginated working trees of the project's repository (sort `path,asc\|desc`); each says whether a run may use it and why not |
-| POST `/runs` | Request UUID, workflow, project and input; optional `worktreePath` of an existing worktree (404 unknown, 409 missing, unreadable by git, detached or in use) instead of a new one; snapshots definitions with `notesDir`; 400 on `input` when a configured progress file is absent from the repository's current commit or the chosen worktree; 400 on `project` when step guidance exceeds 2,000 characters; requestId replay is idempotent and conflicting reuse is 409 |
-| GET `/runs`, GET `/runs/:id` | Persisted progress, steps (including `readOnly`, `approval`, and a looping step's `repeat.toStepIndex` and `roundsCompleted`), worktree state, allowed actions including `approve` and `sendBack`, `agentsDecide`, `decisionCount`, `notesDir`, and per-step `notePath` and latest `note`; `approvalRequest` is null except in `awaiting_approval`, when it contains `stepIndex`, `stepName`, and the latest note; `progress` is null or `{file, status, phaseCount, phase}` with status `in_progress`, `all_done`, `no_phases`, `missing`, or `unreadable`. A run started without a progress file follows the workflow's current setting; if its input does not compose a valid path, `progress` is null |
+| POST `/runs` | Request UUID, workflow, project and input. Where the run works is at most one of: `taskId` (an open task of that project: 404 unknown, 400 another project's, 409 finished, files gone or in use; no Setup), `newTask: {title}` (a task is created for the run only after every other check passed; the run starts with Setup and needs a setup agent), or `worktreePath` of an existing worktree (404 unknown, 409 missing, unreadable by git, detached or in use). With none of them the run gets a worktree of its own that it removes when it completes, as before. A run never removes a task's worktree; snapshots definitions with `notesDir`; 400 on `input` when a configured progress file is absent from the repository's current commit or the chosen worktree; 400 on `project` when step guidance exceeds 2,000 characters; requestId replay is idempotent and conflicting reuse is 409 |
+| GET `/runs`, GET `/runs/:id` | `taskId` (null outside a task); persisted progress, steps (including `role`, `readOnly`, `approval`, and a looping step's `repeat.toStepIndex` and `roundsCompleted`), worktree state, allowed actions including `approve` and `sendBack`, `agentsDecide`, `decisionCount`, `notesDir`, and per-step `notePath` and latest `note`; `approvalRequest` is null except in `awaiting_approval`, when it contains `stepIndex`, `stepName`, and the latest note; `progress` is null or `{file, status, phaseCount, phase, tasksDone, tasksTotal}` (the last two count every phase, or are null) with status `in_progress`, `all_done`, `no_phases`, `missing`, or `unreadable`. A run started without a progress file follows the workflow's current setting; if its input does not compose a valid path, `progress` is null |
 
-The `progress` response shape is unchanged. With no configured Progress file, a run's optional notes `plan.md` is read; a missing plan or one with no phase sections returns `progress: null`, while an unreadable plan retains its status. Configured files retain all existing statuses.
+A step the owner continued past its limit has status `limit_accepted`. With no configured Progress file, a run's optional notes `plan.md` is read; a missing plan or one with no phase sections returns `progress: null`, while an unreadable plan retains its status. Configured files retain all existing statuses.
 `stopReason` also accepts `no_progress` when a looping run stops after two rounds without a newly ticked task. The run remains `stopped` and offers `resume` and `cleanup`.
-| GET `/runs/:id/decisions` | Paginated requests the run's agents settled themselves: step, pass, the questions listed, whether that list was cut, and the answer typed. Sort `createdAt,asc\|desc` (default `asc`); 404 for an unknown run |
+| GET `/runs/:id/decisions` | Paginated requests the run's agents settled themselves: step, pass, the questions listed, whether that list was cut, and the answer typed. Sort `createdAt,asc\|desc` (default `asc`); optional exact `stepIndex` filter; 404 for an unknown run |
+| GET `/runs/:id/reviews` | Paginated owner reviews: step, attempt, `verdict` (`approved` or `sent_back`) and the send-back comment. Sort `createdAt,asc\|desc` (default `asc`); optional exact `stepIndex` filter; 404 for an unknown run |
 | GET `/runs/:id/notes` | Paginated append-only notes: step, attempt, pass, status, summary and written content. Sort `createdAt,asc\|desc` (default `asc`, id tiebreaker); optional exact `stepIndex` filter; 404 for an unknown run |
 | POST `/runs/:id/stop` | Stop automation; repeated Stop is idempotent |
 | POST `/runs/:id/resume` | Fresh attempt; refuses a missing worktree |
@@ -148,7 +185,7 @@ The `progress` response shape is unchanged. With no configured Progress file, a 
 | POST `/runs/:id/cleanup` | Remove a clean worktree without force; retain branch. For a run in an existing worktree it only releases the worktree |
 
 Agents/workflows filter by exact `name`, and runs by `status`, `project`,
-`workflowId`, or `open=true|false`. The runs bar filters by project; sidebar counts
+`workflowId`, `taskId`, or `open=true|false`. The runs bar filters by project; sidebar counts
 page through all open runs. Definition conflicts and disallowed run actions return
 409. Missing records return 404. Setup's clean-worktree guard and blocked cleanup
 are represented in the returned run; clients must inspect run status even on HTTP 200.

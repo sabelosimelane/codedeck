@@ -18,7 +18,8 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Truthful terminal scrollback** — VS Code-style scrolling, snapshot-first reconnects, and visible warnings when preserved history cannot be guaranteed
 - **Terminal resilience** — debug inspector, transport replay catch-up, visibility-aware recovery, heartbeat monitoring
 - **Durable sessions** — tmux-backed sessions survive browser detaches and server restarts
-- **Workflow pipelines** — configure agents and multi-step workflows, run them in isolated Git worktrees, and watch progress across projects
+- **Tasks** — give a piece of work a title and it gets its own copy of the project, so several things can be built at once; commit, merge, open a pull request or close it from the same place
+- **Workflow pipelines** — build multi-step workflows from templates or your own saved steps, run them inside a task, and follow each step, its notes and its terminal in one view
 - **Descriptive session titles** — optional background naming through configurable local CLIs, with manual rename and retry
 - **Session search** — find past agent-CLI conversations and resume one in its project
 - **Toast notifications** — success/error feedback on every action, no silent failures
@@ -49,8 +50,8 @@ Open `http://localhost:43000` in your browser.
 2. Click a project to open a terminal scoped to that directory.
 3. Use **Split right** (columns icon) to add side-by-side terminal panes — drag dividers to resize, double-click to reset.
 4. Use **+** in the tab bar to open new terminal tabs. Each tab has its own set of panes.
-5. Use the branch-plus icon beside **+**, or **Open in new worktree** on the **No terminals open** card, to create a terminal in a new Git worktree. Enter a new branch name (a string of 1–100 characters, valid Git branch syntax, no leading dash, whitespace, control characters, `<`, or `>`). CodeDeck creates the worktree in `worktrees/` beside the home repository from the current commit; uncommitted changes and ignored files are not copied. CodeDeck never removes this worktree.
-   The sidebar groups a project's terminals and open runs by worktree. Choose a group in the sidebar or in the switcher above the terminal tabs to see that worktree's tabs and run header. Both places name a run worktree **Workflow name · first eight characters of run ID**; the full folder, branch and path are in its tooltip. A plain new terminal opens in the main checkout. Terminals already open before worktree grouping was introduced appear under **Main checkout** until closed, except terminals of an open run, which appear with that run.
+5. Use the branch-plus icon beside **+**, or **New task** on the **No terminals open** card, to start a task: type what you are working on and CodeDeck opens a terminal in the task's own copy of the project. See **Tasks** below.
+   The sidebar lists **Main** and each open task under its project; the switcher above the terminal tabs does the same. A new terminal, a split and **Cmd/Ctrl+Shift+T** open in whichever of them you are looking at, and stay there.
 6. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
 
 Agent status comes from the live prompt, status, and footer region of each CLI pane, with 20 seconds of silence vetoing a stale working marker. Input dialogs appear as **Needs input**; working sub-agent panes and background shells keep the session **Running**. An idle agent with a live background shell therefore shows as Running.
@@ -81,32 +82,55 @@ The highlight stays after copying. Selection alone does not copy, and terminal
 OSC 52 sequences cannot read or overwrite the clipboard. Clipboard failures
 appear as a toast. Resizing or reconnecting ends selection with a notice.
 
+## Tasks
+
+A task is a titled piece of work with its own copy of the project. CodeDeck creates a Git worktree and a branch for it from the project's current commit; you never name either. Tasks keep work apart, so several can be in progress at once, each with its own terminals and workflow runs.
+
+Start one with **New task** and a title. Uncommitted changes in Main and files Git ignores (`.env.local`, installed dependencies) are not carried over. The sidebar and the switcher show the task by its title; its branch and folder are in the tooltip and under **Details**. **Rename** changes the title only.
+
+The bar above a task's terminals says how it stands in Git, read every few seconds: uncommitted files, commits not yet in the branch it started from, and whether that branch has moved on. From there:
+
+- **Commit changes** commits everything in the task with the message you give.
+- **Merge into `<branch>`** merges the task into the branch it started from, in Main. It is offered only when the task is committed, Main is clean and on that branch, and no workflow run is still working in the task; otherwise the bar says what is in the way. A merge that conflicts is aborted, the conflicting files are listed, and both sides are left as they were. After a merge the task's folder is removed and its merged branch deleted.
+- **Open a pull request** pushes the task's branch to the remote you choose and opens a pull request with the GitHub CLI (`gh`) or a merge request with the GitLab CLI (`glab`), which must be installed and signed in. It asks first, because pushing publishes the branch. The task stays open for review fixes and links to the request.
+- **Close task** removes a clean task's folder. Its branch is kept, and you are told how many commits on it are not merged.
+
+Nothing is forced: a task with uncommitted work is never removed, and a branch is deleted only once Git agrees it is merged. Worktrees CodeDeck was already using when tasks were introduced (those of open workflow runs, and ones a terminal was opened in) became tasks at the next start.
+
+Limits: a new task has none of the project's ignored local files (a workflow run's Setup step prepares them; a task started by hand gets none), and two tasks cannot both serve an app on the same ports. Conflicts between tasks show up when you merge; CodeDeck reports them and resolves nothing itself. Tasks are for local projects.
+
 ## Workflow pipelines
 
-The run header describes state in plain words, such as **Running**, **Needs your input**, **Waiting for your approval**, **Interrupted**, **Failed** and **Complete**. When an action is available, the highlighted button shows the next thing to do. The step sequence marks completed, current, failed and stopped steps and shows where a loop returns.
+A run is shown as its task. The header names the task and the workflow and describes the run in plain words, such as **Running**, **Needs your input**, **Waiting for your approval**, **Interrupted**, **Failed** and **Complete**; when an action is available, the highlighted button is the next thing to do. Down the left are the run's steps, each with its state in words (for example "Running · round 4 of 12"). Select a step to see how it stands, its role and agent, and to switch to its terminal, which sits below. A question or an approval appears on the step that is waiting for you; that step's **Notes**, the **Decisions** its agent made by itself, and **Your reviews** open in place. A step that has not started has no terminal yet; one whose terminal was closed says so and offers a new one in the task.
 
-An ordered workflow gives each agent a step, a prompt, and a handoff to the next step. Start with **Bug fix** or **Feature build** in the **Add workflow** chooser, choose an agent for every step, then save. **Blank** starts from one empty step. **Duplicate** copies an existing workflow and its agent choices into a new unsaved draft.
+An ordered workflow gives each agent a step, a prompt, and a handoff to the next step. Build workflows in the **workflow builder**, opened from **Settings → Workflows** or from **Edit workflows…** in the Run workflow dialog. It lists your workflows on the left. On the right, the workflow being built shows its steps as a rail (drag a step to reorder it), the open step with a large prompt editor, and **What the agent is sent**: the complete prompt for that step, composed by the backend the way a run composes it. The task's folder, the run notes folder and the pass identifier appear as placeholders, because only a run knows them.
 
-Each new run has notes in `.codedeck/runs/<run-id-prefix>` inside its worktree. Git ignores the folder. Each step is asked to read earlier notes and write a summary of its work, decisions, remaining tasks, and paths before its final signal. CodeDeck keeps a copy of each step note when the pass ends and shows the history in the runs bar.
-When steps divide work into phases, they can keep `plan.md` in that run's notes folder with `## Phase N: <title>` sections and `- [ ]` or `- [x]` tasks. Without a configured Progress file, the runs bar reads this plan. If it is absent or has no phases, no progress line appears; an unreadable plan is reported.
+Start with a template in the **Add workflow** chooser, choose an agent for every step, then save. The built-in templates are **Bug fix**, **Feature build**, **Troubleshoot** (gather evidence, agree on a cause, prove it with a failing test, fix, verify) and **Review only** (read a change and report findings; it changes and commits nothing). **Blank** starts from one empty step. **Duplicate** copies an existing workflow and its agent choices into a new unsaved draft.
 
-Open **Settings → Workflows** to add agents, choose a
-Setup agent, and save an ordered workflow. Each node has a prompt, an agent and a
+A workflow has a **kind** (Build, Bug fix, Troubleshoot, Review or Other) and an optional description; both only label it and never change how a run behaves. Each step can name its **role** (Planner, Reviewer, …), which is shown beside the step and never sent to the agent.
+
+**Save as template** saves the open workflow without its agents; it then appears in the chooser beside the built-in templates. The bookmark button on a step saves that step for reuse, and **Insert a saved step…** adds a copy of one to the end of a workflow. A step that loops back cannot be saved on its own. Templates and saved steps are copied when used, so deleting one never affects a workflow or a run.
+
+Each new run has notes in `.codedeck/runs/<run-id-prefix>` inside its worktree. Git ignores the folder. Each step is asked to read earlier notes and write a summary of its work, decisions, remaining tasks, and paths before its final signal. CodeDeck keeps a copy of each step note when the pass ends and shows each step's notes on that step in the task view.
+When steps divide work into phases, they can keep `plan.md` in that run's notes folder with `## Phase N: <title>` sections and `- [ ]` or `- [x]` tasks. Without a configured Progress file, the task view reads this plan. If it is absent or has no phases, no progress line appears; an unreadable plan is reported.
+
+Open **Settings → Workflows** to add agents and choose a
+Setup agent; build workflows there or in the workflow builder. Each node has a prompt, an agent and a
 repeat rule: a single pass, repetition until completion with a maximum pass count,
 or a loop back to an earlier node (see below).
 Mark a node **Read-only step** to tell its agent to write only inside its run notes folder: its note, and a plan when its instructions ask for one. A run without a notes folder is told to change nothing in the worktree.
-Mark **Wait for my approval** to pause when the step finishes. The runs bar shows
-the step note; **Approve** advances, while **Send back** takes a comment and reruns
+Mark **Wait for my approval** to pause when the step finishes. The task view shows
+the step note on that step; **Approve** advances, while **Send back** takes a comment and reruns
 the same step with that feedback. A step that closes a loop cannot wait for approval,
 though steps inside a loop can. **Let agents decide** never skips an approval gate.
 `{input}` in prompts is replaced once with the input supplied when starting a run.
 The optional **Progress file** setting names a Markdown todo inside the run's worktree;
-it may use `{input}`. The runs bar shows the first `## Phase N` section with unticked
+it may use `{input}`. The task view shows the first `## Phase N` section with unticked
 boxes and its task count. If the file is absent or cannot be read, the bar says
 "Progress file not found" or "Progress file could not be read" with its path.
 A run with a Progress file is refused when that file is not in the repository at its current commit, or in the chosen worktree. Each step's agent is told to create, change and delete files only inside the run's worktree. It may read outside files named by its instructions, skills or project documents. If the task's own files are missing from the worktree, it asks for input instead of searching other repositories.
 A run started without a progress file follows the workflow's current setting. If its
-input does not form a valid path, the runs bar shows no phase line. A workflow with no Progress file uses the optional run notes plan above.
+input does not form a valid path, the task view shows no phase line. A workflow with no Progress file uses the optional run notes plan above.
 The Feature build template plans phases in that file, then repeats Develop, Review and Test until all tasks pass before committing. The Bug fix template gates Analyse and Specify on owner approval before implementation.
 Write a skill as `/name` at the start of a prompt (for example `/feature-dev {input}`).
 Codex invokes skills with `$`, so when the CLI running the step is Codex, CodeDeck sends
@@ -123,10 +147,12 @@ does not apply to it. Choose **Custom command** to write the command yourself (a
 extra flags, other CLIs). A model ID is not checked until a run launches the agent.
 
 Select a local Git repository project and click **Run workflow** beside Session
-search. Preflight blocks ineligible projects and warns that uncommitted changes
-will not enter the run. CodeDeck creates a branch and a worktree beside the home
-repository, runs Setup first, then runs each step in the terminal of its agent. Setup
-must leave the worktree clean before the workflow's nodes can begin.
+search. Preflight blocks ineligible projects. **Where to work** offers **A new task**
+(the default, named after the run's input unless you type a title), each open task of
+the project, and **Main**. A new task gets its own copy of the project and the run
+starts with Setup, which must leave that copy clean before the workflow's nodes can
+begin; uncommitted changes in Main are not in it. A run in an open task or in Main
+uses the place as it is: there is no Setup step and no setup agent is needed.
 
 **One terminal per agent.** A step opens a tab only when its agent has none yet in that
 worktree. Otherwise it goes to the tab where that agent already runs, clears it with
@@ -142,21 +168,17 @@ stays live. When the run is stopped, interrupted, failed or complete, all its
 terminals are muted. Closing the run lifts the muting. A change you make with the
 eye icon lasts until the run's next state change.
 
-The dialog's **Worktree** list offers a new worktree (the default) and every
-existing working tree of the repository: the project's own checkout and its
-linked worktrees, each with its branch and whether it has uncommitted changes.
-A run in an existing worktree uses it as it is: there is no Setup step, no setup
-agent is needed, and CodeDeck never removes that worktree. When such a run ends
-or is stopped, **Dismiss run** closes it and leaves the worktree in place. A
-worktree with no branch checked out, a missing directory, a directory git cannot
-read, or an open run already using it cannot be chosen.
+A task that an open run is already using, one with no branch checked out, or one
+whose files are no longer on disk cannot be chosen. A run never removes the place it
+works in. When a run in a task or in Main ends or is stopped, **Close run** closes
+the run and leaves the task as it is.
 
 When an agent needs something from you it pauses the run. CodeDeck asks every agent
-to list its questions, each with the answer it recommends, before it pauses. The runs
-bar shows that list under the run, with a box to type your answer and **Accept
+to list its questions, each with the answer it recommends, before it pauses. The task
+view shows that list on the waiting step, with a box to type your answer and **Accept
 recommendations** to tell the agent to go with its own suggestions. Your answer is
 typed into the agent's terminal for you; answering in the terminal yourself works
-too. If the agent did not list its questions, the runs bar says so and you read its
+too. If the agent did not list its questions, the task view says so and you read its
 terminal. A dialog the agent CLI shows (trust, permission, a question form), while starting
 or in the middle of a pass, also pauses the run and is answered in the terminal only. The sidebar count for a project turns to the warning colour
 while one of its runs waits for you, and the phone gets an "Input requested" push.
@@ -169,7 +191,8 @@ looping back to Develop builds and tests one phase per round. The looping node's
 decides: when it reports work left the loop runs again, when it reports COMPLETE the
 run moves on to the next node. Each node keeps the terminal tab of its agent across rounds; the
 agent's context is cleared with the reset command before each new round. At the
-maximum number of rounds the run pauses and **Continue** moves past the loop. Loops
+maximum number of rounds the run pauses and **Continue** moves past the loop; the
+step then reads "Stopped at its limit; you continued". Loops
 cannot share a node, and the first node cannot loop.
 
 When the loop's closing step reports work left, CodeDeck checks the number of ticked tasks in
@@ -181,15 +204,15 @@ not guarded.
 **Let agents decide.** Tick this on a workflow to keep its runs going without you.
 Each agent is told to go with the option it would recommend instead of asking, and to
 write the decision down. If an agent pauses anyway and lists its questions, CodeDeck
-answers "Proceed with your recommendations." for it and the run carries on. The runs
-bar marks such a run **agents decide** and shows **N decisions made by agents**; open
-it to read what was asked and answered. You are still asked when an agent pauses
+answers "Proceed with your recommendations." for it and the run carries on. The task
+view marks such a run **agents decide** with a count; open **Decisions** on a step
+to read what was asked and answered there. You are still asked when an agent pauses
 without listing what it needs, when it asks again in the same pass, when the Setup
 step asks, and for a dialog an agent shows while starting. With this on, an agent's
 own choice is acted on before you see it: agents that skip permission prompts will
 build, commit and push on those choices.
 
-The runs bar shows steps, passes, loop rounds, branch and available controls. **Stop** stops
+The task view shows steps, passes, loop rounds and the available controls. **Stop** stops
 automation; the agent may still be working. **Resume** starts the current step again
 in its own terminal: it waits for the agent there to reach its prompt, clears it with the
 agent's reset command and sends the prompt again. If the agent has exited there, it is
@@ -197,12 +220,12 @@ started again in the same tab. A new tab is opened only when that terminal was c
 At the pass limit, **Continue** advances to the next
 step. Runs survive browser disconnects. A backend restart marks active runs
 **interrupted**, ready for an explicit Resume. The sidebar counts each project's
-open runs, including runs that need attention or worktree cleanup.
+open runs, including runs that need attention.
 
-Completion removes a clean worktree and keeps its branch. Modified or untracked
-files block removal and appear in the runs bar; resolve them and choose **Clean up
-worktree**. CodeDeck never forces removal. These pipelines use local projects;
-remote projects are ineligible.
+When a run completes, its task stays, with the work on the task's branch: commit,
+merge, open a pull request or close it as described under **Tasks**. Finishing a task
+also closes any run that worked in it. These pipelines use local projects; remote
+projects are ineligible.
 
 ## Session naming
 
