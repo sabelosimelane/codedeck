@@ -61,6 +61,7 @@ codedeck/
 │   │   ├── tasks.js              # Tasks: list, create, rename, terminals, landing (RFC 9457 errors)
 │   │   ├── collection-query.js   # Shared page/size/sort/filter parsing and the page envelope
 │   │   └── agent-sessions.js     # Paginated local agent conversations + resume API
+│   ├── launch-settings.js # Companion settings read from ~/.codedeck/launch.env at startup
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
 │   └── __tests__/

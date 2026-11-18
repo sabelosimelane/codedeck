@@ -83,6 +83,7 @@ Open `http://localhost:43000` in the browser.
 - `FRONTEND_PORT` overrides the frontend listener port checked and reported by `server.sh` (default: `43000`).
 - `CODEDECK_TERMINAL_RUNTIME=tmux` is the supported runtime contract; legacy non-`tmux` values are ignored and the backend still enforces tmux-required terminals.
 - `CODEDECK_CAFFEINATE=1` re-execs `./start.sh` under macOS `caffeinate -i` to prevent idle sleep while CodeDeck is running.
+- The Android companion's settings (`CODEDECK_SERVE_ORIGIN`, `CODEDECK_TAILSCALE_OWNER`, `CODEDECK_FIREBASE_CREDENTIALS`) are read at startup from `~/.codedeck/launch.env` (`NAME=value` lines) by `server/launch-settings.js`, so a restart keeps them. They may also be set in the environment; a name set in both with different values stops the server. Without them every phone request is refused, and the backend log says so on its first `[companion]` line.
 - Application config is stored in SQLite `configs` table key-value rows; documented keys include `defaultPath` and `editorCommand`.
 - `~/.codedeck.db` is the main persistent state file; terminal durability and truthful scrollback depend on tmux-backed sessions plus snapshot-first reconnects.
 

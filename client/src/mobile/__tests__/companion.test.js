@@ -11,6 +11,14 @@ describe('companion private boundaries',()=>{
   await expect(createCompanionApi('https://host',request).get('/capabilities')).rejects.toThrow('Not authorized');
  });
 });
+it('says which instance it could not reach when the request never gets an answer',async()=>{
+ const request=vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+ await expect(createCompanionApi('https://host.tail.ts.net:8443',request).get('/capabilities')).rejects.toThrow('Could not reach https://host.tail.ts.net:8443. Check that Tailscale is connected on this phone and that CodeDeck on the host allows phone access.');
+});
+it('passes on a failure that is not a lost connection',async()=>{
+ const request=vi.fn().mockRejectedValue(new DOMException('The operation timed out.','TimeoutError'));
+ await expect(createCompanionApi('https://host',request).get('/capabilities')).rejects.toThrow('The operation timed out.');
+});
 it('accepts no-content device deletion',async()=>{const request=vi.fn().mockResolvedValue({ok:true,status:204,json:vi.fn(()=>{throw new Error('empty')})});expect(await createCompanionApi('https://host',request).remove('/devices/id')).toBeNull();});
 
 it('accepts test event routing and millisecond timestamps',()=>expect(validateEvent({id:'event',instanceId:'instance',sessionId:null,incarnationId:null,kind:'test',status:'active',createdAt:123})).toBeTruthy());

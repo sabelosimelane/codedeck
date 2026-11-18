@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-11-18] - The phone keeps its access across a restart
+
+### Executive Summary
+* The Android companion showed "Failed to fetch" and could not connect. The backend only lets the phone in when it is started with the Tailscale Serve origin and the owner's login, and those were passed in the environment of one restart command. The launcher started at 16:42 on 2026-11-18 had none of them, so the backend refused every phone request with a 403. A refusal carries no cross-origin permission, so the app could not read it and showed the browser's own "Failed to fetch". The settings are now read from a private file, `~/.codedeck/launch.env`, each time the backend starts. The backend log says on startup whether phone access is on, and the app says which instance it could not reach and what to check.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** `server/index.js` read `CODEDECK_SERVE_ORIGIN`, `CODEDECK_TAILSCALE_OWNER` and `CODEDECK_FIREBASE_CREDENTIALS` from `process.env` only. A plain `./server.sh restart` left all three unset; `createPrivateAccess` then denies every request that is not from a loopback origin, and push notifications are off.
+  * **Solution:** `server/launch-settings.js` (new) reads the three settings from `~/.codedeck/launch.env`. A missing file means no saved settings. An unknown name, a repeated name, an empty or quoted value, or a line that is not `NAME=value` stops the server with a message naming the file and line, never the value. A setting present in both the environment and the file with different values stops the server.
+* **🛠️ Codebase:**
+  * `server/index.js` — Uses the settled settings for private access and the notification provider, and logs `[companion] phone access is off: …` or `[companion] phone access is on through <origin>; push notifications are …` at startup.
+  * `client/src/mobile/companion.js` — A request that rejects with a `TypeError` is reported as "Could not reach `<origin>`. Check that Tailscale is connected on this phone and that CodeDeck on the host allows phone access." Other failures are passed on unchanged. Reaches the phone with the next APK.
+  * `docs/android-companion.md`, `docs/steering/tech.md`, `docs/steering/structure.md` — The settings file.
+* **🧪 Tests:**
+  * `server/__tests__/launch-settings.test.js` — New, 23 tests: reading, each rejected line, messages that never repeat a value, the environment and the file agreeing or conflicting, and the startup line.
+  * `client/src/mobile/__tests__/companion.test.js` — A lost connection names the instance; a timeout is passed on.
+  * Verified against two isolated backends: with no settings file a phone-shaped request gets 403 with no `Access-Control-Allow-Origin`; with a settings file and an empty environment the preflight gets 204 and the request 200, and another Tailscale login still gets 403.
+
 ## [2026-11-18] - Terminal tabs can no longer share an id
 
 ### Executive Summary

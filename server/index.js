@@ -87,6 +87,7 @@ import { createSessionStateService } from './session-state-service.js';
 import { createSessionAttentionRouter } from './routes/session-attention.js';
 import { fileURLToPath } from 'node:url';
 import { createPrivateAccess } from './mobile-access.js';
+import { describeCompanionAccess, readLaunchSettings, resolveLaunchSettings } from './launch-settings.js';
 import { createMobileStore, MobileError } from './mobile-store.js';
 import { createMobileSessionStarter } from './mobile-session-start.js';
 import { createAgentHistory } from './agent-history/index.js';
@@ -102,9 +103,14 @@ import { prepareMobileDatabase } from './mobile-migration.js';
 stripNodeWatchEnvironment(process.env);
 
 const app = express();
+// The owner keeps the companion's settings in a private file, so a restart
+// that passes no environment still lets the phone in.
+const launchSettingsFile = path.join(os.homedir(), '.codedeck', 'launch.env');
+const launchSettings = resolveLaunchSettings(process.env, readLaunchSettings(launchSettingsFile), launchSettingsFile);
+console.log(`[companion] ${describeCompanionAccess(launchSettings)}`);
 const privateAccess = createPrivateAccess({
-  owner: process.env.CODEDECK_TAILSCALE_OWNER ?? null,
-  serveOrigin: process.env.CODEDECK_SERVE_ORIGIN ?? null,
+  owner: launchSettings.CODEDECK_TAILSCALE_OWNER,
+  serveOrigin: launchSettings.CODEDECK_SERVE_ORIGIN,
   localOrigins: ['http://localhost:43000', 'http://127.0.0.1:43000', `http://localhost:${process.env.PORT || 43001}`, `http://127.0.0.1:${process.env.PORT || 43001}`],
 });
 app.use(privateAccess.middleware);
@@ -836,8 +842,8 @@ const mobileDiscovery = createMobileDiscovery({
 // A missing provider is an explicit unconfigured state. A broken configured
 // provider is reported; terminal operation remains independent of push delivery.
 let notificationProvider = null;
-if (process.env.CODEDECK_FIREBASE_CREDENTIALS) {
-  try { notificationProvider = await initializeFcmProvider({ credentialPath: process.env.CODEDECK_FIREBASE_CREDENTIALS }); }
+if (launchSettings.CODEDECK_FIREBASE_CREDENTIALS) {
+  try { notificationProvider = await initializeFcmProvider({ credentialPath: launchSettings.CODEDECK_FIREBASE_CREDENTIALS }); }
   catch { console.warn('[companion] notification_provider_initialization_failed'); }
 }
 let lastDesktopActivityAt = null;

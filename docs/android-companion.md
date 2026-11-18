@@ -39,7 +39,29 @@ npm run build --workspace=client
 
 Configure `CODEDECK_SERVE_ORIGIN` to the exact HTTPS origin and
 `CODEDECK_TAILSCALE_OWNER` to the owner's exact Tailscale login. Configure both
-or neither; partial configuration is rejected. The native origin is
+or neither; partial configuration is rejected.
+
+Keep these settings in `~/.codedeck/launch.env`, readable only by the owner. The
+backend reads the file every time it starts, so a restart cannot drop them:
+
+```sh
+CODEDECK_SERVE_ORIGIN=https://<your-machine>.ts.net:8443
+CODEDECK_TAILSCALE_OWNER=<owner@example.com>
+CODEDECK_FIREBASE_CREDENTIALS=/absolute/path/to/service-account.json
+```
+
+One `NAME=value` per line, without quotes; blank lines and lines starting with
+`#` are ignored. A line that is not one of these three settings stops the
+server with a message naming the line. The settings may still be passed in the
+environment instead. A setting given in both places with different values stops
+the server.
+
+When the settings are missing the backend refuses every phone request, and the
+app reports that it could not reach the instance. The backend log says which
+state it started in on its first `[companion]` line: `phone access is off: …`
+or `phone access is on through <origin>; push notifications are …`.
+
+The native origin is
 `https://localhost`; desktop development explicitly permits localhost/127.0.0.1
 ports 43000 and 43001. Remote requests require the owner's Serve identity header
 and an allowed origin. Non-loopback connections and unauthorized upgrades fail.
@@ -99,8 +121,9 @@ sending a notification. The owner approved the managed restart with
 Executed on 2026-11-10: restart reported force-kill then successful startup;
 private HTTPS capabilities confirmed `notificationsReady: true`, queue failures0,
 and the backend remained bound to127.0.0.1:43001. This proves provider readiness,
-not actual phone delivery. Launch settings are still supplied through environment
-variables rather than persisted in the launch configuration.
+not actual phone delivery. At that time the launch settings were supplied through
+environment variables only, and a later restart without them shut the phone out
+(2026-11-18). They are now read from `~/.codedeck/launch.env`, described above.
 
 Firebase-enabled Android verification and signed release builds passed. Release
 signature matches the existing certificate, and APK resources contain the correct
