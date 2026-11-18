@@ -189,6 +189,19 @@ describe('TaskView', () => {
     expect(h.onCleanup).toHaveBeenCalledWith('run-1');
   });
 
+  it('keeps a finished run in view, points at landing the task, and highlights no run action', () => {
+    view({ inTask: true, run: run({ status: 'complete', currentStepIndex: 2, actions: { ...run().actions, stop: false, cleanup: true },
+      steps: run().steps.map(item => ({ ...item, status: 'complete', sessionId: item.sessionId ?? 'Demo-2', attempt: 1, iteration: 1 })) }) });
+    expect(screen.getByLabelText('Run status: Complete')).toBeTruthy();
+    expect(screen.getByText('This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run only takes the run off the screen.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Close run' }).className).not.toContain('pipeline-run-primary');
+    cleanup();
+    // In Main there is no task to land.
+    view({ inTask: false, run: run({ status: 'complete', currentStepIndex: 2, actions: { ...run().actions, stop: false, cleanup: true },
+      steps: run().steps.map(item => ({ ...item, status: 'complete', sessionId: item.sessionId ?? 'Demo-2', attempt: 1, iteration: 1 })) }) });
+    expect(screen.getByText('This run has finished. Close run takes it off the screen.')).toBeTruthy();
+  });
+
   it('shows progress, a failure message, and opens a terminal from the rail', () => {
     const { h } = view({ run: run({ status: 'error', error: 'Setup left uncommitted files', actions: { ...run().actions, stop: false, resume: true },
       progress: { file: 'plan.md', status: 'in_progress', phaseCount: 6, phase: { number: 4, title: 'Answers', tasksDone: 3, tasksTotal: 7 } },

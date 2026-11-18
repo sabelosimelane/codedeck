@@ -224,11 +224,17 @@ started again in the same tab. A new tab is opened only when that terminal was c
 At the pass limit, **Continue** advances to the next
 step. Runs survive browser disconnects. A backend restart marks active runs
 **interrupted**, ready for an explicit Resume. The sidebar counts each project's
-open runs, including runs that need attention.
+runs that are not finished. The count turns to the warning colour while any of them
+cannot go on without you: one that waits for an answer, an approval or a decision at its
+limit, and one that is interrupted, failed, stopped for lack of progress or stopped
+because its terminal was closed. The strip of tasks above the terminals says how each
+task's run stands in a word (running, needs your input, complete, failed, …).
 
-When a run completes, its task stays, with the work on the task's branch: commit,
-merge, open a pull request or close it as described under **Tasks**. Finishing a task
-also closes any run that worked in it. These pipelines use local projects; remote
+When a run completes, it stays in view on its task as **Complete**, with its steps and
+notes, and its task stays, with the work on the task's branch: commit, merge, open a
+pull request or close it as described under **Tasks**. **Close run** only takes the
+finished run off the screen. Starting another run in the same task, or finishing the
+task, closes it too. These pipelines use local projects; remote
 projects are ineligible.
 
 ## Session naming

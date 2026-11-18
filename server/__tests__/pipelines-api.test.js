@@ -1416,9 +1416,17 @@ describe('pipelines API — worktrees', () => {
     expect(second.status).toBe(409);
     expect(second.body.message).toBe('An open workflow run is using this worktree.');
 
-    ctx.runStore.update(first.body.id, { status: 'complete', finishedAt: new Date().toISOString(), worktreeState: 'released' });
+    // A finished run stays open where it worked, but no longer holds the place.
+    ctx.runStore.update(first.body.id, { status: 'complete', finishedAt: new Date().toISOString() });
+    expect(ctx.runStore.get(first.body.id).worktreeState).toBe('external');
+    const open = await request(ctx.app).get(`${base}/runs?open=true`);
+    expect(open.body.data.map(run => run.id)).toEqual([first.body.id]);
     const third = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { requestId: 'run-third' }));
     expect(third.status).toBe(201);
+    // The new run takes its place: the finished one is closed.
+    expect(ctx.runStore.get(first.body.id).worktreeState).toBe('released');
+    const after = await request(ctx.app).get(`${base}/runs?open=true`);
+    expect(after.body.data.map(run => run.id)).toEqual([third.body.id]);
   });
 
   it('refuses the worktree of a stopped run that CodeDeck created', async () => {

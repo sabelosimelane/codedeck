@@ -240,6 +240,18 @@ export function createRunEngine({
     return true;
   }
 
+  /**
+   * A run that completed. In a worktree that existed before it (a task's, or Main) it stays open,
+   * so the owner sees that it finished and what it left, until they close it, start another run
+   * there or finish the task. A worktree the run created for itself is removed as before.
+   */
+  async function finishComplete(runId) {
+    const run = runStore.get(runId);
+    if (run?.worktreeState !== 'external') return cleanupWorktree(runId);
+    await sweepNotes(run);
+    return runStore.get(runId);
+  }
+
   async function cleanupWorktree(runId) {
     const run = runStore.get(runId);
     if (!run) return run;
@@ -794,7 +806,7 @@ export function createRunEngine({
     }
 
     if (after.status === 'complete') {
-      await cleanupWorktree(runId);
+      await finishComplete(runId);
     }
   }
 
@@ -868,7 +880,7 @@ export function createRunEngine({
         persistTransition(runId, { type: 'continue', at: now() });
         const after = runStore.get(runId);
         if (after.status === 'complete') {
-          return cleanupWorktree(runId);
+          return finishComplete(runId);
         }
         if (after.status === 'running') {
           // Acknowledge Continue immediately; keep execution on the same chain.
@@ -888,7 +900,7 @@ export function createRunEngine({
         reviewStore.add({ runId, stepIndex: index, stepName: run.definition.steps[index].name, attempt: run.steps[index].attempt, verdict: 'approved', comment: null });
         persistTransition(runId, { type: 'approve', at: now() });
         const after = runStore.get(runId);
-        if (after.status === 'complete') return cleanupWorktree(runId);
+        if (after.status === 'complete') return finishComplete(runId);
         enqueue(runId, () => runStep(runId)).catch(err => console.error(`[pipeline-run] approval execution failed for ${runId}:`, err));
         return after;
       });

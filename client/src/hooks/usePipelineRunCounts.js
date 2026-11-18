@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
 import { parseRun } from '../utils/pipelineRunRecords';
 import { listOpenRuns } from '../utils/pipelinesApi';
+import { describeRunStatus } from '../utils/pipelineRunStatus';
 
-// A run in one of these waits for the owner: an agent needs input, or a step reached its pass limit.
-const AWAITING_OWNER = ['needs_input', 'limit_paused', 'awaiting_approval'];
 
 /** Per project: how many runs are open, and how many of those wait for the owner. */
 export function usePipelineRunCounts(showToast) {
@@ -29,10 +28,12 @@ export function usePipelineRunCounts(showToast) {
             steps: run.steps.map(step => ({ status: step.status, name: step.name, sessionId: step.sessionId, note: step.note })),
           });
           runsByProject.set(run.project, groupRuns);
+          // A finished run stays with its task but is no longer work in progress, so it is not counted.
+          if (run.status === 'complete') continue;
           const counts = next.get(run.project) ?? { open: 0, awaitingOwner: 0 };
           next.set(run.project, {
             open: counts.open + 1,
-            awaitingOwner: counts.awaitingOwner + (AWAITING_OWNER.includes(run.status) || (run.status === 'stopped' && run.stopReason === 'no_progress') ? 1 : 0),
+            awaitingOwner: counts.awaitingOwner + (describeRunStatus(run).needsOwner ? 1 : 0),
           });
         }
         if (!disposed) {

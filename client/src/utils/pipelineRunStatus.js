@@ -15,9 +15,18 @@ export function describeRunStatus(run) {
   if (!run || typeof run !== 'object' || Array.isArray(run)) throw new Error('run status: run must be an object');
   if (typeof run.status !== 'string' || !Object.hasOwn(RUN_STATUS, run.status)) throw new Error(`run status: status ${String(run.status)} is unknown`);
   if (run.actions !== undefined && (run.actions === null || typeof run.actions !== 'object' || Array.isArray(run.actions))) throw new Error('run status: actions must be an object');
-  const [label, tone, action] = run.status === 'stopped' && run.stopReason === 'no_progress'
-    ? ['Stopped: no progress', 'waiting', 'resume'] : RUN_STATUS[run.status];
-  return { label, tone, primaryAction: action && run.actions?.[action] === true ? action : null };
+  const [label, tone, action] = run.status === 'stopped' && run.stopReason === 'no_progress' ? ['Stopped: no progress', 'waiting', 'resume']
+    : run.status === 'stopped' && run.stopReason === 'terminal' ? ['Stopped: terminal closed', 'waiting', 'resume']
+      : RUN_STATUS[run.status];
+  // A run that finished in a task or in Main leaves its work there: the next thing to do is land
+  // the task, so closing the run is offered but not highlighted.
+  const landed = run.status === 'complete' && run.worktree?.state === 'external';
+  return {
+    label, tone,
+    primaryAction: !landed && action && run.actions?.[action] === true ? action : null,
+    // The run cannot go on by itself: it waits for an answer, an approval, a decision or a Resume.
+    needsOwner: tone === 'waiting' || tone === 'danger',
+  };
 }
 
 export function describeStepState(step, { isCurrent } = {}) {

@@ -4,19 +4,28 @@ import { describeRunStatus, describeStepState, describeStepProgress } from '../p
 describe('describeRunStatus', () => {
   it('shows a no-progress stop as waiting for the owner', () => {
     expect(describeRunStatus({ status: 'stopped', stopReason: 'no_progress', actions: { resume: true } }))
-      .toEqual({ label: 'Stopped: no progress', tone: 'waiting', primaryAction: 'resume' });
+      .toEqual({ label: 'Stopped: no progress', tone: 'waiting', primaryAction: 'resume', needsOwner: true });
+  });
+  it('says when a run stopped because its terminal was closed, and counts it as needing the owner', () => {
+    expect(describeRunStatus({ status: 'stopped', stopReason: 'terminal', actions: { resume: true } }))
+      .toEqual({ label: 'Stopped: terminal closed', tone: 'waiting', primaryAction: 'resume', needsOwner: true });
+  });
+  it('highlights nothing on a run that finished in a task or in Main: what comes next is landing the task', () => {
+    expect(describeRunStatus({ status: 'complete', actions: { cleanup: true }, worktree: { state: 'external' } }))
+      .toEqual({ label: 'Complete', tone: 'done', primaryAction: null, needsOwner: false });
+    expect(describeRunStatus({ status: 'complete', actions: { cleanup: true }, worktree: { state: 'removal_blocked' } }).primaryAction).toBe('cleanup');
   });
   it.each([
-    ['pending', 'Starting', 'neutral', null], ['running', 'Running', 'active', null],
-    ['needs_input', 'Needs your input', 'waiting', 'answer'],
-    ['limit_paused', 'Paused at its limit', 'waiting', 'continue'],
-    ['awaiting_approval', 'Waiting for your approval', 'waiting', 'approve'],
-    ['interrupted', 'Interrupted', 'waiting', 'resume'],
-    ['stopped', 'Stopped', 'neutral', 'resume'], ['error', 'Failed', 'danger', 'resume'],
-    ['complete', 'Complete', 'done', 'cleanup'],
-  ])('%s description and offered action', (status, label, tone, action) => {
+    ['pending', 'Starting', 'neutral', null, false], ['running', 'Running', 'active', null, false],
+    ['needs_input', 'Needs your input', 'waiting', 'answer', true],
+    ['limit_paused', 'Paused at its limit', 'waiting', 'continue', true],
+    ['awaiting_approval', 'Waiting for your approval', 'waiting', 'approve', true],
+    ['interrupted', 'Interrupted', 'waiting', 'resume', true],
+    ['stopped', 'Stopped', 'neutral', 'resume', false], ['error', 'Failed', 'danger', 'resume', true],
+    ['complete', 'Complete', 'done', 'cleanup', false],
+  ])('%s description, offered action and whether it needs the owner', (status, label, tone, action, needsOwner) => {
     expect(describeRunStatus({ status, actions: action ? { [action]: true } : {} }))
-      .toEqual({ label, tone, primaryAction: action });
+      .toEqual({ label, tone, primaryAction: action, needsOwner });
     if (action) expect(describeRunStatus({ status, actions: {} }).primaryAction).toBeNull();
   });
   it('rejects unknown and malformed statuses', () => {

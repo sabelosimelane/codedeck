@@ -137,7 +137,7 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
  * (`children`: the terminals of this task, owned by the terminal area).
  */
 export default function TaskView({
-  title, tooltip, run, openSessionIds, children,
+  title, tooltip, run, openSessionIds, inTask = false, children,
   onActivateStep, onOpenTerminal,
   onStop, onResume, onContinue, onCleanup, onAnswer,
   onLoadNotes, onLoadDecisions, onLoadReviews, onLoadAnswers = async () => ({ answers: [] }), onApprove, onSendBack,
@@ -145,6 +145,7 @@ export default function TaskView({
   if (!run || typeof run !== 'object') throw new Error('task view: run is required');
   if (!Array.isArray(run.steps) || run.steps.length === 0) throw new Error('task view: run.steps must be a nonempty array');
   if (!(openSessionIds instanceof Set)) throw new Error('task view: openSessionIds must be a Set');
+  if (typeof inTask !== 'boolean') throw new Error('task view: inTask must be a boolean');
   const currentIndex = Number.isInteger(run.currentStepIndex) ? run.currentStepIndex : 0;
   // The owner's pick holds until the run moves to another step; then the view follows the run.
   const [picked, setPicked] = useState(null);
@@ -194,6 +195,9 @@ export default function TaskView({
         </div>
         {progress && <div title={run.progress.file} className="pipeline-run-progress"><span className={progress.tone === 'plain' ? 'pipeline-run-progress-phase' : `pipeline-run-${progress.tone}`}>{progress.text}</span>{progress.detail && <span className="pipeline-run-muted">{` · ${progress.detail}`}</span>}</div>}
         {run.status === 'stopped' && run.stopReason === 'no_progress' && <div className="pipeline-run-warning">{`No task was ticked in the last ${NO_PROGRESS_ROUNDS} rounds. Check what the steps reported, then Resume to try again.`}</div>}
+        {run.status === 'complete' && run.worktree?.state === 'external' && <div className="pipeline-run-muted">{inTask
+          ? 'This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run only takes the run off the screen.'
+          : 'This run has finished. Close run takes it off the screen.'}</div>}
         {run.error && <span className="pipeline-run-danger">{run.error}</span>}
         {blockedCleanup && (
           <>

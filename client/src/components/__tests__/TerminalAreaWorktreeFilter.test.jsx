@@ -41,6 +41,17 @@ describe('TerminalArea worktree view', () => {
     await waitFor(() => expect(view.getAllByTestId('terminal-tab')).toHaveLength(2));
     expect([...view.getByLabelText('Main and tasks').querySelectorAll('button')].map(button => button.textContent)).toEqual(['Main2', 'New task']);
   });
+  it.each([['running', 'running', 'active', false], ['complete', 'complete', 'done', false], ['error', 'failed', 'danger', true], ['interrupted', 'interrupted', 'waiting', true]])('says on the strip that the task’s run is %s', async (status, word, tone, flagged) => {
+    const stateGroups = [groups[0], { ...groups[1], run: { ...groups[1].run, status } }];
+    const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={stateGroups} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);
+    const button = await waitFor(() => view.getByRole('button', { name: 'Build · 57f488b5 (1)' }));
+    const state = button.querySelector('.worktree-switcher-state');
+    expect(state.textContent).toBe(word);
+    expect(state.dataset.tone).toBe(tone);
+    expect(Boolean(button.querySelector('[aria-label="Waiting for owner"]'))).toBe(flagged);
+    // Main has no run, so it says nothing.
+    expect(view.getByRole('button', { name: 'Main (1)' }).querySelector('.worktree-switcher-state')).toBeNull();
+  });
   it.each(['needs_input', 'limit_paused', 'awaiting_approval'])('shows label, count and waiting badge for %s', async status => {
     const waitingGroups = [groups[0], { ...groups[1], run: { ...groups[1].run, status } }];
     const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={waitingGroups} worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} />);

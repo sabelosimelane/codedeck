@@ -88,8 +88,12 @@ function rejectUnknownQuery(query, allowed) {
 
 const parseCollectionQuery = (query, spec) => parseQuery(query, spec, fieldError);
 
+/**
+ * An open run is one the owner still has in front of them. A complete run is open while its own
+ * worktree could not be removed, or while it sits finished in a task or Main waiting to be closed.
+ */
 function isOpenRun(run) {
-  if (run.status === 'complete') return run.worktreeState === 'removal_blocked';
+  if (run.status === 'complete') return run.worktreeState === 'removal_blocked' || run.worktreeState === 'external';
   return OPEN_WORKTREE.has(run.worktreeState);
 }
 
@@ -211,7 +215,8 @@ function worktreeRefusal(worktree, changes, runs) {
   const code = worktree.missing ? 'missing'
     : !changes.readable ? 'unreadable'
       : worktree.branch === null ? 'detached'
-        : runs.some(run => run.worktreePath === worktree.path && isOpenRun(run)) ? 'in_use'
+        // A finished run is still shown there but no longer holds the place.
+        : runs.some(run => run.worktreePath === worktree.path && run.status !== 'complete' && isOpenRun(run)) ? 'in_use'
           : null;
   return code === null ? null : { code, message: WORKTREE_REASONS[code] };
 }
@@ -949,6 +954,13 @@ export function createPipelinesRouter(deps) {
         throw new PipelineError('This requestId was already used with a different body', 409);
       }
       throw err;
+    }
+
+    // The new run takes the place of a finished one that was still shown there.
+    for (const other of runStore.list()) {
+      if (other.id !== run.id && other.status === 'complete' && other.worktreeState === 'external' && other.worktreePath === run.worktreePath) {
+        runStore.update(other.id, { worktreeState: 'released', worktreeDetail: null });
+      }
     }
 
     res.status(201).json(await asRunView(run));

@@ -1637,7 +1637,7 @@ describe('createRunEngine with an existing worktree', () => {
     ...overrides,
   });
 
-  it('runs in the chosen worktree without creating one, and releases it on completion without removing it', async () => {
+  it('runs in the chosen worktree without creating one, and stays with it when complete until the owner closes the run', async () => {
     const ctx = setupEngine();
     const run = ctx.runStore.create(external());
 
@@ -1648,9 +1648,11 @@ describe('createRunEngine with an existing worktree', () => {
 
     const finished = ctx.runStore.get(run.id);
     expect(finished.status).toBe('complete');
-    expect(finished.worktreeState).toBe('released');
+    // The finished run stays open on its task, so the owner can see that it finished and what it left.
+    expect(finished.worktreeState).toBe('external');
     expect(finished.worktreeDetail).toBeNull();
     expect(ctx.createWorktree).not.toHaveBeenCalled();
+    expect((await ctx.engine.cleanup(run.id)).worktreeState).toBe('released');
     expect(ctx.removeWorktree).not.toHaveBeenCalled();
     expect(ctx.startSession).toHaveBeenCalledWith({ project: 'Demo', cwd: '/tmp/worktrees/home-existing' });
     expect(ctx.attachBackground).toHaveBeenCalledWith('Demo-1', { cwd: '/tmp/worktrees/home-existing' });
@@ -2626,10 +2628,15 @@ describe('createRunEngine — a step reuses the terminal of its agent', () => {
     expect(calls).toContainEqual(['Demo-1', true]);
     expect(calls).toContainEqual(['Demo-2', false]);
     expect(calls).toContainEqual(['Demo-2', true]);
+    // Finished and still shown on its task: every terminal of the run is muted.
+    expect(calls.at(-2)).toEqual(['Demo-1', true]);
+    expect(calls.at(-1)).toEqual(['Demo-2', true]);
+    expect(run.worktreeState).toBe('external');
+    // Closing the run lifts the muting.
+    expect((await ctx.engine.cleanup(run.id)).worktreeState).toBe('released');
     expect(calls.at(-2)).toEqual(['Demo-1', false]);
     expect(calls.at(-1)).toEqual(['Demo-2', false]);
     expect(calls.some(([id]) => id === 'Other-1')).toBe(false);
-    expect(run.worktreeState).toBe('released');
   });
 
   it('retries an unobserved terminal on the next transition', async () => {

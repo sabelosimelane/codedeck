@@ -316,7 +316,7 @@ function getPaneStatusTitle(sessionId, status, session) {
 function TaskFrame({ run, group, children, ...handlers }) {
   if (!run) return <>{children}</>;
   const described = group ? describeWorktreeGroup(group) : { title: run.workflowName, tooltip: undefined };
-  return <TaskView title={described.title} tooltip={described.tooltip} run={run} {...handlers}>{children}</TaskView>;
+  return <TaskView title={described.title} tooltip={described.tooltip} run={run} inTask={Boolean(group?.task)} {...handlers}>{children}</TaskView>;
 }
 
 export default function TerminalArea({
@@ -1170,8 +1170,9 @@ export default function TerminalArea({
         {groups.map(group => {
           const count = tabs.filter(tab => tabGroupKey(tab) === group.key).length;
           const { title, tooltip } = describeWorktreeGroup(group);
-          const waiting = group.run && describeRunStatus(group.run).tone === 'waiting';
-          return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
+          const runState = group.run ? describeRunStatus(group.run) : null;
+          const waiting = runState?.needsOwner === true;
+          return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{runState && <span className="worktree-switcher-state" data-tone={runState.tone}>{runState.label.toLowerCase()}</span>}{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
         })}
         {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked} title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
       </div>}

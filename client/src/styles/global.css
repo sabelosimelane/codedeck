@@ -117,7 +117,12 @@
 .worktree-switcher-new:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .worktree-switcher-new:disabled { opacity: 0.5; cursor: not-allowed; }
 .worktree-switcher-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.worktree-switcher-count, .worktree-switcher-waiting { flex: none; }
+.worktree-switcher-count, .worktree-switcher-waiting, .worktree-switcher-state { flex: none; }
+.worktree-switcher-button:has(.worktree-switcher-state) { max-width: 300px; }
+.worktree-switcher-state { padding: 0 4px; border-radius: 4px; background: var(--bg-hover); color: var(--text-muted); white-space: nowrap; }
+.worktree-switcher-state[data-tone="waiting"] { color: var(--warning); }
+.worktree-switcher-state[data-tone="danger"] { color: var(--danger); }
+.worktree-switcher-state[data-tone="active"] { color: var(--accent); }
 
 * {
   margin: 0;
