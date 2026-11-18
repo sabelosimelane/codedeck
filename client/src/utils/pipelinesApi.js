@@ -157,7 +157,8 @@ export function getRun(runId, { signal } = {}) {
 }
 
 /**
- * Where the run works is one of: `newTask` ({ title }, a task created for it), `taskId` (an open
+ * Where the run works is one of: `newTask` (a task created for it; `{ title }` when the owner
+ * typed one, `{}` to have it named from the run's work), `taskId` (an open
  * task) or `worktreePath` (an existing working tree, such as Main).
  */
 export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask }, { signal } = {}) {

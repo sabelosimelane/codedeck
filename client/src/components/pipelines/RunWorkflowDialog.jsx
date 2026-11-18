@@ -35,7 +35,7 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
   const [worktrees, setWorktrees] = useState([]);
   const [place, setPlace] = useState(defaultTaskId ? OPEN_TASK : NEW_TASK);
   const [taskId, setTaskId] = useState(defaultTaskId);
-  const [title, setTitle] = useState(null);
+  const [title, setTitle] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(false);
@@ -76,11 +76,12 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
   const chosenTask = place === OPEN_TASK ? projectTasks.find(task => task.id === taskId) ?? projectTasks.find(task => worktreeOf(task)?.selectable) ?? projectTasks[0] ?? null : null;
   const where = place === OPEN_TASK ? (chosenTask ? OPEN_TASK : NEW_TASK) : place;
   const chosenWorktree = where === OPEN_TASK ? worktreeOf(chosenTask) : where === MAIN ? home : null;
-  // Until the owner types a title, the task is named after what the run is about.
-  const taskTitle = (title ?? input).slice(0, TASK_TITLE_MAX);
+  // A title is sent only when the owner typed one. Without it the backend calls the task after
+  // the input and names it from the run's work, with the CLI chosen for session naming.
+  const typedTitle = title.trim().slice(0, TASK_TITLE_MAX).trim();
   const reasons = (preflight?.reasons ?? []).filter(reason => !(where !== NEW_TASK && reason.code === SETUP_AGENT_MISSING));
   const listable = (preflight?.reasons ?? []).every(reason => reason.code === SETUP_AGENT_MISSING);
-  const placeUsable = where === NEW_TASK ? taskTitle.trim().length > 0 : Boolean(chosenWorktree?.selectable);
+  const placeUsable = where === NEW_TASK ? typedTitle.length > 0 || input.trim().length > 0 : Boolean(chosenWorktree?.selectable);
   const eligible = preflight !== null && reasons.length === 0 && placeUsable;
   const canStart = !loading && !starting && eligible && Boolean(workflowId);
 
@@ -92,7 +93,7 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
         requestId: newRequestId(),
         workflowId,
         input,
-        ...(where === NEW_TASK ? { newTask: { title: taskTitle.trim() } }
+        ...(where === NEW_TASK ? { newTask: typedTitle ? { title: typedTitle } : {} }
           : where === OPEN_TASK ? { taskId: chosenTask.id }
             : { worktreePath: chosenWorktree.path }),
       });
@@ -140,7 +141,7 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
                 { value: MAIN, label: 'Main', disabled: !home?.selectable, title: home?.reason?.message },
               ]} />
               {where === NEW_TASK && (
-                <TextInput label="Task title" value={taskTitle} onChange={setTitle} maxLength={TASK_TITLE_MAX} placeholder="Task title — what it is called in the sidebar" />
+                <TextInput label="Task title" value={title} onChange={setTitle} maxLength={TASK_TITLE_MAX} placeholder="Named from the work once the run starts, or type a title" />
               )}
               {where === OPEN_TASK && (
                 <Select label="Task" value={chosenTask.id} onChange={setTaskId}>

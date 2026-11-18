@@ -38,7 +38,9 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
   }
 
   /** Checks the request and names the task's branch and folder. Changes nothing. */
-  async function plan({ project: projectName, title } = {}) {
+  async function plan({ project: projectName, title, titleSource } = {}) {
+    // The caller says whether the owner gave the title or it was made from a run's input.
+    if (titleSource !== 'owner' && titleSource !== 'input') throw new Error('Task title source must be owner or input');
     if (typeof projectName !== 'string' || projectName.length === 0) throw invalid('project', 'A project name is required');
     if (!isTaskTitle(title)) throw invalid('title', TITLE_RULE);
     const project = await resolveProject(projectName);
@@ -61,6 +63,7 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
       project: project.name,
       projectPath: project.path,
       title: title.trim(),
+      titleSource,
       homePath: home,
       worktreePath: names.worktreePath,
       branch: names.branch,
@@ -75,6 +78,7 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
       if (typeof planned[field] !== 'string' || planned[field].length === 0) throw new TypeError(`Task plan ${field} is invalid`);
     }
     if (planned.baseBranch !== null && typeof planned.baseBranch !== 'string') throw new TypeError('Task plan baseBranch is invalid');
+    if (planned.titleSource !== 'owner' && planned.titleSource !== 'input') throw new TypeError('Task plan titleSource is invalid');
     const exists = await pathExists(planned.worktreePath);
     if (typeof exists !== 'boolean') throw new Error('pathExists must return a boolean');
     if (exists) throw new TaskError('A folder for this task already exists. Try again.', 409);
@@ -84,6 +88,7 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
       id: planned.id,
       project: planned.project,
       title: planned.title,
+      titleSource: planned.titleSource,
       worktreePath: planned.worktreePath,
       branch: planned.branch,
       baseBranch: planned.baseBranch,
@@ -107,8 +112,9 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
       queue = run.then(() => undefined, () => undefined);
       return run;
     },
+    /** A task made by hand: its title is the owner's. */
     create(input) {
-      const run = queue.then(async () => createPlannedNow(await plan(input)));
+      const run = queue.then(async () => createPlannedNow(await plan({ ...input, titleSource: 'owner' })));
       queue = run.then(() => undefined, () => undefined);
       return run;
     },

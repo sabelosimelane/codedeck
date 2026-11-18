@@ -77,6 +77,7 @@ import { createTerminalWorktreeService } from './terminal-worktree-service.js';
 import { createTerminalWorktreesRouter } from './routes/terminal-worktrees.js';
 import { createTaskStore } from './tasks/task-store.js';
 import { createTaskService } from './tasks/task-service.js';
+import { createTaskNaming } from './tasks/task-naming.js';
 import { createTasksRouter } from './routes/tasks.js';
 import { adoptWorktrees } from './tasks/task-adoption.js';
 import { createTaskLanding } from './tasks/task-landing.js';
@@ -927,8 +928,18 @@ const pipelineNoteStore = createNoteStore(db);
 const pipelineReviewStore = createReviewStore(db);
 const pipelineAnswerStore = createAnswerStore(db);
 const pipelineProgressReader = createRunProgressReader();
+// A task started with a run and no title is named from the run's work, by the CLI chosen for session naming.
+const taskNaming = createTaskNaming({
+  taskStore,
+  readSettings: () => namingStore.settings(),
+  generate: (settings, context) => namingCli.generate(settings, context),
+  warn: message => console.warn(message),
+});
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
+  onNoteWritten: note => {
+    taskNaming.noteWritten(note).catch(error => console.warn(`[task-naming] run=${note.runId} error=${error?.message || error}`));
+  },
   setTerminalMuted: (sessionId, muted) => setObservedTerminalMuted(sessionAttention, sessionId, muted),
   readProgressCount: async run => {
     const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: pipelineProgressReader });

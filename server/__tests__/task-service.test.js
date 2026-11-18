@@ -149,15 +149,27 @@ describe('task service', () => {
 
   it('plans a task without touching disk, then creates exactly what was planned', async () => {
     const { base, service, taskStore } = setup();
-    const planned = await service.plan({ project: 'Demo', title: ' Planned ' });
-    expect(planned).toMatchObject({ id: ID, project: 'Demo', title: 'Planned', worktreePath: path.join(base, 'worktrees', 'repo-planned-7a000000'), branch: 'task/planned-7a000000', baseBranch: 'main' });
+    const planned = await service.plan({ project: 'Demo', title: ' Planned ', titleSource: 'input' });
+    expect(planned).toMatchObject({ id: ID, project: 'Demo', title: 'Planned', titleSource: 'input', worktreePath: path.join(base, 'worktrees', 'repo-planned-7a000000'), branch: 'task/planned-7a000000', baseBranch: 'main' });
     expect(existsSync(planned.worktreePath)).toBe(false);
     expect(taskStore.list()).toEqual([]);
     const task = await service.createPlanned(planned);
-    expect(task).toMatchObject({ id: ID, worktreePath: planned.worktreePath, branch: planned.branch });
+    expect(task).toMatchObject({ id: ID, worktreePath: planned.worktreePath, branch: planned.branch, titleSource: 'input' });
+    await expect(service.createPlanned({ ...planned, titleSource: 'generated' })).rejects.toThrow('Task plan titleSource is invalid');
     expect(await rejection(service.createPlanned(planned))).toMatchObject({ status: 409 });
     await expect(service.createPlanned({ ...planned, branch: '' })).rejects.toThrow('Task plan branch is invalid');
     await expect(service.createPlanned(null)).rejects.toThrow('A task plan is required');
+  });
+
+  it('records the title of a task made by hand as the owner\'s', async () => {
+    const { service } = setup();
+    expect((await service.create({ project: 'Demo', title: 'By hand' })).titleSource).toBe('owner');
+  });
+
+  it.each([[undefined], ['generated'], ['someone']])('refuses to plan with the title source %j', async titleSource => {
+    const { service, taskStore } = setup();
+    await expect(service.plan({ project: 'Demo', title: 'Planned', titleSource })).rejects.toThrow('Task title source must be owner or input');
+    expect(taskStore.list()).toEqual([]);
   });
 
   it('requires its dependencies', () => {

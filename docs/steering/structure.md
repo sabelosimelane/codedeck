@@ -54,6 +54,7 @@ codedeck/
 │   │   ├── task-service.js   # Plans and creates a task's worktree; opens terminals in it; renames
 │   │   ├── task-landing.js   # Live Git status and commit, merge, pull request and close; nothing forced
 │   │   ├── task-terminals.js # Closes a finished task's terminals: those opened in it and those its runs used
+│   │   ├── task-naming.js    # Names a task started without a title from its run's first step note, with the session-naming CLI
 │   │   └── task-adoption.js  # At startup, worktrees already in use become tasks
 │   ├── routes/
 │   │   ├── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)

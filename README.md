@@ -150,8 +150,13 @@ extra flags, other CLIs). A model ID is not checked until a run launches the age
 
 Select a local Git repository project and click **Run workflow** beside Session
 search. Preflight blocks ineligible projects. **Where to work** offers **A new task**
-(the default, named after the run's input unless you type a title), each open task of
-the project, and **Main**. A new task gets its own copy of the project and the run
+(the default), each open task of the project, and **Main**. Type a title for the new
+task, or leave it empty: the task is then called after the run's input, and as soon as
+a step of the run writes its note CodeDeck asks the CLI chosen under **Settings →
+Session naming** for a short title that describes the work, and renames the task. A
+title you typed, or one you change with **Rename**, is never replaced. Without a
+session-naming CLI, or if it fails, the task keeps the title made from the input; the
+failure is in the backend log and the next step note tries again. A new task gets its own copy of the project and the run
 starts with Setup, which must leave that copy clean before the workflow's nodes can
 begin; uncommitted changes in Main are not in it. A run in an open task or in Main
 uses the place as it is: there is no Setup step and no setup agent is needed.

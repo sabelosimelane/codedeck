@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-11-19] - A run's task is named from the work, not from a file path
+
+### Executive Summary
+* A task created for a workflow run was titled with the run's input. When the run was started from a dropped file the title was only a path, such as `"/tmp/codedeck-drops/1795037620464-Screenshot….png"`, in the sidebar, the task strip and on the phone. Session naming never applied: it names terminals, and a task's title was set once from what the Run dialog sent. The Run dialog now sends a title only when you type one. Otherwise the task is first called after the input, and as soon as a step of the run writes its note the CLI chosen under Settings → Session naming is asked for a short title that describes the work, and the task is renamed. A title you typed or changed with Rename is never replaced. Tasks that already exist keep their titles.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/tasks/task-naming.js` — New. `createTaskNaming({ taskStore, readSettings, generate, warn })`: `noteWritten({ taskId, input, content })` asks the naming CLI with what was asked and what the step reported (at most 12,000 characters) and applies the title. It does nothing for a run without a task, a finished task, a title that is not made from the input, or when session naming is not configured. A CLI failure is logged once per task and reason and the next note tries again. `provisionalTaskTitle(input, workflowName)`: what the task is called until then.
+  * `server/tasks/task-store.js` — `tasks.title_source` (`owner`, `input`, `generated`), added to existing databases as `owner`. `create` requires `titleSource` (`owner` or `input`). `applyGeneratedTitle(id, title)` replaces only an open task's `input` title and returns null otherwise. `rename` marks the title as the owner's.
+  * `server/pipelines/run-engine.js` — Optional `onNoteWritten`, called after a step's note is stored as `written`; a failure in it is logged and never affects the run.
+* **🛠️ Codebase:**
+  * `shared/pipeline-definitions.mjs`, `server/routes/pipelines.js` — `POST /api/pipelines/runs` accepts `newTask: {}`. A typed `title` is stored as the owner's; without one the task gets the provisional title and `titleSource: 'input'`. A request replay matches by typed title, or for an untitled request by the task's title not being the owner's. A `title` that is present but blank is still 400. Clients that always send a title keep working.
+  * `server/tasks/task-service.js` — `plan` takes `titleSource`; a task made by hand is `owner`. `server/tasks/task-adoption.js` — adopted worktrees are `owner`.
+  * `server/index.js` — Wires task naming to the session-naming settings and CLI client and to the run engine.
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx` — The task title field starts empty with the placeholder "Named from the work once the run starts, or type a title", and `newTask` carries a title only when one was typed.
+  * `README.md`, `docs/steering/api-standards.md`, `docs/steering/structure.md`.
+* **🧪 Tests:**
+  * `server/__tests__/task-naming.test.js` — New, 34 tests. `task-store.test.js` — 21 new cases, including the migration of an older table. `task-service.test.js`, `pipelines-api.test.js`, `pipeline-definitions.test.js`, `pipeline-run-engine.test.js`, `client/.../RunWorkflowDialog.test.jsx` — the title source through planning, the run endpoint with and without a title and its replays, the engine's note listener, and the dialog.
+  * Checked on a backup copy of the live database: the migration read all 9 tasks back as `owner`, and with the real naming CLI the open task titled `/tmp/codedeck-audit-todo-b2bd312.md` became "Fix Task Worktree Audit Bugs" in 6 seconds. An isolated backend booted and accepted `newTask: {}` past validation.
+
 ## [2026-11-18] - The phone shows a workflow run as its task
 
 ### Executive Summary

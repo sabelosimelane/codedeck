@@ -23,6 +23,7 @@ const input = {
   branch: 'task/whatsapp-replies-7a000000',
   baseBranch: 'main',
   baseCommit: 'a'.repeat(40),
+  titleSource: 'owner',
 };
 
 describe('task store', () => {
@@ -75,6 +76,10 @@ describe('task store', () => {
     ['baseBranch', 12],
     ['baseCommit', 'abc'],
     ['baseCommit', null],
+    ['titleSource', undefined],
+    ['titleSource', null],
+    ['titleSource', 'generated'],
+    ['titleSource', 'someone'],
   ])('refuses to create with invalid %s (%j)', (field, value) => {
     const { store } = setup();
     expect(() => store.create({ ...input, [field]: value })).toThrow(new RegExp(`tasks: ${field}`));
@@ -147,6 +152,7 @@ describe('task store', () => {
     ['state', 'bogus'],
     ['pr_url', 'ftp://x'],
     ['revision', 0],
+    ['title_source', 'someone'],
     ['created_at', 'yesterday'],
     ['updated_at', 'yesterday'],
     ['finished_at', 'yesterday'],
@@ -162,6 +168,76 @@ describe('task store', () => {
     store.create(input);
     db.prepare('UPDATE tasks SET state = ? WHERE id = ?').run('merged', ID);
     expect(() => store.get(ID)).toThrow(`tasks row ${ID} field finished_at`);
+  });
+
+  describe('where a title came from', () => {
+    const fromInput = { ...input, title: '/tmp/drop/screenshot.png', titleSource: 'input' };
+
+    it('remembers whether the owner gave the title or it was made from the run input', () => {
+      const { store } = setup();
+      expect(store.create(input).titleSource).toBe('owner');
+      expect(store.create({ ...fromInput, id: OTHER_ID, worktreePath: '/tmp/worktrees/other', branch: 'task/other' }).titleSource).toBe('input');
+    });
+
+    it('replaces a title made from the run input with a generated one', () => {
+      const { store } = setup();
+      store.create(fromInput);
+      const named = store.applyGeneratedTitle(ID, '  First name only on the call ');
+      expect(named).toMatchObject({ title: 'First name only on the call', titleSource: 'generated', revision: 2, updatedAt: '2026-11-18T10:00:01.000Z' });
+      expect(store.get(ID)).toEqual(named);
+    });
+
+    it.each([
+      ['the owner gave', store => store.create(input)],
+      ['the owner changed', store => { store.create(fromInput); store.rename(ID, { title: 'Mine', revision: 1 }); }],
+      ['was already generated', store => { store.create(fromInput); store.applyGeneratedTitle(ID, 'First'); }],
+    ])('never replaces a title %s', (_name, arrange) => {
+      const { store } = setup();
+      arrange(store);
+      const before = store.get(ID);
+      expect(store.applyGeneratedTitle(ID, 'Something else')).toBeNull();
+      expect(store.get(ID)).toEqual(before);
+    });
+
+    it('does not name a finished task', () => {
+      const { store } = setup();
+      store.create(fromInput);
+      store.setState(ID, { state: 'closed' });
+      expect(store.applyGeneratedTitle(ID, 'Too late')).toBeNull();
+      expect(store.get(ID).title).toBe('/tmp/drop/screenshot.png');
+    });
+
+    it('marks a renamed title as the owner\'s', () => {
+      const { store } = setup();
+      store.create(fromInput);
+      expect(store.rename(ID, { title: 'Mine', revision: 1 }).titleSource).toBe('owner');
+    });
+
+    it.each([[''], ['   '], ['x'.repeat(81)], ['two\nlines'], [null], [undefined]])('refuses a generated title of %j', value => {
+      const { store } = setup();
+      store.create(fromInput);
+      expect(() => store.applyGeneratedTitle(ID, value)).toThrow('tasks: title');
+      expect(store.get(ID).titleSource).toBe('input');
+    });
+
+    it('requires the task to exist', () => {
+      const { store } = setup();
+      expect(() => store.applyGeneratedTitle(OTHER_ID, 'Named')).toThrow(`tasks row ${OTHER_ID}: not found`);
+      expect(() => store.applyGeneratedTitle('nope', 'Named')).toThrow('tasks: id');
+    });
+
+    it('treats the titles of tasks stored before this as the owner\'s', () => {
+      const db = new Database(':memory:');
+      databases.push(db);
+      db.exec(`CREATE TABLE tasks (id TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL, worktree_path TEXT NOT NULL, branch TEXT NOT NULL,
+        base_branch TEXT, base_commit TEXT NOT NULL, state TEXT NOT NULL, pr_url TEXT, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT)`);
+      db.prepare("INSERT INTO tasks VALUES (?, 'Demo', '/tmp/old.md', '/tmp/worktrees/old', 'task/old', 'main', ?, 'active', NULL, 1, ?, ?, NULL)")
+        .run(ID, 'a'.repeat(40), '2026-11-18T09:00:00.000Z', '2026-11-18T09:00:00.000Z');
+      const store = createTaskStore(db);
+      expect(store.get(ID)).toMatchObject({ title: '/tmp/old.md', titleSource: 'owner' });
+      expect(store.applyGeneratedTitle(ID, 'Named')).toBeNull();
+      expect(() => createTaskStore(db)).not.toThrow();
+    });
   });
 
   it('requires a database handle', () => {

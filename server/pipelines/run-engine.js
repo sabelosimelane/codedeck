@@ -66,6 +66,8 @@ export function createRunEngine({
   answerStore,
   terminalAvailable,
   setTerminalMuted,
+  // Told what a step wrote once its note is stored; nothing it does can affect the run.
+  onNoteWritten = () => {},
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
   pathExists = async () => true,
@@ -129,6 +131,7 @@ export function createRunEngine({
       const status = result.status === 'present' ? changed ? 'written' : 'unchanged' : result.status;
       const summary = changed ? (result.content.split(/\r?\n/).find(line => line.trim()) ?? '').replace(/^\s*#+/, '').trim().slice(0, 200) : null;
       noteStore.add({ runId: run.id, stepIndex, stepName: run.definition.steps[stepIndex].name, attempt: run.steps[stepIndex].attempt, pass, status, summary, content: changed ? result.content : null });
+      if (status === 'written') onNoteWritten({ runId: run.id, taskId: run.taskId, input: run.input, stepIndex, content: result.content });
     } catch (error) {
       const key = `${run.id}:${stepIndex}:${String(error?.message || error)}`;
       if (!noteWarnings.has(key)) {

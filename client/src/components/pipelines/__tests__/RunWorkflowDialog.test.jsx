@@ -72,7 +72,7 @@ describe('RunWorkflowDialog', () => {
       delete workflows[1].progressFile;
     }
   });
-  it('starts a run in a new task named after the input unless a title is typed', async () => {
+  it('starts a run in a new task without a title, left to be named from the work, unless one is typed', async () => {
     mockApi();
     const { onStart, onClose } = await renderDialog();
 
@@ -80,20 +80,34 @@ describe('RunWorkflowDialog', () => {
     expect(chosenPlace()).toBe('A new task');
     expect(startButton().disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'ship the feature' } });
-    expect(screen.getByLabelText('Task title').value).toBe('ship the feature');
+    expect(screen.getByLabelText('Task title').value).toBe('');
+    expect(screen.getByLabelText('Task title').placeholder).toBe('Named from the work once the run starts, or type a title');
+    expect(startButton().disabled).toBe(false);
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledWith({
       workflowId: workflows[0].id, input: 'ship the feature', requestId: expect.stringMatching(/^[\w-]{1,128}$/),
-      newTask: { title: 'ship the feature' },
+      newTask: {},
     }));
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('keeps a typed task title and limits a long one taken from the input', async () => {
+  it('sends no title again once a typed one is cleared', async () => {
+    mockApi();
+    const { onStart } = await renderDialog();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: workflows[0].id } });
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'ship the feature' } });
+    fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Typed' } });
+    fireEvent.change(screen.getByLabelText('Task title'), { target: { value: '   ' } });
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ newTask: {} })));
+  });
+
+  it('keeps a typed task title whatever the input becomes, at most 80 characters', async () => {
     mockApi();
     const { onStart } = await renderDialog();
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: `docs/${'x'.repeat(200)}.md` } });
-    expect(screen.getByLabelText('Task title').value).toHaveLength(80);
+    expect(screen.getByLabelText('Task title').value).toBe('');
+    expect(screen.getByLabelText('Task title').maxLength).toBe(80);
     fireEvent.change(screen.getByLabelText('Task title'), { target: { value: '  WhatsApp replies ' } });
     fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'docs/todos/replies.md' } });
     fireEvent.click(startButton());

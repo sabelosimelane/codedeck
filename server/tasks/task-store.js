@@ -15,6 +15,10 @@ const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d
 const CONTROL = /[\x00-\x1f\x7f]/;
 const COMMIT_ID = /^[0-9a-f]{40}$/;
 export const TASK_TITLE_MAX = 80;
+// Where a title came from: the owner gave or changed it ('owner'), it was made from the input
+// of the run the task was created for ('input'), or it was generated from the run's work
+// ('generated'). Only a title made from the input is ever replaced, and only once.
+export const TITLE_SOURCES = ['owner', 'input', 'generated'];
 
 function isIso(value) {
   return typeof value === 'string' && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value));
@@ -61,6 +65,7 @@ function hydrate(row) {
   if (!TASK_STATES.includes(row.state)) rowError(id, 'state', `must be one of ${TASK_STATES.join(', ')}`);
   if (row.pr_url !== null && !isPrUrl(row.pr_url)) rowError(id, 'pr_url', 'must be an http(s) URL or null');
   if (!Number.isInteger(row.revision) || row.revision < 1) rowError(id, 'revision', 'must be an integer ≥ 1');
+  if (!TITLE_SOURCES.includes(row.title_source)) rowError(id, 'title_source', `must be one of ${TITLE_SOURCES.join(', ')}`);
   if (!isIso(row.created_at)) rowError(id, 'created_at', 'must be an ISO-8601 timestamp');
   if (!isIso(row.updated_at)) rowError(id, 'updated_at', 'must be an ISO-8601 timestamp');
   if (row.finished_at !== null && !isIso(row.finished_at)) rowError(id, 'finished_at', 'must be an ISO-8601 timestamp or null');
@@ -69,6 +74,7 @@ function hydrate(row) {
     id,
     project: row.project,
     title: row.title,
+    titleSource: row.title_source,
     worktreePath: row.worktree_path,
     branch: row.branch,
     baseBranch: row.base_branch,
@@ -102,20 +108,27 @@ export function createTaskStore(db, { now = () => new Date().toISOString() } = {
       revision INTEGER NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      finished_at TEXT
+      finished_at TEXT,
+      title_source TEXT NOT NULL DEFAULT 'owner'
     );
     CREATE UNIQUE INDEX IF NOT EXISTS tasks_open_worktree
       ON tasks (worktree_path) WHERE state IN ('active', 'pr_open');
   `);
+  // Titles stored before their source was recorded are kept as the owner's: none is replaced.
+  if (!db.prepare('PRAGMA table_info(tasks)').all().some(column => column.name === 'title_source')) {
+    db.exec("ALTER TABLE tasks ADD COLUMN title_source TEXT NOT NULL DEFAULT 'owner'");
+  }
 
   const read = db.prepare('SELECT * FROM tasks WHERE id = ?');
   const readAll = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC, id DESC');
   const readOpenByPath = db.prepare(`SELECT * FROM tasks WHERE worktree_path = ? AND state IN (${OPEN_STATES.map(() => '?').join(', ')})`);
   const insert = db.prepare(`
-    INSERT INTO tasks (id, project, title, worktree_path, branch, base_branch, base_commit, state, pr_url, revision, created_at, updated_at, finished_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, 1, ?, ?, NULL)
+    INSERT INTO tasks (id, project, title, worktree_path, branch, base_branch, base_commit, state, pr_url, revision, created_at, updated_at, finished_at, title_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, 1, ?, ?, NULL, ?)
   `);
-  const renameStmt = db.prepare('UPDATE tasks SET title = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?');
+  const renameStmt = db.prepare("UPDATE tasks SET title = ?, title_source = 'owner', revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?");
+  const generatedStmt = db.prepare(`UPDATE tasks SET title = ?, title_source = 'generated', revision = revision + 1, updated_at = ?
+    WHERE id = ? AND title_source = 'input' AND state IN (${OPEN_STATES.map(() => '?').join(', ')})`);
   const stateStmt = db.prepare('UPDATE tasks SET state = ?, pr_url = ?, finished_at = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?');
 
   const get = id => {
@@ -142,7 +155,9 @@ export function createTaskStore(db, { now = () => new Date().toISOString() } = {
     },
     create(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)) inputError('body', 'must be an object');
-      const { id, project, title, worktreePath, branch, baseBranch, baseCommit } = input;
+      const { id, project, title, worktreePath, branch, baseBranch, baseCommit, titleSource } = input;
+      // A new title is the owner's or made from a run's input; 'generated' only ever replaces the latter.
+      if (titleSource !== 'owner' && titleSource !== 'input') inputError('titleSource', 'must be owner or input');
       if (!isUuid(id)) inputError('id', 'must be a UUID');
       if (!isProject(project)) inputError('project', 'must be a nonempty string');
       if (!isTaskTitle(title)) inputError('title', `must be 1–${TASK_TITLE_MAX} single-line characters`);
@@ -152,7 +167,7 @@ export function createTaskStore(db, { now = () => new Date().toISOString() } = {
       if (typeof baseCommit !== 'string' || !COMMIT_ID.test(baseCommit)) inputError('baseCommit', 'must be a commit id');
       const stamp = now();
       try {
-        insert.run(id, project, title.trim(), worktreePath, branch, baseBranch, baseCommit, stamp, stamp);
+        insert.run(id, project, title.trim(), worktreePath, branch, baseBranch, baseCommit, stamp, stamp, titleSource);
       } catch (err) {
         if (isUniqueConflict(err) && /worktree_path/.test(err.message)) throw new Error('tasks: worktree already belongs to an open task');
         throw err;
@@ -167,6 +182,15 @@ export function createTaskStore(db, { now = () => new Date().toISOString() } = {
         throw new Error(`tasks row ${id}: revision conflict`);
       }
       return get(id);
+    },
+    /**
+     * Gives an open task whose title was made from a run's input a generated one. Returns the
+     * task, or null when its title is no longer one to replace: the owner's always stands.
+     */
+    applyGeneratedTitle(id, title) {
+      if (!isTaskTitle(title)) inputError('title', `must be 1–${TASK_TITLE_MAX} single-line characters`);
+      requireTask(id);
+      return generatedStmt.run(title.trim(), now(), id, ...OPEN_STATES).changes === 1 ? get(id) : null;
     },
     setState(id, { state, prUrl } = {}) {
       if (!TASK_STATES.includes(state)) inputError('state', `must be one of ${TASK_STATES.join(', ')}`);

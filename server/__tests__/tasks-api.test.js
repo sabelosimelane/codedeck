@@ -28,7 +28,7 @@ async function setup({ openTerminal, landing } = {}) {
       if (typeof title !== 'string' || !title.trim() || title.length > 80) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'title', message: 'Use 1–80 characters on one line' }]);
       if (project === 'Nope') throw new TaskError('Project not found', 404);
       created += 1;
-      return taskStore.create({ id: id(created), project, title, worktreePath: `/tmp/worktrees/t-${created}`, branch: `task/t-${created}`, baseBranch: 'main', baseCommit: 'a'.repeat(40) });
+      return taskStore.create({ id: id(created), project, title, worktreePath: `/tmp/worktrees/t-${created}`, branch: `task/t-${created}`, baseBranch: 'main', baseCommit: 'a'.repeat(40), titleSource: 'owner' });
     }),
     get: real.get,
     rename: real.rename,

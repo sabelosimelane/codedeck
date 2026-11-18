@@ -368,6 +368,47 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     expect(prepareNotes).toHaveBeenCalledBefore(ctx.startSession);
     expect(ctx.noteStore.list(run.id, { offset: 0, limit: 10, direction: 'asc' })).toMatchObject([{ status: 'written', summary: 'Finished', pass: 1 }]);
   });
+  it('tells its listener what a step wrote, once the note is stored', async () => {
+    const onNoteWritten = vi.fn();
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Finished\nChanged file' }));
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote, onNoteWritten } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    onNoteWritten.mockImplementation(() => expect(ctx.noteStore.latestByStep(run.id).get(0).status).toBe('written'));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(onNoteWritten).toHaveBeenCalledTimes(1);
+    expect(onNoteWritten).toHaveBeenCalledWith({ runId: run.id, taskId: run.taskId, input: run.input, stepIndex: 0, content: '# Finished\nChanged file' });
+  });
+  it.each([
+    [{ status: 'missing', content: null }],
+    [{ status: 'unreadable', content: null }],
+  ])('tells its listener nothing when a step wrote no note (%j)', async result => {
+    const onNoteWritten = vi.fn();
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote: vi.fn(async () => result), onNoteWritten } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(onNoteWritten).not.toHaveBeenCalled();
+  });
+  it('finishes the run when its note listener fails, and reports the failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onNoteWritten = vi.fn(() => { throw new Error('listener broke'); });
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Finished' }));
+    const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote, onNoteWritten } });
+    const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(ctx.noteStore.latestByStep(run.id).get(0).status).toBe('written');
+    expect(warn).toHaveBeenCalledWith(`[pipeline-notes] run=${run.id} step=0 error=listener broke`);
+    warn.mockRestore();
+  });
   it('records each changed note before the next pass prompt and on completion', async () => {
     const events = [];
     const readNote = vi.fn(async () => {

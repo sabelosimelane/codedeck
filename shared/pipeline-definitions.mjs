@@ -281,10 +281,11 @@ export function validateRunStartBody(body) {
   if (body.newTask !== undefined) {
     const task = body.newTask;
     if (task === null || typeof task !== 'object' || Array.isArray(task)) {
-      add(errors, 'newTask', 'Use an object with a title');
+      add(errors, 'newTask', 'Use an object, with a title when the owner typed one');
     } else {
       for (const key of Object.keys(task)) if (key !== 'title') add(errors, `newTask.${key}`, 'Unknown field');
-      if (typeof task.title !== 'string' || task.title.trim().length < 1 || task.title.trim().length > 80 || SINGLE_LINE.test(task.title)) {
+      // No title: the task is called after the run's input and named from the run's work.
+      if (Object.hasOwn(task, 'title') && (typeof task.title !== 'string' || task.title.trim().length < 1 || task.title.trim().length > 80 || SINGLE_LINE.test(task.title))) {
         add(errors, 'newTask.title', 'Use 1–80 characters on one line');
       }
     }

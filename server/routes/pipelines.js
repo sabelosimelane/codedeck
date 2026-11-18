@@ -32,6 +32,7 @@ import {
   hasCommittedFile,
 } from '../pipelines/run-worktree.js';
 import { parseCollectionQuery as parseQuery, paginate } from './collection-query.js';
+import { provisionalTaskTitle } from '../tasks/task-naming.js';
 
 const BASE = '/api/pipelines';
 const OPEN_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', 'external']);
@@ -196,7 +197,11 @@ const EXISTING_WORKTREE_STATES = new Set(['external', 'released']);
 function sameStartBody(existing, body, existingTask) {
   const samePlace = () => {
     if (body.taskId !== undefined) return existing.taskId === body.taskId;
-    if (body.newTask !== undefined) return existingTask !== null && existingTask.title === body.newTask.title.trim();
+    // A typed title stays as typed; a task started without one is known by its title not being the owner's.
+    if (body.newTask !== undefined) {
+      if (existingTask === null) return false;
+      return body.newTask.title === undefined ? existingTask.titleSource !== 'owner' : existingTask.titleSource === 'owner' && existingTask.title === body.newTask.title.trim();
+    }
     return existing.taskId === null;
   };
   const existingPath = existing.taskId === null && EXISTING_WORKTREE_STATES.has(existing.worktreeState) ? existing.worktreePath : undefined;
@@ -856,7 +861,12 @@ export function createPipelinesRouter(deps) {
     }
     if (forNewTask) {
       try {
-        taskPlan = await taskService.plan({ project: project.name, title: body.newTask.title });
+        const typed = body.newTask.title !== undefined;
+        taskPlan = await taskService.plan({
+          project: project.name,
+          title: typed ? body.newTask.title : provisionalTaskTitle(body.input, workflow.name),
+          titleSource: typed ? 'owner' : 'input',
+        });
       } catch (err) {
         if (!Number.isInteger(err?.status)) throw err;
         if (err.status === 400) throw fieldErrors((err.errors ?? []).map(item => ({ field: item.field === 'title' ? 'newTask.title' : item.field, message: item.message })));

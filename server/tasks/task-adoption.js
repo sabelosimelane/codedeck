@@ -69,6 +69,8 @@ export async function adoptWorktrees({ taskStore, runStore, worktreeStore, findP
           id: newId(),
           project: projectName,
           title: entry.title || titleFrom(worktree.branch),
+          // An adopted worktree keeps the name it is given here; nothing renames it later.
+          titleSource: 'owner',
           worktreePath,
           branch: worktree.branch,
           baseBranch: home?.branch ?? null,

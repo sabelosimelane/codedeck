@@ -201,14 +201,14 @@ async function setup(overrides = {}) {
   const taskStore = createTaskStore(db);
   let plannedTasks = 0;
   const taskService = overrides.taskService ?? {
-    plan: vi.fn(async ({ project, title }) => {
+    plan: vi.fn(async ({ project, title, titleSource }) => {
       plannedTasks += 1;
       const id = `7a00000${plannedTasks}-0000-4000-8000-000000000000`;
-      return { id, project, projectPath: PROJECT.path, title: title.trim(), homePath: '/Users/me/git/codedeck',
+      return { id, project, projectPath: PROJECT.path, title: title.trim(), titleSource, homePath: '/Users/me/git/codedeck',
         worktreePath: `/Users/me/git/worktrees/codedeck-task-${plannedTasks}`, branch: `task/t-${plannedTasks}`, baseBranch: 'main' };
     }),
     createPlanned: vi.fn(async planned => taskStore.create({ id: planned.id, project: planned.project, title: planned.title,
-      worktreePath: planned.worktreePath, branch: planned.branch, baseBranch: planned.baseBranch, baseCommit: 'c'.repeat(40) })),
+      titleSource: planned.titleSource, worktreePath: planned.worktreePath, branch: planned.branch, baseBranch: planned.baseBranch, baseCommit: 'c'.repeat(40) })),
   };
 
   const app = express();
@@ -2241,7 +2241,7 @@ describe('pipelines API — runs in tasks', () => {
     const ctx = await setup({ ...overrides, routerDeps: { listWorktrees, readWorktreeChanges, realpath: async value => value, execFile: 'exec-file-stub', ...overrides.routerDeps } });
     const { workflow } = await seedReady(ctx);
     const seedTask = (fields = {}) => ctx.taskStore.create({ id: TASK_ID, project: 'Demo', title: 'Replies', worktreePath: TASK_WT.path,
-      branch: TASK_WT.branch, baseBranch: 'main', baseCommit: HEAD_A, ...fields });
+      branch: TASK_WT.branch, baseBranch: 'main', baseCommit: HEAD_A, titleSource: 'owner', ...fields });
     const body = (extra = {}) => ({ requestId: 'run-task', workflowId: workflow.id, project: 'Demo', input: 'docs/todos/feature.md', ...extra });
     return { ...ctx, workflow, seedTask, body, listWorktrees };
   }
@@ -2265,12 +2265,41 @@ describe('pipelines API — runs in tasks', () => {
 
     expect(started.status).toBe(201);
     const task = ctx.taskStore.get(started.body.taskId);
-    expect(task).toMatchObject({ title: 'WhatsApp replies', project: 'Demo', state: 'active' });
+    expect(task).toMatchObject({ title: 'WhatsApp replies', titleSource: 'owner', project: 'Demo', state: 'active' });
     expect(started.body.worktree).toEqual({ path: task.worktreePath, branch: task.branch, baseCommit: task.baseCommit, state: 'external', detail: null });
     expect(started.body.steps.map(item => item.kind)).toEqual(['setup', 'node']);
     expect(ctx.runStore.get(started.body.id).definition.steps[0].prompt).toContain(task.worktreePath);
     ctx.flushStart();
     expect(ctx.engine.start).toHaveBeenCalledWith(started.body.id);
+  });
+
+  it('calls a task after the input of its run when no title was typed, and marks it as one to name', async () => {
+    const ctx = await setupTasks();
+    const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ input: '"/tmp/drops/screenshot.png"', newTask: {} }));
+
+    expect(started.status).toBe(201);
+    expect(ctx.taskStore.get(started.body.taskId)).toMatchObject({ title: '"/tmp/drops/screenshot.png"', titleSource: 'input', project: 'Demo', state: 'active' });
+    expect(ctx.taskService.plan).toHaveBeenCalledWith({ project: 'Demo', title: '"/tmp/drops/screenshot.png"', titleSource: 'input' });
+  });
+
+  it('replays an untitled request without creating a second task, also once the task is named', async () => {
+    const ctx = await setupTasks();
+    const body = ctx.body({ newTask: {} });
+    const first = await request(ctx.app).post(`${base}/runs`).send(body);
+    ctx.taskStore.applyGeneratedTitle(first.body.taskId, 'Named from the work');
+    const second = await request(ctx.app).post(`${base}/runs`).send(body);
+    expect([first.status, second.status]).toEqual([201, 200]);
+    expect(second.body.id).toBe(first.body.id);
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    // The same request id asking for a titled task is a different request.
+    expect((await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'Typed' } }))).status).toBe(409);
+  });
+
+  it('does not take an untitled request for the replay of a titled one', async () => {
+    const ctx = await setupTasks();
+    expect((await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'Typed' } }))).status).toBe(201);
+    expect((await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: {} }))).status).toBe(409);
+    expect(ctx.taskStore.list()).toHaveLength(1);
   });
 
   it('replays the same request without creating a second task', async () => {
@@ -2359,8 +2388,9 @@ describe('pipelines API — runs in tasks', () => {
   it.each([
     [{ taskId: 'nope' }, ['taskId']],
     [{ taskId: null }, ['taskId']],
-    [{ newTask: {} }, ['newTask.title']],
     [{ newTask: { title: '' } }, ['newTask.title']],
+    [{ newTask: { title: null } }, ['newTask.title']],
+    [{ newTask: { title: '   ' } }, ['newTask.title']],
     [{ newTask: { title: 'x'.repeat(81) } }, ['newTask.title']],
     [{ newTask: [] }, ['newTask']],
     [{ newTask: { title: 'x', branch: 'main' } }, ['newTask.branch']],

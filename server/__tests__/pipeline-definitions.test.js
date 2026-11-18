@@ -263,7 +263,9 @@ describe('validateRunStartBody', () => {
   it('rejects a bad task, a bad new task and more than one place to run', () => {
     expect(fields(validateRunStartBody({ ...valid, taskId: 'nope' }))).toEqual(['taskId']);
     expect(fields(validateRunStartBody({ ...valid, taskId: null }))).toEqual(['taskId']);
-    for (const newTask of [null, 'x', [], {}, { title: '' }, { title: '  ' }, { title: 12 }, { title: 'x'.repeat(81) }, { title: 'a\nb' }]) {
+    // A new task needs no title: one that is absent is made from the input and named later.
+    expect(validateRunStartBody({ ...valid, newTask: {} })).toEqual([]);
+    for (const newTask of [null, 'x', [], { title: null }, { title: '' }, { title: '  ' }, { title: 12 }, { title: 'x'.repeat(81) }, { title: 'a\nb' }]) {
       expect(fields(validateRunStartBody({ ...valid, newTask }))[0]).toMatch(/^newTask/);
     }
     expect(fields(validateRunStartBody({ ...valid, newTask: { title: 'x', branch: 'y' } }))).toEqual(['newTask.branch']);
