@@ -27,6 +27,25 @@ const input = {
 };
 
 describe('task store', () => {
+  it('only removes an active task at its initial revision', () => {
+    const { store } = setup();
+    expect(() => store.remove('invalid')).toThrow(/id.*UUID/);
+    expect(() => store.remove(ID)).toThrow(/active.*revision 1/);
+    store.create(input);
+    store.remove(ID);
+    expect(store.get(ID)).toBeNull();
+
+    store.create(input);
+    const renamed = store.rename(ID, { title: 'Changed', revision: 1 });
+    expect(() => store.remove(ID)).toThrow(/active.*revision 1/);
+    expect(store.get(ID)).toEqual(renamed);
+
+    store.create({ ...input, id: OTHER_ID, worktreePath: '/tmp/worktrees/other' });
+    const finished = store.setState(OTHER_ID, { state: 'closed' });
+    expect(() => store.remove(OTHER_ID)).toThrow(/active.*revision 1/);
+    expect(store.get(OTHER_ID)).toEqual(finished);
+  });
+
   it('creates an active task and reads it back', () => {
     const { store } = setup();
     const task = store.create(input);

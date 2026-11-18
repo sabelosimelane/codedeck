@@ -24,6 +24,7 @@ import { createAgentStore } from './pipelines/agent-store.js';
 import { createWorkflowStore } from './pipelines/workflow-store.js';
 import { createSettingsStore } from './pipelines/settings-store.js';
 import { createRunStore } from './pipelines/run-store.js';
+import { createRequestStore } from './pipelines/request-store.js';
 import { createDecisionStore } from './pipelines/decision-store.js';
 import { createNoteStore } from './pipelines/note-store.js';
 import { createReviewStore } from './pipelines/review-store.js';
@@ -922,6 +923,7 @@ const pipelineAgentStore = createAgentStore(db);
 const pipelineWorkflowStore = createWorkflowStore(db);
 const pipelineSettingsStore = createSettingsStore(db);
 const pipelineRunStore = createRunStore(db);
+const pipelineRequestStore = createRequestStore(db);
 pipelineRunStoreForMobile = pipelineRunStore;
 const pipelineDecisionStore = createDecisionStore(db);
 const pipelineNoteStore = createNoteStore(db);
@@ -1056,6 +1058,7 @@ app.use(createPipelinesRouter({
   workflowStore: pipelineWorkflowStore,
   settingsStore: pipelineSettingsStore,
   runStore: pipelineRunStore,
+  requestStore: pipelineRequestStore,
   decisionStore: pipelineDecisionStore,
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,

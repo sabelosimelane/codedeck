@@ -130,6 +130,7 @@ export function createTaskStore(db, { now = () => new Date().toISOString() } = {
   const generatedStmt = db.prepare(`UPDATE tasks SET title = ?, title_source = 'generated', revision = revision + 1, updated_at = ?
     WHERE id = ? AND title_source = 'input' AND state IN (${OPEN_STATES.map(() => '?').join(', ')})`);
   const stateStmt = db.prepare('UPDATE tasks SET state = ?, pr_url = ?, finished_at = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?');
+  const removeInitial = db.prepare("DELETE FROM tasks WHERE id = ? AND state = 'active' AND revision = 1");
 
   const get = id => {
     if (!isUuid(id)) inputError('id', 'must be a UUID');
@@ -145,6 +146,10 @@ export function createTaskStore(db, { now = () => new Date().toISOString() } = {
 
   return {
     get,
+    remove(id) {
+      if (!isUuid(id)) inputError('id', 'must be a UUID');
+      if (removeInitial.run(id).changes !== 1) throw new Error(`tasks row ${id}: must be active at revision 1 to remove`);
+    },
     list() {
       return readAll.all().map(hydrate);
     },
