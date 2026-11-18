@@ -147,6 +147,40 @@ it('renders persisted titles on tabs and panes without changing terminal identit
     vi.restoreAllMocks();
   });
 
+  it('repairs duplicate saved tab ids before opening another terminal', async () => {
+    const numbers = [22, 23, 24, 25, 26, 27, 29];
+    const ids = [134, 135, 136, 137, 138, 139, 137];
+    const tabs = numbers.map((number, index) => ({
+      id: `tab-${ids[index]}`,
+      label: `Gamma-${number}`,
+      panes: [{ id: `pane-Gamma-${number}`, sessionId: `Gamma-${number}`, widthFraction: 1, isConnected: true }],
+    }));
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({
+      tabs, activeTabId: 'tab-137', tabCounter: 137, sessionCounter: 29,
+    }));
+    const sessions = numbers.map(number => ({ sessionId: `Gamma-${number}`, cwd: '/tmp/gamma', alive: true }));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    global.fetch = vi.fn(async (url, options = {}) => {
+      if (url === '/api/health') return { ok: true, json: async () => ({ terminalCreationAllowed: true }) };
+      if (url === '/api/sessions') return { ok: true, json: async () => sessions };
+      if (url === '/api/terminal' && options.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 'Gamma-30' }) };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const view = render(<TerminalArea project={PROJECT} sessionStatus={sessions} onSessionStatusRefresh={onSessionStatusRefresh} />);
+    await waitFor(() => expect(view.getAllByTestId('terminal-tab')).toHaveLength(7));
+    fireEvent.click(view.getByRole('button', { name: 'New terminal' }));
+    await waitFor(() => expect(view.getAllByTestId('terminal-tab')).toHaveLength(8));
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY));
+      expect(saved.tabs).toHaveLength(8);
+      expect(new Set(saved.tabs.map(tab => tab.id)).size).toBe(8);
+    });
+    expect(errorSpy.mock.calls.some(args => args.some(arg => String(arg).includes('Encountered two children with the same key')))).toBe(false);
+  });
+
   it('preserves but does not render the saved layout when /api/sessions fails during restore', async () => {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify(SAVED_LAYOUT));
     global.fetch = vi.fn().mockRejectedValue(new Error('backend unavailable'));

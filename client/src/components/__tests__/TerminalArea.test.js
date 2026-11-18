@@ -75,6 +75,85 @@ describe('TerminalArea project-switch render guard', () => {
 });
 
 describe('TerminalArea live session hydration', () => {
+  const session = number => ({ sessionId: `Gamma-${number}`, cwd: '/tmp/gamma', alive: true });
+  const savedTab = (id, number) => ({
+    id,
+    label: `Gamma-${number}`,
+    panes: [{ id: `pane-Gamma-${number}`, sessionId: `Gamma-${number}`, widthFraction: 1, isConnected: true }],
+  });
+  const restore = (savedLayout, liveSessions) => resolveInitialTerminalState({
+    projectName: 'Gamma', projectPath: '/tmp/gamma', savedLayout, liveSessions,
+  });
+  const corruptLayout = {
+    tabs: [
+      savedTab('tab-134', 22), savedTab('tab-135', 23), savedTab('tab-136', 24),
+      savedTab('tab-137', 25), savedTab('tab-138', 26), savedTab('tab-139', 27),
+      savedTab('tab-137', 29),
+    ],
+    activeTabId: 'tab-137', tabCounter: 137, sessionCounter: 29,
+  };
+
+  it('raises the counter for a tab added for a missing live session', () => {
+    const savedLayout = {
+      tabs: [savedTab('tab-134', 22), savedTab('tab-135', 23), savedTab('tab-136', 24)],
+      activeTabId: 'tab-136', tabCounter: 136, sessionCounter: 24,
+    };
+    const result = restore(savedLayout, [22, 23, 24, 25].map(session));
+    expect(result.state.tabs.map(tab => tab.id)).toEqual(['tab-134', 'tab-135', 'tab-136', 'tab-137']);
+    expect(result.tabCounter).toBe(137);
+  });
+
+  it('raises a saved counter that is below a saved tab id', () => {
+    const result = restore({
+      tabs: [savedTab('tab-136', 24)], activeTabId: 'tab-136', tabCounter: 135, sessionCounter: 24,
+    }, [session(24)]);
+    expect(result.tabCounter).toBe(136);
+  });
+
+  it('repairs later duplicate ids and keeps the first duplicate active', () => {
+    const result = restore(corruptLayout, [22, 23, 24, 25, 26, 27, 29].map(session));
+    expect(result.state.tabs.map(tab => tab.id)).toEqual([
+      'tab-134', 'tab-135', 'tab-136', 'tab-137', 'tab-138', 'tab-139', 'tab-140',
+    ]);
+    expect(result.state.tabs.map(tab => tab.panes[0].sessionId)).toEqual(corruptLayout.tabs.map(tab => tab.panes[0].sessionId));
+    expect(result.state.tabs[3].panes[0].sessionId).toBe('Gamma-25');
+    expect(result.state.tabs[6].panes[0].sessionId).toBe('Gamma-29');
+    expect(result.state.activeTabId).toBe('tab-137');
+    expect(result.tabCounter).toBe(140);
+  });
+
+  it('numbers missing live sessions after repaired ids', () => {
+    const result = restore(corruptLayout, [22, 23, 24, 25, 26, 27, 29, 30].map(session));
+    expect(result.state.tabs.at(-1).id).toBe('tab-141');
+    expect(result.tabCounter).toBe(141);
+  });
+
+  it('repairs duplicate saved ids when there are no live sessions', () => {
+    const result = restore(corruptLayout, []);
+    expect(result.state.tabs.map(tab => tab.id)).toEqual([
+      'tab-134', 'tab-135', 'tab-136', 'tab-137', 'tab-138', 'tab-139', 'tab-140',
+    ]);
+    expect(result.state.activeTabId).toBe('tab-137');
+    expect(result.tabCounter).toBe(140);
+  });
+
+  it('leaves an already unique saved layout unchanged', () => {
+    const savedLayout = {
+      tabs: [savedTab('tab-136', 24), savedTab('tab-137', 25)],
+      activeTabId: 'tab-136', tabCounter: 137, sessionCounter: 25,
+    };
+    const result = restore(savedLayout, [session(24), session(25)]);
+    expect(result.state.tabs.map(tab => tab.id)).toEqual(['tab-136', 'tab-137']);
+    expect(result.state.activeTabId).toBe('tab-136');
+    expect(result.tabCounter).toBe(137);
+  });
+
+  it('sets the counter to the highest tab number when building from live sessions alone', () => {
+    const result = restore(null, [session(22), session(23), session(24)]);
+    expect(result.state.tabs.map(tab => tab.id)).toEqual(['tab-1', 'tab-2', 'tab-3']);
+    expect(result.tabCounter).toBe(3);
+  });
+
   it('restores all live project sessions when saved layout is missing', async () => {
     const sessions = [
       { sessionId: 'Gamma-1', cwd: '/tmp/gamma', alive: true, wsAttached: false },

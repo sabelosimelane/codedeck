@@ -139,6 +139,24 @@ function getNextTabNumber(restoredTabs) {
     : 1;
 }
 
+function repairDuplicateTabIds(tabs) {
+  const seenIds = new Set();
+  let nextTabNumber = getNextTabNumber(tabs);
+  return tabs.map(tab => {
+    if (!seenIds.has(tab.id)) {
+      seenIds.add(tab.id);
+      return tab;
+    }
+    const id = `tab-${nextTabNumber++}`;
+    seenIds.add(id);
+    return { ...tab, id };
+  });
+}
+
+function highestTabNumber(tabs) {
+  return getNextTabNumber(tabs) - 1;
+}
+
 function preserveSavedLayout(savedLayout) {
   const tabs = savedLayout.tabs.map(tab => {
     const panes = tab.panes.map(pane => ({
@@ -186,7 +204,8 @@ export function resolveInitialTerminalState({ projectName, projectPath, savedLay
   );
 
   if (savedLayout) {
-    const restored = filterLayoutByLiveSessions(savedLayout, projectLiveSessions, projectName);
+    const repairedLayout = { ...savedLayout, tabs: repairDuplicateTabIds(savedLayout.tabs) };
+    const restored = filterLayoutByLiveSessions(repairedLayout, projectLiveSessions, projectName);
     if (restored) {
       const maxSessionNumber = projectLiveSessions.reduce((max, session) => {
         const sessionNumber = getSessionNumber(projectName, session.sessionId);
@@ -194,7 +213,7 @@ export function resolveInitialTerminalState({ projectName, projectPath, savedLay
       }, 0);
       return {
         state: restored,
-        tabCounter: Math.max(savedLayout.tabCounter ?? 0, restored.tabs.length),
+        tabCounter: Math.max(savedLayout.tabCounter ?? 0, restored.tabs.length, highestTabNumber(restored.tabs)),
         sessionCounter: Math.max(savedLayout.sessionCounter ?? 0, maxSessionNumber || projectLiveSessions.length),
         shouldClearSavedLayout: false,
       };
@@ -202,8 +221,8 @@ export function resolveInitialTerminalState({ projectName, projectPath, savedLay
 
     if (projectLiveSessions.length === 0) {
       return {
-        state: preserveSavedLayout(savedLayout),
-        tabCounter: savedLayout.tabCounter ?? savedLayout.tabs.length,
+        state: preserveSavedLayout(repairedLayout),
+        tabCounter: Math.max(savedLayout.tabCounter ?? savedLayout.tabs.length, highestTabNumber(repairedLayout.tabs)),
         sessionCounter: savedLayout.sessionCounter ?? 0,
         shouldClearSavedLayout: false,
       };
@@ -219,7 +238,7 @@ export function resolveInitialTerminalState({ projectName, projectPath, savedLay
 
     return {
       state: { tabs, activeTabId: tabs[tabs.length - 1].id },
-      tabCounter: tabs.length,
+      tabCounter: Math.max(tabs.length, highestTabNumber(tabs)),
       sessionCounter: maxSessionNumber || projectLiveSessions.length,
       shouldClearSavedLayout: false,
     };

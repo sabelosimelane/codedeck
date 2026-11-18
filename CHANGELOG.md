@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-11-18] - Terminal tabs can no longer share an id
+
+### Executive Summary
+* After switching to a project with no terminals, the previous project's tabs and one of its terminal panes stayed on screen above the "No terminals open" card. Two tabs in that project's saved layout had the same id, and the page cannot remove an element whose id is duplicated. The duplicate came from restoring a layout: a tab built for a terminal that had no tab yet took the next free number, but the tab counter was not advanced, so the next terminal opened reused a number. Restoring a layout now always leaves the counter at or above the highest tab number, and a saved layout that already holds a duplicate is renumbered when it is restored.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** `resolveInitialTerminalState` returned `tabCounter` as the larger of the saved counter and the number of tabs, ignoring ids handed out by `filterLayoutByLiveSessions` for live sessions without a tab and saved ids above the saved counter. `TerminalArea.jsx` mints `tab-${++tabCounter}`, so a later tab could take an id already in use. Tab ids are React keys for the tab bar and the pane containers.
+  * **Solution:** the counter is at least the highest `tab-N` in the returned state on every path; duplicate ids in a saved layout are repaired before it is used.
+* **🛠️ Codebase:**
+  * `client/src/utils/terminalLayoutState.js` — `repairDuplicateTabIds`: the first tab with an id keeps it, each later one gets the next number above the layout's highest, order and contents unchanged. Applied on both saved-layout paths. `tabCounter` raised to the highest tab number on all three paths that return tabs.
+* **🧪 Tests:**
+  * `client/src/components/__tests__/TerminalArea.test.js` — A tab added for a live session without one, a saved counter below a saved id, the duplicated layout found on the live instance (with and without live sessions, and with one more live session), an already unique layout left unchanged, and tabs built from live sessions alone.
+  * `client/src/components/__tests__/TerminalAreaRestore.test.jsx` — With the duplicated layout saved, seven tabs render, a new terminal makes eight with eight distinct saved ids, and React logs no duplicate-key warning.
+  * Client suite: 69 files, 1,111 tests passed.
+
 ## [2026-11-18] - A run shows live status only on the terminal it is working in
 
 ### Executive Summary
