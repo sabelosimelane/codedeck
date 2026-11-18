@@ -5,6 +5,7 @@
  * branch is deleted only once Git agrees it is merged.
  */
 
+import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
 import { listDirtyPaths, remove as removeWorktree, resolveHomeRepoPath } from '../pipelines/run-worktree.js';
@@ -29,7 +30,12 @@ const BLOCKERS = {
   main_dirty: 'Main has uncommitted changes. Commit or stash them before merging.',
   no_remote: 'This project has no remote to push to.',
   no_pr_tool: null, // message names the tool
+  branch_switched: null, // message names the branches
+  ignored_files: null, // message names the files
 };
+
+// Ignored files the owner agreed may go with a task's folder; any other ignored file is kept.
+const DISPOSABLE = new Set(['node_modules', 'dist', 'build', '.codedeck']);
 
 function run(execFile, file, args, { cwd, timeout = GIT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
@@ -83,6 +89,36 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     }));
   }
 
+  /** The checkout's branch now, or null when its HEAD is detached. */
+  async function currentBranch(cwd) {
+    const { stdout } = await git(execFile, cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    return stdout.trim() === 'HEAD' ? null : stdout.trim();
+  }
+
+  async function sameBytes(worktreePath, homePath, file) {
+    if (file.endsWith('/')) return false;
+    // Only a regular file in Main can hold the same bytes; a folder or link of that name cannot.
+    const home = await lstat(path.join(homePath, file)).catch(error => {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+      throw error;
+    });
+    if (!home?.isFile()) return false;
+    const hash = async cwd => (await git(execFile, cwd, ['hash-object', '--no-filters', '--', file])).stdout.trim();
+    return (await hash(worktreePath)) === (await hash(homePath));
+  }
+
+  /** Ignored files in the task that removing its folder would lose: not disposable, and not copied byte for byte in Main. */
+  async function listIgnoredAtRisk(worktreePath, homePath) {
+    const { stdout } = await git(execFile, worktreePath, ['status', '--porcelain', '-z', '--ignored']);
+    const ignored = stdout.split('\0').filter(entry => entry.startsWith('!! ')).map(entry => entry.slice(3));
+    const atRisk = [];
+    for (const file of ignored) {
+      if (file.split('/').some(segment => DISPOSABLE.has(segment))) continue;
+      if (!(await sameBytes(worktreePath, homePath, file))) atRisk.push(file);
+    }
+    return atRisk;
+  }
+
   /** Everything the owner needs to decide how to land the task, read from Git now. */
   async function inspect(id) {
     const { task, project } = await load(id);
@@ -94,8 +130,12 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     let uncommitted = [];
     let ahead = null;
     let behind = null;
+    let checkoutBranch = null;
+    let ignoredAtRisk = [];
     if (present) {
       uncommitted = await listDirtyPaths({ worktreePath: task.worktreePath, execFile });
+      checkoutBranch = await currentBranch(task.worktreePath);
+      ignoredAtRisk = await listIgnoredAtRisk(task.worktreePath, project.path);
       const base = task.baseBranch ?? task.baseCommit;
       const { stdout } = await git(execFile, task.worktreePath, ['rev-list', '--left-right', '--count', `${base}...HEAD`]);
       const counts = stdout.trim().split(/\s+/).map(Number);
@@ -103,8 +143,7 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
       [behind, ahead] = counts;
     }
 
-    const { stdout: branchRaw } = await git(execFile, project.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
-    const mainBranch = branchRaw.trim() === 'HEAD' ? null : branchRaw.trim();
+    const mainBranch = await currentBranch(project.path);
     const mainDirty = (await listDirtyPaths({ worktreePath: project.path, execFile })).length > 0;
     const remoteList = await remotes(project.path);
 
@@ -115,6 +154,8 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     const withWork = [...common];
     if (present && uncommitted.length > 0) withWork.push('uncommitted');
     if (present && ahead === 0) withWork.push('nothing_to_land');
+    // Landing acts on the task's stored branch; work committed on another branch would not go with it.
+    if (present && checkoutBranch !== task.branch) withWork.push('branch_switched');
 
     const merge = [...withWork];
     if (open && task.baseBranch === null) merge.push('no_base_branch');
@@ -125,7 +166,11 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
       code,
       message: code === 'main_not_on_base'
         ? `Main is on ${mainBranch ?? 'no branch'}, but this task was started from ${task.baseBranch}. Switch Main to ${task.baseBranch} to merge.`
-        : BLOCKERS[code],
+        : code === 'branch_switched'
+          ? `This task's folder is on ${checkoutBranch ?? 'no branch'}, not on its branch ${task.branch}. Switch it back to ${task.branch} first.`
+          : code === 'ignored_files'
+            ? `This task has files Git ignores that exist nowhere else: ${ignoredAtRisk.slice(0, 5).join(', ')}${ignoredAtRisk.length > 5 ? ', …' : ''}. Move or delete them first.`
+            : BLOCKERS[code],
     });
     const pullRequest = [...withWork];
     if (remoteList.length === 0) pullRequest.push('no_remote');
@@ -133,10 +178,14 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     // A task whose files are already gone can still be closed; there is nothing left to lose.
     const close = common.filter(code => code !== 'files_missing');
     if (present && uncommitted.length > 0) close.push('uncommitted');
+    // Closing removes the folder and keeps only the stored branch; commits on another branch or a detached HEAD would be lost with it.
+    if (present && checkoutBranch !== task.branch) close.push('branch_switched');
+    if (present && ignoredAtRisk.length > 0) close.push('ignored_files');
 
     return {
       task,
       project,
+      ignoredAtRisk: ignoredAtRisk.length > 0 ? describe('ignored_files') : null,
       view: {
         taskId: task.id,
         state: task.state,
@@ -212,7 +261,7 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
 
     merge(id) {
       return serial(async () => {
-        const { task, project, view } = await inspect(id);
+        const { task, project, view, ignoredAtRisk } = await inspect(id);
         if (view.blockers.merge.length) throw refuse(view.blockers.merge);
         try {
           await git(execFile, project.path, ['merge', '--no-edit', task.branch]);
@@ -226,7 +275,10 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
             : `Git could not merge: ${firstLine(error.stderr || error.stdout || error.message)}`;
           throw withExtra(new TaskError(message, 409, undefined, { cause: error }), { conflicts });
         }
-        const { home, removed } = await finishWorktree(task, project);
+        // The work is merged either way; a folder holding ignored files that exist nowhere else is kept and reported.
+        const { home, removed } = ignoredAtRisk
+          ? { home: null, removed: { ok: false, detail: `The task's folder was kept. ${ignoredAtRisk.message}` } }
+          : await finishWorktree(task, project);
         let branchDeleted = false;
         if (removed.ok) {
           try {
