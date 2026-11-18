@@ -78,6 +78,12 @@ describe('TaskView', () => {
     rerender(<TaskView {...props} run={run()} openSessionIds={new Set(['Demo-1', 'Demo-2'])} {...h} />);
     expect(h.onActivateStep).toHaveBeenCalledTimes(1);
 
+    // A new callback on every render (the terminal area makes one whenever sessions are polled) is
+    // not a move: otherwise the owner is pulled back to the run every two seconds and cannot leave.
+    const again = vi.fn();
+    rerender(<TaskView {...props} run={run()} openSessionIds={new Set(['Demo-1', 'Demo-2'])} {...h} onActivateStep={again} />);
+    expect(again).not.toHaveBeenCalled();
+
     // The run moved on, but the next step's terminal is not open in this browser yet.
     rerender(<TaskView {...props} run={moved()} openSessionIds={new Set(['Demo-1', 'Demo-2'])} {...h} />);
     expect(h.onActivateStep).toHaveBeenCalledTimes(1);

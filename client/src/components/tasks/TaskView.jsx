@@ -153,9 +153,12 @@ export default function TaskView({
   // that is no longer working moves nothing.
   const working = !['complete', 'stopped', 'error', 'interrupted'].includes(run.status);
   const followSessionId = working && current.sessionId && openSessionIds.has(current.sessionId) ? current.sessionId : null;
+  // Read through a ref: the callback is a new function on most renders, and that is not a move.
+  const activateRef = useRef(onActivateStep);
+  activateRef.current = onActivateStep;
   useEffect(() => {
-    if (followSessionId) onActivateStep(followSessionId);
-  }, [run.id, currentIndex, followSessionId, onActivateStep]);
+    if (followSessionId) activateRef.current(followSessionId);
+  }, [run.id, currentIndex, followSessionId]);
   const status = describeRunStatus(run);
   const progress = progressLine(run.progress);
   const blockedCleanup = run.worktree?.state === 'removal_blocked' && run.worktree.detail ? describeBlockedCleanup(run.worktree.detail) : null;
