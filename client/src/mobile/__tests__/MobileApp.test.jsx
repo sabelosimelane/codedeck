@@ -6,6 +6,7 @@ vi.mock('../../components/Terminal',()=>({default:React.forwardRef((props,ref)=>
 vi.mock('../native',()=>({isPushConfigured:()=>mocks.pushConfigured,restoreNotifications:mocks.restore,watchNative:async handlers=>{mocks.native=handlers;return ()=>{}},enableNotifications:mocks.enable,hideKeyboard:async()=>{},showKeyboard:async()=>{}}));
 import MobileApp from '../MobileApp';
 import { setThemeMode } from '../../theme';
+import { run,askingRun,approvalRun,completeRun,task,RUN_ID } from './runFixtures';
 const MIN=60_000,HOUR=60*MIN;
 function reply(body){return Promise.resolve({ok:true,json:async()=>body});}
 const page=data=>({data,page:{currentPage:0,size:20,totalElements:data.length,totalPages:1,hasNextPage:false}});
@@ -13,9 +14,19 @@ const CAPS={instanceId:'instance',protocolVersion:2,notificationsReady:false,cap
 const proj=(id,name,state='active',stateChangedAt=null)=>({id,name,state,stateChangedAt});
 const session=(id,projectId,title,status,live=true,extra={})=>({id,incarnationId:`inc-${id}`,projectId,title,status,live,cwd:'/tmp',host:'local',runtimeType:'tmux',finished:false,muted:false,waiting:false,needsInput:false,lastActivityAt:Date.now()-MIN,...extra});
 // A small backend: lists projects and sessions, and applies state changes the way the server does.
+// Runs and tasks come from the endpoints the desktop uses. `onRun` answers an owner action on a run.
+let work={runs:[],tasks:[],notes:[],onRun:null};
+function workReply(url,options){
+ if(url.includes('/api/tasks'))return reply(page(work.tasks));
+ if(!url.includes('/api/pipelines/runs'))return undefined;
+ if(url.includes('/notes'))return reply(page(work.notes));
+ if(options.method==='POST'){const result=work.onRun(url,options);if(result.ok)result.json().then(next=>{work.runs=work.runs.map(item=>item.id===next.id?next:item);});return Promise.resolve(result);}
+ return reply(page(work.runs));
+}
 function serve(projects,sessions,{onState}={}){
  let rows=sessions;
  global.fetch=vi.fn((url,options={})=>{
+  const worked=workReply(url,options);if(worked)return worked;
   if(options.method==='PUT'&&url.endsWith('/state')){
    const id=decodeURIComponent(url.split('/sessions/')[1].replace('/state',''));const patch=JSON.parse(options.body);
    if(onState){const refused=onState(id,patch);if(refused)return Promise.resolve(refused);}
@@ -33,7 +44,7 @@ const calls=method=>global.fetch.mock.calls.filter(([,options])=>options?.method
 const rowTitles=()=>within(screen.getByRole('list',{name:'Sessions'})).getAllByRole('listitem').map(item=>item.querySelector('.m-row-title').textContent);
 async function connected(){localStorage.setItem('codedeck-mobile-instance','https://host');render(<MobileApp/>);}
 afterEach(()=>{cleanup();vi.useRealTimers();});
-beforeEach(()=>{localStorage.clear();setThemeMode('dark');mocks.pushConfigured=false;mocks.send.mockReturnValue(true);mocks.composer.mockReturnValue(true);mocks.restore.mockClear();mocks.enable.mockClear();
+beforeEach(()=>{work={runs:[],tasks:[],notes:[],onRun:null};localStorage.clear();setThemeMode('dark');mocks.pushConfigured=false;mocks.send.mockReturnValue(true);mocks.composer.mockReturnValue(true);mocks.restore.mockClear();mocks.enable.mockClear();
  serve([proj('p','Project')],[session('s','p','Agent','idle',true,{incarnationId:'inc'})]);
 });
 describe('mobile companion',()=>{
@@ -246,6 +257,7 @@ describe('new session',()=>{
   let projects=[proj('p','Project'),proj('Parked','Parked','waiting','2026-11-02T08:00:00.000Z'),proj('Shelf','Shelf','shelved','2026-11-01T10:00:00.000Z')];
   let sessions=[session('s','p','Agent','idle')];
   global.fetch=vi.fn((url,options={})=>{
+   const worked=workReply(url,options);if(worked)return worked;
    if(options.method==='POST'&&url.endsWith('/sessions')){return onStart(url).then(result=>{if(result.ok){projects=projects.map(row=>row.id==='Shelf'?proj('Shelf','Shelf'):row);sessions=[...sessions,started];}return result;});}
    if(url.endsWith('/capabilities'))return reply(CAPS);
    if(url.includes('/projects'))return reply(page(projects));
@@ -290,5 +302,106 @@ describe('new session',()=>{
   fireEvent.click(screen.getByRole('button',{name:'New session'}));expect(screen.getByRole('dialog')).toBeTruthy();
   await mocks.native.onBack();await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());
   expect(screen.getByText('Agent')).toBeTruthy();
+ });
+});
+
+describe('workflow runs on the phone',()=>{
+ const okRun=record=>({ok:true,status:200,json:async()=>record});
+ const runSessions=()=>[session('p-1','p','p-1','idle'),session('p-2','p','p-2','running'),session('p-9','p','Scratch','idle')];
+ const taskList=()=>within(screen.getByRole('list',{name:'Tasks'}));
+ async function withRun(record){work.runs=[record];work.tasks=[task()];serve([proj('p','p')],runSessions());await connected();await screen.findByRole('list',{name:'Tasks'});}
+ async function openTask(){fireEvent.click(taskList().getByRole('button',{name:/First name only on the call/}));await screen.findByRole('list',{name:'Steps'});}
+
+ it('lists a run as its task, with its state and step, and keeps its terminals out of the session list',async()=>{
+  await withRun(run());
+  const row=taskList().getByRole('button',{name:/First name only on the call/});
+  expect(row.textContent).toContain('Running');expect(row.textContent).toContain('Step 2 of 3 · Fix');expect(row.textContent).toContain('Bug fix · p');
+  expect(rowTitles()).toEqual(['Scratch']);
+  expect(screen.getByRole('heading',{level:1}).textContent).toBe('1 running');
+  expect(screen.getByRole('heading',{level:2,name:'Sessions'})).toBeTruthy();
+ });
+ it('shows no task list when no run is open',async()=>{
+  serve([proj('p','p')],runSessions());await connected();await screen.findByText('Scratch');
+  expect(screen.queryByRole('list',{name:'Tasks'})).toBeNull();expect(screen.queryByRole('heading',{level:2,name:'Sessions'})).toBeNull();
+  expect(global.fetch.mock.calls.some(([url])=>url==='https://host/api/pipelines/runs?open=true&page=0&size=100')).toBe(true);
+  expect(global.fetch.mock.calls.some(([url])=>url==='https://host/api/tasks?open=true&page=0&size=100')).toBe(true);
+ });
+ it('opens the task, then a step terminal, and comes back the same way',async()=>{
+  await withRun(run());await openTask();
+  expect(screen.getByRole('heading',{level:1,name:'First name only on the call'})).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Open terminal of Fix'}));
+  expect(await screen.findByText('Terminal p-2')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Back to sessions'}));
+  expect(await screen.findByRole('list',{name:'Steps'})).toBeTruthy();
+  await mocks.native.onBack();
+  expect(await screen.findByRole('list',{name:'Tasks'})).toBeTruthy();
+ });
+ it('answers the questions of a run and shows the run moving on',async()=>{
+  work.onRun=vi.fn(()=>okRun(run()));
+  await withRun(askingRun());
+  expect(screen.getByRole('heading',{level:1}).textContent).toBe('1 needs you');expect(taskList().getByText('Needs your input')).toBeTruthy();
+  await openTask();
+  fireEvent.change(screen.getByLabelText('Your answer to question 2'),{target:{value:'Yes'}});
+  fireEvent.click(screen.getByRole('button',{name:'Send answers'}));
+  expect(await screen.findByText('Answer sent to Bug fix')).toBeTruthy();
+  const [url,options]=work.onRun.mock.calls[0];
+  expect(url).toBe(`https://host/api/pipelines/runs/${RUN_ID}/answer`);
+  expect(JSON.parse(options.body)).toEqual({answer:'1. As you recommend: The first name only\n2. Yes'});
+  await waitFor(()=>expect(screen.queryByRole('group',{name:'Question 1'})).toBeNull());
+  expect(screen.getByText('Running',{selector:'.m-state'})).toBeTruthy();
+ });
+ it('says why an answer was refused and keeps the questions',async()=>{
+  work.onRun=vi.fn(()=>({ok:false,status:409,json:async()=>({message:'The run is not waiting for an answer'})}));
+  await withRun(askingRun());await openTask();
+  fireEvent.change(screen.getByLabelText('Your answer to question 2'),{target:{value:'Yes'}});
+  fireEvent.click(screen.getByRole('button',{name:'Send answers'}));
+  expect(await screen.findByText('The run is not waiting for an answer')).toBeTruthy();
+  expect(screen.getByRole('group',{name:'Question 1'})).toBeTruthy();
+  expect(screen.getByLabelText('Your answer to question 2').value).toBe('Yes');
+ });
+ it('approves a step that waits for approval',async()=>{
+  work.onRun=vi.fn(()=>okRun(run()));work.notes=[{id:7,stepIndex:1,stepName:'Fix',status:'written',summary:'Done',attempt:1,pass:1,createdAt:'2026-11-10T17:50:00.000Z',content:'The greeting reads the first name.'}];
+  await withRun(approvalRun());await openTask();
+  expect(await screen.findByText('The greeting reads the first name.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Approve and continue'}));
+  expect(await screen.findByText('Bug fix approved')).toBeTruthy();
+  expect(work.onRun.mock.calls[0][0]).toBe(`https://host/api/pipelines/runs/${RUN_ID}/approve`);
+ });
+ it('sends a step back with what to change',async()=>{
+  work.onRun=vi.fn(()=>okRun(run()));
+  await withRun(approvalRun());await openTask();
+  fireEvent.click(screen.getByRole('button',{name:'Send back…'}));
+  fireEvent.change(screen.getByLabelText('What should change'),{target:{value:'Keep the surname.'}});
+  fireEvent.click(screen.getByRole('button',{name:'Send back'}));
+  expect(await screen.findByText('Bug fix sent back')).toBeTruthy();
+  expect(JSON.parse(work.onRun.mock.calls[0][1].body)).toEqual({comment:'Keep the surname.'});
+ });
+ it('resumes an interrupted run',async()=>{
+  work.onRun=vi.fn(()=>okRun(run()));
+  const interrupted=run({status:'interrupted',actions:{...run().actions,stop:false,resume:true},steps:[run().steps[0],{...run().steps[1],status:'interrupted'},run().steps[2]]});
+  await withRun(interrupted);await openTask();
+  fireEvent.click(screen.getByRole('button',{name:'Resume'}));
+  expect(await screen.findByText('Bug fix resumed')).toBeTruthy();
+  expect(work.onRun.mock.calls[0][0]).toBe(`https://host/api/pipelines/runs/${RUN_ID}/resume`);
+ });
+ it('returns to the list when the run it shows is closed',async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});
+  await withRun(run());await openTask();
+  work.runs=[];
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5000);});
+  expect(await screen.findByText('That run is no longer open')).toBeTruthy();
+  expect(screen.queryByRole('list',{name:'Steps'})).toBeNull();expect(rowTitles()).toContain('Scratch');
+ });
+ it('counts quiet tasks beside quiet sessions',async()=>{
+  const old=new Date(Date.now()-9*HOUR).toISOString();
+  work.runs=[completeRun({updatedAt:old,finishedAt:old})];work.tasks=[task()];
+  serve([proj('p','p')],[session('p-9','p','Scratch','running')]);await connected();await screen.findByText('Scratch');
+  expect(screen.queryByRole('list',{name:'Tasks'})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'1 quiet task'}));
+  expect(taskList().getByText('Complete')).toBeTruthy();
+ });
+ it('reports runs that cannot be read instead of showing a partial list',async()=>{
+  work.runs=[{...run(),status:'paused'}];serve([proj('p','p')],runSessions());await connected();
+  expect((await screen.findByRole('alert')).textContent).toContain(`Invalid run ${RUN_ID} field status`);
  });
 });

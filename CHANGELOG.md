@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-11-18] - The phone shows a workflow run as its task
+
+### Executive Summary
+* On the phone a workflow run appeared only as its separate step terminals, with nothing to say which task, workflow or step they belonged to, and a question or an approval could only be dealt with by opening the terminal. The Now view now lists each run as one row under **Tasks**: its task's title, how the run stands in words, the step it is in, its workflow and project. Opening it shows the steps, and on the step that waits for you the agent's questions (answered by choosing, as on the desktop) or the approval with the step's note. Resume and Continue past the limit are offered when the run needs them. A run's terminals are reached from its task instead of crowding the session list. Reaches the phone with the next APK.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/mobile/nowView.js` — `buildNowView` takes `runs` and `tasks` and returns `tasks` (one row per run) and `quietTaskCount`. Sessions that are a listed run's step terminals are left out of the session groups; the headline counts each run once. A run is listed under Active while it is working, needs its owner, or changed in the last 8 hours.
+  * `client/src/mobile/TaskScreen.jsx` — New. The run as its task: header, optional phase line, the steps with their state, and the desktop's `QuestionsPanel` and `ApprovalReview` on the waiting step.
+  * `client/src/mobile/runsApi.js` — New. Reads open runs and open tasks and posts answer, approve, send back, resume and continue to the endpoints the desktop uses, at the instance address. Records are checked with `parseRun`, `parseTask` and `parseNotePage`.
+* **🛠️ Codebase:**
+  * `client/src/mobile/MobileApp.jsx` — Loads runs and tasks on connect and with the 5-second refresh (now also while a task is open), renders the Tasks group and the task screen, returns from a step terminal to its task, and leaves a task whose run was closed with a notice.
+  * `client/src/mobile/companion.js` — `sendToInstance`: the time limit and the "could not reach" message, shared by both clients.
+  * `client/src/mobile/mobile.css` — The task row's third line, the step rail, and touch sizes for the shared question and approval panels.
+  * No backend change and no new endpoint.
+* **🧪 Tests:**
+  * `client/src/mobile/__tests__/taskRows.test.js` (28), `runsApi.test.js` (37), `TaskScreen.test.jsx` (24) — New. `MobileApp.test.jsx` — 11 new cases: the task list, opening a task and a step terminal and coming back, answering, a refused answer, approving, sending back, resuming, a run closed elsewhere, quiet tasks, and an unreadable run.
+  * Client suite: 80 files, 1,412 tests passed; the phone bundle builds.
+  * Checked in a browser at 375×812 against canned answers: the list, answering (the run moves on), the approval note, and a refused send-back.
+
 ## [2026-11-18] - The phone keeps its access across a restart
 
 ### Executive Summary

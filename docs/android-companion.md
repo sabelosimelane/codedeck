@@ -220,6 +220,46 @@ active in the last 8 hours, newest activity first; parked sessions and sessions
 of waiting or shelved projects are under All. It refreshes every 5 seconds while
 visible.
 
+## Tasks and workflow runs on the phone
+
+A workflow run is one row in the Now view, under **Tasks**, named after its task
+(or after its folder when it has no task). The row says how the run stands in the
+desktop's words (Running, Needs your input, Waiting for your approval,
+Interrupted, Failed, Complete, …), the step it is in ("Step 2 of 5 · Develop",
+with the pass or loop round when there is one), its workflow and its project.
+The terminals of a run are not listed as sessions: they are reached from the
+task, and the headline counts the run once. Other sessions follow under
+**Sessions**.
+
+Listed under Active: a run that is working, one that cannot go on without you,
+and one that changed in the last 8 hours. Older finished or stopped runs, and the
+runs of waiting or shelved projects, are under All ("N quiet tasks").
+
+Tapping a task opens it: the steps as a rail with each step's state and agent,
+and **Terminal** on every step whose terminal is open. Back from that terminal
+returns to the task. On the step that waits for you:
+
+- **Questions** are shown one by one with the agent's recommendation chosen, as
+  on the desktop. **Send answers** sends one numbered answer; the backend types
+  it into the agent's terminal. A dialog the agent shows in its terminal is
+  answered in the terminal.
+- **Approval** shows what the step concluded and its note. **Approve and
+  continue** advances the run; **Send back…** takes a comment and reruns the
+  step.
+
+An interrupted, failed or stopped run offers **Resume**, and a run paused at its
+limit **Continue past the limit**, when the backend allows them. Stop and Close
+run are on the desktop only. Every action shows a confirmation or the reason the
+backend refused it, and the task changes only once the backend answers. A task
+whose run is closed elsewhere returns to the list with a notice.
+
+The phone reads `GET /api/pipelines/runs?open=true` and `GET /api/tasks?open=true`
+and posts to `/api/pipelines/runs/{id}/answer`, `approve`, `send-back`, `resume`
+and `continue`: the endpoints the desktop uses, behind the same private access
+check. Each record is validated by the desktop's parsers; a run the app cannot
+read is reported instead of showing a partial list. There is no phone-only
+endpoint and no backend change, so an older installed app keeps working.
+
 ## Persistence and rollback
 
 Startup performs an online SQLite backup before the first additive companion

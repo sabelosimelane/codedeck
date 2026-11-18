@@ -53,15 +53,19 @@ export function validateEvent(event){
  }
  if(!['active','ended','obsolete'].includes(event.status)||!Number.isSafeInteger(event.createdAt)||event.createdAt<0)throw new Error('Invalid notification event state.');return event;
 }
+/** Sends one request to the instance, with a time limit. `path` starts at the origin. */
+export function sendToInstance(request,origin,path,options={}){
+ // A request that gets no answer the app may read (no route to the host, or a
+ // refusal that carries no cross-origin permission) rejects with a TypeError.
+ return request(`${origin}${path}`,{...options,signal:AbortSignal.timeout(15000)}).catch(error=>{
+  if(error instanceof TypeError)throw new Error(`Could not reach ${origin}. Check that Tailscale is connected on this phone and that CodeDeck on the host allows phone access.`,{cause:error});
+  throw error;
+ });
+}
 export function createCompanionApi(address,request=fetch){
  const origin=normalizeInstanceUrl(address);
  async function call(path,options={}){
-  // A request that gets no answer the app may read (no route to the host, or a
-  // refusal that carries no cross-origin permission) rejects with a TypeError.
-  const response=await request(`${origin}/api/mobile/v1${path}`,{...options,headers:{'Content-Type':'application/json',...options.headers},signal:AbortSignal.timeout(15000)}).catch(error=>{
-   if(error instanceof TypeError)throw new Error(`Could not reach ${origin}. Check that Tailscale is connected on this phone and that CodeDeck on the host allows phone access.`,{cause:error});
-   throw error;
-  });
+  const response=await sendToInstance(request,origin,`/api/mobile/v1${path}`,{...options,headers:{'Content-Type':'application/json',...options.headers}});
   if(response.ok&&response.status===204)return null;
   const body=await response.json();if(!response.ok)throw new Error(typeof body.message==='string'?body.message:`Connection failed (${response.status}).`);return body;
  }

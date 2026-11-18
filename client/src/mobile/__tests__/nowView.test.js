@@ -5,7 +5,7 @@ const NOW = Date.parse('2026-11-10T18:00:00.000Z');
 const MIN = 60_000, HOUR = 60 * MIN;
 const projects = [{ id: 'p', name: 'Project', state: 'active' }, { id: 'w', name: 'Parked project', state: 'waiting' }, { id: 's', name: 'Shelf', state: 'shelved' }];
 const session = (id, extra = {}) => ({ id, incarnationId: `inc-${id}`, projectId: 'p', title: id, status: 'idle', live: true, finished: false, muted: false, waiting: false, needsInput: false, lastActivityAt: NOW - 10 * MIN, ...extra });
-const view = (sessions, options = {}) => buildNowView({ sessions, projects, now: NOW, scope: 'active', query: '', ...options });
+const view = (sessions, options = {}) => buildNowView({ sessions, projects, now: NOW, scope: 'active', query: '', runs: [], tasks: [], ...options });
 const ids = groups => groups.map(group => group.rows.map(row => row.id));
 
 describe('ago', () => {

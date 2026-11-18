@@ -3,6 +3,8 @@ import Terminal from '../components/Terminal';
 import { ToastProvider, useToast } from '../components/ToastContext';
 import { createCompanionApi, normalizeInstanceUrl, validateCapabilities, validatePage, validateEvent, validateSession, validateSessionState, draftKey } from './companion';
 import { buildNowView } from './nowView';
+import { createRunsApi } from './runsApi';
+import TaskScreen from './TaskScreen';
 import { watchNative, enableNotifications, hideKeyboard, showKeyboard, isPushConfigured, restoreNotifications } from './native';
 import { getThemeMode, setThemeMode, getResolvedTheme, THEME_CHANGE_EVENT } from '../theme';
 import './mobile.css';
@@ -55,6 +57,22 @@ function SessionRow({row,index,onOpen,onActions}){
     <span className="m-row-meta">{row.note&&<><span className={`m-state is-${row.tone}`}>{row.note}</span><span aria-hidden="true"> · </span></>}<span>{row.projectName}</span></span>
    </span>
    {row.muted&&<span className="m-row-flag"><Glyph d={EYE_OFF} label="Status muted"/></span>}
+   {row.parked&&<span className="m-row-flag"><Glyph d={HOURGLASS} label="Waiting"/></span>}
+   <span className="m-row-when m-mono">{row.when}</span>
+  </button>
+ </li>;
+}
+
+/** One workflow run in the Now list, shown as its task. A tap opens the task. */
+function TaskRow({row,index,onOpen}){
+ return <li className="m-rise" style={{'--i':index}}>
+  <button className="m-row m-press" onClick={()=>onOpen(row)}>
+   <span className={`m-dot is-${row.tone}`}/>
+   <span className="m-row-body">
+    <span className="m-row-title">{row.title}</span>
+    <span className="m-row-meta"><span className={`m-state is-${row.tone}`}>{row.label}</span>{row.step&&<><span aria-hidden="true"> · </span><span>{row.step}</span></>}</span>
+    <span className="m-row-meta m-row-sub">{row.workflowName} · {row.projectName}</span>
+   </span>
    {row.parked&&<span className="m-row-flag"><Glyph d={HOURGLASS} label="Waiting"/></span>}
    <span className="m-row-when m-mono">{row.when}</span>
   </button>
@@ -151,17 +169,43 @@ function Companion(){
  const notificationEnabled=useRef(false),notificationInstance=useRef(null);
  const draftRef=useRef(draft);draftRef.current=draft;
  const terminal=useRef(null),api=useRef(null),keyboard=useRef(false),current=useRef({});
+ const [runs,setRuns]=useState([]),[tasks,setTasks]=useState([]),[openRun,setOpenRun]=useState(null),[runBusy,setRunBusy]=useState(false);
+ const runsApi=useRef(null),runBusyRef=useRef(false),returnTo=useRef('sessions');
  const fail=err=>{setError(typeof err==='string'?err:err.message);};
  async function loadSessions(){
-  refreshing.current=true;
-  try {
-   const all=[];let nextPage=0,more=true;
-   while(more){
-    const result=validatePage(await api.current.get(`/sessions?page=${nextPage}&size=100`),'sessions');
-    all.push(...result.data);more=result.page.hasNextPage;nextPage+=1;
-   }
-   setSessions(all);setNow(Date.now());return all;
-  }finally{refreshing.current=false;}
+  const all=[];let nextPage=0,more=true;
+  while(more){
+   const result=validatePage(await api.current.get(`/sessions?page=${nextPage}&size=100`),'sessions');
+   all.push(...result.data);more=result.page.hasNextPage;nextPage+=1;
+  }
+  setSessions(all);setNow(Date.now());return all;
+ }
+ // Runs before tasks: a task closed in between only leaves an extra task, never a run without one.
+ async function loadWork(){
+  const nextRuns=await runsApi.current.listOpenRuns();
+  const nextTasks=await runsApi.current.listOpenTasks();
+  setRuns(nextRuns);setTasks(nextTasks);
+ }
+ // An owner action on a run: the list changes once the backend answers with the run as it now stands.
+ async function runAction(describe,call){
+  if(runBusyRef.current)return null;
+  runBusyRef.current=true;setRunBusy(true);
+  try{
+   const next=await call();
+   setRuns(rows=>rows.map(row=>row.id===next.id?next:row));
+   showToast({type:'success',message:describe(next)});return next;
+  }catch(err){showToast({type:'error',message:err.message});return null;}
+  finally{runBusyRef.current=false;setRunBusy(false);}
+ }
+ const answerRun=(runId,answer)=>runAction(run=>`Answer sent to ${run.workflowName}`,()=>runsApi.current.answer(runId,answer));
+ const approveRun=runId=>runAction(run=>`${run.workflowName} approved`,()=>runsApi.current.approve(runId));
+ const sendBackRun=(runId,comment)=>runAction(run=>`${run.workflowName} sent back`,()=>runsApi.current.sendBack(runId,comment));
+ const actOnRun=(action,runId)=>action==='resume'
+  ?runAction(run=>`${run.workflowName} resumed`,()=>runsApi.current.resume(runId))
+  :runAction(run=>`${run.workflowName} continued`,()=>runsApi.current.continuePast(runId));
+ async function loadRunNotes(runId,page,stepIndex){
+  try{return await runsApi.current.listNotes(runId,page,stepIndex);}
+  catch(err){showToast({type:'error',message:err.message});return null;}
  }
  // Waiting, muted and reviewed are shared state: the list only changes once the backend confirms.
  async function applyState(session,patch,message){
@@ -193,7 +237,9 @@ function Companion(){
   }catch(err){fail(err);showToast({type:'error',message:`Could not start a session in ${project.name}`});}
   finally{startingRef.current=null;setStarting(null);}
  }
+ function openTaskSession(session){openSession(session);returnTo.current='task';}
  function openSession(session,identity=instance){
+  returnTo.current='sessions';
   if(selected?.incarnationId===session.incarnationId)terminal.current?.claimControl?.();
   setSelected(session);setDraft(localStorage.getItem(draftKey(identity.instanceId,session.incarnationId))||'');setComposer(false);setActionsFor(null);setScreen('terminal');
   // Opening finished work is looking at it — the same acknowledgement as clicking its pane on the desktop.
@@ -214,10 +260,10 @@ function Companion(){
  async function connect(){
   setError('');setStatus('Connecting…');
   try{
-   const origin=normalizeInstanceUrl(address);api.current=createCompanionApi(origin);
+   const origin=normalizeInstanceUrl(address);api.current=createCompanionApi(origin);runsApi.current=createRunsApi(origin);
    const capabilities=validateCapabilities(await api.current.get('/capabilities'));setInstance(capabilities);setAddress(origin);localStorage.setItem(SETTINGS,origin);
    await loadProjects();
-   await loadSessions();setStatus('Connected');setScreen('sessions');
+   await loadSessions();await loadWork();setStatus('Connected');setScreen('sessions');
    notificationInstance.current=capabilities.instanceId;
    const stored=localStorage.getItem(`codedeck-mobile-notifications:${capabilities.instanceId}`);
    if(stored!==null&&stored!=='true'&&stored!=='false')throw new Error('Invalid stored notification preference.');
@@ -243,12 +289,21 @@ function Companion(){
   if(keyboard.current){await hideKeyboard();return;}
   if(actionsFor){setActionsFor(null);return;}
   if(sheetOpen){setSheetOpen(false);return;}
-  if(screen==='terminal'){setScreen('sessions');setSelected(null);}
+  if(screen==='terminal'){setScreen(returnTo.current);returnTo.current='sessions';setSelected(null);}
+  else if(screen==='task'){setScreen('sessions');setOpenRun(null);}
   else if(screen==='settings'){if(instance)setScreen('sessions');}
   else setScreen('settings');
  }
  function chooseTheme(mode){setThemeMode(mode);setThemeModeState(mode);setResolvedTheme(getResolvedTheme());}
- current.current={route,register,back,fail};
+ current.current={route,register,back,fail,answerRun,approveRun,sendBackRun,actOnRun,loadRunNotes,openTaskSession};
+ // The task screen keeps what it is given: these never change identity, and always call the latest.
+ const taskHandlers=useRef(null);
+ if(!taskHandlers.current)taskHandlers.current={
+  onBack:()=>current.current.back().catch(current.current.fail),onOpenSession:session=>current.current.openTaskSession(session),
+  onAnswer:(...args)=>current.current.answerRun(...args),onApprove:(...args)=>current.current.approveRun(...args),
+  onSendBack:(...args)=>current.current.sendBackRun(...args),onLoadNotes:(...args)=>current.current.loadRunNotes(...args),
+  onAction:(...args)=>current.current.actOnRun(...args),
+ };
  useEffect(()=>{
   let dispose=null,cancelled=false;
   watchNative({onRoute:intent=>{localStorage.setItem(INTENT,JSON.stringify(intent));current.current.route(intent).catch(current.current.fail);},onToken:token=>current.current.register(token).catch(current.current.fail),onBack:()=>current.current.back().catch(current.current.fail),onKeyboard:visible=>{keyboard.current=visible;},onError:message=>current.current.fail(message)}).then(fn=>{if(cancelled)fn();else dispose=fn;}).catch(fail);
@@ -271,10 +326,14 @@ function Companion(){
  },[resolvedTheme]);
  function send(data,onSent){if(ctrl&&data.length===1){data=String.fromCharCode(data.toUpperCase().charCodeAt(0)-64);setCtrl(false);}return terminal.current?.sendInput(data,onSent)===true;}
  function updateDraft(value){setDraft(value);localStorage.setItem(draftKey(instance.instanceId,selected.incarnationId),value);}
- refresh.current=()=>Promise.all([loadProjects(),loadSessions()]);
+ refresh.current=async()=>{
+  refreshing.current=true;
+  try{await Promise.all([loadProjects(),loadSessions(),loadWork()]);}
+  finally{refreshing.current=false;}
+ };
  useEffect(()=>{
-  // The list keeps itself current while it is on screen; nothing to tap.
-  if(screen!=='sessions'||!instance)return undefined;
+  // The list and an open task keep themselves current while they are on screen; nothing to tap.
+  if((screen!=='sessions'&&screen!=='task')||!instance)return undefined;
   const tick=()=>{if(document.visibilityState!=='visible'||refreshing.current)return;refresh.current().catch(err=>current.current.fail(err));};
   const timer=setInterval(tick,REFRESH_MS);document.addEventListener('visibilitychange',tick);
   return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',tick);};
@@ -282,13 +341,21 @@ function Companion(){
  const connected=status==='Connected'||(instance&&status!=='Connection problem'&&status!=='Connecting…');
  const toggleThemeLabel=resolvedTheme==='dark'?'Switch to light mode':'Switch to dark mode';
  const errorBanner=error&&<div role="alert" className="m-error"><span>{error}</span><button className="m-press" onClick={()=>setError('')}>Dismiss</button></div>;
- const everyRow=buildNowView({sessions,projects,now,scope:'all',query:''}).groups.flatMap(group=>group.rows);
+ // Every session as a row, including the terminals of runs, for the terminal screen and the actions sheet.
+ const everyRow=buildNowView({sessions,projects,now,scope:'all',query:'',runs:[],tasks:[]}).groups.flatMap(group=>group.rows);
+ const taskRow=openRun===null?null:buildNowView({sessions,projects,now,scope:'all',query:'',runs,tasks}).tasks.find(row=>row.key===openRun)??null;
+ const taskGone=screen==='task'&&taskRow===null;
+ useEffect(()=>{
+  // The run was closed, on the desktop or by finishing its task: there is nothing left to show.
+  if(!taskGone)return;
+  setScreen('sessions');setOpenRun(null);showToast({type:'warning',message:'That run is no longer open'});
+ },[taskGone,showToast]);
  const actionsRow=actionsFor&&everyRow.find(row=>row.key===actionsFor);
  const actionsSheet=actionsRow&&<SessionActionsSheet row={actionsRow} busy={stateBusy} showOpen={screen!=='terminal'} onOpen={openSession} onApply={applyState} onClose={()=>setActionsFor(null)}/>;
 
  if(screen==='terminal'&&selected){
   // A session started seconds ago may not be in the list yet; it is still described by what the start returned.
-  const selectedRow=everyRow.find(row=>row.key===selected.incarnationId)??buildNowView({sessions:[selected],projects,now,scope:'all',query:''}).groups[0].rows[0];
+  const selectedRow=everyRow.find(row=>row.key===selected.incarnationId)??buildNowView({sessions:[selected],projects,now,scope:'all',query:'',runs:[],tasks:[]}).groups[0].rows[0];
   return <main className="mobile-app m-terminal-screen">
   <header className="m-bar">
    <button className="m-icon m-press" onClick={()=>back().catch(fail)} aria-label="Back to sessions"><BackIcon/></button>
@@ -313,9 +380,12 @@ function Companion(){
  </main>;
  }
 
- if(screen==='sessions'){
-  const view=buildNowView({sessions,projects,now,scope,query:search});
+ if(screen==='task'&&taskRow)return <TaskScreen row={taskRow} busy={runBusy} banner={errorBanner} {...taskHandlers.current}/>;
+
+ if(screen==='sessions'||screen==='task'){
+  const view=buildNowView({sessions,projects,now,scope,query:search,runs,tasks});
   const showingAll=scope==='all';
+  const quiet=[view.quietCount>0&&plural(view.quietCount,'quiet session'),view.quietTaskCount>0&&plural(view.quietTaskCount,'quiet task')].filter(Boolean).join(' · ');
   let position=0;
   return <main className="mobile-app">
   <header className="m-bar">
@@ -327,13 +397,17 @@ function Companion(){
   <section className="mobile-sessions" aria-label="Session picker">
    <div className="m-now m-rise"><h1 className={`is-${view.headlineTone}`}>{view.headline}</h1><p className={`is-${view.sublineTone}`}>{view.subline}</p></div>
    <div className="m-results" aria-live="polite">
+    {view.tasks.length>0&&<section className="m-now-group" aria-label="Tasks">
+     <h2 className="m-mono">Tasks</h2>
+     <ul aria-label="Tasks">{view.tasks.map(row=><TaskRow key={row.key} row={row} index={position++} onOpen={target=>{setOpenRun(target.key);setScreen('task');}}/>)}</ul>
+    </section>}
     {view.groups.map((group,groupIndex)=><section key={group.label} className="m-now-group" aria-label={group.label}>
-     {group.showLabel&&<h2 className="m-mono">{group.label}</h2>}
+     {(group.showLabel||view.tasks.length>0)&&<h2 className="m-mono">{group.showLabel?group.label:'Sessions'}</h2>}
      <ul aria-label={groupIndex===0?'Sessions':`${group.label} sessions`}>{group.rows.map(row=><SessionRow key={row.key} row={row} index={position++} onOpen={openSession} onActions={target=>setActionsFor(target.key)}/>)}</ul>
     </section>)}
-    {view.searching&&!view.groups.length&&<p className="m-now-empty">No sessions match “{search.trim()}”</p>}
-    {!view.searching&&!sessions.length&&<p className="m-now-empty">Open a terminal on your desktop, or start one with +.</p>}
-    {view.quietCount>0&&!showingAll&&<button className="m-more m-press" onClick={()=>setScope('all')}><span>{plural(view.quietCount,'quiet session')}</span><Icon d="M6 9l6 6 6-6" size={14} width={2.2}/></button>}
+    {view.searching&&!view.groups.length&&!view.tasks.length&&<p className="m-now-empty">No sessions match “{search.trim()}”</p>}
+    {!view.searching&&!sessions.length&&!runs.length&&<p className="m-now-empty">Open a terminal on your desktop, or start one with +.</p>}
+    {quiet&&!showingAll&&<button className="m-more m-press" onClick={()=>setScope('all')}><span>{quiet}</span><Icon d="M6 9l6 6 6-6" size={14} width={2.2}/></button>}
    </div>
    <div className="m-dock m-rise m-d3">
     <label className="m-search"><SearchIcon/><input type="search" aria-label="Search sessions and projects" placeholder="Search" value={search} onChange={e=>setSearch(e.target.value)}/></label>
