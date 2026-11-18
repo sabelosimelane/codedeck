@@ -95,6 +95,32 @@ describe('TaskLandingBar', () => {
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Changes committed' });
   });
 
+  it('says nothing about merging while a workflow run is working in the task', async () => {
+    await mount(landing({
+      runActive: true, uncommitted: ['a.txt'], uncommittedCount: 20, commitsAhead: 0,
+      blockers: {
+        commit: blocked('A workflow run is still working in this task. Stop it or let it finish first.'),
+        merge: [{ code: 'run_active', message: 'A workflow run is still working in this task. Stop it or let it finish first.' }, { code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }, { code: 'nothing_to_land', message: 'This task has no commits of its own yet.' }, { code: 'main_dirty', message: 'Main has uncommitted changes. Commit or stash them before merging.' }],
+        pullRequest: blocked('A workflow run is still working in this task. Stop it or let it finish first.'),
+        close: blocked('A workflow run is still working in this task. Stop it or let it finish first.'),
+      },
+    }));
+    expect(screen.getByText('20 uncommitted files')).toBeTruthy();
+    expect(screen.queryByText(/still working in this task/)).toBeNull();
+    expect(screen.queryByText('This task has no commits of its own yet.')).toBeNull();
+    expect(screen.queryByText(/Main has uncommitted changes/)).toBeNull();
+    // The reason is still there for whoever hovers a disabled button.
+    expect(screen.getByRole('button', { name: 'Merge into main' }).title).toBe('A workflow run is still working in this task. Stop it or let it finish first.');
+  });
+
+  it('never repeats that there are no commits yet when the uncommitted files already say so', async () => {
+    await mount(landing({
+      uncommitted: ['a.txt'], uncommittedCount: 2, commitsAhead: 0,
+      blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }, { code: 'nothing_to_land', message: 'This task has no commits of its own yet.' }], pullRequest: [], close: blocked('x') },
+    }));
+    expect(screen.queryByText('This task has no commits of its own yet.')).toBeNull();
+  });
+
   it('does nothing when the commit or the rename is cancelled, blank or unchanged', async () => {
     await mount(landing({ uncommittedCount: 1, uncommitted: ['a.txt'], blockers: { ...landing().blockers, commit: [] } }));
     fireEvent.click(screen.getByRole('button', { name: 'Commit changes' }));

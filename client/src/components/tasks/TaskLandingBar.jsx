@@ -108,8 +108,13 @@ export default function TaskLandingBar({ task, onChanged, onFinished }) {
   }
   const hasWork = landing && (landing.uncommittedCount > 0 || landing.commitsAhead > 0);
   const canMerge = landing && landing.blockers.merge.length === 0;
-  // What stands between the work and a merge is said outright, once there is work to merge.
-  const mergeHint = landing && hasWork && !canMerge ? landing.blockers.merge.filter(item => item.code !== 'uncommitted').map(item => item.message) : [];
+  // What stands between the work and a merge is said outright, but only once merging is the
+  // next thing to do. While a run is working the task is simply in progress, and "no commits
+  // yet" and "commit first" are already told by the uncommitted count and its button.
+  const SAID_ELSEWHERE = new Set(['uncommitted', 'nothing_to_land', 'run_active']);
+  const mergeHint = landing && !landing.runActive && hasWork && !canMerge
+    ? landing.blockers.merge.filter(item => !SAID_ELSEWHERE.has(item.code)).map(item => item.message)
+    : [];
 
   return (
     <div role="group" aria-label={`Task ${task.title}`} className="task-landing">
