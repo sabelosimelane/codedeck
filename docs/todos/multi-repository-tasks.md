@@ -33,7 +33,7 @@
 - [ ] `server/tasks/task-store.js`: `create` writes the task row and its first worktree row in one transaction and still fills the old `tasks` columns; `addWorktree`; `setWorktreeState(taskId, worktreeId, { state, prUrl })` writes the worktree and the derived `tasks.state` in one transaction (Spec §3.5, §6)
 - [ ] `server/tasks/task-store.js`: `findOpenByWorktreePath` reads `task_worktrees`; the "worktree already belongs to an open task" refusal comes from the new index
 - [ ] Switch the readers with no change in behaviour: `server/tasks/task-service.js`, `server/tasks/task-landing.js` (state changes go through `setWorktreeState`), `server/tasks/task-terminals.js`, `server/tasks/task-adoption.js`, `server/routes/tasks.js` (`taskView` adds `worktrees` and `folder`), `server/routes/pipelines.js` (`POST /runs` in a task)
-- [ ] `server/__tests__/tasks-routes.test.js`: a fixture of what the released phone and desktop send and read (`GET /api/tasks?open=true&page=0&size=100`) replays unchanged; `parseTask` in `client/src/utils/tasksApi.js` accepts the new response
+- [ ] `server/__tests__/tasks-api.test.js`: a fixture of what the released phone and desktop send and read (`GET /api/tasks?open=true&page=0&size=100`) replays unchanged; `parseTask` in `client/src/utils/tasksApi.js` accepts the new response
 - [ ] Run the full server suite and the client suite; record the counts in the session notes
 - [ ] With the owner's go-ahead only: run the migration against a copy of `~/.codedeck.db` and record the row counts before and after
 
