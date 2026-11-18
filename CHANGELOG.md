@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-11-19] - A refused run start says which field and why
+
+### Executive Summary
+* Starting a run showed only "One or more fields failed validation." when the backend refused it, with nothing to say which field or why. In the case found, the workflow reads its progress from `docs/{input}` and the input was the file's full path from disk, which the backend refuses because `docs//Users/…` is not a path inside the project. The backend's reason was in the response but the toast left it out, and the reason itself only said "input does not form a valid progress file path". The toast now shows what the backend says about each refused field. That refusal now names the template, shows what the progress file would have been, and says what to type. The hint under the input says the same before you start.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** `failureMessage` in `client/src/hooks/usePipelineRuns.js` used only the problem's `message`, which for every 400 is the generic line; the field messages in `errors` were dropped.
+  * **Solution:** when the refusal carries field messages they are shown, joined; otherwise the problem's message as before. This applies to every pipelines toast.
+* **🛠️ Codebase:**
+  * `server/routes/pipelines.js` — The `input` refusal for a progress file template reads: "This workflow reads its progress from `<template>`. With this input that is "`<composed, at most 120 characters>`", which is not the path of a .md file inside the project. Type only the part that replaces {input}."
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx` — The input hint for such a workflow reads: "This workflow reads its progress from `<template>`. Type only the part that replaces {input}: a path inside the project, not a full path from your disk."
+* **🧪 Tests:**
+  * `server/__tests__/pipelines-api.test.js` — An absolute path, a path that leaves the project, a path without `.md` and one too long to show in full. `client/src/hooks/__tests__/usePipelineRuns.test.jsx` — Field messages in the toast, and a refusal that names no field. `RunWorkflowDialog.test.jsx` — The hint.
+  * Client suite: 80 files, 1,415 tests passed. `pipelines-api.test.js`: 222 passed.
+
 ## [2026-11-19] - A run's task is named from the work, not from a file path
 
 ### Executive Summary

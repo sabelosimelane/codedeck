@@ -26,6 +26,11 @@ function checkRun(run, index) {
 
 function failureMessage(failure) {
   if (failure instanceof TypeError || failure?.message === 'network down') return 'Server unreachable';
+  // A validation refusal says what is wrong with each field; its own message only says that one failed.
+  const fields = (Array.isArray(failure?.errors) ? failure.errors : [])
+    .map(item => item?.message)
+    .filter(message => typeof message === 'string' && message.trim() !== '');
+  if (fields.length > 0) return fields.join(' ');
   return failure?.message || 'Pipelines request failed';
 }
 

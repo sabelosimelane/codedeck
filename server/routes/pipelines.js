@@ -316,7 +316,9 @@ function buildDefinitionSnapshot({
 
   const progressFile = workflow.progressFile === null ? null : composePrompt(workflow.progressFile, input);
   if (progressFile !== null && !isProgressFilePath(progressFile, 512)) {
-    errors.push({ field: 'input', message: 'input does not form a valid progress file path' });
+    // The owner typed something the template cannot take, often a full path from disk: say what came of it.
+    const shown = progressFile.length > 120 ? `${progressFile.slice(0, 120)}…` : progressFile;
+    errors.push({ field: 'input', message: `This workflow reads its progress from ${workflow.progressFile}. With this input that is "${shown}", which is not the path of a .md file inside the project. Type only the part that replaces {input}.` });
   }
 
   if (errors.length) throw fieldErrors(errors);

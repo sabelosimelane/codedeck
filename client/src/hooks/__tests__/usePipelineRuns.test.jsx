@@ -204,6 +204,37 @@ describe('usePipelineRuns', () => {
     expect(result.current.locallyStartedRunIds.has('r9')).toBe(true);
   });
 
+  it('says which fields the backend refused, not only that validation failed', async () => {
+    const refusal = {
+      status: 400, error: 'Validation Error', message: 'One or more fields failed validation.',
+      errors: [{ field: 'input', message: 'This workflow reads its progress from docs/{input}.' }, { field: 'newTask.title', message: 'Use 1–80 characters on one line' }],
+    };
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).endsWith('/runs')) return { ok: false, status: 400, json: async () => refusal };
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+
+    let started;
+    await act(async () => {
+      started = await result.current.startRun({ requestId: 'req-9', workflowId: '11111111-1111-1111-1111-111111111111', input: '/abs/plan.md' });
+    });
+    expect(started).toBeNull();
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'This workflow reads its progress from docs/{input}. Use 1–80 characters on one line' });
+  });
+
+  it('shows the message of a refusal that names no field', async () => {
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).endsWith('/runs')) return { ok: false, status: 400, json: async () => ({ message: 'One or more fields failed validation.', errors: [{ field: 'input' }, null] }) };
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    await act(async () => { await result.current.startRun({ requestId: 'req-9', workflowId: '11111111-1111-1111-1111-111111111111', input: 'x' }); });
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'One or more fields failed validation.' });
+  });
+
   it('does not optimistically mutate runs on a failed stop', async () => {
     const running = runView({ status: 'running' });
     global.fetch = vi.fn(async (url, options) => {

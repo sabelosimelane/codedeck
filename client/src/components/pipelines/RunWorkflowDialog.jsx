@@ -104,7 +104,7 @@ export default function RunWorkflowDialog({ projectName, tasks = [], defaultTask
   };
 
   const inputHint = selectedWorkflow?.progressFile?.includes('{input}')
-    ? `This workflow reads its progress from ${selectedWorkflow.progressFile}, so this must be that file's path.`
+    ? `This workflow reads its progress from ${selectedWorkflow.progressFile}. Type only the part that replaces {input}: a path inside the project, not a full path from your disk.`
     : 'A description of the work, or the path of a file its steps should work from.';
   const ready = !loading && !error;
 

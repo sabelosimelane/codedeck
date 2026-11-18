@@ -420,6 +420,23 @@ describe('pipelines API — progress file start boundary', () => {
   }
 
   it.each([
+    ['/Users/me/git/demo/docs/todos/plan.md', 'docs//Users/me/git/demo/docs/todos/plan.md'],
+    ['../outside.md', 'docs/../outside.md'],
+    ['todos/plan', 'docs/todos/plan'],
+    [`todos/${'x'.repeat(600)}.md`, `docs/todos/${'x'.repeat(109)}…`],
+  ])('says what the progress file would be when the input %j does not complete its path', async (input, shown) => {
+    const { ctx, body } = await ready();
+    const workflow = ctx.workflowStore.create({ name: 'Templated', agentsDecide: false, progressFile: 'docs/{input}', nodes: [node(ctx.agentStore.list()[0].id, { prompt: 'Work on {input}' })] });
+    const result = await request(ctx.app).post(`${base}/runs`).send({ ...body, workflowId: workflow.id, input });
+    expect(result.status).toBe(400);
+    expect(result.body.errors).toEqual([{
+      field: 'input',
+      message: `This workflow reads its progress from docs/{input}. With this input that is "${shown}", which is not the path of a .md file inside the project. Type only the part that replaces {input}.`,
+    }]);
+    expect(ctx.runStore.list()).toEqual([]);
+  });
+
+  it.each([
     ['blob', 201], ['missing', 400], ['untracked', 400], ['tree', 400],
   ])('checks the linked project commit for a %s path before storing a new run', async (kind, status) => {
     const execFile = vi.fn((_command, args, _options, callback) => {
