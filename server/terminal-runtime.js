@@ -10,6 +10,7 @@ import { spawn } from 'node-pty';
 import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import { buildShellEnv } from './shell-env.js';
 import { isTransportFailure, STATUS_POLL_TIMEOUT_MS } from './command-runner.js';
 import { collectSessionProcessIds, parsePaneProcesses, parseProcessSnapshot } from './session-processes.js';
@@ -849,11 +850,14 @@ function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess
 
       // Attach via node-pty so we get the same onData/onExit/write/resize API.
       // -T hyperlinks: tmux only forwards OSC 8 links to clients declaring it.
+      // The attaching client runs in the home folder, never in the session's own: the session
+      // keeps its folder inside tmux, and a client started in a folder that has since been
+      // removed (a merged or closed task) exits at once.
       return spawn('tmux', ['-T', 'hyperlinks', 'attach-session', '-t', tmuxName], {
         name: 'xterm-256color',
         cols,
         rows,
-        cwd,
+        cwd: homedir(),
       });
     },
 

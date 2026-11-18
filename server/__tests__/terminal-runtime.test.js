@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { homedir } from 'node:os';
 
 const execFileSync = vi.fn();
 const execFile = vi.fn();
@@ -526,8 +527,18 @@ describe('createTerminalRuntime', () => {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
-      cwd: '/tmp/demo',
+      cwd: homedir(),
     });
+  });
+
+  it('attaches from the home folder, so a terminal whose own folder was removed can still be attached', async () => {
+    execFileSync.mockImplementation((_command, args) => (args[0] === '-V' ? 'tmux 3.4' : ''));
+    const { createTerminalRuntime } = await import('../terminal-runtime.js');
+    createTerminalRuntime('tmux').spawn({ cwd: '/tmp/worktrees/removed-after-merge', cols: 120, rows: 30, sessionId: 'demo-1' });
+    expect(execFileSync.mock.calls.some(([, args]) => args[0] === 'new-session')).toBe(false);
+    const attach = ptySpawn.mock.calls.find(([command]) => command === 'tmux');
+    expect(attach[1]).toEqual(['-T', 'hyperlinks', 'attach-session', '-t', 'demo-1']);
+    expect(attach[2].cwd).toBe(homedir());
   });
 
   it('enables tmux mouse mode so wheel scrolling works in the terminal', async () => {
