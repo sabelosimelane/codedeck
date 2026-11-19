@@ -89,6 +89,10 @@ export function createTaskService({ taskStore, findProject, execFile, startSessi
       project: planned.project,
       title: planned.title,
       titleSource: planned.titleSource,
+      folder: null,
+      // The project's own repository, known by the folder name of its home repository.
+      repository: path.basename(planned.homePath),
+      repositoryPath: null,
       worktreePath: planned.worktreePath,
       branch: planned.branch,
       baseBranch: planned.baseBranch,

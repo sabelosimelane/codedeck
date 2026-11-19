@@ -885,7 +885,7 @@ app.use(createTerminalWorktreesRouter({ service: createTerminalWorktreeService({
   startSession: startSessionWithWorktree,
   pathExists: worktreePathExists,
 }) }));
-const taskStore = createTaskStore(db);
+const taskStore = createTaskStore(db, { findProject: name => loadProjects().find(project => project.name === name) ?? null });
 const taskService = createTaskService({
   taskStore,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,

@@ -59,6 +59,8 @@ describe('adopting worktrees as tasks', () => {
     expect(adopted).toHaveLength(1);
     expect(adopted[0]).toMatchObject({ project: 'Demo', title: 'docs/todos/replies.md', worktreePath: RUN_WT, branch: 'workflow/feature-1111', baseBranch: 'main', baseCommit: BASE, state: 'active' });
     expect(ctx.runStore.get(stored.id)).toMatchObject({ taskId: adopted[0].id, worktreeState: 'external' });
+    expect(adopted[0].folder).toBeNull();
+    expect(adopted[0].worktrees).toMatchObject([{ repository: 'demo', own: true, first: true, repositoryPath: null, worktreePath: RUN_WT }]);
   });
 
   it('closes a finished run whose worktree was kept, leaving the work with the task', async () => {

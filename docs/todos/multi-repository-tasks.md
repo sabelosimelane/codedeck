@@ -24,14 +24,14 @@
 > **Outputs:** `task_worktrees` and `tasks.task_folder`; a migration; a store that reads and writes worktrees; every reader switched to it
 > **Closed when:** the full server suite passes with no behaviour change, the migration is proven idempotent on a database holding tasks in all four states, and the released phone's task request still parses
 
-- [ ] `server/__tests__/task-store.test.js` (red): a database with `tasks` rows in `active`, `pr_open`, `merged` and `closed` gets exactly one `task_worktrees` row each (`is_first = 1`, `is_own = 1`, values copied, `repository` from the project's folder name or the task's project name), and a second start inserts nothing (Spec §6)
-- [ ] `server/tasks/task-store.js`: create `task_worktrees` and its three indexes, add `tasks.task_folder`, drop `tasks_open_worktree`, run the migration in one transaction; it takes a `findProject` so the migration needs no Git call (Spec §6)
-- [ ] `server/tasks/task-store.js`: `hydrateWorktree` with one guard per column, including "`repository_path` is NULL exactly when `is_own = 1`" and "`finished_at` is set exactly when finished"; a red test per guard
-- [ ] `server/tasks/task-store.js`: a task is returned with `worktrees` (first one first) and `folder`; its top-level `worktreePath`, `branch`, `baseBranch`, `baseCommit` and `prUrl` come from the first worktree (Spec §3.2, §7)
-- [ ] `server/tasks/task-store.js`: `create` writes the task row and its first worktree row in one transaction and still fills the old `tasks` columns; `addWorktree`; `setWorktreeState(taskId, worktreeId, { state, prUrl })` writes the worktree and the derived `tasks.state` in one transaction (Spec §3.5, §6)
-- [ ] `server/tasks/task-store.js`: `findOpenByWorktreePath` reads `task_worktrees`; the "worktree already belongs to an open task" refusal comes from the new index
-- [ ] Switch the readers with no change in behaviour: `server/tasks/task-service.js`, `server/tasks/task-landing.js` (state changes go through `setWorktreeState`), `server/tasks/task-terminals.js`, `server/tasks/task-adoption.js`, `server/routes/tasks.js` (`taskView` adds `worktrees` and `folder`), `server/routes/pipelines.js` (`POST /runs` in a task)
-- [ ] `server/__tests__/tasks-api.test.js`: a fixture of what the released phone and desktop send and read (`GET /api/tasks?open=true&page=0&size=100`) replays unchanged; `parseTask` in `client/src/utils/tasksApi.js` accepts the new response
+- [x] `server/__tests__/task-store.test.js` (red): a database with `tasks` rows in `active`, `pr_open`, `merged` and `closed` gets exactly one `task_worktrees` row each (`is_first = 1`, no `repository_path`, values copied, `repository` from the project's folder name or the task's project name), and a second start inserts nothing (Spec §6)
+- [x] `server/tasks/task-store.js`: create `task_worktrees` and its indexes, add `tasks.task_folder`, drop `tasks_open_worktree`, run the migration in one transaction; it takes a `findProject` so the migration needs no Git call (Spec §6)
+- [x] `server/tasks/task-store.js`: `hydrateWorktree` with one guard per column, including "`finished_at` is set exactly when finished"; a task must have exactly one first worktree and the state its worktrees give; a red test per guard
+- [x] `server/tasks/task-store.js`: a task is returned with `worktrees` (first one first) and `folder`; its top-level `worktreePath`, `branch`, `baseBranch`, `baseCommit` and `prUrl` come from the first worktree (Spec §3.2, §7)
+- [x] `server/tasks/task-store.js`: `create` writes the task row and its first worktree row in one transaction and still fills the old `tasks` columns; `addWorktree`; `setWorktreeState(taskId, worktreeId, { state, prUrl })` writes the worktree and the derived `tasks.state` in one transaction (Spec §3.5, §6)
+- [x] `server/tasks/task-store.js`: `findOpenByWorktreePath` reads `task_worktrees`; the "worktree already belongs to an open task" refusal comes from the new index
+- [x] Switch the readers with no change in behaviour: `server/tasks/task-service.js`, `server/tasks/task-landing.js` (state changes go through `setWorktreeState`), `server/tasks/task-terminals.js`, `server/tasks/task-adoption.js`, `server/routes/tasks.js` (`taskView` adds `worktrees` and `folder`), `server/routes/pipelines.js` (`POST /runs` in a task)
+- [x] `server/__tests__/tasks-api.test.js`: a fixture of what the released phone and desktop send and read (`GET /api/tasks?open=true&page=0&size=100`) replays unchanged; `parseTask` in `client/src/utils/tasksApi.js` accepts the new response
 - [ ] Run the full server suite and the client suite; record the counts in the session notes
 - [ ] With the owner's go-ahead only: run the migration against a copy of `~/.codedeck.db` and record the row counts before and after
 
@@ -67,6 +67,7 @@
 - [ ] `client/src/utils/worktreeGroups.js`: a path that is any worktree of a task belongs to that task's group; the group key is the task id; groups carry their worktrees (Spec §3.6)
 - [ ] `client/src/components/TerminalArea.jsx`, `TerminalTabBar.jsx`: new terminal, split and Cmd/Ctrl+Shift+T open in the active pane's repository; "+" offers the task's open repositories; the repository's name on tabs and pane headers of a task with several worktrees
 - [ ] `client/src/components/WorktreeGroupHeader.jsx`: tooltip lists each repository's folder, branch and path
+- [ ] Main reaches every repository (Spec §3.6, §10 answer 5). Read first how a Main terminal gets its directory today (`server/ws-handler.js`, `client/src/components/Terminal.jsx`, `client/src/utils/terminalPaneCwd.js`). Then: the backend accepts a Main terminal only in the checkout of one of the project's repositories; "+" in Main offers them; such a terminal belongs to the Main group in `worktreeGroups.js` and shows the repository's name on its tab
 
 ## Phase 4: Landing per Repository
 > Status, commit, merge and close for one repository of a task, and a task that finishes with its last repository.
@@ -96,6 +97,7 @@
 - [ ] `server/pipelines/run-worktree.js`: `buildSetupPrompt` takes a list of home checkout and worktree pairs; `server/pipelines/run-engine.js`: the guard after Setup checks every worktree of the task and names the dirty one; guidance and notes read the task's places at each step start through a `listTaskPlaces` dependency wired in `server/index.js`
 - [ ] `server/routes/pipelines.js`: `GET /worktrees` accepts `repository`; the prompt preview shows placeholder repositories
 - [ ] `client/src/components/pipelines/RunWorkflowDialog.jsx`, `client/src/utils/pipelinesApi.js`: for a new task, repository checkboxes and "Start in"; for an open task, "Start in" among its open worktrees
+- [ ] `server/routes/pipelines.js` and `RunWorkflowDialog.jsx`: a run in Main may start in the own checkout of any of the project's repositories; it writes there only, the others are named as readable, and it has no Setup (Spec §3.4)
 - [ ] `client/src/components/tasks/TaskView.jsx`: the header names the repository the run works in when the task has several; "Open a terminal here" opens in the run's worktree
 
 ## Phase 6: Adding a Repository, and Pull Requests per Repository
@@ -126,7 +128,7 @@
 ### Session — 2026-11-19 (specification and todo)
 **Completed**: the specification and this todo. No code.
 **Key decisions** (Spec §4): the project path stays the project's own repository; a run's directory is one repository's worktree; a repository not in the task is readable only; one unfinished run per task; landing per repository with no "merge all"; old `tasks` columns kept for one release; guidance limit 4000.
-**Owner's answers** (Spec §10): repositories are listed per project; the grouping is virtual and nothing is linked automatically; one folder per task; a new task includes the repository it starts in plus the ones ticked. Open with the owner: whether two separately registered projects of one group should also be shown as one sidebar row (not built).
+**Owner's answers** (Spec §10): repositories are listed per project; the grouping is virtual and nothing is linked automatically; one folder per task; a new task includes the repository it starts in plus the ones ticked. One sidebar row per group; Main reaches every repository's own checkout, so no repository needs a project of its own (answer 5).
 **Key files read**: `server/tasks/*.js`, `server/routes/tasks.js`, `server/routes/pipelines.js` (`POST /runs`, `:812-996`), `server/pipelines/step-guidance.js`, `run-worktree.js`, `run-notes.js`, `run-progress.js`, `run-engine.js` (`:226-280`, `:375-398`, `:605-719`), `client/src/utils/worktreeGroups.js`, `client/src/components/tasks/`, `client/src/mobile/nowView.js`.
 **Not read**: `server/project-deletion-service.js`, `server/pipelines/run-machine.js`, `client/src/components/TerminalTabBar.jsx`, `client/src/mobile/MobileApp.jsx`, most of `TerminalArea.jsx`, `Sidebar.jsx` and `App.jsx`. Read them before Phase 3.
 **Quirks**:

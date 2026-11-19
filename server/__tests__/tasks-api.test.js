@@ -6,6 +6,7 @@ import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import { createTasksRouter } from '../routes/tasks.js';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService, TaskError } from '../tasks/task-service.js';
+import { setTaskState, OWN_REPOSITORY } from './helpers/task-state.js';
 
 const base = '/api/tasks';
 const id = n => `7a${String(n).padStart(6, '0')}-0000-4000-8000-000000000000`;
@@ -28,7 +29,7 @@ async function setup({ openTerminal, landing } = {}) {
       if (typeof title !== 'string' || !title.trim() || title.length > 80) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'title', message: 'Use 1–80 characters on one line' }]);
       if (project === 'Nope') throw new TaskError('Project not found', 404);
       created += 1;
-      return taskStore.create({ id: id(created), project, title, worktreePath: `/tmp/worktrees/t-${created}`, branch: `task/t-${created}`, baseBranch: 'main', baseCommit: 'a'.repeat(40), titleSource: 'owner' });
+      return taskStore.create({ ...OWN_REPOSITORY, id: id(created), project, title, worktreePath: `/tmp/worktrees/t-${created}`, branch: `task/t-${created}`, baseBranch: 'main', baseCommit: 'a'.repeat(40), titleSource: 'owner' });
     }),
     get: real.get,
     rename: real.rename,
@@ -47,15 +48,15 @@ async function setup({ openTerminal, landing } = {}) {
       const task = real.get(taskId);
       if (task.title === 'Conflict') throw refused('This task conflicts with main in 1 file. Nothing was merged.', { conflicts: ['shared.txt'] });
       if (task.title === 'Dirty') throw refused('This task has uncommitted changes. Commit them first.', { reasons: [{ code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }] });
-      return { task: { ...taskStore.setState(taskId, { state: 'merged' }), secretColumn: 'never shown' }, mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true, terminalsClosed: ['Demo-2'], terminalsNotClosed: [] };
+      return { task: { ...setTaskState(taskStore, taskId, { state: 'merged' }), secretColumn: 'never shown' }, mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true, terminalsClosed: ['Demo-2'], terminalsNotClosed: [] };
     }),
     pullRequest: vi.fn(async (taskId, { remote }) => {
       real.get(taskId);
       if (typeof remote !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(remote)) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'remote', message: 'Use the name of one of the project remotes' }]);
       if (remote === 'down') throw new TaskError('The branch could not be pushed to down: timeout', 503);
-      return { task: taskStore.setState(taskId, { state: 'pr_open', prUrl: 'https://example.test/pr/1' }), prUrl: 'https://example.test/pr/1', remote };
+      return { task: setTaskState(taskStore, taskId, { state: 'pr_open', prUrl: 'https://example.test/pr/1' }), prUrl: 'https://example.test/pr/1', remote };
     }),
-    close: vi.fn(async taskId => { real.get(taskId); return { task: taskStore.setState(taskId, { state: 'closed' }), branchKept: 'task/t-1', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'] }; }),
+    close: vi.fn(async taskId => { real.get(taskId); return { task: setTaskState(taskStore, taskId, { state: 'closed' }), branchKept: 'task/t-1', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'] }; }),
     ...landing,
   };
   app.use(createTasksRouter({ service, taskStore, landing: land }));
@@ -78,8 +79,17 @@ describe('tasks API', () => {
       id: id(1), project: 'Demo', title: 'WhatsApp replies', state: 'active',
       worktreePath: '/tmp/worktrees/t-1', branch: 'task/t-1', baseBranch: 'main', baseCommit: 'a'.repeat(40),
       prUrl: null, revision: 1, createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z', finishedAt: null,
+      folder: null,
+      worktrees: [{
+        id: expect.stringMatching(/^[0-9a-f-]{36}$/), repository: 'demo', own: true, first: true,
+        worktreePath: '/tmp/worktrees/t-1', branch: 'task/t-1', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null,
+      }],
     });
     expect((await request(server).get(`${base}/${id(1)}`)).body).toEqual(response.body);
+    // What the released phone and desktop read from a task is still there, with the same meaning.
+    for (const field of ['id', 'project', 'title', 'state', 'worktreePath', 'branch', 'baseBranch', 'baseCommit', 'prUrl', 'revision', 'createdAt', 'updatedAt', 'finishedAt']) {
+      expect(response.body).toHaveProperty(field);
+    }
   });
 
   it('creates a separate task for each identical request', async () => {
@@ -163,8 +173,8 @@ describe('tasks API', () => {
     await request(server).post(base).send({ project: 'Demo', title: 'a' });
     await request(server).post(base).send({ project: 'Other', title: 'b' });
     await request(server).post(base).send({ project: 'Demo', title: 'c' });
-    taskStore.setState(id(3), { state: 'merged' });
-    taskStore.setState(id(1), { state: 'pr_open', prUrl: 'https://example.test/pr/1' });
+    setTaskState(taskStore, id(3), { state: 'merged' });
+    setTaskState(taskStore, id(1), { state: 'pr_open', prUrl: 'https://example.test/pr/1' });
     const titles = async query => (await request(server).get(`${base}?${query}`)).body.data.map(task => task.title);
     expect(await titles('project=Demo')).toEqual(['c', 'a']);
     expect(await titles('state=merged')).toEqual(['c']);
@@ -232,7 +242,7 @@ describe('tasks API', () => {
     const withBody = await request(server).post(url).send({ cwd: '/etc' });
     expectProblem(withBody, 400, url);
     expect(withBody.body.errors.map(error => error.field)).toEqual(['cwd']);
-    taskStore.setState(id(1), { state: 'closed' });
+    setTaskState(taskStore, id(1), { state: 'closed' });
     expectProblem(await request(server).post(url), 409, url);
   });
 

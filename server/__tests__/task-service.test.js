@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService, TaskError } from '../tasks/task-service.js';
+import { setTaskState } from './helpers/task-state.js';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
 const cleanups = [];
@@ -126,7 +127,7 @@ describe('task service', () => {
     const task = await service.create({ project: 'Demo', title: 'Gone' });
     rmSync(task.worktreePath, { recursive: true, force: true });
     expect(await rejection(service.openTerminal(ID))).toMatchObject({ status: 409, message: "This task's files are no longer on disk." });
-    taskStore.setState(ID, { state: 'closed' });
+    setTaskState(taskStore, ID, { state: 'closed' });
     expect(await rejection(service.openTerminal(ID))).toMatchObject({ status: 409, message: 'This task is finished.' });
     expect(start).not.toHaveBeenCalled();
   });
@@ -154,7 +155,9 @@ describe('task service', () => {
     expect(existsSync(planned.worktreePath)).toBe(false);
     expect(taskStore.list()).toEqual([]);
     const task = await service.createPlanned(planned);
-    expect(task).toMatchObject({ id: ID, worktreePath: planned.worktreePath, branch: planned.branch, titleSource: 'input' });
+    expect(task).toMatchObject({ id: ID, worktreePath: planned.worktreePath, branch: planned.branch, titleSource: 'input', folder: null });
+    // The task's one worktree is in the project's own repository, known by its folder name.
+    expect(task.worktrees).toMatchObject([{ repository: 'repo', own: true, first: true, repositoryPath: null, worktreePath: planned.worktreePath, branch: planned.branch }]);
     await expect(service.createPlanned({ ...planned, titleSource: 'generated' })).rejects.toThrow('Task plan titleSource is invalid');
     expect(await rejection(service.createPlanned(planned))).toMatchObject({ status: 409 });
     await expect(service.createPlanned({ ...planned, branch: '' })).rejects.toThrow('Task plan branch is invalid');

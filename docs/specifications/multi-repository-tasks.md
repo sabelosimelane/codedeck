@@ -319,8 +319,10 @@ or changes `backend` beside it.
 - A task takes one unfinished run at a time, whichever worktree it starts in. Today the refusal is
   per worktree path (`pipelines.js:219-227`); two runs in two worktrees of one task could change the
   same files.
-- Runs in Main and in a worktree named by path are unchanged: they work in the project's own
-  repository only.
+- **A run in Main** may start in the own checkout of any of the project's repositories ("Start in",
+  §10 answer 5). It changes that one checkout only: the project's other repositories are named as
+  readable, never writable, because main checkouts have no isolation. It has no Setup step, as a run
+  in Main has none today. A run in a worktree named by path is unchanged.
 
 **Step guidance.** For a run in a task of a project with other repositories, the first sentence
 (`step-guidance.js:31`) is built from the task's open worktrees and the project's repositories, read
@@ -412,9 +414,16 @@ A task stays **one thing** on screen. Its repositories are detail inside it.
   in the repository of the active pane; the "+" button offers the task's open repositories. Each tab
   and pane header of such a task shows the repository's name, because session ids keep the project's
   name (`backend-7` may be a terminal in `mobile-app`). A task with one worktree looks as it does now.
-- **Sidebar and switcher.** One row per task, as now
-  (`client/src/components/WorktreeGroupHeader.jsx:5-28`). The tooltip lists each repository's folder,
-  branch and path.
+- **Main reaches every repository** (§10, answer 5). In Main, the "+" button offers the project's
+  repositories, and a terminal opens in the own checkout of the one chosen; a split and
+  Cmd/Ctrl+Shift+T follow the active pane's repository. A terminal in another repository's checkout
+  belongs to the Main group and shows that repository's name on its tab. The backend accepts such a
+  terminal only for a directory that is the checkout of one of the project's repositories. With
+  this, no repository needs a project of its own.
+- **Sidebar and switcher.** One row per project and, under it, one row per task, as now. A
+  repository is never a row
+  (`client/src/components/WorktreeGroupHeader.jsx:5-28`). A task's tooltip lists each repository's
+  folder, branch and path.
 - **Landing bar.** The task's title and Rename, then one row per repository with its name, its facts
   and its buttons, then Add repository and Close task. A task with one worktree in a project without
   other repositories renders exactly as today.
@@ -444,7 +453,7 @@ were not read. Their part of this list is an estimate.
 | Adding a repository to an open task | Allowed unless a run is `pending` or `running` | Lets a paused run be answered by adding what it lacks |
 | Setup for a repository added later | None | Setup is a run's first step; the owner or the next step prepares it. Stated on the bar |
 | Runs per task | One unfinished run | Two runs could write the same worktrees |
-| Runs in Main | Own repository only | No isolation in main checkouts |
+| Runs in Main | Start in any repository's own checkout; change that one only | The owner wants no project per repository (§10, answer 5); main checkouts have no isolation, so one run writes in one of them |
 | Merge | Per repository, no "merge all" | Not atomic; undoing half would be forcing |
 | Pull requests | Per repository, in the build (phase 6) | Each repository has its own remotes |
 | Task state | Derived from its worktrees and stored on the task row | Existing filters on `tasks.state` keep working (`routes/tasks.js:72`) |
@@ -485,8 +494,7 @@ CREATE TABLE IF NOT EXISTS task_worktrees (
   task_id TEXT NOT NULL,             -- tasks.id
   is_first INTEGER NOT NULL,         -- 1 for the worktree the task started in, else 0
   repository TEXT NOT NULL,          -- repository name when the worktree was created
-  is_own INTEGER NOT NULL,           -- 1 when it is the project's own repository, else 0
-  repository_path TEXT,              -- declared checkout when created; NULL exactly when is_own = 1
+  repository_path TEXT,              -- declared checkout when created; NULL for the project's own repository
   worktree_path TEXT NOT NULL,
   branch TEXT NOT NULL,
   base_branch TEXT,
@@ -501,19 +509,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS task_worktrees_open_path
   ON task_worktrees (worktree_path) WHERE state IN ('active', 'pr_open');
 CREATE UNIQUE INDEX IF NOT EXISTS task_worktrees_first ON task_worktrees (task_id) WHERE is_first = 1;
 CREATE UNIQUE INDEX IF NOT EXISTS task_worktrees_repository ON task_worktrees (task_id, repository);
+CREATE INDEX IF NOT EXISTS task_worktrees_task ON task_worktrees (task_id);
 ```
 
-- The own repository's checkout is not stored: it is the project's path when asked, as today
-  (`task-landing.js:76-77`). Another repository's checkout is stored, so the task keeps working after
-  the project's list is edited.
+- A worktree of the project's own repository has no stored checkout (`repository_path` is NULL): its
+  checkout is the project's path when asked, as today (`task-landing.js:76-77`). Another repository's
+  checkout is stored, so the task keeps working after the project's list is edited.
 - Every column gets its own check when a row is read, in the style of `hydrate`
-  (`task-store.js:56-89`), including the "NULL exactly when" rule and the `finished_at` rule.
+  (`task-store.js:56-89`), including the `finished_at` rule. Reading a task also checks that it has exactly one first worktree
+  and that its stored state is the one its worktrees give.
 - `tasks.state` stays and is written in the same transaction as a worktree's state change, by the
   rule in §3.5. `findOpenByWorktreePath` reads `task_worktrees`.
 - The task row and its first worktree row are written in one transaction.
 
 **Migration of existing tasks**, once at startup in one transaction, with no Git call: for every
-`tasks` row that has no `task_worktrees` row, insert one with `is_first = 1`, `is_own = 1`, the task's
+`tasks` row that has no `task_worktrees` row, insert one with `is_first = 1`, no `repository_path`, the task's
 `worktree_path`, `branch`, `base_branch`, `base_commit`, `state`, `pr_url` and timestamps, and
 `repository` set to the folder name of the project's path, or to the task's project name when that
 project is no longer stored. Running it again inserts nothing.
@@ -566,7 +576,7 @@ The phased todo is `docs/todos/multi-repository-tasks.md`. In order, riskiest fi
 
 **Not in this work:** choosing a start branch per repository; cross-links between a task's pull
 requests; browsing another repository in the file panel; other repositories for remote projects;
-runs in Main changing other repositories; preparing (Setup) a repository added to a task later;
+a run in Main changing more than the repository it starts in; preparing (Setup) a repository added to a task later;
 re-adding a repository that was merged or closed in the same task; dropping the old `tasks` columns
 (a later release).
 
@@ -591,10 +601,15 @@ re-adding a repository that was merged or closed in the same task; dropping the 
    virtual not the actual repos". Read here as: nothing is linked or changed automatically, the
    grouping exists only in CodeDeck's configuration, and a project with other repositories is one
    project on screen with its repositories inside its tasks, runs and landing bar. Not built on this
-   reading: merging two separately registered projects of one group (for example `backend` and the
-   `mobile-app` project added by hand) into one sidebar row. The owner has not confirmed or ruled
-   that out.
+   reading: merging two separately registered projects of one group into one sidebar row; answer 5
+   makes the second project unnecessary instead.
 3. **Folder layout for tasks of projects with several repositories.** One folder per task,
    `worktrees/<task>/<repo>`.
 4. **Which repositories a new task includes.** The one it starts in plus the ones ticked; the rest
    stay readable and can be added later.
+5. **What the sidebar shows, and how another repository's own checkout is reached.** The owner does
+   not want every repository loaded as its own project. Chosen: one row per group; in Main the "+"
+   button and Run workflow also offer the project's other repositories, so a terminal or a run can
+   start in any repository's own checkout, and the tab shows the repository's name. This also settles
+   the point left open under answer 2: repositories never become sidebar rows, and a project added
+   by hand for one repository of a group can be removed once the group's project lists it.

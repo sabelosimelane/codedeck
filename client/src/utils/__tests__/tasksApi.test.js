@@ -14,6 +14,9 @@ afterEach(() => vi.unstubAllGlobals());
 describe('parseTask', () => {
   it('returns exactly the known fields', () => {
     expect(parseTask({ ...task(), surprise: true })).toEqual(task());
+    // A newer backend also sends the task's folder and one entry per repository; this parser reads the task as before.
+    expect(parseTask({ ...task(), folder: null, worktrees: [{ id: '7b000000-0000-4000-8000-000000000001', repository: 'demo', own: true, first: true,
+      worktreePath: '/tmp/worktrees/demo-replies', branch: 'task/replies-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null }] })).toEqual(task());
     expect(parseTask(task({ baseBranch: null, state: 'pr_open', prUrl: 'https://example.test/pr/1' })).prUrl).toBe('https://example.test/pr/1');
   });
   it.each([

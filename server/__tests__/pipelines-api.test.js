@@ -17,6 +17,7 @@ import { createTemplateStore, createStepPresetStore } from '../pipelines/library
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
+import { setTaskState, OWN_REPOSITORY } from './helpers/task-state.js';
 
 const base = '/api/pipelines';
 const cleanup = [];
@@ -207,7 +208,7 @@ async function setup(overrides = {}) {
       return { id, project, projectPath: PROJECT.path, title: title.trim(), titleSource, homePath: '/Users/me/git/codedeck',
         worktreePath: `/Users/me/git/worktrees/codedeck-task-${plannedTasks}`, branch: `task/t-${plannedTasks}`, baseBranch: 'main' };
     }),
-    createPlanned: vi.fn(async planned => taskStore.create({ id: planned.id, project: planned.project, title: planned.title,
+    createPlanned: vi.fn(async planned => taskStore.create({ ...OWN_REPOSITORY, id: planned.id, project: planned.project, title: planned.title,
       titleSource: planned.titleSource, worktreePath: planned.worktreePath, branch: planned.branch, baseBranch: planned.baseBranch, baseCommit: 'c'.repeat(40) })),
   };
 
@@ -2257,7 +2258,7 @@ describe('pipelines API — runs in tasks', () => {
     const readWorktreeChanges = vi.fn(async () => ({ readable: true, dirty: false }));
     const ctx = await setup({ ...overrides, routerDeps: { listWorktrees, readWorktreeChanges, realpath: async value => value, execFile: 'exec-file-stub', ...overrides.routerDeps } });
     const { workflow } = await seedReady(ctx);
-    const seedTask = (fields = {}) => ctx.taskStore.create({ id: TASK_ID, project: 'Demo', title: 'Replies', worktreePath: TASK_WT.path,
+    const seedTask = (fields = {}) => ctx.taskStore.create({ ...OWN_REPOSITORY, id: TASK_ID, project: 'Demo', title: 'Replies', worktreePath: TASK_WT.path,
       branch: TASK_WT.branch, baseBranch: 'main', baseCommit: HEAD_A, titleSource: 'owner', ...fields });
     const body = (extra = {}) => ({ requestId: 'run-task', workflowId: workflow.id, project: 'Demo', input: 'docs/todos/feature.md', ...extra });
     return { ...ctx, workflow, seedTask, body, listWorktrees };
@@ -2396,7 +2397,7 @@ describe('pipelines API — runs in tasks', () => {
     expect(second.status).toBe(409);
     expect(second.body.reasons).toEqual([{ code: 'in_use', message: 'An open workflow run is using this worktree.' }]);
 
-    busy.taskStore.setState(TASK_ID, { state: 'closed' });
+    setTaskState(busy.taskStore, TASK_ID, { state: 'closed' });
     const finished = await request(busy.app).post(`${base}/runs`).send(busy.body({ requestId: 'run-third', taskId: TASK_ID }));
     expect(finished.status).toBe(409);
     expect(finished.body.message).toBe('This task is finished.');

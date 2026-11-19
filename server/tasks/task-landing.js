@@ -64,7 +64,7 @@ export function describeRemote(url) {
 }
 
 export function createTaskLanding({ taskStore, findProject, execFile, pathExists, hasActiveRun, onTaskFinished, closeTerminals } = {}) {
-  if (typeof taskStore?.get !== 'function' || typeof taskStore?.setState !== 'function') throw new TypeError('taskStore is required');
+  if (typeof taskStore?.get !== 'function' || typeof taskStore?.setWorktreeState !== 'function') throw new TypeError('taskStore is required');
   for (const [name, value] of Object.entries({ findProject, execFile, pathExists, hasActiveRun, onTaskFinished, closeTerminals })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
@@ -77,6 +77,13 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     if (!project || typeof project.path !== 'string' || !path.isAbsolute(project.path)) throw new TaskError('The project of this task no longer exists.', 409);
     return { task, project };
   }
+
+  /** Records how the worktree the task started in now stands; the task's state follows from it. */
+  const setState = (task, change) => {
+    const first = task.worktrees.find(worktree => worktree.first);
+    if (!first) throw new Error(`Task ${task.id} has no first worktree`);
+    return taskStore.setWorktreeState(task.id, first.id, change);
+  };
 
   async function remotes(projectPath) {
     const { stdout } = await git(execFile, projectPath, ['remote']);
@@ -288,7 +295,7 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
             console.warn(`[tasks] merged branch kept task=${task.id}: ${firstLine(error.stderr || error.message)}`);
           }
         }
-        const finished = taskStore.setState(task.id, { state: 'merged' });
+        const finished = setState(task, { state: 'merged' });
         // Runs and terminals that worked in the task have nothing left to work in; they are closed with it.
         const terminals = await finish(finished);
         return { task: finished, mergedInto: task.baseBranch, filesRemoved: removed.ok, filesDetail: removed.ok ? null : removed.detail, branchDeleted, ...terminals };
@@ -330,7 +337,7 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
         }
         const prUrl = /https?:\/\/[^\s"'<>]+/.exec(`${output.stdout}\n${output.stderr}`)?.[0];
         if (!prUrl) throw new TaskError(`The branch was pushed to ${remote}, but ${chosen.tool} did not report the pull request's address.`, 503);
-        return { task: taskStore.setState(task.id, { state: 'pr_open', prUrl }), prUrl, remote };
+        return { task: setState(task, { state: 'pr_open', prUrl }), prUrl, remote };
       });
     },
 
@@ -343,7 +350,7 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
           if (!removed.ok) throw new TaskError(`The task's files could not be removed: ${firstLine(removed.detail)}`, 409);
         }
         // The branch stays: it may hold commits that are not merged anywhere.
-        const finished = taskStore.setState(task.id, { state: 'closed' });
+        const finished = setState(task, { state: 'closed' });
         const terminals = await finish(finished);
         return { task: finished, branchKept: task.branch, unmergedCommits: view.commitsAhead ?? 0, ...terminals };
       });

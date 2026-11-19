@@ -39,6 +39,20 @@ function taskView(task) {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     finishedAt: task.finishedAt,
+    folder: task.folder,
+    // One entry per repository of the task, the one it started in first. The fields above are that first one's.
+    worktrees: task.worktrees.map(worktree => ({
+      id: worktree.id,
+      repository: worktree.repository,
+      own: worktree.own,
+      first: worktree.first,
+      worktreePath: worktree.worktreePath,
+      branch: worktree.branch,
+      baseBranch: worktree.baseBranch,
+      baseCommit: worktree.baseCommit,
+      state: worktree.state,
+      prUrl: worktree.prUrl,
+    })),
   };
 }
 

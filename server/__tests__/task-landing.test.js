@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService } from '../tasks/task-service.js';
 import { createTaskLanding, describeRemote } from '../tasks/task-landing.js';
+import { setTaskState } from './helpers/task-state.js';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
 const cleanups = [];
@@ -100,7 +101,7 @@ describe('task landing — status', () => {
     expect(gone).toMatchObject({ filesPresent: false, commitsAhead: null, uncommittedCount: 0 });
     expect(codes(gone.blockers.merge)).toContain('files_missing');
     expect(gone.blockers.close).toEqual([]);
-    taskStore.setState(ID, { state: 'closed' });
+    setTaskState(taskStore, ID, { state: 'closed' });
     expect(codes((await landing.status(ID)).blockers.merge)).toEqual(['finished']);
     expect(await rejection(landing.status('7c000000-0000-4000-8000-000000000009'))).toMatchObject({ status: 404 });
     expect(await rejection(landing.status('nope'))).toMatchObject({ status: 404 });
