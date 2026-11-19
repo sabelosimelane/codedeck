@@ -41,10 +41,10 @@ const startable = entry => entry.role === 'todo' && entry.listed && entry.input 
  * a new task works from can say this itself in its Repositories line; what it says is filled in
  * for the owner to change, and nothing starts before Start.
  */
-export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, planDelay = PLAN_DELAY_MS, onClose, onStart }) {
+export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, initialInput = '', planDelay = PLAN_DELAY_MS, onClose, onStart }) {
   const [workflows, setWorkflows] = useState([]);
   const [workflowId, setWorkflowId] = useState('');
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(initialInput);
   const [preflight, setPreflight] = useState(null);
   const [worktrees, setWorktrees] = useState([]);
   // Where the owner chose to work and in which task; null until they choose, and the dialog then

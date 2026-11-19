@@ -113,3 +113,13 @@ it('does not discard custom profiles when they are persisted and reloaded', asyn
     expect(() => createNamingStore(db).settings()).toThrow();
   } finally { db.close(); }
 });
+it('uses a separate JSON reviewer contract and ignores model-reported billing',async()=>{
+ const {client,input}=setup(JSON.stringify({type:'result',is_error:false,result:JSON.stringify({proposal:null,cost:123})}));
+ expect(await client.review({provider:'claude',model:'test',effort:null},{instructions:'Review',rubric:'Evidence',evidence:[],feedback:[]})).toEqual({proposal:null,cost:null});
+ expect(input()).toContain('Evidence'); expect(input()).not.toContain('Name the user task');
+});
+it('records provider billing from the Claude result envelope and redacts credential fields',async()=>{
+ const {client,input}=setup(JSON.stringify({type:'result',is_error:false,total_cost_usd:.014,result:'{"proposal":null,"cost":123}'}));
+ const out=await client.review({provider:'claude',model:'test',effort:null},{instructions:'Review',rubric:'Inspect',evidence:[{note:'Authorization: Bearer placeholder_secret_token'}],feedback:[]});
+ expect(out).toEqual({proposal:null,cost:.014});expect(input()).not.toContain('placeholder_secret_token');
+});

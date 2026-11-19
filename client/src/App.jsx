@@ -623,7 +623,7 @@ function AppContent() {
           }}
         />
       )}
-      {showWorkflowBuilder && <WorkflowsScreen onClose={() => setShowWorkflowBuilder(false)} />}
+      {showWorkflowBuilder && <WorkflowsScreen projects={projects} onClose={() => setShowWorkflowBuilder(false)} />}
       {showProjectSwitcher && (
         <ProjectSwitcher
           projects={[...activeProjects, ...waitingProjects]}

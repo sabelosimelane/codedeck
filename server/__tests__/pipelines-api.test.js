@@ -3453,3 +3453,40 @@ describe('pipelines API — runs across the repositories of a project', () => {
     expect(outside.body.errors[0].message).toContain('which is not the path of a .md file inside the project');
   });
 });
+
+describe('workflow improvement endpoints', () => {
+  it('pages and filters dashboard outcomes and rejects invalid query parameters', async () => {
+    const id=randomUUID(), at='2026-11-19T12:00:00.000Z';
+    const {app}=await setup({routerDeps:{improvements:{outcomes:()=>[{id,at,workflowId:id,revision:2}]}}});
+    const url=base+'/improvements/outcomes';
+    const ok=await request(app).get(url).query({workflowId:id,revision:2,from:'2026-11-19',size:1});
+    expect(ok.status).toBe(200); expect(ok.body.page).toMatchObject({totalElements:1,hasNextPage:false}); expect(ok.body.data[0].id).toBe(id);
+    for (const invalid of [{revision:'x'},{workflowId:'drop table'},{from:'2026-02-31'},{size:101},{sort:'constructor,desc'},{unknown:'x'}]) {
+      const res=await request(app).get(url).query(invalid);
+      expect(res.status).toBe(400); expect(res.body).toMatchObject({traceId:expect.any(String),errors:expect.any(Array)});
+    }
+    expect((await request(app).get(url).query({revision:3})).body.data).toEqual([]);
+  });
+});
+it('uses structured errors, validates decision edges and forwards valid owner actions',async()=>{
+ const id=randomUUID(), configure=vi.fn(v=>v),decide=vi.fn(()=>({id})),label=vi.fn(),evaluate=vi.fn(()=>({passed:true})),packet=vi.fn(()=>({id}));
+ const {app}=await setup({routerDeps:{improvements:{configure,decide,label,evaluate,packet,status:()=>({configured:false}),calls:()=>[],proposals:()=>[]}}});
+ const api=base+'/improvements';
+ for (const key of ['calls','proposals'])expect((await request(app).get(api+'/'+key).query({page:0,size:100})).body.page.totalElements).toBe(0);
+ expect((await request(app).get(api+'/status')).body.configured).toBe(false);
+ expect((await request(app).get(api+'/outcomes/'+id)).body.id).toBe(id);
+ for(const body of [null,{},[],{action:'foo'},{action:'approve',extra:1},{action:'dismiss',reason:''},{action:'dismiss',reason:'x'.repeat(1501)}]){
+   const r=await request(app).post(api+'/proposals/'+id+'/decision').send(body);
+   expect(r.status).toBe(400);expect(r.type).toBe('application/problem+json');expect(r.body.errors.length).toBeGreaterThan(0);
+ }
+ const malformed=await request(app).post(api+'/proposals/'+id+'/decision').type('json').send('{');
+ expect(malformed.status).toBe(400);expect(malformed.body.traceId).toBeTruthy();
+ for(const action of ['approve','activate']) expect((await request(app).post(api+'/proposals/'+id+'/decision').send({action})).body.id).toBe(id);
+ expect((await request(app).post(api+'/proposals/'+id+'/decision').send({action:'dismiss',reason:'x'.repeat(1500)})).status).toBe(200);
+ expect((await request(app).post(api+'/outcomes/'+id+'/label').send({label:'ordinary'})).body.label).toBe('ordinary');
+ expect((await request(app).post(api+'/outcomes/'+id+'/label').send({label:'arbitrary'})).status).toBe(400);
+ expect((await request(app).post(api+'/proposals/'+id+'/evaluation').send({})).body.passed).toBe(true);
+ expect((await request(app).post(api+'/proposals/'+id+'/evaluation').send({key:'guess'})).status).toBe(400);
+ expect((await request(app).put(api+'/model').send({model:'m',provider:'codex',revision:0,effort:null})).status).toBe(200);
+ expect((await request(app).put(api+'/model').send({model:'m',provider:'codex',revision:-1,effort:null})).status).toBe(400);
+});

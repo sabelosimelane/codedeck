@@ -3,6 +3,7 @@ import { Button, IconButton } from '../../ui/index.jsx';
 import { X } from 'lucide-react';
 import { loadDefinitions } from '../../../utils/pipelineRecords';
 import { useToast } from '../../ToastContext';
+import Improvements from './Improvements';
 import WorkflowList from '../WorkflowList';
 import { failureMessage } from '../definitionForm';
 import '../pipeline-settings.css';
@@ -13,10 +14,11 @@ import './workflows-screen.css';
  * its steps, the open step and what that step's agent is sent. Nothing here is
  * authoritative; every list is read from the backend and every save goes to it.
  */
-export default function WorkflowsScreen({ onClose }) {
+export default function WorkflowsScreen({ onClose, projects = [] }) {
   const { showToast } = useToast();
   const [definitions, setDefinitions] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  const [view, setView] = useState('builder');
   const [dirty, setDirty] = useState(false);
 
   const load = useCallback(async () => {
@@ -44,11 +46,18 @@ export default function WorkflowsScreen({ onClose }) {
   return (
     <div className="workflows-screen" role="dialog" aria-modal="true" aria-label="Workflow builder">
       <header className="workflows-screen-header">
-        <strong>Workflow builder</strong>
+        <nav aria-label="Workflow views" className="workflow-views">
+          <button aria-pressed={view === 'builder'} onClick={() => setView('builder')}>Workflow builder</button>
+          <button aria-pressed={view === 'improvements'} onClick={() => setView('improvements')}>Improvements</button>
+        </nav>
         <span className="pipeline-hint">Agents and the setup agent are in Settings → Workflows.</span>
         <IconButton aria-label="Close the workflow builder" onClick={close}><X size={16} /></IconButton>
       </header>
-      <div className="workflows-screen-body pipeline-settings">
+      {view === 'improvements' && (
+        <Improvements workflows={definitions?.workflows ?? []} projects={projects} onChanged={load} />
+      )}
+      <div hidden={view !== 'builder'} style={view === 'builder' ? undefined : { display: 'none' }}
+        className="workflows-screen-body pipeline-settings">
         {loadError && (
           <div className="pipeline-load-error">
             <span role="alert">{loadError}</span>

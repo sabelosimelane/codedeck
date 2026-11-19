@@ -265,3 +265,21 @@ export async function cleanupRun(runId, options) {
   }
   return closed;
 }
+
+export function improvementDashboard(query, signal) {
+  return Promise.all([
+    listAll('/improvements/outcomes', { query, signal }),
+    listAll('/improvements/proposals', { query, signal }),
+    listAll('/improvements/calls', { query, signal }),
+    request('/improvements/status', { signal }),
+  ]);
+}
+export function improvementEvidence(id, signal) {
+  return request(itemPath('improvements/outcomes', id), { signal });
+}
+export function improvementAction(path, body) {
+  return request('/improvements/' + path, { method: 'POST', body });
+}
+export function configureReviewer(body) {
+  return request('/improvements/model', { method: 'PUT', body });
+}

@@ -1,3 +1,4 @@
+import { mountImprovements } from './improvements.js';
 import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
@@ -444,6 +445,10 @@ export function createPipelinesRouter(deps) {
     next();
   });
   router.use(BASE, express.json({ limit: '512kb' }));
+
+  if (deps.improvements) {
+    mountImprovements({ router, service: deps.improvements, route, parseCollectionQuery, fieldError, PipelineError });
+  }
 
   // --- Agents ---
 

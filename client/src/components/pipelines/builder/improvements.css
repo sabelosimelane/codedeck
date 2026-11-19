@@ -1,0 +1,352 @@
+.workflow-views {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.workflows-screen-header .workflow-views button {
+  margin: 0;
+  padding: 6px 12px;
+  font-weight: 600;
+}
+.workflow-views button[aria-pressed='true'] {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  box-shadow: inset 0 -2px var(--accent);
+}
+.imp-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-base);
+  font-family: inherit;
+}
+.imp-inner {
+  max-width: 1260px;
+  margin: auto;
+  padding: clamp(16px, 3vw, 42px);
+  display: grid;
+  gap: 18px;
+}
+.imp-page h2,
+.imp-page h3,
+.imp-page h4,
+.imp-page p {
+  margin: 0;
+}
+.imp-page h2 {
+  font-size: clamp(24px, 3vw, 36px);
+  letter-spacing: -0.045em;
+  line-height: 1.2;
+}
+.imp-page h3 {
+  font-size: 16px;
+  letter-spacing: -0.02em;
+  margin-bottom: 14px;
+}
+.imp-page h4 {
+  font-size: 16px;
+  margin: 5px 0 8px;
+}
+.imp-page p,
+.imp-meta,
+.imp-page small,
+.imp-legend,
+.imp-page label {
+  color: var(--text-secondary);
+}
+.imp-page p {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.imp-page button,
+.imp-page input,
+.imp-page select {
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  max-width: 100%;
+}
+.imp-page button {
+  cursor: pointer;
+}
+.imp-page button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-active);
+}
+.imp-page button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.imp-heading,
+.imp-filters,
+.imp-actions,
+.imp-refs,
+.imp-legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.imp-heading {
+  justify-content: space-between;
+}
+.imp-heading button,
+.imp-cards button span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.imp-heading p {
+  margin-top: 5px;
+}
+.imp-filters {
+  gap: 14px;
+  border-block: 1px solid var(--border);
+  padding: 12px 0;
+}
+.imp-filters label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.imp-filters input,
+.imp-filters select {
+  font-size: 13px;
+}
+.imp-filters input[type='number'] {
+  width: 72px;
+}
+.imp-page section,
+.imp-cards button {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px;
+  min-width: 0;
+}
+.imp-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.imp-cards button {
+  text-align: left;
+  display: grid;
+  gap: 16px;
+}
+.imp-cards span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.imp-cards svg {
+  color: var(--accent);
+}
+.imp-cards strong {
+  font-size: clamp(20px, 2.6vw, 34px);
+  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
+}
+.imp-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.imp-legend {
+  gap: 12px;
+  margin-bottom: 13px;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.imp-legend span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.imp-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.imp-exec,
+.imp-complete {
+  background: #48b8a1;
+}
+.imp-wait,
+.imp-stopped {
+  background: #e0b26b;
+}
+.imp-interrupted {
+  background: #90a2c8;
+}
+.imp-error {
+  background: #dd817f;
+}
+.imp-chart {
+  max-height: 240px;
+  overflow: auto;
+}
+.imp-chart button {
+  border: 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 5px 0;
+  background: transparent;
+  font: 12px var(--font-mono, monospace);
+}
+.imp-chart b {
+  font-size: 11px;
+  min-width: 2ch;
+}
+.imp-track {
+  flex: 1;
+  display: flex;
+  height: 11px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg-base);
+}
+.imp-table {
+  overflow: auto;
+}
+.imp-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.imp-table th,
+.imp-table td {
+  white-space: nowrap;
+  text-align: right;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.imp-table th {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.imp-table :is(th, td):first-child {
+  text-align: left;
+}
+.imp-table button,
+.imp-refs button {
+  background: transparent;
+  color: var(--accent);
+  border: 0;
+  padding: 2px 0;
+}
+.imp-review-stats {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.imp-review-stats div {
+  display: grid;
+  gap: 6px;
+}
+.imp-review-stats b {
+  font-size: 17px;
+}
+.imp-proposal {
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.imp-meta,
+.imp-refs,
+.imp-actions,
+.imp-result {
+  font-size: 12px;
+}
+.imp-refs,
+.imp-actions,
+.imp-result {
+  margin: 10px 0;
+}
+.imp-page details {
+  padding: 8px 0;
+}
+.imp-page summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+.imp-page dl {
+  font-size: 13px;
+}
+.imp-page dt {
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+.imp-page dd {
+  margin: 3px 0;
+}
+.imp-page pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.imp-page .imp-primary {
+  background: var(--accent);
+  color: var(--bg-base);
+  font-weight: 600;
+}
+.imp-right {
+  float: right;
+}
+.imp-drill > button:not(.imp-right) {
+  margin: 3px;
+}
+.imp-result strong {
+  text-transform: capitalize;
+}
+.imp-inner > div:empty {
+  display: none;
+}
+.imp-page [role='alert'] {
+  color: var(--text-primary);
+  border-left: 3px solid #dd817f;
+  padding: 8px 12px;
+}
+@media (max-width: 740px) {
+  .imp-cards {
+    grid-template-columns: 1fr 1fr;
+  }
+  .imp-pair {
+    grid-template-columns: 1fr;
+  }
+  .imp-filters label {
+    flex: 1 1 35%;
+  }
+  .workflows-screen:has(.imp-page) .pipeline-hint {
+    display: none;
+  }
+}
+@media (max-width: 460px) {
+  .imp-cards {
+    grid-template-columns: 1fr;
+  }
+  .imp-cards button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+  }
+  .imp-inner {
+    padding: 12px;
+    gap: 12px;
+  }
+  .imp-page section {
+    padding: 13px;
+  }
+}
+.workflows-screen-body[hidden] {
+  display: none;
+}

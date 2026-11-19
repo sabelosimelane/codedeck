@@ -1,3 +1,5 @@
+import CircuitBreaker from 'opossum';
+import { createImprovements } from './pipelines/improvements.js';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
@@ -956,6 +958,22 @@ const pipelineDecisionStore = createDecisionStore(db);
 const pipelineNoteStore = createNoteStore(db);
 const pipelineReviewStore = createReviewStore(db);
 const pipelineAnswerStore = createAnswerStore(db);
+const reviewModel = new CircuitBreaker((settings, packet) => namingCli.review(settings, packet), {
+  timeout: 68000, resetTimeout: 180000, volumeThreshold: 3, errorThresholdPercentage: 60, capacity: 1,
+});
+for (const event of ['open', 'halfOpen', 'close']) reviewModel.on(event, () => console.info('[workflow-review] model circuit ' + event));
+const improvements = createImprovements({
+  db, tasks: taskStore, runs: pipelineRunStore, workflows: pipelineWorkflowStore, notes: pipelineNoteStore, answers: pipelineAnswerStore,
+  decisions: pipelineDecisionStore, reviews: pipelineReviewStore, settings: () => namingStore.settings(),
+  generate: (settings, packet) => reviewModel.fire(settings, packet).catch(() => {
+    throw Object.assign(new Error('Review model unavailable. Check the configured Claude or Codex model and CLI login.'), {status:503});
+  }),
+});
+const reviewTick = () => improvements.tick().catch(error => console.warn('[workflow-review]', error.message));
+const reviewInterval = setInterval(reviewTick, 30000);
+reviewInterval.unref();
+setImmediate(reviewTick);
+process.once('exit', () => { clearInterval(reviewInterval); reviewModel.shutdown(); });
 const pipelineProgressReader = createRunProgressReader();
 // A task started with a run and no title is named from the run's work, by the CLI chosen for session naming.
 const taskNaming = createTaskNaming({
@@ -1083,6 +1101,7 @@ try {
   console.error('[tasks] adopting existing worktrees failed:', error);
 }
 app.use(createPipelinesRouter({
+  improvements,
   agentStore: pipelineAgentStore,
   workflowStore: pipelineWorkflowStore,
   settingsStore: pipelineSettingsStore,

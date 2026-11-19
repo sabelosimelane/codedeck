@@ -182,3 +182,13 @@ describe('asking for the workflow builder', () => {
     expect(() => onOpenWorkflowBuilder(null)).toThrow('handler must be a function');
   });
 });
+
+it('preserves an unsaved workflow while inspecting the improvement dashboard',async()=>{
+  await open();
+  fireEvent.click(screen.getByRole('button',{name:'Edit workflow Feature'}));
+  fireEvent.change(screen.getByLabelText('Workflow name'),{target:{value:'Unsaved workflow'}});
+  fireEvent.click(screen.getByRole('button',{name:'Improvements',exact:true}));
+  expect(screen.queryByRole('region',{name:'Workflows'})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Workflow builder',exact:true}));
+  expect(screen.getByLabelText('Workflow name').value).toBe('Unsaved workflow');
+});
