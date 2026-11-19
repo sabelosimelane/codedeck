@@ -257,7 +257,7 @@ export function validateSettingsBody(body) {
 }
 
 /** A repository is known by its folder name. */
-function isRepositoryName(value) {
+export function isRepositoryName(value) {
   return typeof value === 'string' && value.length >= 1 && value.length <= 100 && !SINGLE_LINE.test(value) && !value.includes('/') && value !== '.' && value !== '..';
 }
 

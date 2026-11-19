@@ -5,6 +5,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import { isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
 
 const GIT_TIMEOUT_MS = 30_000;
 
@@ -129,6 +130,14 @@ export async function hasCommittedFile({ repoPath, progressFile, execFile } = {}
   if (typeof progressFile !== 'string' || !progressFile) throw new TypeError('progressFile must be a non-empty string');
   const { stdout } = await runGit(execFile, ['-C', repoPath, 'ls-tree', '-z', 'HEAD', '--', progressFile]);
   return stdout.split('\0').some(entry => entry.split('\t')[1] === progressFile && /^100(?:644|755) blob /.test(entry));
+}
+
+/** The text of a Markdown file as it is at HEAD in `repoPath`. The caller has checked that it is there. */
+export async function readCommittedFile({ repoPath, file, execFile } = {}) {
+  if (typeof repoPath !== 'string' || !path.isAbsolute(repoPath)) throw new TypeError('repoPath must be an absolute path');
+  if (!isProgressFilePath(file, 512)) throw new TypeError('file must be the path of a .md file inside the repository');
+  const { stdout } = await runGit(execFile, ['-C', repoPath, 'cat-file', 'blob', `HEAD:${file}`]);
+  return stdout;
 }
 
 async function resolveRealpath(realpath, target) {

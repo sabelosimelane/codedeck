@@ -31,10 +31,12 @@ import {
   listWorktrees as defaultListWorktrees,
   readWorktreeChanges as defaultReadWorktreeChanges,
   hasCommittedFile,
+  readCommittedFile,
   buildSetupPromptForRepositories,
 } from '../pipelines/run-worktree.js';
 import { createRunPlaces } from '../pipelines/run-places.js';
 import { readStoredRepositories } from '../project-repositories.js';
+import { parseTodoRepositories } from '../../shared/todo-repositories.mjs';
 import { GUIDANCE_MAX } from '../terminal-workflow.js';
 import { parseCollectionQuery as parseQuery, paginate } from './collection-query.js';
 import { provisionalTaskTitle } from '../tasks/task-naming.js';
@@ -708,6 +710,69 @@ export function createPipelinesRouter(deps) {
     }
     return settings;
   }
+
+  /**
+   * What a run of this workflow with this input would work from, before anything is started:
+   * which of the project's repositories holds the progress file at its current commit, and what
+   * that file's Repositories line says about the others. Reads only; saves nothing.
+   */
+  router.post(`${BASE}/run-plans`, route(async (req, res) => {
+    const body = req.body;
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) throw fieldError('body', 'A JSON object is required');
+    const errors = Object.keys(body).filter(field => !['workflowId', 'project', 'input'].includes(field)).map(field => ({ field, message: 'Unknown field' }));
+    if (!isUuid(body.workflowId)) errors.push({ field: 'workflowId', message: 'Use a workflow UUID' });
+    if (!isText(body.project) || body.project.length > 200) errors.push({ field: 'project', message: 'Use the name of a project' });
+    if (typeof body.input !== 'string' || body.input.length < 1 || body.input.length > 4096 || /[\x00-\x1f\x7f]/.test(body.input)) {
+      errors.push({ field: 'input', message: 'Use 1–4096 characters on one line without control characters' });
+    }
+    if (errors.length) throw fieldErrors(errors);
+
+    const workflow = workflowStore.get(body.workflowId);
+    if (!workflow) throw new PipelineError('Workflow not found', 404);
+    const project = findProject(body.project);
+    if (!project) throw new PipelineError('Project not found', 404);
+
+    const nothing = { progressFile: null, input: body.input, foundIn: null, problem: null, repositories: null };
+    const template = workflow.progressFile;
+    if (template === null) return res.json(nothing);
+    // The two ways an input names the progress file: as the part that replaces {input}, or as the file's whole path.
+    const part = inputFromProgressFilePath(template, body.input);
+    const readings = [{ file: composePrompt(template, body.input), input: body.input }, ...(part === null ? [] : [{ file: body.input, input: part }])]
+      .filter(reading => isProgressFilePath(reading.file, 512));
+    if (readings.length === 0) return res.json(nothing);
+
+    await requireRunnableProject(project, SETUP_AGENT_MISSING);
+    const ownName = path.basename(await resolveHomeRepoPath({ projectPath: project.path, execFile }));
+    const checkouts = [{ repository: ownName, path: project.path }, ...readStoredRepositories(project).map(entry => ({ repository: entry.name, path: entry.path }))];
+
+    let found = null;
+    for (const reading of readings) {
+      for (const checkout of checkouts) {
+        if (await hasCommittedFile({ repoPath: checkout.path, progressFile: reading.file, execFile })) { found = { ...reading, checkout }; break; }
+      }
+      if (found) break;
+    }
+    if (!found) return res.json({ ...nothing, progressFile: readings[0].file, input: readings[0].input });
+
+    const plan = { progressFile: found.file, input: found.input, foundIn: found.checkout.repository, problem: null, repositories: null };
+    const header = parseTodoRepositories(await readCommittedFile({ repoPath: found.checkout.path, file: found.file, execFile }));
+    if (!header.found) return res.json(plan);
+    if (header.problem !== null) return res.json({ ...plan, problem: header.problem });
+    const claimed = header.entries.find(entry => entry.role === 'this');
+    if (claimed && claimed.repository !== found.checkout.repository) {
+      return res.json({ ...plan, problem: `The Repositories line says this todo belongs to ${claimed.repository}, but it is in ${found.checkout.repository}.` });
+    }
+
+    const repositories = [];
+    for (const entry of header.entries) {
+      const checkout = checkouts.find(candidate => candidate.repository === entry.repository) ?? null;
+      // The input a run of this workflow takes for another repository's todo; null when its path does not fit the Progress file.
+      const input = entry.role !== 'todo' ? null : template === '{input}' ? entry.todo : inputFromProgressFilePath(template, entry.todo);
+      const present = entry.role === 'todo' && checkout ? await hasCommittedFile({ repoPath: checkout.path, progressFile: entry.todo, execFile }) : null;
+      repositories.push({ repository: entry.repository, role: entry.role, todo: entry.todo, input, listed: checkout !== null, present });
+    }
+    res.json({ ...plan, repositories });
+  }));
 
   router.get(`${BASE}/worktrees`, route(async (req, res) => {
     const query = parseCollectionQuery(req.query, {

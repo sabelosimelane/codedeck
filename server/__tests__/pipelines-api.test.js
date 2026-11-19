@@ -3004,6 +3004,142 @@ describe('pipelines API — runs across the repositories of a project', () => {
     };
   }
 
+  describe('POST /api/pipelines/run-plans', () => {
+    const url = `${base}/run-plans`;
+    const HEADER = '# Tag pings\n\n**Repositories**: codedeck (this todo), mobile-app (docs/todos/tag-phone.md), frontend (minor)\n**Status**: Not started\n\n## Phase 1: Models\n- [ ] One\n';
+    /** Git as the plan needs it: which files each checkout holds at HEAD, and their text. */
+    const committed = files => vi.fn((_command, args, _options, callback) => {
+      const held = files[args[1]] ?? {};
+      if (args[2] === 'ls-tree') {
+        const file = args.at(-1);
+        return callback(null, Object.hasOwn(held, file) ? `100644 blob abc\t${file}\0` : '', '');
+      }
+      if (args[2] === 'cat-file') {
+        const file = args.at(-1).slice('HEAD:'.length);
+        return Object.hasOwn(held, file) ? callback(null, held[file], '') : callback(new Error(`fatal: path '${file}' does not exist in 'HEAD'`));
+      }
+      return callback(new Error(`unexpected git ${args.join(' ')}`));
+    });
+    async function setupPlan(files, progressFile = 'docs/{input}') {
+      const execFile = committed(files);
+      const ctx = await setupRepositories({ routerDeps: { execFile } });
+      const workflow = ctx.workflowStore.create({ name: 'Templated', agentsDecide: false, progressFile, nodes: [node(ctx.agentStore.list()[0].id, { prompt: 'Work on {input}' })] });
+      const plan = (input, extra = {}) => request(ctx.app).post(url).send({ workflowId: workflow.id, project: 'Demo', input, ...extra });
+      return { ...ctx, execFile, workflow, plan };
+    }
+    const FILES = { [PROJECT.path]: { 'docs/todos/tag.md': HEADER }, [MOBILE]: { 'docs/todos/tag-phone.md': '# Phone\n' } };
+
+    it('says where the todo is and what its Repositories line asks for', async () => {
+      const ctx = await setupPlan(FILES);
+      const response = await ctx.plan('todos/tag.md');
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        progressFile: 'docs/todos/tag.md',
+        input: 'todos/tag.md',
+        foundIn: 'codedeck',
+        problem: null,
+        repositories: [
+          { repository: 'codedeck', role: 'this', todo: null, input: null, listed: true, present: null },
+          { repository: 'mobile-app', role: 'todo', todo: 'docs/todos/tag-phone.md', input: 'todos/tag-phone.md', listed: true, present: true },
+          { repository: 'frontend', role: 'minor', todo: null, input: null, listed: false, present: null },
+        ],
+      });
+      // The same question twice gives the same answer and stores nothing.
+      expect((await ctx.plan('todos/tag.md')).body).toEqual(response.body);
+      expect(ctx.runStore.list()).toEqual([]);
+      expect(ctx.taskStore.list()).toEqual([]);
+    });
+
+    it('finds a todo that is in another repository of the project, and one typed as its whole path', async () => {
+      const ctx = await setupPlan({ [MOBILE]: { 'docs/todos/tag-phone.md': '# Phone\n\n**Repositories**: mobile-app (this todo)\n' } });
+      const elsewhere = await ctx.plan('todos/tag-phone.md');
+      expect(elsewhere.body).toMatchObject({ progressFile: 'docs/todos/tag-phone.md', input: 'todos/tag-phone.md', foundIn: 'mobile-app', problem: null,
+        repositories: [{ repository: 'mobile-app', role: 'this', todo: null, input: null, listed: true, present: null }] });
+      const whole = await ctx.plan('docs/todos/tag-phone.md');
+      expect(whole.body).toMatchObject({ progressFile: 'docs/todos/tag-phone.md', input: 'todos/tag-phone.md', foundIn: 'mobile-app' });
+    });
+
+    it('answers with nothing to read when there is no such file, no line, or no Progress file', async () => {
+      const ctx = await setupPlan({ [PROJECT.path]: { 'docs/todos/plain.md': '# Plain\n\n## Phase 1\n- [ ] One\n' } });
+      expect((await ctx.plan('todos/absent.md')).body).toEqual({ progressFile: 'docs/todos/absent.md', input: 'todos/absent.md', foundIn: null, problem: null, repositories: null });
+      expect((await ctx.plan('todos/plain.md')).body).toEqual({ progressFile: 'docs/todos/plain.md', input: 'todos/plain.md', foundIn: 'codedeck', problem: null, repositories: null });
+      // An input that does not complete the path of a .md file names no file to look for, and Git is not asked.
+      ctx.execFile.mockClear();
+      for (const input of ['fix the login', '../outside.md', '/Users/me/todo.md', 'todos/tag']) {
+        expect((await ctx.plan(input)).body).toEqual({ progressFile: null, input, foundIn: null, problem: null, repositories: null });
+      }
+      expect(ctx.execFile).not.toHaveBeenCalled();
+
+      const none = await setupPlan(FILES, null);
+      expect((await none.plan('todos/tag.md')).body).toEqual({ progressFile: null, input: 'todos/tag.md', foundIn: null, problem: null, repositories: null });
+      expect(none.execFile).not.toHaveBeenCalled();
+    });
+
+    it('reports a line it cannot read, and one that puts the todo in another repository, without guessing', async () => {
+      const ctx = await setupPlan({ [PROJECT.path]: {
+        'docs/todos/bad.md': '# Bad\n\n**Repositories**: codedeck (major)\n',
+        'docs/todos/moved.md': '# Moved\n\n**Repositories**: mobile-app (this todo), codedeck (minor)\n',
+      } });
+      expect((await ctx.plan('todos/bad.md')).body).toEqual({ progressFile: 'docs/todos/bad.md', input: 'todos/bad.md', foundIn: 'codedeck', repositories: null,
+        problem: 'codedeck (major): use this todo, minor, or the path of a .md file inside that repository' });
+      expect((await ctx.plan('todos/moved.md')).body).toMatchObject({ foundIn: 'codedeck', repositories: null,
+        problem: 'The Repositories line says this todo belongs to mobile-app, but it is in codedeck.' });
+    });
+
+    it('says when another repository\'s todo is not committed there, or does not fit the workflow\'s Progress file', async () => {
+      const text = '# Tag\n\n**Repositories**: codedeck (this todo), mobile-app (docs/todos/missing.md)\n';
+      const ctx = await setupPlan({ [PROJECT.path]: { 'docs/todos/tag.md': text } });
+      expect((await ctx.plan('todos/tag.md')).body.repositories[1]).toEqual({ repository: 'mobile-app', role: 'todo', todo: 'docs/todos/missing.md', input: 'todos/missing.md', listed: true, present: false });
+
+      const elsewhere = await setupPlan({ [PROJECT.path]: { 'docs/todos/tag.md': '# Tag\n\n**Repositories**: codedeck (this todo), mobile-app (plans/phone.md)\n' }, [MOBILE]: { 'plans/phone.md': '# Phone\n' } });
+      expect((await elsewhere.plan('todos/tag.md')).body.repositories[1]).toEqual({ repository: 'mobile-app', role: 'todo', todo: 'plans/phone.md', input: null, listed: true, present: true });
+
+      const whole = await setupPlan({ [PROJECT.path]: { 'docs/todos/tag.md': text } }, '{input}');
+      expect((await whole.plan('docs/todos/tag.md')).body.repositories[1]).toMatchObject({ todo: 'docs/todos/missing.md', input: 'docs/todos/missing.md' });
+    });
+
+    it('refuses a body that is not what it takes, naming each field', async () => {
+      const ctx = await setupPlan(FILES);
+      const fields = response => { expect(response.status).toBe(400); expect(response.body.traceId).toBe(response.headers['x-trace-id']); return response.body.errors.map(error => error.field).sort(); };
+      expect(fields(await request(ctx.app).post(url).send({}))).toEqual(['input', 'project', 'workflowId']);
+      expect(fields(await request(ctx.app).post(url).send([]))).toEqual(['body']);
+      expect(fields(await ctx.plan('todos/tag.md', { extra: 1 }))).toEqual(['extra']);
+      expect(fields(await request(ctx.app).post(url).send({ workflowId: 'nope', project: 7, input: null }))).toEqual(['input', 'project', 'workflowId']);
+      expect(fields(await request(ctx.app).post(url).send({ workflowId: ctx.workflow.id, project: '', input: '' }))).toEqual(['input', 'project']);
+      // Boundaries of the input: 1 and 4096 characters are taken, 4097 and a control character are not.
+      expect((await ctx.plan('x')).status).toBe(200);
+      expect((await ctx.plan('x'.repeat(4096))).status).toBe(200);
+      expect(fields(await ctx.plan('x'.repeat(4097)))).toEqual(['input']);
+      expect(fields(await ctx.plan('todos/tag.md\n--upload-pack=x'))).toEqual(['input']);
+      const malformed = await request(ctx.app).post(url).set('Content-Type', 'application/json').send('{"workflowId":');
+      expect(malformed.status).toBe(400);
+      expect(ctx.execFile).not.toHaveBeenCalledWith(expect.anything(), expect.arrayContaining(['--upload-pack=x']), expect.anything(), expect.anything());
+    });
+
+    it('neutralises input that tries to reach outside the repository or run something', async () => {
+      const ctx = await setupPlan(FILES);
+      for (const input of ["todos/x.md'; DROP TABLE tasks; --", '<script>alert(1)</script>.md', 'todos/$(touch x).md', '-rf.md']) {
+        const response = await ctx.plan(input);
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({ foundIn: null, repositories: null });
+        expect(response.headers['content-type']).toMatch(/application\/json/);
+      }
+      // Whatever was asked, Git was only ever given a path after `--` or after `HEAD:`.
+      for (const [, args] of ctx.execFile.mock.calls) expect(args.slice(0, 3)).toEqual(['-C', expect.stringMatching(/^\//), expect.stringMatching(/^(ls-tree|cat-file)$/)]);
+      expect((await request(ctx.app).post(url).send({ workflowId: ctx.workflow.id, project: 'Demo', input: 'x'.repeat(600 * 1024) })).status).toBe(413);
+    });
+
+    it('answers 404 for a workflow or project it does not know', async () => {
+      const ctx = await setupPlan(FILES);
+      const unknownWorkflow = await request(ctx.app).post(url).send({ workflowId: '11111111-1111-4111-8111-111111111111', project: 'Demo', input: 'todos/tag.md' });
+      expect(unknownWorkflow.status).toBe(404);
+      expect(unknownWorkflow.body).toMatchObject({ status: 404, message: 'Workflow not found', traceId: unknownWorkflow.headers['x-trace-id'] });
+      const unknownProject = await ctx.plan('todos/tag.md', { project: 'Nope' });
+      expect(unknownProject.status).toBe(404);
+      expect(unknownProject.body.message).toBe('Project not found');
+    });
+  });
+
   it('starts a run in the repository of an open task that is named, and in the one the task started in when none is', async () => {
     const ctx = await setupRepositories();
     ctx.seedTask();

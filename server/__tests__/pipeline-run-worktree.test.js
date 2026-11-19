@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildSetupPrompt, buildSetupPromptForRepositories, create, hasCommittedFile, listDirtyPaths, listWorktrees, planNames, preflight, readWorktreeChanges, remove } from '../pipelines/run-worktree.js';
+import { buildSetupPrompt, buildSetupPromptForRepositories, create, hasCommittedFile, listDirtyPaths, listWorktrees, planNames, preflight, readCommittedFile, readWorktreeChanges, remove } from '../pipelines/run-worktree.js';
 
 const RUN_ID = '0d9e4b1a-1111-4111-8111-111111111111';
 const HOME = '/Users/me/git/codedeck';
@@ -19,6 +19,24 @@ describe('hasCommittedFile preconditions', () => {
     const execFile = vi.fn((_cmd, args, _options, callback) => callback(null, '100644 blob abc\tdocs/todo.md\0', ''));
     await expect(hasCommittedFile({ repoPath: '/linked', progressFile: 'docs/todo.md', execFile })).resolves.toBe(true);
     expect(execFile.mock.calls[0][1]).toEqual(['-C', '/linked', 'ls-tree', '-z', 'HEAD', '--', 'docs/todo.md']);
+  });
+});
+
+describe('readCommittedFile', () => {
+  const execFile = vi.fn();
+  it.each([undefined, '', 'relative', 7])('rejects repoPath %s', async repoPath => {
+    await expect(readCommittedFile({ repoPath, file: 'docs/todo.md', execFile })).rejects.toThrow('repoPath must be an absolute path');
+  });
+  it.each([undefined, '', 7, '/abs/todo.md', '../todo.md', 'docs/todo.txt'])('rejects file %s', async file => {
+    await expect(readCommittedFile({ repoPath: HOME, file, execFile })).rejects.toThrow('file must be the path of a .md file inside the repository');
+  });
+  it('rejects an absent git runner', async () => {
+    await expect(readCommittedFile({ repoPath: HOME, file: 'docs/todo.md' })).rejects.toThrow('execFile is required');
+  });
+  it('reads the file as it is at HEAD in repoPath', async () => {
+    const execFile = vi.fn((_cmd, args, _options, callback) => callback(null, '# Todo\n', ''));
+    await expect(readCommittedFile({ repoPath: '/linked', file: 'docs/todo.md', execFile })).resolves.toBe('# Todo\n');
+    expect(execFile.mock.calls[0][1]).toEqual(['-C', '/linked', 'cat-file', 'blob', 'HEAD:docs/todo.md']);
   });
 });
 
