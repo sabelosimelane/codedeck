@@ -147,33 +147,32 @@ This specification makes several repositories the normal case:
 
 ### 2.7 One group folder, observed 2026-11-19 (read-only)
 
-`git worktree list` and `git rev-parse` in `/Users/sabside/git/mlondolozi`:
+`git worktree list` and `git rev-parse` in `/Users/me/git/acme`:
 
 | Folder | Kind | Branch checked out |
 | --- | --- | --- |
 | `backend/` | repository | `main` |
-| `frontend/` | repository | `feat/whatsapp-setup` |
+| `frontend/` | repository | `feat/new-console` |
 | `mobile-app/` | repository | `main` |
 | `worktrees/frontend-main` | worktree of `frontend` | `main` |
-| `worktrees/backend-docs-todos-2026-11-17-182751-com-8ea2fe43` | worktree of `backend` | `task/docs-todos-…` |
-| `worktrees/backend-users-sabside-git-mlondolozi-mob-b5c0667a` | worktree of `backend` | `task/users-sabside-git-mlondolozi-mob-b5c0667a` |
+| `worktrees/backend-fix-login-8ea2fe43` | worktree of `backend` | `task/fix-login-8ea2fe43` |
+| `worktrees/backend-users-me-git-acme-mob-b5c0667a` | worktree of `backend` | `task/users-me-git-acme-mob-b5c0667a` |
 
 A repository's own folder is not always on its main branch (`frontend/`); the branch a task should
 start from may be checked out in a `<repo>-main` worktree instead.
 
 ### 2.8 The owner's projects (reported by the session that started this work; not re-counted here)
 
-- 68 local projects (87 in all, 19 on remote hosts). 31 are a repository inside a group folder that
-  holds other repositories beside it; 7 of those groups already have a `worktrees/` folder. 30 are a
-  lone repository directly under `~/git`. 3 are folders that are not repositories, 3 point at paths
-  that no longer exist, 1 is alone in its group folder. No project is registered at a group folder.
-- The case that exposed the gap: only `backend` of `/Users/sabside/git/mlondolozi/` was a project. A
+- Most of the owner's local projects are a repository inside a group folder that holds other
+  repositories beside it, and some of those groups already have a `worktrees/` folder. Many others
+  are a lone repository directly under `~/git`. No project is registered at a group folder.
+- The case that exposed the gap: only `backend` of `/Users/me/git/acme/` was a project. A
   Bug fix run started there with a todo that lives in `mobile-app` got a worktree of `backend`, and
   its Develop step stopped to ask for a restart from `mobile-app`.
 - Workaround applied by hand: `mobile-app` was added as a separate project. This design should make
   that unnecessary.
 - That todo refers to the backend's spec as `../../backend/docs/…`. From the main checkout the path
-  resolves. From a task worktree under `mlondolozi/worktrees/` it does not.
+  resolves. From a task worktree under `acme/worktrees/` it does not.
 - The phone app released as 1.8 reads `GET /api/tasks?open=true` and
   `GET /api/pipelines/runs?open=true` with `parseTask` and `parseRun`. Fields it reads must not be
   removed or change meaning in one release.
@@ -185,16 +184,16 @@ start from may be checked out in a `<repo>-main` worktree instead.
 A project has its **own repository** (its `path`, unchanged) and a list of **other repositories**:
 
 ```json
-{ "name": "mlondolozi", "path": "/Users/sabside/git/mlondolozi/backend",
+{ "name": "acme", "path": "/Users/me/git/acme/backend",
   "repositories": [
-    { "name": "mobile-app", "path": "/Users/sabside/git/mlondolozi/mobile-app" },
-    { "name": "frontend",   "path": "/Users/sabside/git/mlondolozi/worktrees/frontend-main" }
+    { "name": "mobile-app", "path": "/Users/me/git/acme/mobile-app" },
+    { "name": "frontend",   "path": "/Users/me/git/acme/worktrees/frontend-main" }
   ] }
 ```
 
 The owner lists them per project (§10, answer 1). The dialog offers the repositories found beside the
 project's own (direct children of its parent folder that are Git repositories, `worktrees` excepted)
-to add with one click. Nothing is guessed: 30 of the owner's projects sit directly under `~/git`
+to add with one click. Nothing is guessed: many of the owner's projects sit directly under `~/git`
 beside hundreds of unrelated repositories, so "everything in the parent folder" cannot be a rule.
 
 The grouping is virtual (§10, answer 2): it is a list in CodeDeck's own configuration. No repository
@@ -267,7 +266,7 @@ repository's worktrees, `task-adoption.js:52-66`), `client/src/components/tasks/
 these tasks only, from the owner's written rule `worktrees/<repo>-<purpose>`.
 
 ```
-/Users/sabside/git/mlondolozi/
+/Users/me/git/acme/
   backend/  frontend/  mobile-app/
   worktrees/
     whatsapp-replies-1a2b3c4d/          the task's folder: <slug>-<first 8 hex of the task id>
@@ -446,7 +445,7 @@ were not read. Their part of this list is an estimate.
 
 | Topic | Decision | Why |
 | --- | --- | --- |
-| Project path | Stays the project's own repository | Main, the default terminal directory, the file panel and merge all use it (`worktreeGroups.js:126`, `mobile-session-start.js:11`, `task-landing.js:267`); the 68 local projects keep working untouched |
+| Project path | Stays the project's own repository | Main, the default terminal directory, the file panel and merge all use it (`worktreeGroups.js:126`, `mobile-session-start.js:11`, `task-landing.js:267`); the existing local projects keep working untouched |
 | Working directory of a run | One repository's worktree, not the task's folder | Agent CLIs load instructions, skills and settings from the repository they start in |
 | Start point of a worktree | HEAD and branch of the repository's declared checkout | The rule the own repository has today; a `<repo>-main` worktree can be declared where the repository's own folder is on another branch |
 | A repository not in the task | Readable at its own checkout, never writable, no symbolic link | A write there would have no isolation and nothing to land |
@@ -467,8 +466,8 @@ were not read. Their part of this list is an estimate.
 
 | Alternative | Why not |
 | --- | --- |
-| **A project registered at the group folder** | The project path is assumed to be a Git top level and to be Main in every layer (`run-worktree.js:144-146`, `task-landing.js:267`, `worktreeGroups.js:126`). All 31 group projects would be re-registered and their terminals would start in a folder with no agent instructions. |
-| **Everything in the parent folder is related, automatically** | 30 projects sit directly under `~/git`; their parent holds hundreds of unrelated repositories. |
+| **A project registered at the group folder** | The project path is assumed to be a Git top level and to be Main in every layer (`run-worktree.js:144-146`, `task-landing.js:267`, `worktreeGroups.js:126`). All group projects would be re-registered and their terminals would start in a folder with no agent instructions. |
+| **Everything in the parent folder is related, automatically** | Many projects sit directly under `~/git`; their parent holds hundreds of unrelated repositories. |
 | **Linking separate CodeDeck projects** so a task spans projects | Sessions, tasks and runs are keyed and filtered by one project name (`mobile-session-start.js:50-53`, `task-store.js:100`, `pipelines.js:800`). Every repository would have to be a project in the sidebar. |
 | **One task per repository with a link between them** | Nothing is shared: a run still has one worktree and the guidance still forbids the other. |
 | **The task's folder as the run's working directory** | The agent would start outside any repository and miss its instructions, skills and settings. |

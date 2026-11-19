@@ -12,7 +12,7 @@
 > endpoint; every new or changed endpoint is tested in the six dimensions of that standard.
 > Server tests: `cd server && npx vitest run __tests__/<file> --maxWorkers=1`.
 > Client tests: `cd client && npx vitest run <path> --maxWorkers=1`.
-> Work only in a worktree of this repository based on `main`. Do not edit `/Users/sabside/git/codedeck`,
+> Work only in a worktree of this repository based on `main`. Do not edit `/Users/me/git/codedeck`,
 > do not merge into `main`, and do not restart or reload the live instance without the owner's
 > explicit go-ahead: a change under `server/` in that checkout reloads the live backend and
 > interrupts working runs.
@@ -234,7 +234,7 @@
 **Completed**: the migration check of Phase 1, with the owner's go-ahead ("Yes, try it").
 **How**: the live `~/.codedeck.db` was copied with SQLite's backup through a read-only connection into the session scratchpad; the live file's size and modification time were the same afterwards. `createTaskStore` was then run on the copy with `findProject` reading the copy's own `projects`.
 **Evidence** (Node v22.22.0, branch tip `396cd50`):
-- Before: 12 `tasks` rows (6 `closed`, 6 `merged`), naming 3 projects, all 3 still stored; 86 projects stored; no `task_worktrees` table; index `tasks_open_worktree` present.
+- Before: 12 `tasks` rows (6 `closed`, 6 `merged`), naming projects that are all still stored; no `task_worktrees` table; index `tasks_open_worktree` present.
 - A start without `findProject` stopped with `tasks: findProject is required to carry over stored tasks` and left the copy as it was: no `task_worktrees` table, the old index still there.
 - The migration took 1 ms and wrote 12 `task_worktrees` rows (6 `closed`, 6 `merged`). The 14 old columns of every `tasks` row were byte for byte what they had been; `tasks_open_worktree` was gone and `task_folder` was there.
 - All 12 tasks read back through the store with one worktree each, first and own, carrying the task's path, branch, base branch, base commit, state, pull request address and times: 0 mismatches. Each repository was named after its project's folder.
@@ -268,6 +268,6 @@
 **Evidence after the reload**:
 - The backend log shows one `Restarting 'index.js'`, then `[companion] phone access is on through …; push notifications are configured` and `CodeDeck server running on http://localhost:43001`; `./server.sh status` reports backend and frontend listening.
 - The live database has `task_worktrees` with 12 rows (6 `closed`, 6 `merged`) and no `tasks_open_worktree` index; `GET /api/tasks?size=50` returns 12 tasks, each with one worktree that is first, own, and carries the task's path and state.
-- `GET /api/projects/mlondolozi/repositories` → 200 with `backend` (own); `GET …/repository-candidates` → 200 with `frontend` and `mobile-app`. The Repositories dialog opened in the running app and showed the same; nothing was added.
+- `GET /api/projects/acme/repositories` → 200 with `backend` (own); `GET …/repository-candidates` → 200 with `frontend` and `mobile-app`. The Repositories dialog opened in the running app and showed the same; nothing was added.
 **Not checked live**: adding a repository, a task across repositories, landing per repository, a run with `startIn`, and the phone. They are covered by the suites only. Nothing was pushed.
-**Worth knowing**: the dialog offers a repository's home folder. Where the home is on a feature branch and `main` lives in a `<repo>-main` worktree (mlondolozi's `frontend` is on `feat/whatsapp-setup`, `main` is in `worktrees/frontend-main`), add that worktree with **Add another folder…** instead, because tasks start from and merge into the folder listed.
+**Worth knowing**: the dialog offers a repository's home folder. Where the home is on a feature branch and `main` lives in a `<repo>-main` worktree (acme's `frontend` is on `feat/new-console`, `main` is in `worktrees/frontend-main`), add that worktree with **Add another folder…** instead, because tasks start from and merge into the folder listed.
