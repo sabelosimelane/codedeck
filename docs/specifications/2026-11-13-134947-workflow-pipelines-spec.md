@@ -929,6 +929,11 @@ Consequences:
 ## 11. Known Limits
 
 - Only CLIs with a screen profile (Claude, Codex, Cursor, agy, Muse) can run a step.
+- Codex hides its `• Working (…)` line while it writes text, between tools and for its final
+  answer. The Codex profile therefore also reads the run state in Codex's footer (`… · Working · …`),
+  which Codex shows when its status line includes `run-state` and the pane is wide enough. Without
+  that footer a step that returns to a Codex terminal can be started while Codex is still in a turn:
+  the reset is then not applied and the prompt is queued behind the turn.
 - For a full-screen CLI, CodeDeck can read only its visible screen. If a question list is longer than the screen, CodeDeck cannot read the full list and asks the owner instead.
 - Local projects whose path is the top level of a git working tree only.
 - The worktree contains committed files only; an uncommitted todo or spec in the checkout is absent

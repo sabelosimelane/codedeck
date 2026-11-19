@@ -7,6 +7,7 @@ import * as cursor from '../agent-profiles/cursor.js';
 import * as agy from '../agent-profiles/agy.js';
 import * as codex from '../agent-profiles/codex.js';
 import { classify } from '../pipelines/agent-readiness.js';
+import { classifyTerminalExecution } from '../terminal-execution-classifier.js';
 
 const root = new URL('./fixtures/agent-screens/', import.meta.url);
 const screen = (cli, name) => readFileSync(new URL(`${cli}/${name}`, root), 'utf8').replace(/\r/g, '').split('\n');
@@ -36,6 +37,56 @@ describe('promptVisible', () => {
   it.each(profiles)('$id is true on idle-fresh and false before the prompt is drawn', ({ profile, fixtureDir }) => {
     expect(profile.promptVisible(screen(fixtureDir, 'idle-fresh.txt'))).toBe(true);
     expect(profile.promptVisible(['starting up…', '', ''])).toBe(false);
+  });
+});
+
+// Codex hides its `• Working (…)` line while it writes text, between tools and for its final
+// answer. Its footer still says the turn is running; a step must not be started on that screen.
+describe('Codex writing text in the middle of a turn', () => {
+  const readiness = (lines) => {
+    const execution = classifyTerminalExecution({
+      paneCurrentCommand: 'codex', paneDead: '0', snapshotText: lines.join('\n'), subagentPanes: [], quietSeconds: 0,
+    });
+    return {
+      reason: execution.executionReason,
+      readiness: classify({ executionReason: execution.executionReason, foregroundCommand: 'codex', lines, profile: codex, ...alive }),
+    };
+  };
+
+  it.each(['working-writing-before-tool.txt', 'working-writing-final-answer.txt'])('%s is working, not ready', (name) => {
+    expect(codex.read(screen('codex', name))).toEqual({ turn: 'working', backgroundShells: 0 });
+    expect(readiness(screen('codex', name))).toEqual({ reason: 'agent_working', readiness: 'waiting' });
+  });
+
+  it('is ready once the footer says Ready', () => {
+    const lines = screen('codex', 'working-writing-final-answer.txt').map(line => line.replace(' · Working · ', ' · Ready · '));
+    expect(codex.read(lines).turn).toBe('idle');
+    expect(readiness(lines)).toEqual({ reason: 'agent_prompt_idle', readiness: 'ready' });
+  });
+
+  it('reads the run state only from the footer below the prompt', () => {
+    const lines = [
+      '• The status line reads GPT-6.2-Sol medium · ~/work/demo · Working · Context 10% used while a turn runs.',
+      '',
+      '  Worked for 12s • 10:39',
+      '',
+      '› Ask Codex to do anything',
+      '',
+      '  GPT-6.2-Sol medium · ~/work/demo · Ready · Context 10% used',
+      '  ← for agents · ? for shortcuts',
+    ];
+    expect(codex.read(lines).turn).toBe('idle');
+  });
+
+  it('does not take a word of the folder name for the run state', () => {
+    const lines = ['› Ask Codex to do anything', '', '  GPT-6.2-Sol medium · ~/Working · Ready · Context 10% used'];
+    expect(codex.read(lines).turn).toBe('idle');
+  });
+
+  it('reads a footer cut short before the run state as it did before', () => {
+    const lines = screen('codex', 'working-writing-final-answer.txt').map(line => line.replace(/ · Working · .*$/, '…'));
+    expect(lines.some(line => line.includes('~/work/demo…'))).toBe(true);
+    expect(codex.read(lines).turn).toBe('idle');
   });
 });
 

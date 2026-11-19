@@ -10,6 +10,10 @@ const DIALOG_HINT = /\benter (?:to )?(?:confirm|continue)\b/i;
 // `• Working (27s • esc to interrupt)`, `• Starting MCP servers (22/26): … (1s • esc to interrupt)`
 const LIVE_STATUS = new RegExp(String.raw`^• .*\(${ELAPSED} [•·] esc to interrupt\)`, 'u');
 const BACKGROUND_TERMINALS = /\b(\d+) background terminals? running\b/i;
+// The run state in the footer, when the status line has it and the pane is wide enough to show it:
+// `GPT-6.2-Sol medium · ~/work/demo · Working · Context 10% used`. Codex hides the live status line
+// while it writes text, between tools and for its final answer; the footer still says Working then.
+const FOOTER_WORKING = /(?:^| · )Working(?: · |$)/u;
 
 export function matches({ foregroundCommand, lines }) {
   if (foregroundCommand === 'codex') return true;
@@ -31,6 +35,7 @@ export function read(lines) {
 
   const region = promptRegion(lines, line => INPUT_PROMPT.test(line) && !DIALOG_OPTION.test(line));
   const backgroundShells = count([...region.above, ...region.below].join(' '), BACKGROUND_TERMINALS);
-  const turn = region.above.some(line => LIVE_STATUS.test(line)) ? 'working' : 'idle';
+  const working = region.above.some(line => LIVE_STATUS.test(line)) || region.below.some(line => FOOTER_WORKING.test(line));
+  const turn = working ? 'working' : 'idle';
   return { turn, backgroundShells };
 }
