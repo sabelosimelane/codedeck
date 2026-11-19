@@ -197,6 +197,8 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
   agents settled themselves (`pipeline_run_decisions`).
 - `server/pipelines/run-progress.js`: asynchronously reads and caches a run's Markdown phase and task progress inside its worktree.
 - `server/pipelines/run-notes.js`: prepares an ignored per-run notes folder and safely reads each step's note inside the worktree.
+- `server/pipelines/request-store.js`: reserves run start IDs with their original parameters before
+  provisioning. A replay can resume an unfinished reservation using its recorded task.
 - `server/pipelines/run-terminal-muting.js`: pure plan for which of a run's step terminals show live status; `terminal-muting-adapter.js` applies it after the attention tracker observes a session.
 - `server/pipelines/note-store.js`: append-only SQLite copies of step notes and their pass outcomes (`pipeline_run_notes`).
 - `server/pipelines/review-store.js`: append-only owner approval and send-back reviews (`pipeline_run_reviews`); `run-notes.js` writes their comments to the step feedback file.
@@ -234,7 +236,8 @@ never creates or removes it; a run in a task created for it still gets the Setup
 
 - `server/tasks/task-service.js` splits creation into `plan` (validates and names, changes
   nothing) and `createPlanned`, so `POST /api/pipelines/runs` can refuse a run before any
-  worktree exists.
+  worktree exists. Creation writes the task row before adding the worktree at the recorded
+  commit. If Git fails and leaves no folder, creation deletes the initial row.
 - `server/tasks/task-landing.js` reads everything from Git when asked. Merge runs in the
   project's own checkout and aborts on conflict. Finishing a task releases its runs
   (`onTaskFinished` in `server/index.js`).

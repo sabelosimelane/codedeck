@@ -274,6 +274,9 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
   const taskStateStmt = db.prepare('UPDATE tasks SET state = ?, finished_at = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?');
   const touchStmt = db.prepare('UPDATE tasks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?');
   const worktreeStateStmt = db.prepare('UPDATE task_worktrees SET state = ?, pr_url = ?, finished_at = ?, updated_at = ? WHERE id = ? AND task_id = ?');
+  const removeInitial = db.prepare("DELETE FROM tasks WHERE id = ? AND state = 'active' AND revision = 1");
+  const removeWorktreesOf = db.prepare('DELETE FROM task_worktrees WHERE task_id = ?');
+  const removeAddedWorktree = db.prepare("DELETE FROM task_worktrees WHERE id = ? AND task_id = ? AND is_first = 0 AND state = 'active'");
 
   const get = id => {
     if (!isUuid(id)) inputError('id', 'must be a UUID');
@@ -300,9 +303,23 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
     return err;
   };
 
-  const createNow = db.transaction((input, stamp) => {
+  const createNow = db.transaction((input, others, stamp) => {
     insert.run(input.id, input.project, input.title.trim(), input.worktreePath, input.branch, input.baseBranch, input.baseCommit, stamp, stamp, input.titleSource, input.folder);
     insertWorktree.run(newWorktreeId(), input.id, 1, input.repository, input.repositoryPath, input.worktreePath, input.branch, input.baseBranch, input.baseCommit, stamp, stamp);
+    for (const other of others) {
+      insertWorktree.run(newWorktreeId(), input.id, 0, other.repository, other.repositoryPath, other.worktreePath, other.branch, other.baseBranch, other.baseCommit, stamp, stamp);
+    }
+  });
+
+  // A task goes with its worktree rows, and only while nothing has happened to it.
+  const removeNow = db.transaction((id) => {
+    if (removeInitial.run(id).changes !== 1) throw new Error(`tasks row ${id}: must be active at revision 1 to remove`);
+    removeWorktreesOf.run(id);
+  });
+
+  const removeWorktreeNow = db.transaction((task, worktreeId, stamp) => {
+    if (removeAddedWorktree.run(worktreeId, task.id).changes !== 1) throw new Error(`task_worktrees row ${worktreeId}: must be an added, active worktree of task ${task.id} to remove`);
+    if (touchStmt.run(stamp, task.id, task.revision).changes !== 1) throw new Error(`tasks row ${task.id}: revision conflict`);
   });
 
   const addWorktreeNow = db.transaction((task, input, stamp) => {
@@ -321,6 +338,18 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
 
   return {
     get,
+    /** Takes back a task that was recorded and then could not get its worktrees: only while it is active and untouched. */
+    remove(id) {
+      if (!isUuid(id)) inputError('id', 'must be a UUID');
+      removeNow(id);
+    },
+    /** Takes back a worktree that was recorded for an open task and then could not be created. Never the one the task started in. */
+    removeWorktree(id, worktreeId) {
+      if (!isUuid(worktreeId)) inputError('worktreeId', 'must be a UUID');
+      const task = requireTask(id);
+      removeWorktreeNow(task, worktreeId, now());
+      return get(id);
+    },
     list() {
       const byTask = new Map();
       for (const row of readAllWorktrees.all()) {
@@ -336,9 +365,9 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
       return row ? requireTask(row.task_id) : null;
     },
     /**
-     * A new task with the worktree it starts in. `repositoryPath` is the checkout that worktree
-     * came from, or null when it is the project's own repository. `folder` is the folder that
-     * holds the task's worktrees, or null when each is named on its own.
+     * A new task with the worktree it starts in, and optionally its `others`. `repositoryPath` is
+     * the checkout a worktree came from, or null when it is the project's own repository. `folder`
+     * is the folder that holds the task's worktrees, or null when each is named on its own.
      */
     create(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)) inputError('body', 'must be an object');
@@ -350,8 +379,15 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
       if (!isTaskTitle(title)) inputError('title', `must be 1–${TASK_TITLE_MAX} single-line characters`);
       if (folder !== null && !isAbsolutePath(folder)) inputError('folder', 'must be an absolute path or null');
       requireWorktreeInput(input);
+      // `others`: the task's further worktrees, recorded with it so that the task is still untouched when Git is asked for them.
+      const others = input.others ?? [];
+      if (!Array.isArray(others)) inputError('others', 'must be a list of worktrees');
+      for (const other of others) {
+        if (!other || typeof other !== 'object' || Array.isArray(other)) inputError('others', 'must be a list of worktrees');
+        requireWorktreeInput(other);
+      }
       try {
-        createNow(input, now());
+        createNow(input, others, now());
       } catch (err) {
         throw conflict(err);
       }

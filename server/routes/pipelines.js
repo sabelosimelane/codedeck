@@ -18,6 +18,7 @@ import {
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions } from '../pipelines/run-machine.js';
+import { serializeStartParams } from '../pipelines/request-store.js';
 import { createRunProgressReader, readRunProgress, isProgressFileInWorktree } from '../pipelines/run-progress.js';
 import { notePath, feedbackPath } from '../pipelines/run-notes.js';
 import { buildStepGuidance } from '../pipelines/step-guidance.js';
@@ -194,27 +195,6 @@ function decisionView(decision) {
   };
 }
 
-const EXISTING_WORKTREE_STATES = new Set(['external', 'released']);
-
-/** `existingTask` is the stored run's task, or null. A replay must ask for the same place to run. */
-function sameStartBody(existing, body, existingTask) {
-  const samePlace = () => {
-    if (body.taskId !== undefined) return existing.taskId === body.taskId;
-    // A typed title stays as typed; a task started without one is known by its title not being the owner's.
-    if (body.newTask !== undefined) {
-      if (existingTask === null) return false;
-      return body.newTask.title === undefined ? existingTask.titleSource !== 'owner' : existingTask.titleSource === 'owner' && existingTask.title === body.newTask.title.trim();
-    }
-    return existing.taskId === null;
-  };
-  const existingPath = existing.taskId === null && EXISTING_WORKTREE_STATES.has(existing.worktreeState) ? existing.worktreePath : undefined;
-  return samePlace()
-    && existing.workflowId === body.workflowId
-    && existing.project === body.project
-    && existing.input === body.input
-    && existingPath === body.worktreePath;
-}
-
 /**
  * Why a worktree cannot take a run, or null when it can. The first reason that applies is reported.
  * `changes` is what git read in the worktree, or null for a missing one, which is never read.
@@ -389,6 +369,7 @@ export function createPipelinesRouter(deps) {
     workflowStore,
     settingsStore,
     runStore,
+    requestStore,
     decisionStore,
     noteStore,
     reviewStore,
@@ -428,6 +409,9 @@ export function createPipelinesRouter(deps) {
   if (typeof stepPresetStore?.list !== 'function') throw new Error('pipelines router: stepPresetStore is required');
   if (typeof taskStore?.get !== 'function') throw new Error('pipelines router: taskStore is required');
   if (typeof taskService?.plan !== 'function' || typeof taskService?.createPlanned !== 'function') throw new Error('pipelines router: taskService is required');
+  if (['get', 'reserve', 'setTaskId', 'release'].some(method => typeof requestStore?.[method] !== 'function')) {
+    throw new Error('pipelines router: requestStore is required');
+  }
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
   const asRunView = async run => {
@@ -825,35 +809,15 @@ export function createPipelinesRouter(deps) {
     });
   }));
 
-  router.post(`${BASE}/runs`, route(async (req, res) => {
-    const errors = validateRunStartBody(req.body);
-    if (errors.length) throw fieldErrors(errors);
+  const startsInFlight = new Map();
+  const reusedRequest = () => new PipelineError('This requestId was already used with a different body', 409);
 
-    const body = {
-      requestId: req.body.requestId,
-      workflowId: req.body.workflowId,
-      project: req.body.project,
-      input: req.body.input,
-      worktreePath: req.body.worktreePath,
-      taskId: req.body.taskId,
-      newTask: req.body.newTask,
-      startIn: req.body.startIn,
-    };
+  async function provisionRun(body, reservation) {
     // A run works in a new worktree of its own, in a worktree named by path, in an existing
     // task, or in a task created for it. Only a worktree CodeDeck has just created gets Setup.
     const inTask = body.taskId !== undefined;
     const forNewTask = body.newTask !== undefined;
     const useExisting = body.worktreePath !== undefined || inTask;
-    const taskOf = run => (run.taskId === null ? null : taskStore.get(run.taskId));
-
-    const existing = runStore.getByRequestId(body.requestId);
-    if (existing) {
-      if (sameStartBody(existing, body, taskOf(existing))) {
-        return res.status(200).json(await asRunView(existing));
-      }
-      throw new PipelineError('This requestId was already used with a different body', 409);
-    }
-
     const workflow = workflowStore.get(body.workflowId);
     if (!workflow) throw new PipelineError('Workflow not found', 404);
 
@@ -885,11 +849,15 @@ export function createPipelinesRouter(deps) {
       task = taskStore.get(body.taskId);
       if (!task) throw new PipelineError('Task not found', 404);
       if (task.project !== project.name) throw fieldError('taskId', 'This task belongs to another project');
-      if (!OPEN_TASK.has(task.state)) throw new PipelineError('This task is finished.', 409);
+    } else if (forNewTask && reservation.taskId !== null) {
+      task = taskStore.get(reservation.taskId);
     }
-    if (forNewTask) {
-      // The repository the run starts in is the one the task starts in: its worktree comes first.
-      const asked = body.newTask.repositories;
+    if (task && !OPEN_TASK.has(task.state)) throw new PipelineError('This task is finished.', 409);
+    // Setup prepares every worktree of a task created for the run, the one it works in first.
+    let setupPairs = null;
+    // The repository the run starts in is the one a new task starts in: its worktree comes first.
+    const asked = forNewTask ? body.newTask.repositories : undefined;
+    if (forNewTask && !task) {
       const repositories = body.startIn === undefined ? asked : [body.startIn, ...(asked ?? []).filter(name => name !== body.startIn)];
       try {
         const typed = body.newTask.title !== undefined;
@@ -914,22 +882,31 @@ export function createPipelinesRouter(deps) {
       homePath = first.homePath;
       checkoutPath = first.checkoutPath;
       startRepository = first.repository;
+      setupPairs = taskPlan.worktrees.map(entry => ({ repository: entry.repository, homePath: entry.homePath, worktreePath: entry.worktreePath }));
       const included = new Set(taskPlan.worktrees.map(entry => entry.repository));
       places = {
         current: first.repository,
         worktrees: taskPlan.worktrees.map(entry => ({ repository: entry.repository, path: entry.worktreePath })),
         readOnly: checkouts.filter(entry => !included.has(entry.repository)),
       };
-    } else if (useExisting) {
+    } else if (useExisting || task) {
       let wantedPath;
-      if (inTask) {
-        // The run starts in the repository named, or where a terminal of the task would open.
+      if (task) {
+        // The run starts in the repository named, or where a terminal of the task would open. A task
+        // recorded for an earlier attempt of this request is used the same way.
         const open = task.worktrees.filter(candidate => OPEN_TASK.has(candidate.state));
         const target = body.startIn === undefined ? open[0] : open.find(candidate => candidate.repository === body.startIn);
         if (!target) throw fieldError('startIn', 'Use the name of a repository of this task that is still open');
         wantedPath = target.worktreePath;
-        checkoutPath = target.own ? project.path : target.repositoryPath;
+        const checkoutOf = candidate => (candidate.own ? project.path : candidate.repositoryPath);
+        checkoutPath = checkoutOf(target);
         startRepository = target.repository;
+        if (forNewTask) {
+          setupPairs = [];
+          for (const entry of [target, ...open.filter(candidate => candidate !== target)]) {
+            setupPairs.push({ repository: entry.repository, homePath: await resolveHomeRepoPath({ projectPath: checkoutOf(entry), execFile }), worktreePath: entry.worktreePath });
+          }
+        }
       } else {
         wantedPath = body.worktreePath;
         // Main reaches every repository of the project: the path may be the own checkout of one of the others.
@@ -940,8 +917,18 @@ export function createPipelinesRouter(deps) {
       // The path is only ever one git itself reported for a repository of this project.
       const worktrees = await listWorktrees({ projectPath: checkoutPath, execFile });
       worktree = worktrees.find(candidate => candidate.path === wantedPath) ?? null;
-      if (!worktree && inTask) throw new PipelineError("This task's files are no longer on disk.", 409);
+      const taskFilesMissing = () => new PipelineError("This task's files are no longer on disk.", 409);
+      if (task && !worktree) throw taskFilesMissing();
       if (!worktree) throw new PipelineError('Worktree not found for this project', 404);
+      if (forNewTask) {
+        // A locked worktree can still be listed without Git marking it prunable.
+        if (worktree.missing) throw taskFilesMissing();
+        const directory = await fs.promises.stat(worktree.path).catch(error => {
+          if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+          throw error;
+        });
+        if (!directory?.isDirectory()) throw taskFilesMissing();
+      }
       const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
       const refusal = worktreeRefusal(worktree, changes, runStore.list());
       if (refusal) throw new PipelineError(refusal.message, 409, undefined, { reasons: [refusal] });
@@ -966,10 +953,7 @@ export function createPipelinesRouter(deps) {
       agentStore,
       settings,
       input: body.input,
-      // Setup prepares every worktree of a task created for the run, the one it works in first.
-      setupPairs: taskPlan
-        ? taskPlan.worktrees.map(entry => ({ repository: entry.repository, homePath: entry.homePath, worktreePath: entry.worktreePath }))
-        : [{ repository: startRepository, homePath, worktreePath: names.worktreePath }],
+      setupPairs: setupPairs ?? [{ repository: startRepository, homePath, worktreePath: names.worktreePath }],
       checkouts,
       withSetup: !useExisting,
     });
@@ -1001,6 +985,8 @@ export function createPipelinesRouter(deps) {
 
     // Everything that can refuse the run has been checked; only now is the task's worktree created.
     if (taskPlan) {
+      requestStore.setTaskId(body.requestId, taskPlan.id);
+      reservation.taskId = taskPlan.id;
       try {
         task = await taskService.createPlanned(taskPlan);
       } catch (err) {
@@ -1034,7 +1020,7 @@ export function createPipelinesRouter(deps) {
         worktreePath: names.worktreePath,
         worktreeBranch: names.branch,
         // A task owns its worktree, so to the run it is one that already existed: never removed by the run.
-        baseCommit: taskPlan ? task.baseCommit : worktree ? worktree.head : null,
+        baseCommit: forNewTask ? task.baseCommit : worktree ? worktree.head : null,
         worktreeState: taskPlan || worktree ? 'external' : 'not_created',
         worktreeDetail: null,
         inputRequest: null,
@@ -1044,10 +1030,7 @@ export function createPipelinesRouter(deps) {
     } catch (err) {
       if (/requestId already exists/i.test(String(err?.message || err))) {
         const raced = runStore.getByRequestId(body.requestId);
-        if (raced && sameStartBody(raced, body, taskOf(raced))) {
-          return res.status(200).json(await asRunView(raced));
-        }
-        throw new PipelineError('This requestId was already used with a different body', 409);
+        if (raced) return { run: raced, status: 200 };
       }
       throw err;
     }
@@ -1059,9 +1042,46 @@ export function createPipelinesRouter(deps) {
       }
     }
 
-    res.status(201).json(await asRunView(run));
+    return { run, status: 201 };
+  }
 
-    if (engine && typeof engine.start === 'function') {
+  router.post(`${BASE}/runs`, route(async (req, res) => {
+    const body = req.body;
+    const errors = validateRunStartBody(body);
+    if (errors.length) throw fieldErrors(errors);
+
+    const { requestId } = body;
+    const params = serializeStartParams(body);
+    let reservation = requestStore.get(requestId);
+    const existing = runStore.getByRequestId(requestId);
+    if (!reservation && existing) throw reusedRequest();
+    if (!reservation) reservation = requestStore.reserve(requestId, params);
+    if (reservation.params !== params) throw reusedRequest();
+
+    const pending = startsInFlight.get(requestId);
+    if (pending) {
+      const { view } = await pending;
+      return res.status(200).json(view);
+    }
+    if (existing) return res.status(200).json(await asRunView(existing));
+
+    const start = Promise.resolve().then(async () => {
+      try {
+        const { run, status } = await provisionRun(body, reservation);
+        return { run, status, view: await asRunView(run) };
+      } catch (error) {
+        const taskExists = reservation.taskId !== null && taskStore.get(reservation.taskId);
+        if (!taskExists && !runStore.getByRequestId(requestId)) requestStore.release(requestId);
+        throw error;
+      } finally {
+        startsInFlight.delete(requestId);
+      }
+    });
+    startsInFlight.set(requestId, start);
+    const { run, status, view } = await start;
+    res.status(status).json(view);
+
+    if (status === 201 && engine && typeof engine.start === 'function') {
       scheduleStart(() => {
         Promise.resolve(engine.start(run.id)).catch(err => {
           console.warn(

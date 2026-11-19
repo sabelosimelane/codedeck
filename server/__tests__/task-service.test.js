@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService, TaskError } from '../tasks/task-service.js';
 import { setTaskState } from './helpers/task-state.js';
+import { createTaskLanding } from '../tasks/task-landing.js';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
 const cleanups = [];
@@ -16,7 +17,7 @@ function git(cwd, args) {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
-function setup({ host, startSession } = {}) {
+function setup({ host, startSession, gitExec = execFile } = {}) {
   const base = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'codedeck-task-')));
   const repo = path.join(base, 'repo');
   mkdirSync(repo);
@@ -31,15 +32,16 @@ function setup({ host, startSession } = {}) {
   const taskStore = createTaskStore(db);
   const start = startSession ?? vi.fn(async () => ({ id: 'Demo-3' }));
   const ids = [ID, '7b000000-0000-4000-8000-000000000002'];
-  const service = createTaskService({ isRunWorking: () => false,
-    taskStore,
-    findProject: name => (name === 'Demo' ? { name: 'Demo', path: repo, repositories: [], ...(host ? { host } : {}) } : null),
-    execFile,
+  const findProject = name => (name === 'Demo' ? { name: 'Demo', path: repo, repositories: [], ...(host ? { host } : {}) } : null);
+  const service = createTaskService({
+    isRunWorking: () => false,
+    taskStore, findProject,
+    execFile: gitExec,
     startSession: start,
     pathExists: async target => existsSync(target),
     newId: () => ids.shift(),
   });
-  return { base, repo, taskStore, service, start };
+  return { base, repo, db, findProject, taskStore, service, start };
 }
 
 async function rejection(promise) {
@@ -48,6 +50,90 @@ async function rejection(promise) {
 }
 
 describe('task service', () => {
+  it('creates no worktree or branch when the task insert fails', async () => {
+    const { repo, service, taskStore } = setup();
+    const plan = await service.plan({ project: 'Demo', title: 'Insert failure', titleSource: 'owner' });
+    vi.spyOn(taskStore, 'create').mockImplementationOnce(() => { throw new Error('Insert failed'); });
+    const before = git(repo, ['worktree', 'list', '--porcelain']);
+    await expect(service.createPlanned(plan)).rejects.toThrow('Insert failed');
+    expect(git(repo, ['branch', '--list', plan.branch])).toBe('');
+    expect(git(repo, ['worktree', 'list', '--porcelain'])).toBe(before);
+    expect(existsSync(plan.worktreePath)).toBe(false);
+    expect(taskStore.list()).toEqual([]);
+  });
+
+  it('removes the initial row when Git fails without leaving a folder', async () => {
+    const { repo, service, taskStore } = setup();
+    const plan = await service.plan({ project: 'Demo', title: 'Branch collision', titleSource: 'owner' });
+    git(repo, ['branch', plan.branch]);
+    const create = vi.spyOn(taskStore, 'create');
+    await expect(service.createPlanned(plan)).rejects.toThrow(/already exists/);
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ id: plan.id }));
+    expect(taskStore.list()).toEqual([]);
+    expect(existsSync(plan.worktreePath)).toBe(false);
+  });
+
+  it('keeps the task row and its files when Git fails after leaving a folder', async () => {
+    const gitExec = (cmd, args, options, callback) => {
+      if (args[2] !== 'worktree' || args[3] !== 'add') return execFile(cmd, args, options, callback);
+      mkdirSync(args[4]);
+      writeFileSync(path.join(args[4], 'owner.txt'), 'keep');
+      callback(new Error('Worktree add interrupted'));
+    };
+    const { service, taskStore } = setup({ gitExec });
+    const plan = await service.plan({ project: 'Demo', title: 'Partial worktree', titleSource: 'owner' });
+    await expect(service.createPlanned(plan)).rejects.toThrow('Worktree add interrupted');
+    expect(taskStore.get(plan.id)).toMatchObject({ state: 'active', worktreePath: plan.worktreePath });
+    expect(readFileSync(path.join(plan.worktreePath, 'owner.txt'), 'utf8')).toBe('keep');
+  });
+
+  it('can close a task after interruption between the row and Git while preserving owner files', async () => {
+    const { db, repo, findProject, service, taskStore } = setup();
+    const plan = await service.plan({ project: 'Demo', title: 'Interrupted', titleSource: 'owner' });
+    const [first] = plan.worktrees;
+    const row = taskStore.create({
+      id: plan.id, project: plan.project, title: plan.title, titleSource: plan.titleSource, folder: plan.folder,
+      repository: first.repository, repositoryPath: first.repositoryPath, worktreePath: first.worktreePath,
+      branch: first.branch, baseBranch: first.baseBranch, baseCommit: git(repo, ['rev-parse', 'HEAD']),
+    });
+    const reopened = createTaskStore(db);
+    const pathExists = vi.fn(async target => existsSync(target));
+    const restarted = createTaskService({ taskStore: reopened, findProject, execFile, pathExists, startSession: vi.fn(), isRunWorking: () => false });
+    const landing = createTaskLanding({ taskStore: reopened, findProject, execFile, pathExists,
+      hasActiveRun: () => false, onTaskFinished: () => {}, onWorktreeFinished: () => {}, closeTerminals: async () => ({ closed: [], notClosed: [] }) });
+    expect(reopened.list()).toEqual([row]);
+    expect(restarted.get(row.id)).toEqual(row);
+    const status = await landing.status(row.id);
+    expect(status.filesPresent).toBe(false);
+    expect(status.blockers.commit).toContainEqual({ code: 'files_missing', message: "This task's files are no longer on disk." });
+    expect(status.blockers.close).toEqual([]);
+    // An owner can recreate the path after the close operation observes that the worktree is missing.
+    pathExists.mockImplementationOnce(async target => {
+      expect(existsSync(target)).toBe(false);
+      mkdirSync(target, { recursive: true });
+      writeFileSync(path.join(target, 'owner.txt'), 'keep');
+      return false;
+    });
+    await expect(landing.close(row.id)).resolves.toMatchObject({ task: { state: 'closed' } });
+    expect(readFileSync(path.join(plan.worktreePath, 'owner.txt'), 'utf8')).toBe('keep');
+  });
+
+  it('uses the recorded base commit even when HEAD moves during the task insert', async () => {
+    const { repo, service, taskStore } = setup();
+    const baseCommit = git(repo, ['rev-parse', 'HEAD']);
+    const plan = await service.plan({ project: 'Demo', title: 'Pinned base', titleSource: 'owner' });
+    const create = taskStore.create;
+    vi.spyOn(taskStore, 'create').mockImplementationOnce(input => {
+      git(repo, ['commit', '--allow-empty', '-m', 'Move HEAD']);
+      expect(existsSync(plan.worktreePath)).toBe(false);
+      return create(input);
+    });
+    const task = await service.createPlanned(plan);
+    expect(git(repo, ['rev-parse', 'HEAD'])).not.toBe(baseCommit);
+    expect(task.baseCommit).toBe(baseCommit);
+    expect(git(task.worktreePath, ['rev-parse', 'HEAD'])).toBe(baseCommit);
+  });
+
   it('creates a task with its own worktree and branch from the current commit', async () => {
     const { base, repo, service, taskStore } = setup();
     const task = await service.create({ project: 'Demo', title: '  WhatsApp replies ' });

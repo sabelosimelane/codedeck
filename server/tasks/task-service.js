@@ -37,7 +37,9 @@ export function createTaskService({
   isRunWorking,
   rmdir = target => fs.promises.rmdir(target),
 } = {}) {
-  if (typeof taskStore?.create !== 'function' || typeof taskStore?.addWorktree !== 'function') throw new TypeError('taskStore is required');
+  for (const method of ['create', 'remove', 'addWorktree', 'removeWorktree']) {
+    if (typeof taskStore?.[method] !== 'function') throw new TypeError('taskStore with create, remove, addWorktree and removeWorktree is required');
+  }
   for (const [name, value] of Object.entries({ findProject, execFile, startSession, pathExists, newId, isRunWorking, rmdir })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
@@ -173,50 +175,73 @@ export function createTaskService({
     return true;
   }
 
-  const record = (planned, worktrees) => {
-    const [first, ...rest] = worktrees;
-    const row = worktree => ({
-      repository: worktree.repository, repositoryPath: worktree.repositoryPath, worktreePath: worktree.worktreePath,
-      branch: worktree.branch, baseBranch: worktree.baseBranch, baseCommit: worktree.baseCommit,
-    });
-    let task = taskStore.create({ id: planned.id, project: planned.project, title: planned.title, titleSource: planned.titleSource, folder: planned.folder, ...row(first) });
-    for (const worktree of rest) task = taskStore.addWorktree(planned.id, row(worktree));
-    return task;
-  };
+  const row = worktree => ({
+    repository: worktree.repository, repositoryPath: worktree.repositoryPath, worktreePath: worktree.worktreePath,
+    branch: worktree.branch, baseBranch: worktree.baseBranch, baseCommit: worktree.baseCommit,
+  });
 
-  /** Creates the worktrees and the task a plan describes: all of them, or none. */
+  /** The commit a checkout is on now; a worktree is created at the commit recorded for it. */
+  async function headOf(checkout) {
+    const { stdout } = await runGit(execFile, ['-C', checkout, 'rev-parse', 'HEAD']);
+    return stdout.trim();
+  }
+
+  async function onDisk(target) {
+    const there = await pathExists(target);
+    if (typeof there !== 'boolean') throw new Error('pathExists must return a boolean');
+    return there;
+  }
+
+  /**
+   * Records the task with all its worktrees before Git is asked for any of them, then creates
+   * each at the commit recorded for it: all of them, or none.
+   */
   async function createPlannedNow(planned) {
     requirePlan(planned);
-    const taken = planned.folder ?? planned.worktrees[0].worktreePath;
-    const exists = await pathExists(taken);
-    if (typeof exists !== 'boolean') throw new Error('pathExists must return a boolean');
-    if (exists) throw new TaskError('A folder for this task already exists. Try again.', 409);
+    if (await onDisk(planned.folder ?? planned.worktrees[0].worktreePath)) throw new TaskError('A folder for this task already exists. Try again.', 409);
+
+    const worktrees = [];
+    for (const worktree of planned.worktrees) worktrees.push({ ...worktree, baseCommit: await headOf(worktree.checkoutPath) });
+    const [first, ...rest] = worktrees;
+    const task = taskStore.create({
+      id: planned.id, project: planned.project, title: planned.title, titleSource: planned.titleSource, folder: planned.folder,
+      ...row(first), others: rest.map(row),
+    });
 
     const created = [];
-    for (const worktree of planned.worktrees) {
+    for (const worktree of worktrees) {
       try {
-        const made = await createWorktree({ homePath: worktree.homePath, worktreePath: worktree.worktreePath, branch: worktree.branch, projectPath: worktree.checkoutPath, execFile });
-        created.push({ ...worktree, baseCommit: made?.baseCommit });
+        await createWorktree({ homePath: worktree.homePath, worktreePath: worktree.worktreePath, branch: worktree.branch, baseCommit: worktree.baseCommit, execFile });
+        created.push(worktree);
       } catch (error) {
-        // A task with one worktree failed before anything existed: the failure is reported as it always was.
-        if (planned.worktrees.length === 1) throw error;
-        const kept = [];
-        for (const earlier of [...created].reverse()) {
-          if (!(await undo(earlier))) kept.unshift(earlier);
+        // The worktrees already made for this task are taken back; what then is still on disk decides whether the task stays.
+        for (const earlier of [...created].reverse()) await undo(earlier);
+        const remaining = [];
+        for (const candidate of worktrees) {
+          if (await onDisk(candidate.worktreePath)) remaining.push(candidate);
         }
-        const reason = `The copy of ${worktree.repository} could not be created: ${gitReason(error?.message).replace(/\.$/, '')}.`;
-        if (kept.length === 0) {
+        if (remaining.length === 0) {
+          taskStore.remove(planned.id);
           // The task's folder goes with its last worktree; a folder that holds something else stays.
           if (planned.folder !== null) {
-            await rmdir(planned.folder).catch(failure => { if (failure?.code !== 'ENOENT' && failure?.code !== 'ENOTEMPTY') throw failure; });
+            await rmdir(planned.folder).catch((failure) => { if (failure?.code !== 'ENOENT' && failure?.code !== 'ENOTEMPTY') throw failure; });
           }
-          throw new TaskError(`${reason} Nothing was kept.`, 409, undefined, { cause: error });
+        } else {
+          // The task stays for the copies still on disk. A repository whose copy is not there leaves the task again;
+          // the one the task started in cannot, so its row stays and says its files are missing.
+          for (const recorded of taskStore.get(planned.id).worktrees) {
+            if (!recorded.first && !remaining.some(entry => entry.worktreePath === recorded.worktreePath)) taskStore.removeWorktree(planned.id, recorded.id);
+          }
         }
-        record(planned, kept);
-        throw new TaskError(`${reason} The task was kept with ${kept.map(entry => entry.repository).join(', ')}, whose copy could not be removed again.`, 409, undefined, { cause: error });
+        // A task with one worktree reports the failure as it always did.
+        if (worktrees.length === 1) throw error;
+        const reason = `The copy of ${worktree.repository} could not be created: ${gitReason(error?.message).replace(/\.$/, '')}.`;
+        throw new TaskError(remaining.length === 0
+          ? `${reason} Nothing was kept.`
+          : `${reason} The task was kept with ${remaining.map(entry => entry.repository).join(', ')}, whose copy could not be removed again.`, 409, undefined, { cause: error });
       }
     }
-    return record(planned, created);
+    return task;
   }
 
   function requireTask(id) {
@@ -260,24 +285,19 @@ export function createTaskService({
     const worktreePath = task.folder !== null
       ? path.join(task.folder, name)
       : path.join(path.dirname(homePath), 'worktrees', `${path.basename(homePath)}-${branch.slice('task/'.length)}`);
-    const exists = await pathExists(worktreePath);
-    if (typeof exists !== 'boolean') throw new Error('pathExists must return a boolean');
-    if (exists) throw new TaskError(`A folder for ${name} in this task already exists.`, 409);
+    if (await onDisk(worktreePath)) throw new TaskError(`A folder for ${name} in this task already exists.`, 409);
 
-    const worktree = { repository: name, repositoryPath: checkoutPath === project.path ? null : checkoutPath, homePath, worktreePath, branch, baseBranch };
-    let made;
+    // Recorded before Git is asked, at the commit the repository is on now.
+    const baseCommit = await headOf(checkoutPath);
+    const recorded = taskStore.addWorktree(task.id, { repository: name, repositoryPath: checkoutPath === project.path ? null : checkoutPath, worktreePath, branch, baseBranch, baseCommit });
     try {
-      made = await createWorktree({ homePath, worktreePath, branch, projectPath: checkoutPath, execFile });
+      await createWorktree({ homePath, worktreePath, branch, baseCommit, execFile });
     } catch (error) {
+      // No folder was made: the repository never became part of the task.
+      if (!(await onDisk(worktreePath))) taskStore.removeWorktree(task.id, recorded.worktrees.find(worktree => worktree.worktreePath === worktreePath).id);
       throw new TaskError(`The copy of ${name} could not be created: ${gitReason(error?.message).replace(/\.$/, '')}.`, 409, undefined, { cause: error });
     }
-    try {
-      return taskStore.addWorktree(task.id, { repository: name, repositoryPath: worktree.repositoryPath, worktreePath, branch, baseBranch, baseCommit: made?.baseCommit });
-    } catch (error) {
-      // The copy exists but the task could not take it: it is new and clean, so it is taken back.
-      await undo(worktree);
-      throw error;
-    }
+    return recorded;
   }
 
   // Git refuses concurrent `worktree add` in one repository, so creations run one at a time.

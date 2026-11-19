@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
@@ -423,15 +423,85 @@ describe('task landing — work that ordinary status does not show', () => {
 
   it('Close lets disposable ignored folders and byte-identical copies of Main go with the folder', async () => {
     const { wt, repo, landing } = await setup();
-    write(wt, '.gitignore', 'node_modules/\ndist/\nbuild/\n.codedeck/\nsame.local\n');
+    write(wt, '.gitignore', 'node_modules/\ndist/\nbuild/\ntarget/\n.codedeck/\nsame.local\n');
     commitAll(wt, 'ignore');
-    for (const dir of ['node_modules', 'dist', 'build', '.codedeck']) { mkdirSync(path.join(wt, dir)); write(path.join(wt, dir), 'x.txt', 'x\n'); }
+    // `target` is where Maven and Cargo put what they build.
+    for (const dir of ['node_modules', 'dist', 'build', 'target', '.codedeck']) { mkdirSync(path.join(wt, dir)); write(path.join(wt, dir), 'x.txt', 'x\n'); }
     write(wt, 'same.local', 'identical\n');
     write(repo, 'same.local', 'identical\n');
 
     expect((await landing.status(ID)).blockers.close).toEqual([]);
     expect((await landing.close(ID)).task.state).toBe('closed');
     expect(existsSync(wt)).toBe(false);
+  });
+
+  describe('an ignored folder', () => {
+    // The Setup step copies local settings such as a secrets folder from Main into the task.
+    const secrets = (root, files) => {
+      for (const [file, text] of Object.entries(files)) {
+        mkdirSync(path.dirname(path.join(root, 'secrets', file)), { recursive: true });
+        write(path.join(root, 'secrets'), file, text);
+      }
+    };
+    async function ignoring() {
+      const ctx = await setup();
+      write(ctx.wt, '.gitignore', 'secrets/\n');
+      commitAll(ctx.wt, 'ignore the secrets folder');
+      return ctx;
+    }
+    const COPIES = { 'api.key': 'key-one\n', 'certs/server.pem': 'pem\n', 'certs/deep/ca.pem': 'ca\n' };
+
+    it('goes with the task when every file in it is copied byte for byte in Main', async () => {
+      const { wt, repo, landing } = await ignoring();
+      secrets(wt, COPIES);
+      secrets(repo, { ...COPIES, 'only-in-main.key': 'extra\n' });
+      mkdirSync(path.join(wt, 'secrets', 'empty'));
+      // The conditions of the reported fault: Git lists the folder as one entry, and Main holds the same files.
+      expect(git(wt, ['status', '--porcelain', '--ignored'])).toBe('!! secrets/');
+
+      expect((await landing.status(ID)).blockers.close).toEqual([]);
+      expect((await landing.close(ID)).task.state).toBe('closed');
+      expect(existsSync(wt)).toBe(false);
+      expect(existsSync(path.join(repo, 'secrets', 'api.key'))).toBe(true);
+    });
+
+    it.each([
+      ['a file Main does not have', { ...COPIES, 'new.key': 'made in the task\n' }, COPIES],
+      ['a nested file Main does not have', { ...COPIES, 'certs/deep/new.pem': 'made in the task\n' }, COPIES],
+      ['a file of the same length whose bytes differ', { ...COPIES, 'api.key': 'key-two\n' }, COPIES],
+      ['a file of another length', { ...COPIES, 'api.key': 'a longer key\n' }, COPIES],
+      ['files when Main has no such folder', COPIES, {}],
+      ['a file whose name is a folder in Main', { 'api.key': 'key-one\n' }, { 'api.key/inner': 'x\n' }],
+      ['a folder whose name is a file in Main', { 'certs/server.pem': 'pem\n' }, { certs: 'a file\n' }],
+    ])('is kept when it holds %s', async (_name, inTask, inMain) => {
+      const { wt, repo, landing, taskStore } = await ignoring();
+      secrets(wt, inTask);
+      secrets(repo, inMain);
+
+      const closed = await outcome(landing.close(ID));
+
+      expect({ refused: closed.refused, status: closed.status, taskState: taskStore.get(ID).state, checkoutExists: existsSync(wt) })
+        .toEqual({ refused: true, status: 409, taskState: 'active', checkoutExists: true });
+      expect(closed.reasons.map(item => item.code)).toEqual(['ignored_files']);
+      expect(closed.reasons[0].message).toBe('This task has files Git ignores that exist nowhere else: secrets/. Move or delete them first.');
+    });
+
+    it('is kept when it holds a link, which cannot be shown to be a copy', async () => {
+      const { wt, repo, landing } = await ignoring();
+      secrets(wt, { 'api.key': 'key-one\n' });
+      secrets(repo, { 'api.key': 'key-one\n', 'link.key': 'key-one\n' });
+      symlinkSync('api.key', path.join(wt, 'secrets', 'link.key'));
+
+      expect(codes((await landing.status(ID)).blockers.close)).toEqual(['ignored_files']);
+    });
+
+    it('does not look inside disposable folders it contains', async () => {
+      const { wt, repo, landing } = await ignoring();
+      secrets(wt, { 'api.key': 'key-one\n', 'node_modules/pkg/index.js': 'installed in the task\n', 'tool/.codedeck/note.md': 'note\n' });
+      secrets(repo, { 'api.key': 'key-one\n' });
+
+      expect((await landing.status(ID)).blockers.close).toEqual([]);
+    });
   });
 
   it('Status reports an ignored file whose name is a folder in Main instead of failing', async () => {

@@ -48,6 +48,55 @@ const second = {
 };
 
 describe('task store', () => {
+  it('only removes an active task at its initial revision, and its worktrees with it', () => {
+    const { db, store } = setup();
+    expect(() => store.remove('invalid')).toThrow(/id.*UUID/);
+    expect(() => store.remove(ID)).toThrow(/active.*revision 1/);
+    store.create({ ...input, others: [second] });
+    store.remove(ID);
+    expect(store.get(ID)).toBeNull();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM task_worktrees').get().n).toBe(0);
+
+    store.create(input);
+    const renamed = store.rename(ID, { title: 'Changed', revision: 1 });
+    expect(() => store.remove(ID)).toThrow(/active.*revision 1/);
+    expect(store.get(ID)).toEqual(renamed);
+
+    store.create({ ...input, id: OTHER_ID, worktreePath: '/tmp/worktrees/other' });
+    const finished = store.setWorktreeState(OTHER_ID, store.get(OTHER_ID).worktrees[0].id, { state: 'closed' });
+    expect(() => store.remove(OTHER_ID)).toThrow(/active.*revision 1/);
+    expect(store.get(OTHER_ID)).toEqual(finished);
+    // A refused removal leaves the task's worktree rows where they were.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM task_worktrees').get().n).toBe(2);
+  });
+
+  it('records a task with all its worktrees at once, still untouched', () => {
+    const { store } = setup();
+    const third = { ...second, repository: 'frontend', repositoryPath: '/tmp/group/frontend', worktreePath: '/tmp/worktrees/whatsapp-replies-7a000000/frontend' };
+    const task = store.create({ ...input, others: [second, third] });
+    expect(task.revision).toBe(1);
+    expect(task.worktrees.map(worktree => [worktree.repository, worktree.first, worktree.state])).toEqual([['demo', true, 'active'], ['mobile-app', false, 'active'], ['frontend', false, 'active']]);
+    expect(() => store.create({ ...input, id: OTHER_ID, worktreePath: '/tmp/worktrees/other', others: 'mobile-app' })).toThrow('tasks: others');
+    expect(() => store.create({ ...input, id: OTHER_ID, worktreePath: '/tmp/worktrees/other', others: [{ ...second, branch: 'has space' }] })).toThrow('tasks: branch');
+    expect(() => store.create({ ...input, id: OTHER_ID, worktreePath: '/tmp/worktrees/other', others: [{ ...second, worktreePath: '/tmp/worktrees/x' }, { ...second, worktreePath: '/tmp/worktrees/y' }] })).toThrow('tasks: repository is already part of this task');
+    expect(store.get(OTHER_ID)).toBeNull();
+  });
+
+  it('takes back a worktree that was added, never the one the task started in or one that is finished', () => {
+    const { store } = setup();
+    store.create(input);
+    const added = store.addWorktree(ID, second);
+    expect(() => store.removeWorktree(ID, WT)).toThrow(`task_worktrees row ${WT}: must be an added, active worktree`);
+    expect(() => store.removeWorktree(ID, 'nope')).toThrow('tasks: worktreeId');
+    const after = store.removeWorktree(ID, WT2);
+    expect(after.worktrees.map(worktree => worktree.repository)).toEqual(['demo']);
+    expect(after.revision).toBe(added.revision + 1);
+    // The repository can be added again: it never became part of the task.
+    const again = store.addWorktree(ID, second);
+    store.setWorktreeState(ID, again.worktrees[1].id, { state: 'closed' });
+    expect(() => store.removeWorktree(ID, again.worktrees[1].id)).toThrow('must be an added, active worktree');
+  });
+
   it('creates an active task with its first worktree and reads it back', () => {
     const { store } = setup();
     const task = store.create(input);

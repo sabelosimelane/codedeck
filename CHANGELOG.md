@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-11-19] - Build output in `target` goes with a closed task
+
+### Executive Summary
+* Closing a task was refused when its folder held a `target` folder, the build output of Maven and Cargo projects, because the folder is ignored by Git and exists nowhere else. It is rebuilt by the next build, so it now goes with the task, as `node_modules`, `dist`, `build` and `.codedeck` already did.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `server/tasks/task-landing.js` — `target` added to the ignored folders that may go with a task's folder, at the top level and inside an ignored folder.
+  * `README.md` — The Tasks section now says which ignored files keep a task's folder and which go with it.
+* **🧪 Tests:**
+  * `server/__tests__/task-landing.test.js` — The disposable-folders case includes `target`; it failed with "exist nowhere else: target/" before the change. All 49 landing tests pass.
+
+## [2026-11-19] - Closing a task no longer trips over a copied settings folder
+
+### Executive Summary
+* Close and Merge keep a task's folder when it holds files Git ignores that exist nowhere else. That check treated every ignored folder as lost, even one whose files are all identical to Main's, so a task whose Setup step had copied `.local-secrets/` from Main could not be closed until the folder was deleted by hand. A folder now goes with the task when every file in it, at any depth, is copied byte for byte at the same place in Main. A folder that holds anything else is still kept: a file Main does not have, a file whose bytes differ, or a link.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Git lists a wholly ignored folder as one entry ending in `/`, and `sameBytes` in `server/tasks/task-landing.js` returned false for any such entry without looking inside it. A single ignored file, such as `.env.local`, was compared properly.
+  * **Solution:** `sameFolder` walks the task's folder and requires each regular file to be a regular file of the same size and SHA-256 in Main; it stops at the first difference, does not look into disposable folders (`node_modules`, `dist`, `build`, `.codedeck`) inside it, and counts a link or any other kind of entry as one that would be lost. The refusal still names the folder.
+* **🧪 Tests:**
+  * `server/__tests__/task-landing.test.js` — 10 new cases: a folder that is a full copy (with a nested folder and an empty one) closes; a folder is kept for a file or nested file Main lacks, the same length with other bytes, another length, no such folder in Main, a file whose name is a folder in Main and the reverse, and a link; disposable folders inside are skipped. All 49 landing tests and the other task tests (224 in all) pass.
+  * Checked read-only against a real task folder of another project: the guard on main named `.local-secrets/`, `.project`, `.settings/` and `target/`; the fixed guard names `.project` and `target/`. By checksum, `.local-secrets/` (8 files) and `.settings/` (4 files) are identical in Main and `.project` is not.
+
 ## [2026-11-19] - A refused run start says which field and why
 
 ### Executive Summary

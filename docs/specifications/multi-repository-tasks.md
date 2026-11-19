@@ -630,3 +630,15 @@ re-adding a repository that was merged or closed in the same task; dropping the 
   repositories when the instance sends them.
 - **A run in Main in another repository (§3.4).** Asked for with `worktreePath` set to that
   repository's checkout, not with `startIn`.
+- **Creation order (§3.2).** `main` changed creation while this was built (`3d1a8d1`): a task's row
+  is written first, and each worktree is then created at the commit recorded for it. This build
+  follows that order for every repository: the task and all its worktrees are recorded in one
+  transaction, then created one after another. When one fails, the ones already created are taken
+  back as described; if no folder is left, the row is removed again; if the undo is refused, the
+  task stays with the copies still on disk and the rows of the others are removed (the row of the
+  repository the task started in cannot be, and then says its files are missing). Adding a
+  repository records its row before Git too, and removes it again when Git left no folder.
+- **Replaying a start (§3.4).** `startIn` and `newTask.repositories` are part of what a `requestId`
+  is recorded with (`server/pipelines/request-store.js`); a request recorded before they existed
+  reads the same. A start that was interrupted after its task was recorded is finished in that
+  task, in the same repository, with Setup for each of its open repositories.
