@@ -79,6 +79,8 @@ function worktreeLandingView(view) {
     commitsAhead: view.commitsAhead,
     commitsBehind: view.commitsBehind,
     alreadyInBase: view.alreadyInBase,
+    ignoredAtRisk: [...view.ignoredAtRisk],
+    ignoredAtRiskCount: view.ignoredAtRiskCount,
     main: { branch: view.main.branch, dirty: view.main.dirty },
     remotes: view.remotes.map(remote => ({ name: remote.name, host: remote.host, tool: remote.tool })),
     blockers: {
@@ -100,6 +102,13 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
   }
   const noBody = req => {
     if (req.body !== undefined && Object.keys(requireBody(req.body, [])).length) throw fieldError('body', 'This request takes no body');
+  };
+
+  /** Close takes no body, or `{deleteIgnored}`: the owner's word that ignored files only the task holds go with its folder. */
+  const closeOptions = (req) => {
+    if (req.body === undefined || Object.keys(requireBody(req.body, ['deleteIgnored'])).length === 0) return [];
+    if (typeof req.body.deleteIgnored !== 'boolean') throw fieldError('deleteIgnored', 'Use true or false');
+    return [{ deleteIgnored: req.body.deleteIgnored }];
   };
 
   const router = express.Router();
@@ -169,8 +178,7 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
   }));
 
   router.post(`${BASE}/:id/close`, route(async (req, res) => {
-    noBody(req);
-    const result = await landing.close(req.params.id);
+    const result = await landing.close(req.params.id, ...closeOptions(req));
     res.json({ ...result, task: taskView(result.task) });
   }));
 
@@ -206,8 +214,7 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
   }));
 
   router.post(`${BASE}/:id/worktrees/:worktreeId/close`, route(async (req, res) => {
-    noBody(req);
-    const result = await landing.closeWorktree(req.params.id, req.params.worktreeId);
+    const result = await landing.closeWorktree(req.params.id, req.params.worktreeId, ...closeOptions(req));
     res.json({ ...result, task: taskView(result.task) });
   }));
 

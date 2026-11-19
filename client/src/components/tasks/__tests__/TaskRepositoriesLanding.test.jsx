@@ -29,7 +29,7 @@ const blocked = message => [{ code: 'x', message }];
 const standing = (worktreeId, repository, overrides = {}) => ({
   taskId: ID, worktreeId, repository, own: repository === 'backend', first: repository === 'backend', worktreePath: `${FOLDER}/${repository}`,
   state: 'active', branch: 'task/replies-7a000000', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-  uncommitted: [], uncommittedCount: 0, commitsAhead: 0, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
+  uncommitted: [], uncommittedCount: 0, commitsAhead: 0, commitsBehind: 0, alreadyInBase: false, ignoredAtRisk: [], ignoredAtRiskCount: 0, main: { branch: 'main', dirty: false },
   remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }], blockers: { ...none, commit: [{ code: 'nothing_to_commit', message: 'There is nothing to commit.' }] }, ...overrides,
 });
 const clean = { commitsAhead: 2 };
@@ -169,6 +169,35 @@ describe('TaskLandingBar for a task with several repositories', () => {
     expect(api.closeTaskWorktree).toHaveBeenCalledWith(ID, MOBILE);
     expect(handlers.onRepositoryFinished).toHaveBeenCalledWith(result);
     expect(handlers.onFinished).not.toHaveBeenCalled();
+  });
+
+  it('closes a repository that holds ignored files of its own only after listing them', async () => {
+    const ignored = { ignoredAtRisk: ['.project', 'logs/'], ignoredAtRiskCount: 2, blockers: { ...none, close: [{ code: 'ignored_files', message: 'x' }] } };
+    await mount([standing(BACKEND, 'backend', ignored), standing(MOBILE, 'mobile-app')]);
+    expect(row('backend').getByText('2 ignored files only here')).toBeTruthy();
+    api.closeTaskWorktree.mockResolvedValue({ task: TASK, repository: 'backend', branchKept: 'task/replies-7a000000', unmergedCommits: 0, taskFinished: false, terminalsClosed: [], terminalsNotClosed: [] });
+    const close = row('backend').getByRole('button', { name: 'Close backend' });
+    expect(close.disabled).toBe(false);
+    fireEvent.click(close);
+    expect(dialog('Close backend').getByText(/Files Git ignores that exist only in this copy are deleted with it: \.project, logs\/\./)).toBeTruthy();
+    fireEvent.click(dialog('Close backend').getByRole('button', { name: 'Delete files and close' }));
+    await waitFor(() => expect(api.closeTaskWorktree).toHaveBeenCalledWith(ID, BACKEND, { deleteIgnored: true }));
+  });
+
+  it('closes the whole task with the ignored files of each repository only after listing them', async () => {
+    const ignored = files => ({ ignoredAtRisk: files, ignoredAtRiskCount: files.length, blockers: { ...none, close: [{ code: 'ignored_files', message: 'x' }] } });
+    const handlers = await mount([standing(BACKEND, 'backend', ignored(['.project', 'logs/'])), standing(MOBILE, 'mobile-app', ignored(['.gradle/']))]);
+    const result = { task: { ...TASK, state: 'closed' }, branchKept: 'task/replies-7a000000', unmergedCommits: 0, terminalsClosed: [], terminalsNotClosed: [] };
+    api.closeTask.mockResolvedValue(result);
+    const close = screen.getByRole('button', { name: 'Close task' });
+    expect(close.disabled).toBe(false);
+    fireEvent.click(close);
+    expect(dialog('Close task').getByText(/Files Git ignores that exist only in this task are deleted with it: backend: \.project, logs\/; mobile-app: \.gradle\/\./)).toBeTruthy();
+    const yes = dialog('Close task').getByRole('button', { name: 'Delete files and close' });
+    expect(yes.dataset.variant).toBe('danger');
+    fireEvent.click(yes);
+    await waitFor(() => expect(handlers.onFinished).toHaveBeenCalledWith(result));
+    expect(api.closeTask).toHaveBeenCalledWith(ID, { deleteIgnored: true });
   });
 
   it('closes the whole task when every repository can be closed', async () => {

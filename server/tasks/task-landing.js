@@ -65,7 +65,7 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
 }
 
 // Ignored files the owner agreed may go with a task's folder; any other ignored file is kept.
-const DISPOSABLE = new Set(['node_modules', 'dist', 'build', 'target', '.codedeck']);
+const DISPOSABLE = new Set(['node_modules', 'dist', 'build', 'target', '.gradle', '.codedeck']);
 
 function run(execFile, file, args, { cwd, timeout = GIT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
@@ -300,6 +300,9 @@ export function createTaskLanding({
         commitsAhead: ahead,
         commitsBehind: behind,
         alreadyInBase,
+        // Ignored files that exist only here; Close deletes them with the folder once the owner says so.
+        ignoredAtRisk: ignoredAtRisk.slice(0, MAX_LISTED),
+        ignoredAtRiskCount: ignoredAtRisk.length,
         main: { branch: mainBranch, dirty: mainDirty },
         remotes: remoteList,
         blockers: {
@@ -313,6 +316,17 @@ export function createTaskLanding({
   }
 
   const withExtra = (error, extra) => Object.assign(error, { extra });
+
+  /** The owner's word that ignored files only the task holds may be deleted with its folder; left out, they may not. */
+  function requireDeleteIgnored(options) {
+    const value = options?.deleteIgnored;
+    if (value !== undefined && typeof value !== 'boolean') {
+      throw new TaskError('One or more fields failed validation.', 400, [{ field: 'deleteIgnored', message: 'Use true or false' }]);
+    }
+    return value === true;
+  }
+  /** What refuses a close. The owner's word lifts only the ignored files; uncommitted work and the rest still refuse. */
+  const closeBlockers = (view, deleteIgnored) => view.blockers.close.filter(blocker => !(deleteIgnored && blocker.code === 'ignored_files'));
   const refuse = blockers => withExtra(new TaskError(blockers[0].message, 409), { reasons: blockers });
 
   const requireClosed = (result) => {
@@ -486,24 +500,28 @@ export function createTaskLanding({
     },
 
     /** Closes one repository of the task: its worktree goes, its branch stays. */
-    closeWorktree(id, worktreeId) {
+    closeWorktree(id, worktreeId, options) {
+      const deleteIgnored = requireDeleteIgnored(options);
       return serial(async () => {
         const inspection = await inspect(id, worktreeId);
-        if (inspection.view.blockers.close.length) throw refuse(inspection.view.blockers.close);
+        const blockers = closeBlockers(inspection.view, deleteIgnored);
+        if (blockers.length) throw refuse(blockers);
         const { after, closed, finish } = await closeInspected(inspection);
         return { task: after, ...closed, ...finish };
       });
     },
 
     /** Closes the task: every repository that is still open, or none of them. */
-    close(id) {
+    close(id, options) {
+      const deleteIgnored = requireDeleteIgnored(options);
       return serial(async () => {
         const { task } = await load(id);
         const open = task.worktrees.filter(worktree => OPEN_STATES.includes(worktree.state));
         if (open.length <= 1) {
           // One repository is left, or none: the task is closed with it, or refused as finished.
           const inspection = await inspect(id, open[0]?.id);
-          if (inspection.view.blockers.close.length) throw refuse(inspection.view.blockers.close);
+          const blockers = closeBlockers(inspection.view, deleteIgnored);
+          if (blockers.length) throw refuse(blockers);
           const { after, closed, finish } = await closeInspected(inspection);
           return { task: after, ...closed, repositories: [closed], ...finish };
         }
@@ -513,7 +531,7 @@ export function createTaskLanding({
         for (const worktree of open) inspections.push(await inspect(id, worktree.id));
         const reasons = [];
         for (const inspection of inspections) {
-          for (const blocker of inspection.view.blockers.close) {
+          for (const blocker of closeBlockers(inspection.view, deleteIgnored)) {
             // A working run blocks the whole task; it is said once.
             if (blocker.code === 'run_active' && reasons.some(reason => reason.code === 'run_active')) continue;
             reasons.push({ ...blocker, repository: inspection.worktree.repository });

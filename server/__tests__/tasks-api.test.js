@@ -71,7 +71,7 @@ async function setup({ openTerminal, landing } = {}) {
     worktrees: vi.fn(async taskId => real.get(taskId).worktrees.map(worktree => ({
       taskId, worktreeId: worktree.id, repository: worktree.repository, own: worktree.own, first: worktree.first, worktreePath: worktree.worktreePath,
       state: worktree.state, branch: worktree.branch, baseBranch: worktree.baseBranch, prUrl: worktree.prUrl, filesPresent: true, runActive: false,
-      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false, secret: 'never shown' },
+      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, ignoredAtRisk: ['logs/'], ignoredAtRiskCount: 1, main: { branch: 'main', dirty: false, secret: 'never shown' },
       remotes: [{ name: 'origin', host: 'github.com', tool: 'gh', url: 'never shown' }],
       blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.', internal: 'never shown' }], pullRequest: [], close: [] },
       secretColumn: 'never shown',
@@ -438,7 +438,7 @@ describe('tasks API — the repositories of a task', () => {
     expect(response.body.data[1]).toEqual({
       taskId: id(1), worktreeId: secondId, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/t-1-mobile',
       state: 'active', branch: 'task/t-1', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
+      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, ignoredAtRisk: ['logs/'], ignoredAtRiskCount: 1, main: { branch: 'main', dirty: false },
       remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }],
       blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] },
     });
@@ -487,6 +487,27 @@ describe('tasks API — the repositories of a task', () => {
     expect(merged.status).toBe(200);
     expect(landing.merge).toHaveBeenLastCalledWith(id(1), { worktreeId: secondId });
     expect(merged.body.task).not.toHaveProperty('secretColumn');
+  });
+
+  it('passes the owner\'s word about ignored files to Close, and refuses anything but true or false', async () => {
+    const { server, landing, secondId } = await withTask();
+    const whole = `${base}/${id(1)}/close`;
+    const one = `${base}/${id(1)}/worktrees/${secondId}/close`;
+    for (const [url, value] of [[whole, 'yes'], [whole, null], [whole, 1], [one, 'yes'], [one, []]]) {
+      const bad = await request(server).post(url).send({ deleteIgnored: value });
+      expectProblem(bad, 400, url);
+      expect(bad.body.errors).toEqual([{ field: 'deleteIgnored', message: 'Use true or false' }]);
+    }
+    const unknown = await request(server).post(whole).send({ deleteIgnored: true, force: true });
+    expectProblem(unknown, 400, whole);
+    expect(unknown.body.errors.map(error => error.field)).toEqual(['force']);
+    expect(landing.close).not.toHaveBeenCalled();
+    expect(landing.closeWorktree).not.toHaveBeenCalled();
+
+    expect((await request(server).post(one).send({ deleteIgnored: true })).status).toBe(200);
+    expect(landing.closeWorktree).toHaveBeenLastCalledWith(id(1), secondId, { deleteIgnored: true });
+    expect((await request(server).post(whole).send({ deleteIgnored: false })).status).toBe(200);
+    expect(landing.close).toHaveBeenLastCalledWith(id(1), { deleteIgnored: false });
   });
 
   it('closes one repository and returns only the task\'s public fields', async () => {

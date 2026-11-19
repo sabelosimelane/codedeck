@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-11-19] - Close task lists ignored files that exist only in the task and deletes them when you agree
+
+### Executive Summary
+* A task whose folder held a file Git ignores that exists nowhere else could not be closed: Close task was disabled, the reason was only its tooltip, and the files had to be deleted by hand. Two leftover tasks were stuck this way on Gradle caches, `.project` and `logs/`. The bar now counts such files, Close task lists them by name, and **Delete files and close** closes the task and deletes them. Without that choice nothing is deleted.
+* Gradle caches (`.gradle`) now go with a task's folder without asking, like `node_modules` and `build`.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `server/tasks/task-landing.js` — the landing status lists `ignoredAtRisk` (at most 50) with `ignoredAtRiskCount`. `close` and `closeWorktree` take `{deleteIgnored}`; true lifts only the `ignored_files` blocker, and anything but true or false is refused with 400. `.gradle` joined the disposable folders. Merge is unchanged: it still keeps a folder that holds such files.
+  * `server/routes/tasks.js` — `POST /:id/close` and `POST /:id/worktrees/:worktreeId/close` accept no body or `{deleteIgnored}`; a request without a body behaves as before.
+  * `client/src/utils/tasksApi.js` — `parseLanding` requires the two fields; `closeTask` and `closeTaskWorktree` send `{deleteIgnored: true}` only when asked to.
+  * `client/src/components/tasks/ignoredFiles.js` (new), `TaskLandingBar.jsx`, `TaskRepositoriesLanding.jsx` — Close is refused by every reason except ignored files; its dialog lists them, per repository for a whole task, and its button reads "Delete files and close".
+* **📚 Documents:** `README.md` (Tasks) and `docs/steering/api-standards.md`.
+* **Known limit:** the dialog lists the files read at the last refresh (every five seconds). An ignored file created between that and the click is deleted with the folder without having been listed.
+* **🧪 Tests:** `server/__tests__/task-landing.test.js`, `task-landing-repositories.test.js`, `tasks-api.test.js`; `client/src/utils/__tests__/tasksApi.test.js` and the tests of both landing components.
+
 ## [2026-11-19] - A task merged outside CodeDeck says its commits are already in the base branch
 
 ### Executive Summary

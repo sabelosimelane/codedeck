@@ -164,7 +164,7 @@ describe('tasks API client', () => {
 describe('landing API client', () => {
   const landing = (overrides = {}) => ({
     taskId: ID, state: 'active', branch: 'task/replies', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
+    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, ignoredAtRisk: ['logs/'], ignoredAtRiskCount: 1, main: { branch: 'main', dirty: false },
     remotes: [{ name: 'origin', host: 'gitlab.com', tool: 'glab' }],
     blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] }, ...overrides,
   });
@@ -177,7 +177,7 @@ describe('landing API client', () => {
 
   it.each([
     ['taskId', 'x'], ['state', 'done'], ['branch', ''], ['baseBranch', 12], ['prUrl', 'ftp://x'], ['filesPresent', 'yes'], ['runActive', null],
-    ['uncommitted', 'a.txt'], ['uncommittedCount', 0], ['commitsAhead', -1], ['commitsBehind', 'x'], ['alreadyInBase', 'yes'], ['alreadyInBase', undefined], ['alreadyInBase', true], ['main', null], ['remotes', {}], ['blockers', null],
+    ['uncommitted', 'a.txt'], ['uncommittedCount', 0], ['commitsAhead', -1], ['commitsBehind', 'x'], ['alreadyInBase', 'yes'], ['alreadyInBase', undefined], ['alreadyInBase', true], ['ignoredAtRisk', 'logs/'], ['ignoredAtRisk', ['']], ['ignoredAtRisk', undefined], ['ignoredAtRiskCount', 0], ['ignoredAtRiskCount', '1'], ['main', null], ['remotes', {}], ['blockers', null],
   ])('refuses a landing status with an invalid %s', (field, value) => {
     expect(() => parseLanding(landing({ [field]: value }))).toThrow(`Invalid landing response: ${field}`);
   });
@@ -239,7 +239,7 @@ describe('landing one repository of a task', () => {
   const standing = (overrides = {}) => ({
     taskId: ID, worktreeId: WT2, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/replies/mobile-app',
     state: 'active', branch: 'task/replies', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
+    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, ignoredAtRisk: ['logs/'], ignoredAtRiskCount: 1, main: { branch: 'main', dirty: false },
     remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }],
     blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] }, ...overrides,
   });
@@ -296,6 +296,24 @@ describe('landing one repository of a task', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(`/api/tasks/${ID}/worktrees/${WT2}/pull-request`);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ remote: 'origin' });
     await expect(openTaskWorktreePullRequest(ID, WT2, '')).rejects.toThrow('remote');
+  });
+
+  it('sends the owner\'s word about ignored files with Close, and nothing when there is none', async () => {
+    const closedTask = { task: task({ state: 'closed', finishedAt: '2026-11-18T11:00:00.000Z' }), branchKept: 'task/replies', unmergedCommits: 0, terminalsClosed: [], terminalsNotClosed: [] };
+    const fetchMock = vi.fn(async url => reply(String(url).includes('/worktrees/') ? finishedBody({ branchKept: 'task/replies', unmergedCommits: 0 }) : closedTask));
+    vi.stubGlobal('fetch', fetchMock);
+    await closeTask(ID, { deleteIgnored: true });
+    await closeTaskWorktree(ID, WT2, { deleteIgnored: true });
+    await closeTask(ID, { deleteIgnored: false });
+    await closeTask(ID);
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1].body ?? null])).toEqual([
+      [`/api/tasks/${ID}/close`, '{"deleteIgnored":true}'],
+      [`/api/tasks/${ID}/worktrees/${WT2}/close`, '{"deleteIgnored":true}'],
+      [`/api/tasks/${ID}/close`, null],
+      [`/api/tasks/${ID}/close`, null],
+    ]);
+    await expect(closeTask(ID, { deleteIgnored: 'yes' })).rejects.toThrow('deleteIgnored');
+    await expect(closeTaskWorktree(ID, WT2, { deleteIgnored: 1 })).rejects.toThrow('deleteIgnored');
   });
 
   it('closes one repository and says which branch was kept', async () => {

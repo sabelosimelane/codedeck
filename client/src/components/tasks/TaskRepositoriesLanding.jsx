@@ -5,6 +5,7 @@ import {
 } from '../../utils/tasksApi.js';
 import { Button, ConfirmDialog, PromptDialog } from '../ui/index.jsx';
 import AddRepositoryDialog from './AddRepositoryDialog.jsx';
+import { closeArguments, closeRefusals, namedIgnored } from './ignoredFiles.js';
 import './task-view.css';
 
 const plural = (number, word) => `${number} ${word}${number === 1 ? '' : 's'}`;
@@ -125,7 +126,7 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
 
   const closeRepository = async () => {
     const entry = asked;
-    const closed = await act('close', entry.worktreeId, () => closeTaskWorktree(task.id, entry.worktreeId), (result) => {
+    const closed = await act('close', entry.worktreeId, () => closeTaskWorktree(task.id, entry.worktreeId, ...closeArguments(entry.ignoredAtRiskCount > 0)), (result) => {
       const done = `Closed ${entry.repository} in this task. Branch ${result.branchKept} was kept.`;
       return withClosed(result.taskFinished ? `${done} The task is closed.` : done, result);
     });
@@ -134,7 +135,7 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
   };
 
   const closeWholeTask = async () => {
-    const closed = await act('closeTask', null, () => closeTask(task.id), result => withClosed(result.unmergedCommits > 0 ? `Task closed. Branch ${result.branchKept} was kept.` : 'Task closed', result));
+    const closed = await act('closeTask', null, () => closeTask(task.id, ...closeArguments(holdingIgnored.length > 0)), result => withClosed(result.unmergedCommits > 0 ? `Task closed. Branch ${result.branchKept} was kept.` : 'Task closed', result));
     setAsking(null);
     if (!closed) return;
     if (closed.terminalsNotClosed.length > 0) {
@@ -144,7 +145,9 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
     onFinished(closed);
   };
 
-  const blocksClosing = open.find(entry => entry.blockers.close.length > 0) ?? null;
+  // Ignored files that exist only in a copy do not refuse Close; its dialog lists them and asks.
+  const blocksClosing = open.find(entry => closeRefusals(entry).length > 0) ?? null;
+  const holdingIgnored = open.filter(entry => entry.ignoredAtRiskCount > 0);
   const unmergedTotal = open.reduce((sum, entry) => sum + (entry.commitsAhead ?? 0), 0);
   const taskRefusal = refusal && refusal.worktreeId === null ? refusal : null;
 
@@ -160,7 +163,7 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
           <div className="pipeline-run-actions">
             {canAddRepository && <Button size="small" onClick={() => setAsking({ kind: 'addRepository', worktreeId: null })} disabled={busy !== null} title="Give this task a copy of another repository of the project">Add repository</Button>}
             <Button size="small" onClick={() => setAsking({ kind: 'closeTask', worktreeId: null })} disabled={busy !== null || open.length === 0 || blocksClosing !== null}
-              title={blocksClosing ? first(blocksClosing.blockers.close) : undefined}>Close task</Button>
+              title={blocksClosing ? first(closeRefusals(blocksClosing)) : undefined}>Close task</Button>
           </div>
         )}
       </div>
@@ -189,6 +192,7 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
                   {isOpen && entry.alreadyInBase && <span>{`Commits already in ${entry.baseBranch}`}</span>}
                   {isOpen && !entry.alreadyInBase && entry.filesPresent && entry.uncommittedCount === 0 && entry.commitsAhead === 0 && <span className="pipeline-run-muted">No changes yet</span>}
                   {isOpen && entry.commitsBehind > 0 && <span className="pipeline-run-muted">{`${entry.baseBranch} has moved on by ${plural(entry.commitsBehind, 'commit')}`}</span>}
+                  {isOpen && entry.ignoredAtRiskCount > 0 && <span className="pipeline-run-muted">{`${plural(entry.ignoredAtRiskCount, 'ignored file')} only here`}</span>}
                   {entry.prUrl && <a href={entry.prUrl} target="_blank" rel="noreferrer noopener" className="task-landing-link">Pull request</a>}
                   {isOpen && (
                     <div className="pipeline-run-actions">
@@ -196,7 +200,7 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
                       {entry.baseBranch !== null && <Button size="small" variant={canMerge ? 'primary' : 'secondary'} aria-label={`Merge ${entry.repository} into ${entry.baseBranch}`} onClick={() => setAsking({ kind: 'merge', worktreeId: entry.worktreeId })} disabled={busy !== null || !canMerge} title={first(entry.blockers.merge)}>{`Merge into ${entry.baseBranch}`}</Button>}
                       {tools.length > 1 && <select aria-label={`Remote for the pull request of ${entry.repository}`} value={chosen.name} onChange={event => setRemotes(current => ({ ...current, [entry.worktreeId]: event.target.value }))} disabled={busy !== null}>{tools.map(candidate => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}</select>}
                       {tools.length > 0 && entry.baseBranch !== null && entry.prUrl === null && <Button size="small" aria-label={`Open a pull request for ${entry.repository}`} onClick={() => setAsking({ kind: 'pullRequest', worktreeId: entry.worktreeId })} disabled={busy !== null || entry.blockers.pullRequest.length > 0} title={first(entry.blockers.pullRequest)}>Open a pull request</Button>}
-                      <Button size="small" aria-label={`Close ${entry.repository}`} onClick={() => setAsking({ kind: 'close', worktreeId: entry.worktreeId })} disabled={busy !== null || entry.blockers.close.length > 0} title={first(entry.blockers.close)}>Close</Button>
+                      <Button size="small" aria-label={`Close ${entry.repository}`} onClick={() => setAsking({ kind: 'close', worktreeId: entry.worktreeId })} disabled={busy !== null || closeRefusals(entry).length > 0} title={first(closeRefusals(entry))}>Close</Button>
                     </div>
                   )}
                 </div>
@@ -238,13 +242,13 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
         </ConfirmDialog>
       )}
       {asking?.kind === 'close' && asked && (
-        <ConfirmDialog title={`Close ${asked.repository}`} confirmLabel="Close repository" tone={asked.commitsAhead > 0 && asked.state !== 'pr_open' ? 'danger' : 'primary'} onConfirm={closeRepository} onCancel={() => setAsking(null)}>
-          {`${asked.repository} leaves this task: its copy is removed and the terminals in it are closed.${asked.commitsAhead > 0 && asked.state !== 'pr_open' ? ` Its ${plural(asked.commitsAhead, 'commit')} stay on the branch ${asked.branch}, not merged.` : ''}${isLast ? ' This is the task\'s last repository: the task is closed.' : ''}`}
+        <ConfirmDialog title={`Close ${asked.repository}`} confirmLabel={asked.ignoredAtRiskCount > 0 ? 'Delete files and close' : 'Close repository'} tone={asked.ignoredAtRiskCount > 0 || (asked.commitsAhead > 0 && asked.state !== 'pr_open') ? 'danger' : 'primary'} onConfirm={closeRepository} onCancel={() => setAsking(null)}>
+          {`${asked.repository} leaves this task: its copy is removed and the terminals in it are closed.${asked.commitsAhead > 0 && asked.state !== 'pr_open' ? ` Its ${plural(asked.commitsAhead, 'commit')} stay on the branch ${asked.branch}, not merged.` : ''}${isLast ? ' This is the task\'s last repository: the task is closed.' : ''}${asked.ignoredAtRiskCount > 0 ? ` Files Git ignores that exist only in this copy are deleted with it: ${namedIgnored(asked)}.` : ''}`}
         </ConfirmDialog>
       )}
       {asking?.kind === 'closeTask' && (
-        <ConfirmDialog title="Close task" confirmLabel="Close task" tone={unmergedTotal > 0 ? 'danger' : 'primary'} onConfirm={closeWholeTask} onCancel={() => setAsking(null)}>
-          {`Every repository of "${task.title}" is closed: the task's copies are removed and its terminals are closed.${unmergedTotal > 0 ? ` ${plural(unmergedTotal, 'commit')} that ${unmergedTotal === 1 ? 'is' : 'are'} not merged stay on the task's branches.` : ''}`}
+        <ConfirmDialog title="Close task" confirmLabel={holdingIgnored.length > 0 ? 'Delete files and close' : 'Close task'} tone={holdingIgnored.length > 0 || unmergedTotal > 0 ? 'danger' : 'primary'} onConfirm={closeWholeTask} onCancel={() => setAsking(null)}>
+          {`Every repository of "${task.title}" is closed: the task's copies are removed and its terminals are closed.${unmergedTotal > 0 ? ` ${plural(unmergedTotal, 'commit')} that ${unmergedTotal === 1 ? 'is' : 'are'} not merged stay on the task's branches.` : ''}${holdingIgnored.length > 0 ? ` Files Git ignores that exist only in this task are deleted with it: ${holdingIgnored.map(entry => `${entry.repository}: ${namedIgnored(entry)}`).join('; ')}.` : ''}`}
         </ConfirmDialog>
       )}
     </div>

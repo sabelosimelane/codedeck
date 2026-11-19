@@ -139,6 +139,13 @@ export async function openTaskTerminal(taskId, worktreeId) {
   return { sessionId: body.sessionId, taskId: body.taskId, project: body.project, worktreeId: body.worktreeId };
 }
 
+/** The body of a close: the owner's word that ignored files only the task holds are deleted with it, or none. */
+function closeBody(options) {
+  const value = options?.deleteIgnored;
+  if (value !== undefined && typeof value !== 'boolean') throw new TypeError('deleteIgnored must be true or false');
+  return value === true ? { body: { deleteIgnored: true } } : {};
+}
+
 const requireTaskId = taskId => { if (typeof taskId !== 'string' || !UUID.test(taskId)) throw new TypeError('taskId must be a task id'); };
 const count = value => Number.isSafeInteger(value) && value >= 0;
 
@@ -167,13 +174,15 @@ export function parseLanding(body) {
   guard(body.commitsBehind === null || count(body.commitsBehind), 'commitsBehind');
   // Work that is already in the base branch leaves no commit the base lacks.
   guard(body.alreadyInBase === null || body.alreadyInBase === false || (body.alreadyInBase === true && body.commitsAhead === 0), 'alreadyInBase');
+  guard(Array.isArray(body.ignoredAtRisk) && body.ignoredAtRisk.every(text), 'ignoredAtRisk');
+  guard(count(body.ignoredAtRiskCount) && body.ignoredAtRiskCount >= body.ignoredAtRisk.length && (body.ignoredAtRiskCount === 0) === (body.ignoredAtRisk.length === 0), 'ignoredAtRiskCount');
   guard(body.main !== null && typeof body.main === 'object' && (body.main.branch === null || text(body.main.branch)) && typeof body.main.dirty === 'boolean', 'main');
   guard(Array.isArray(body.remotes), 'remotes');
   guard(body.blockers !== null && typeof body.blockers === 'object', 'blockers');
   return {
     taskId: body.taskId, state: body.state, branch: body.branch, baseBranch: body.baseBranch, prUrl: body.prUrl,
     filesPresent: body.filesPresent, runActive: body.runActive, uncommitted: [...body.uncommitted], uncommittedCount: body.uncommittedCount,
-    commitsAhead: body.commitsAhead, commitsBehind: body.commitsBehind, alreadyInBase: body.alreadyInBase, main: { branch: body.main.branch, dirty: body.main.dirty },
+    commitsAhead: body.commitsAhead, commitsBehind: body.commitsBehind, alreadyInBase: body.alreadyInBase, ignoredAtRisk: [...body.ignoredAtRisk], ignoredAtRiskCount: body.ignoredAtRiskCount, main: { branch: body.main.branch, dirty: body.main.dirty },
     remotes: body.remotes.map((remote) => {
       guard(text(remote?.name), 'remotes.name');
       guard(remote.host === null || text(remote.host), 'remotes.host');
@@ -258,10 +267,10 @@ export async function openTaskWorktreePullRequest(taskId, worktreeId, remote) {
   return { task: parseTask(body.task), repository: body.repository, prUrl: body.prUrl, remote: String(body.remote) };
 }
 
-export async function closeTaskWorktree(taskId, worktreeId) {
+export async function closeTaskWorktree(taskId, worktreeId, options) {
   requireTaskId(taskId);
   requireWorktreeId(worktreeId);
-  const body = await request(`/${taskId}/worktrees/${worktreeId}/close`, { method: 'POST' });
+  const body = await request(`/${taskId}/worktrees/${worktreeId}/close`, { method: 'POST', ...closeBody(options) });
   if (!text(body?.branchKept) || !count(body.unmergedCommits)) throw new Error('Invalid close response');
   const outcome = parseRepositoryOutcome(body, 'close');
   return { task: parseTask(body.task), repository: outcome.repository, branchKept: body.branchKept, unmergedCommits: body.unmergedCommits, taskFinished: outcome.taskFinished, ...parseTerminals(body, 'close') };
@@ -301,9 +310,9 @@ export async function openTaskPullRequest(taskId, remote) {
   return { task: parseTask(body.task), prUrl: body.prUrl, remote: String(body.remote) };
 }
 
-export async function closeTask(taskId) {
+export async function closeTask(taskId, options) {
   requireTaskId(taskId);
-  const body = await request(`/${taskId}/close`, { method: 'POST' });
+  const body = await request(`/${taskId}/close`, { method: 'POST', ...closeBody(options) });
   if (!text(body?.branchKept) || !count(body.unmergedCommits)) throw new Error('Invalid close response');
   return { task: parseTask(body.task), branchKept: body.branchKept, unmergedCommits: body.unmergedCommits, ...parseTerminals(body, 'close') };
 }

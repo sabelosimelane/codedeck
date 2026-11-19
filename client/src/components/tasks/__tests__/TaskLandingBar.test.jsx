@@ -18,7 +18,7 @@ import TaskLandingBar from '../TaskLandingBar.jsx';
 const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'Replies', revision: 3, worktreePath: '/tmp/worktrees/demo-replies' };
 const landing = (overrides = {}) => ({
   taskId: TASK.id, state: 'active', branch: 'task/replies-7a000000', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-  uncommitted: [], uncommittedCount: 0, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
+  uncommitted: [], uncommittedCount: 0, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, ignoredAtRisk: [], ignoredAtRiskCount: 0, main: { branch: 'main', dirty: false },
   remotes: [{ name: 'origin', host: 'gitlab.com', tool: 'glab' }],
   blockers: { commit: [{ code: 'nothing_to_commit', message: 'There is nothing to commit.' }], merge: [], pullRequest: [], close: [] },
   ...overrides,
@@ -220,6 +220,32 @@ describe('TaskLandingBar', () => {
     expect(screen.getByText('1 uncommitted file')).toBeTruthy();
     expect(screen.getByText('Commits already in main')).toBeTruthy();
     expect(screen.queryByText(reason)).toBeNull();
+  });
+
+  it('closes a task that holds ignored files of its own only after listing them, and says the owner agreed', async () => {
+    const ignored = [{ code: 'ignored_files', message: 'This task has files Git ignores that exist nowhere else: logs/, owner.local. Move or delete them first.' }];
+    const { onFinished } = await mount(landing({ commitsAhead: 0, ignoredAtRisk: ['logs/', 'owner.local'], ignoredAtRiskCount: 3, blockers: { commit: [], merge: [], pullRequest: [], close: ignored } }));
+    expect(screen.getByText('3 ignored files only here')).toBeTruthy();
+    const close = screen.getByRole('button', { name: 'Close task' });
+    expect(close.disabled).toBe(false);
+    api.closeTask.mockResolvedValue({ branchKept: 'task/replies-7a000000', unmergedCommits: 0, terminalsClosed: [], terminalsNotClosed: [] });
+    fireEvent.click(close);
+    const confirm = dialog('Close task');
+    expect(confirm.getByText('"Replies" is closed, its copy of the project is removed and its terminals are closed. Files Git ignores that exist only in this task are deleted with it: logs/, owner.local and 1 more.')).toBeTruthy();
+    const yes = confirm.getByRole('button', { name: 'Delete files and close' });
+    expect(yes.dataset.variant).toBe('danger');
+    expect(api.closeTask).not.toHaveBeenCalled();
+    fireEvent.click(yes);
+    await waitFor(() => expect(onFinished).toHaveBeenCalled());
+    expect(api.closeTask).toHaveBeenCalledWith(TASK.id, { deleteIgnored: true });
+  });
+
+  it('still refuses Close for any other reason beside ignored files', async () => {
+    await mount(landing({ uncommitted: ['a.txt'], uncommittedCount: 1, ignoredAtRisk: ['logs/'], ignoredAtRiskCount: 1,
+      blockers: { commit: [], merge: [], pullRequest: [], close: [{ code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }, { code: 'ignored_files', message: 'This task has files Git ignores that exist nowhere else: logs/, owner.local. Move or delete them first.' }] } }));
+    const close = screen.getByRole('button', { name: 'Close task' });
+    expect(close.disabled).toBe(true);
+    expect(close.getAttribute('title')).toBe('This task has uncommitted changes. Commit them first.');
   });
 
   it('has no merge for a task started without a branch, and says when nothing has changed', async () => {
