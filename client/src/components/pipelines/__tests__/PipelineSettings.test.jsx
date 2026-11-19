@@ -1152,7 +1152,7 @@ describe('PipelineSettings — reuse: saved templates and saved steps', () => {
   it('inserts a saved step as a copy at the end of the workflow', async () => {
     await renderSettings({ agents: [codex(), cursor()], workflows: [feature()], stepPresets: [savedStep()] });
     click('Edit workflow Feature');
-    expect([...screen.getByLabelText('Insert a saved step').options].map(option => option.textContent)).toEqual(['Insert a saved step…', 'Clarify (built in)', 'Security review (Reviewer)']);
+    expect([...screen.getByLabelText('Insert a saved step').options].map(option => option.textContent)).toEqual(['Insert a saved step…', 'Clarify (built in)', 'Requirements (built in)', 'Security review (Reviewer)']);
     type('Insert a saved step', savedStep().id);
     expect(nodeNames()).toEqual(['Develop', 'Test', 'Security review']);
     expect(screen.getByLabelText('Node 3 role').value).toBe('Reviewer');
@@ -1160,6 +1160,29 @@ describe('PipelineSettings — reuse: saved templates and saved steps', () => {
     expect(screen.getByLabelText('Node 3 read-only step').checked).toBe(true);
     expect(screen.getByLabelText('Node 3 maximum passes').value).toBe('2');
     expect(screen.getByLabelText('Node 3 agent').value).toBe('');
+    expect(backend.mutations()).toEqual([]);
+  });
+
+  it('offers the built-in Feature from requirements template, which opens by asking the owner', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Add workflow' }));
+    click(/Feature from requirements.*specification/);
+    expect(screen.getByLabelText('Workflow kind').value).toBe('build');
+    expect(nodeNames()).toEqual(['Requirements', 'Specify', 'Plan', 'Develop', 'Review', 'Test', 'Commit']);
+    expect(screen.getByLabelText('Node 1 always ask me').checked).toBe(true);
+    expect(screen.getByLabelText('Node 1 read-only step').checked).toBe(true);
+    expect(screen.getByLabelText('Node 2 read-only step').checked).toBe(false);
+    expect(backend.mutations()).toEqual([]);
+  });
+
+  it('inserts the built-in Requirements step into any workflow', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    click('Edit workflow Feature');
+    type('Insert a saved step', 'requirements');
+    expect(nodeNames()).toEqual(['Develop', 'Test', 'Requirements']);
+    expect(screen.getByLabelText('Node 3 always ask me').checked).toBe(true);
+    expect(screen.getByLabelText('Node 3 read-only step').checked).toBe(true);
+    expect(screen.getByLabelText('Node 3 prompt').value).toMatch(/who it is for/);
     expect(backend.mutations()).toEqual([]);
   });
 
