@@ -42,6 +42,13 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
       {banner}
       <section className="m-task" aria-label="Task">
         {run.error !== null && <p role="alert" className="m-task-error">{run.error}</p>}
+        {row.repositories !== null && (
+          <ul className="m-task-repositories m-mono" aria-label="Repositories">
+            {row.repositories.map(entry => (
+              <li key={entry.name}>{[entry.name, entry.current ? 'the run works here' : null, entry.state === 'active' ? null : entry.state === 'pr_open' ? 'pull request open' : entry.state].filter(Boolean).join(' · ')}</li>
+            ))}
+          </ul>
+        )}
         {phase && <p className="m-task-phase m-mono">{phase}</p>}
         {Object.hasOwn(ACTION_LABEL, action ?? '') && (
           <button className="m-primary m-press" disabled={busy} onClick={() => onAction(action, run.id)}>{ACTION_LABEL[action]}</button>

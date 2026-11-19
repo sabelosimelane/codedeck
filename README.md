@@ -110,6 +110,10 @@ With repositories listed:
 - **A task includes the repositories you tick.** **New task** lists them, each with the branch its copy would start from; only the project's own is ticked to begin with. The task gets one copy and one branch per repository, kept together in one folder, `worktrees/<task>/<repository>`, so a reference from one repository to the one beside it (`../../backend/docs/...`) works inside the task as it does outside. The repositories you leave out stay readable at their own folders.
 - **Each repository is landed on its own.** The bar above a task's terminals has one row per repository, with its own Commit changes, Merge, Open a pull request and Close. Merging or closing one keeps the task open for the others and closes only that repository's terminals; the task is finished with its last repository. **Close task** closes all of them, or none when one cannot be closed, and says which.
 
+- **More can be added later.** **Add repository** on the bar gives an open task a copy of another of the project's repositories, also while a run is paused, so a step that stopped because it needs one can be answered by adding it. No Setup runs for a repository added this way.
+
+On the phone, a task in several repositories lists them and says which one its run works in.
+
 A project that lists no other repository works exactly as before.
 
 ## Workflow pipelines

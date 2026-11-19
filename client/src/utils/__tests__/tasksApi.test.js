@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  addTaskRepository, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, mergeTask, mergeTaskWorktree,
+  parseTaskForPhone, addTaskRepository, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, mergeTask, mergeTaskWorktree,
   openTaskPullRequest, openTaskTerminal, openTaskWorktreePullRequest, parseLanding, parseTask, parseTaskSummary, parseWorktreeLanding, renameTask,
 } from '../tasksApi';
 
@@ -69,6 +69,21 @@ describe('parseTaskSummary', () => {
   });
   it.each([['id', 'nope'], ['title', ''], ['state', 'done'], ['worktreePath', 'relative'], ['branch', ''], ['baseCommit', 'abc'], ['revision', 0], ['updatedAt', null]])('refuses an invalid %s (%j)', (field, value) => {
     expect(() => parseTaskSummary({ ...summary, [field]: value })).toThrow(new RegExp(`field ${field}`));
+  });
+});
+
+describe('parseTaskForPhone', () => {
+  const { folder, worktrees, ...summary } = task();
+  it('reads the repositories of a task when the instance sends them, and says so when it does not', () => {
+    expect(parseTaskForPhone(task())).toEqual({ ...summary, worktrees });
+    // An instance of an earlier release sends a task without them.
+    expect(parseTaskForPhone(summary)).toEqual({ ...summary, worktrees: null });
+    expect(folder).toBeNull();
+  });
+  it('refuses repositories it cannot read rather than showing them wrong', () => {
+    expect(() => parseTaskForPhone({ ...summary, worktrees: [] })).toThrow('field worktrees');
+    expect(() => parseTaskForPhone({ ...summary, worktrees: [worktree({ repository: '' })] })).toThrow('field worktrees.repository');
+    expect(() => parseTaskForPhone({ ...summary, title: '' })).toThrow('field title');
   });
 });
 

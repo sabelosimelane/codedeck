@@ -232,6 +232,7 @@
 .m-task{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:8px 20px 32px;display:flex;flex-direction:column;gap:16px}
 .m-task-error{margin:0;padding:12px 14px;border-radius:14px;border:1px solid var(--danger);color:var(--danger);font-size:14px;line-height:1.5;overflow-wrap:anywhere}
 .m-task-phase{margin:0;font-size:12px;color:var(--text-secondary)}
+.m-task-repositories{margin:0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--text-secondary)}
 .m-task>.m-primary{flex:none}
 .m-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .m-step{position:relative;display:flex;gap:14px;padding-bottom:20px}

@@ -1,7 +1,7 @@
 # Multi-repository tasks: specification
 
 **Date:** 2026-11-19
-**Status:** Decided. The owner answered the four questions on 2026-11-19 (§10); the rest is decided in §4.
+**Status:** Built on branch `claude/competent-hamilton-c07651`, not merged. The owner answered the questions on 2026-11-19 (§10); the rest is decided in §4. Where the build departs from this text, §11 says how.
 **Todo:** `docs/todos/multi-repository-tasks.md`
 **Read at:** commit `26380fc` of this repository. Every file and line cited below was read at that commit.
 
@@ -613,3 +613,20 @@ re-adding a repository that was merged or closed in the same task; dropping the 
    start in any repository's own checkout, and the tab shows the repository's name. This also settles
    the point left open under answer 2: repositories never become sidebar rows, and a project added
    by hand for one repository of a group can be removed once the group's project lists it.
+
+## 11. Where the build departs from this specification
+
+- **Group key (§3.6).** A task's group is still known by a path, the worktree the task started in;
+  every other worktree of the task resolves to it. Stored selections stay valid.
+- **Main terminals (§3.6).** A terminal in another repository is opened by
+  `POST /api/projects/:name/terminals`, which accepts only the project's repositories. The terminal
+  socket itself is unchanged and still accepts any absolute directory, as it did.
+- **Pane header (§3.6).** The repository's name is on the tab; the pane header shows the directory.
+- **`is_own` (§6).** Not a column: a worktree of the project's own repository is the one with no
+  stored checkout. Worktrees are read in the order they were written.
+- **`GET /api/pipelines/worktrees?repository=` and the prompt preview (§3.4, §7).** Not built. The
+  start request refuses a worktree that cannot take a run, with the reason.
+- **Phone (§3.6).** Reads tasks by the fields every backend release sends, and a task's
+  repositories when the instance sends them.
+- **A run in Main in another repository (§3.4).** Asked for with `worktreePath` set to that
+  repository's checkout, not with `startIn`.

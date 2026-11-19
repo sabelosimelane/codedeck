@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildNowView } from '../nowView';
 import { parseRun } from '../../utils/pipelineRunRecords';
-import { parseTaskSummary } from '../../utils/tasksApi';
+import { parseTaskForPhone } from '../../utils/tasksApi';
 import { run, askingRun, approvalRun, completeRun, step, task, RUN_ID } from './runFixtures';
 
 const NOW = Date.parse('2026-11-10T18:00:00.000Z');
@@ -14,7 +14,7 @@ const only = options => view(options).tasks[0];
 it('uses fixtures the app would accept from the backend', () => {
   for (const record of [run(), askingRun(), approvalRun(), completeRun()]) expect(() => parseRun(record)).not.toThrow();
   // The phone reads a task by the fields every backend release sends.
-  expect(() => parseTaskSummary(task())).not.toThrow();
+  expect(() => parseTaskForPhone(task())).not.toThrow();
 });
 
 describe('a run shown as its task', () => {
@@ -23,6 +23,17 @@ describe('a run shown as its task', () => {
       key: RUN_ID, title: 'First name only on the call', workflowName: 'Bug fix', projectName: 'p',
       label: 'Running', tone: 'running', step: 'Step 2 of 3 · Fix', when: 'now',
     });
+  });
+  it('lists the repositories of a task with several, and says which one the run works in', () => {
+    const part = (repository, path, extra = {}) => ({ id: `wt-${repository}`, repository, own: false, first: false, worktreePath: path, branch: 'task/the-call-3858fe63', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null, ...extra });
+    const across = task({ worktrees: [part('mobile-app', run().worktree.path, { first: true }), part('backend', '/work/worktrees/the-call/backend', { own: true }), part('frontend', '/work/worktrees/the-call/frontend', { state: 'merged' })] });
+    expect(only({ tasks: [across] }).repositories).toEqual([
+      { name: 'mobile-app', state: 'active', current: true }, { name: 'backend', state: 'active', current: false }, { name: 'frontend', state: 'merged', current: false },
+    ]);
+    // One repository, or an instance that does not say: nothing to list.
+    expect(only({ tasks: [task({ worktrees: [part('p', run().worktree.path, { first: true, own: true })] })] }).repositories).toBeNull();
+    expect(only({ tasks: [task({ worktrees: null })] }).repositories).toBeNull();
+    expect(only({ tasks: [] }).repositories).toBeNull();
   });
   it('is named after its folder when it has no task', () => {
     expect(only({ runs: [run({ taskId: null, worktree: { ...run().worktree, path: '/work/codedeck' } })], tasks: [] }).title).toBe('codedeck');

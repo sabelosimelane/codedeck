@@ -1,8 +1,8 @@
 # Multi-repository Tasks
 
 **Spec**: `docs/specifications/multi-repository-tasks.md`
-**Status**: In Progress
-**Last completed**: Phase 4: Landing per Repository (Phase 1 has one task left for the owner's go-ahead)
+**Status**: Built; waiting for the owner's go-ahead to check it live and to merge
+**Last completed**: Phase 7: Phone, Documentation and Final Verification (the live check and the migration check on a copy of the live database wait for the owner's go-ahead)
 **Created**: 2026-11-19
 
 > Working rules for every phase: strict TDD (red test first), Vitest with `--maxWorkers=1`, per-field
@@ -88,17 +88,17 @@
 > **Outputs:** `startIn` and `newTask.repositories` on run start; guidance, notes and Setup that cover every repository; the Run dialog
 > **Closed when:** a run started in `mobile-app` of a task that also has `backend` has `mobile-app` as its directory, finds its progress file there, is told it may change `backend`, and its Setup prepares both; a run in a project without other repositories gets today's guidance character for character
 
-- [ ] `shared/pipeline-definitions.mjs`: the start body accepts `startIn` and `newTask.repositories`; red tests for each field (Spec §7)
-- [ ] `server/routes/pipelines.js` `POST /runs`: the run's worktree is the task's worktree in `startIn`; the progress file of a new task is checked in that repository's checkout; a task with another unfinished run is refused; the request replay check covers the new fields (Spec §3.4)
-- [ ] `server/routes/pipelines.js`: when the progress path made from the input is absolute and inside one of the project's repositories, the refusal names the repository and the relative path to type
-- [ ] `server/pipelines/step-guidance.js`: the worktree sentence for a task with several worktrees or a project with other repositories; the read-only sentence over all worktrees; today's sentence unchanged otherwise (Spec §3.4)
-- [ ] `server/terminal-workflow.js`: guidance limit 4000; `server/routes/pipelines.js`: the refusal for guidance that is still too long names the repositories
-- [ ] `server/pipelines/run-notes.js`: `buildReadme` gets the "Repositories" section
-- [ ] `server/pipelines/run-worktree.js`: `buildSetupPrompt` takes a list of home checkout and worktree pairs; `server/pipelines/run-engine.js`: the guard after Setup checks every worktree of the task and names the dirty one; guidance and notes read the task's places at each step start through a `listTaskPlaces` dependency wired in `server/index.js`
-- [ ] `server/routes/pipelines.js`: `GET /worktrees` accepts `repository`; the prompt preview shows placeholder repositories
-- [ ] `client/src/components/pipelines/RunWorkflowDialog.jsx`, `client/src/utils/pipelinesApi.js`: for a new task, repository checkboxes and "Start in"; for an open task, "Start in" among its open worktrees
-- [ ] `server/routes/pipelines.js` and `RunWorkflowDialog.jsx`: a run in Main may start in the own checkout of any of the project's repositories; it writes there only, the others are named as readable, and it has no Setup (Spec §3.4)
-- [ ] `client/src/components/tasks/TaskView.jsx`: the header names the repository the run works in when the task has several; "Open a terminal here" opens in the run's worktree
+- [x] `shared/pipeline-definitions.mjs`: the start body accepts `startIn` and `newTask.repositories`; red tests for each field (Spec §7)
+- [x] `server/routes/pipelines.js` `POST /runs`: the run's worktree is the task's worktree in `startIn`; the progress file of a new task is checked in that repository's checkout; a task with another unfinished run is refused; the request replay check covers the new fields (Spec §3.4)
+- [x] `server/routes/pipelines.js`: when the progress path made from the input is absolute and inside one of the project's repositories, the refusal names the repository and the relative path to type
+- [x] `server/pipelines/step-guidance.js`: the worktree sentence for a task with several worktrees or a project with other repositories; the read-only sentence over all worktrees; today's sentence unchanged otherwise (Spec §3.4)
+- [x] `server/terminal-workflow.js`: guidance limit 4000; `server/routes/pipelines.js`: the refusal for guidance that is still too long names the repositories
+- [x] `server/pipelines/run-notes.js`: `buildReadme` gets the "Repositories" section
+- [x] `server/pipelines/run-worktree.js`: `buildSetupPrompt` takes a list of home checkout and worktree pairs; `server/pipelines/run-engine.js`: the guard after Setup checks every worktree of the task and names the dirty one; guidance and notes read the task's places at each step start through a `listTaskPlaces` dependency wired in `server/index.js`
+- [ ] `server/routes/pipelines.js`: `GET /worktrees` accepts `repository`; the prompt preview shows placeholder repositories (not built; see Deviations)
+- [x] `client/src/components/pipelines/RunWorkflowDialog.jsx`, `client/src/utils/pipelinesApi.js`: for a new task, repository checkboxes and "Start in"; for an open task, "Start in" among its open worktrees
+- [x] `server/routes/pipelines.js` and `RunWorkflowDialog.jsx`: a run in Main may start in the own checkout of any of the project's repositories; it writes there only, the others are named as readable, and it has no Setup (Spec §3.4)
+- [x] `client/src/components/tasks/TaskView.jsx`: the header names the repository the run works in when the task has several; "Open a terminal here" opens in the run's worktree
 
 ## Phase 6: Adding a Repository, and Pull Requests per Repository
 > What a task needs after it has started: one more repository, and a pull request for each.
@@ -106,22 +106,22 @@
 > **Outputs:** `POST /api/tasks/:id/worktrees`; `POST …/worktrees/:worktreeId/pull-request`; the bar's Add repository
 > **Closed when:** a run that stopped for lack of `backend` continues after the owner adds it from the bar, and each repository of a task can have its own pull request
 
-- [ ] `server/tasks/task-service.js`: `addRepository(taskId, repository)`; refused while a run of the task is `pending` or `running`, for a finished task, for a repository already in the task, and for one that was merged or closed in it (Spec §3.2)
-- [ ] `server/routes/tasks.js`: `POST /api/tasks/:id/worktrees` with the six test dimensions; a repeated request does not make a second worktree
+- [x] `server/tasks/task-service.js`: `addRepository(taskId, repository)`; refused while a run of the task is `pending` or `running`, for a finished task, for a repository already in the task, and for one that was merged or closed in it (Spec §3.2)
+- [x] `server/routes/tasks.js`: `POST /api/tasks/:id/worktrees` with the six test dimensions; a repeated request does not make a second worktree
 - [x] `server/tasks/task-landing.js`: `pullRequest` per worktree with that repository's remotes; the worktree's own `pr_url`; the task shows `pr_open` while any open worktree has one
 - [x] `server/routes/tasks.js`: `POST /api/tasks/:id/worktrees/:worktreeId/pull-request`
-- [ ] `client/src/components/tasks/TaskLandingBar.jsx`: Add repository (lists the project's repositories not in the task, says that no Setup runs for it); Open a pull request and its link on each row
+- [x] `client/src/components/tasks/TaskLandingBar.jsx`: Add repository (lists the project's repositories not in the task, says that no Setup runs for it); Open a pull request and its link on each row
 
 ## Phase 7: Phone, Documentation and Final Verification
 > **Inputs:** Phases 1–6
 > **Outputs:** the phone's task screen; README and steering files; a verified whole
 > **Closed when:** both suites and the client build pass, the documents describe what was built, and the owner has seen a task across two repositories created, run and landed
 
-- [ ] `client/src/mobile/TaskScreen.jsx`: lists the task's repositories and where the run works; `client/src/mobile/nowView.js` rows unchanged
-- [ ] `README.md` (Tasks, Workflow pipelines), `docs/steering/product.md`, `docs/steering/structure.md`, `docs/steering/api-standards.md`: describe repositories of a project, tasks across them, landing per repository
-- [ ] Full server suite, full client suite, `cd client && npx vite build`
+- [x] `client/src/mobile/TaskScreen.jsx`: lists the task's repositories and where the run works; `client/src/mobile/nowView.js` rows unchanged
+- [x] `README.md` (Tasks, Workflow pipelines), `docs/steering/product.md`, `docs/steering/structure.md`, `docs/steering/api-standards.md`: describe repositories of a project, tasks across them, landing per repository
+- [x] Full server suite, full client suite, `cd client && npx vite build`
 - [ ] Live check with the owner's go-ahead: link the repositories of one group project, create a task in two of them, run a workflow that starts in the second, commit and merge each, close the task. Read the memory note on why a worktree cannot run a second full instance before choosing how to do this
-- [ ] Record what was left for a later release: dropping the old `tasks` columns (Spec §6, §8)
+- [x] Record what was left for a later release: dropping the old `tasks` columns (Spec §6, §8); see the last session note
 
 ## Session Notes
 
@@ -195,3 +195,37 @@
   - **Found**: a phone build is installed separately and also talks to an instance older than itself.
   - **Did**: the phone keeps reading the fields every backend release sends; the desktop requires `folder` and `worktrees`.
   - **Follow-up**: Phase 7 shows a task's repositories on the phone when the instance sends them.
+
+### Session — 2026-11-19 (Phases 5, 6 and 7)
+**Completed**: Phase 5 (`220aa54`), Phase 6 (`428cbde`), Phase 7 apart from the live check.
+**Server**: `validateRunStartBody` takes `startIn` and `newTask.repositories`; `POST /runs` starts in the repository named, refuses a second unfinished run in a task (`task_in_use`), looks for a new task's progress file in the checkout of the repository it starts in, and answers a full path inside one of the project's repositories with the repository to start in; `step-guidance.js` names the task's worktrees and the project's other repositories; `run-places.js` reads them when a step starts; `run-notes.js` adds the Repositories section; `buildSetupPromptForRepositories`; the Setup guard checks every worktree; guidance limit 4000; `taskService.addRepository` and `POST /api/tasks/:id/worktrees`.
+**Client**: Start in and the repository ticks in `RunWorkflowDialog.jsx`; the task view names the repository a run works in; `AddRepositoryDialog.jsx` and the Add repository button on both landing bars; the phone's task screen lists a task's repositories (`parseTaskForPhone`, `nowView.js`, `TaskScreen.jsx`).
+**Evidence**: Node v22.22.0. Before Phase 6: `cd server && npx vitest run --maxWorkers=1` → Test Files 1 failed | 96 passed (97), Tests 8 failed | 2996 passed (3004); the 8 are the live-tmux tests of `pipeline-run-live.test.js` that fail without this work (Phase 1 note). `cd client && npx vitest run --maxWorkers=1` → Test Files 86 passed, Tests 1581 passed. `cd client && npx vite build` → built. After Phase 6 and the phone work: `cd server && npx vitest run --maxWorkers=1` → Test Files 1 failed | 96 passed (97), Tests 8 failed | 3016 passed (3024), the same 8 live-tmux tests.
+**Bug found and fixed**: worktrees recorded in the same millisecond were read in the order of their random ids. They are now read in the order they were written (`rowid`); `task-store.test.js` has a test with a clock that does not move.
+**Not done**:
+- The live check (Phase 7) and the migration check against a copy of `~/.codedeck.db` (Phase 1): both need the owner's go-ahead.
+- Nothing is merged into `main` and nothing was run against the live instance.
+- Left for a later release: dropping `worktree_path`, `branch`, `base_branch`, `base_commit` and `pr_url` from `tasks` (kept filled for one release).
+**Next**: the owner's go-ahead for the live check; then merge.
+
+### Deviations
+- **[Phase 5 / `GET /worktrees?repository=`] — not built**
+  - **Planned**: the Run dialog asks whether a task's worktree in another repository can take a run.
+  - **Found**: the start request already refuses such a worktree with the reason.
+  - **Did**: for a task that started in another repository the dialog offers it and the backend answers; no filter was added.
+  - **Follow-up**: add the filter if the owner wants the option greyed out before starting.
+- **[Phase 5 / prompt preview] — unchanged**
+  - **Planned**: the workflow builder's preview shows placeholder repositories.
+  - **Found**: the preview has no project, so it cannot know whether there are several.
+  - **Did**: the preview shows the sentence of a run with one repository, as before.
+  - **Follow-up**: none unless the owner asks.
+- **[Phase 6 / `isRunWorking`] — a required dependency of the task service**
+  - **Planned**: `addRepository` is refused while a run is pending or running.
+  - **Found**: the service had no way to know about runs.
+  - **Did**: `createTaskService` takes `isRunWorking`; `server/index.js` reads the run store.
+  - **Follow-up**: none.
+- **[Phase 7 / phone] — `parseTaskForPhone`**
+  - **Planned**: the phone lists a task's repositories.
+  - **Found**: an installed phone build also talks to an instance that does not send them.
+  - **Did**: `worktrees` is null when the instance does not say, and checked when it does; the list appears only for a task with several.
+  - **Follow-up**: none.

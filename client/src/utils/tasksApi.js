@@ -36,12 +36,9 @@ export function parseTaskSummary(task, index = 0) {
   };
 }
 
-/** A task with the folder that holds its worktrees and every repository it includes, as this release's backend sends it. */
-export function parseTask(task, index = 0) {
-  const summary = parseTaskSummary(task, index);
-  const guard = (condition, field) => { if (!condition) throw new Error(`Invalid task ${summary.id} field ${field}`); };
-  guard(task.folder === null || absolute(task.folder), 'folder');
-  // One entry per repository the task includes; exactly one is the one it started in.
+/** The repositories a task includes, one entry each; exactly one is the one it started in. */
+function parseTaskWorktrees(task, taskId) {
+  const guard = (condition, field) => { if (!condition) throw new Error(`Invalid task ${taskId} field ${field}`); };
   guard(Array.isArray(task.worktrees) && task.worktrees.length >= 1, 'worktrees');
   const worktrees = task.worktrees.map((worktree) => {
     const part = (condition, field) => guard(condition, `worktrees.${field}`);
@@ -62,7 +59,24 @@ export function parseTask(task, index = 0) {
     };
   });
   guard(worktrees.filter(worktree => worktree.first).length === 1, 'worktrees');
-  return { ...summary, folder: task.folder, worktrees };
+  return worktrees;
+}
+
+/** A task with the folder that holds its worktrees and every repository it includes, as this release's backend sends it. */
+export function parseTask(task, index = 0) {
+  const summary = parseTaskSummary(task, index);
+  if (!(task.folder === null || absolute(task.folder))) throw new Error(`Invalid task ${summary.id} field folder`);
+  return { ...summary, folder: task.folder, worktrees: parseTaskWorktrees(task, summary.id) };
+}
+
+/**
+ * A task as the phone reads it: the fields every backend release sends, and the task's
+ * repositories when the instance sends them. `worktrees` is null for an instance that does
+ * not say; when it does, they are checked like everywhere else.
+ */
+export function parseTaskForPhone(task, index = 0) {
+  const summary = parseTaskSummary(task, index);
+  return { ...summary, worktrees: Object.hasOwn(task, 'worktrees') ? parseTaskWorktrees(task, summary.id) : null };
 }
 
 async function request(path, { method = 'GET', body, signal } = {}) {

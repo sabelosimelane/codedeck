@@ -44,7 +44,12 @@ function taskRows({ runs, tasks, projects, sessions, now }) {
     const parked = project.state !== 'active';
     const running = status.tone === 'active';
     const ids = [...new Set(run.steps.map(step => step.sessionId).filter(id => id !== null))];
+    // A task in several repositories lists them, when the instance says which they are.
+    const worktrees = taskById.get(run.taskId)?.worktrees ?? null;
+    const repositories = worktrees !== null && worktrees.length > 1
+      ? worktrees.map(worktree => ({ name: worktree.repository, state: worktree.state, current: worktree.worktreePath === run.worktree.path })) : null;
     return {
+      repositories,
       key: run.id, run, title: taskById.get(run.taskId)?.title ?? folderName(run.worktree.path),
       workflowName: run.workflowName, projectName: project.name, label: status.label,
       tone: parked ? 'idle' : RUN_TONE[status.tone], parked,
