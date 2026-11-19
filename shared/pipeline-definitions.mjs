@@ -297,9 +297,7 @@ export function isRepositoryName(value) {
   return typeof value === 'string' && value.length >= 1 && value.length <= 100 && !SINGLE_LINE.test(value) && !value.includes('/') && value !== '.' && value !== '..';
 }
 
-export function validateRunStartBody(body) {
-  const errors = [];
-  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides'])) return errors;
+function validateAssignments(body, errors) {
   if (body.teamId !== undefined && !isUuid(body.teamId)) add(errors, 'teamId', 'Choose an existing team');
   if (body.stepOverrides !== undefined) {
     if (!isPlainObject(body.stepOverrides) || Object.keys(body.stepOverrides).length > 32) {
@@ -311,6 +309,32 @@ export function validateRunStartBody(body) {
       }
     }
   }
+}
+
+// A later loop can revisit a step before the current one. Its next agent takes over on re-entry.
+export function firstReassignableStep(steps, current) {
+  return steps.slice(current).reduce((first, step) => step.repeat.mode === 'loop_back'
+    ? Math.min(first, step.repeat.toStepIndex) : first, current);
+}
+
+export function validateTeamChange(body) {
+  const errors = [];
+  if (!rejectUnknown(errors, body, ['expectedUpdatedAt', 'teamId', 'stepOverrides'])) return errors;
+  const stamp = body.expectedUpdatedAt;
+  if (typeof stamp !== 'string' || Number.isNaN(Date.parse(stamp)) || new Date(stamp).toISOString() !== stamp) {
+    add(errors, 'expectedUpdatedAt', 'Use the timestamp of the run being edited');
+  }
+  validateAssignments(body, errors);
+  if (body.teamId === undefined && (!isPlainObject(body.stepOverrides) || !Object.keys(body.stepOverrides).length)) {
+    add(errors, 'teamId', 'Choose a team or override a step');
+  }
+  return errors;
+}
+
+export function validateRunStartBody(body) {
+  const errors = [];
+  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides'])) return errors;
+  validateAssignments(body, errors);
   if (!isRunRequestId(body.requestId)) {
     add(errors, 'requestId', 'Use 1–128 letters, digits, underscores or hyphens');
   }

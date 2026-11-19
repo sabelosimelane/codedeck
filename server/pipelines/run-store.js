@@ -123,7 +123,7 @@ function validateDefinitionStep(id, index, step) {
   const prefix = `definition.steps[${index}]`;
   if (!isPlainObject(step)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(step)) {
-    if (!['kind', 'name', 'role', 'prompt', 'repeat', 'agent', 'readOnly', 'approval', 'askOwner', 'inspectCleanCommit'].includes(key)) {
+    if (!['kind', 'name', 'role', 'prompt', 'repeat', 'agent', 'readOnly', 'approval', 'askOwner', 'inspectCleanCommit', 'nextAgent'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
@@ -151,6 +151,7 @@ function validateDefinitionStep(id, index, step) {
     ...(step.inspectCleanCommit === true ? { inspectCleanCommit: true } : {}),
     prompt: requireString(id, `${prefix}.prompt`, step.prompt, { max: 16384, singleLine: false }),
     repeat: validateRepeat(id, `${prefix}.repeat`, step.repeat, index),
+    ...(Object.hasOwn(step, 'nextAgent') && { nextAgent: validateDefinitionAgent(id, `${prefix}.nextAgent`, step.nextAgent) }),
     agent: validateDefinitionAgent(id, `${prefix}.agent`, step.agent),
   };
 }

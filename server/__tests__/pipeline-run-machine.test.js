@@ -699,3 +699,15 @@ describe('applyEvent — the time a step has worked', () => {
     expect(() => applyEvent(one(), { type: 'step_complete', at: at(-5) })).toThrow('step time: the step ends before it started');
   });
 });
+
+it('switches a completed step to its queued agent only when another loop round begins', () => {
+  const agent = { id: 'old', launchCommand: 'old' };
+  const nextAgent = { id: 'new', launchCommand: 'new' };
+  const state = run({ status: 'running', currentStepIndex: 1,
+    definition: { steps: [{ agent, nextAgent }, { agent }] },
+    steps: [step({ status: 'complete', sessionId: 'Demo-1' }), step({ status: 'running', startedAt: AT, roundsCompleted: 0 })] });
+  const next = applyEvent(state, { type: 'loop_back', toStepIndex: 0, at: AT });
+  expect(next.definition.steps[0]).toEqual({ agent: nextAgent });
+  expect(next.steps[0]).toMatchObject({ sessionId: null, priorSessionIds: ['Demo-1'] });
+  expect(state.definition.steps[0].agent).toBe(agent);
+});

@@ -11,6 +11,11 @@ const CLEANUP_STATUS = new Set(['complete', 'stopped', 'error', 'interrupted']);
 const CLEANUP_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', 'external']);
 const ACTIVE_STEP = new Set(['pending', 'launching', 'running', 'needs_input', 'interrupted', 'stopped', 'failed']);
 
+export function progressForAgent(progress, oldAgent, newAgent) {
+  if (!progress.sessionId || (newAgent.id === oldAgent.id && newAgent.launchCommand === oldAgent.launchCommand)) return progress;
+  return { ...progress, sessionId: null, priorSessionIds: [...progress.priorSessionIds, progress.sessionId] };
+}
+
 function clone(run) {
   return {
     ...run,
@@ -176,6 +181,15 @@ function applyLoopBack(run, event) {
     looped.status = 'pending';
     looped.iteration = 0;
     looped.finishedAt = null;
+  }
+  if (run.definition?.steps.some((step, i) => i >= toStepIndex && i <= run.currentStepIndex && step.nextAgent)) {
+    const steps = run.definition.steps.map((step, index) => {
+      if (index < toStepIndex || index > run.currentStepIndex || !step.nextAgent) return step;
+      const { nextAgent, ...previous } = step;
+      run.steps[index] = progressForAgent(run.steps[index], step.agent, nextAgent);
+      return { ...previous, agent: nextAgent };
+    });
+    run.definition = { ...run.definition, steps };
   }
   run.currentStepIndex = toStepIndex;
   return run;

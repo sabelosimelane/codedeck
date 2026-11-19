@@ -3565,3 +3565,38 @@ it('checks team field boundaries and rejects unsupported run selections before c
   }
   expect(ctx.taskService.createPlanned).not.toHaveBeenCalled();
 });
+
+describe('changing a running workflow’s team', () => {
+  it('reassigns the failed and later steps atomically, retaining previous terminals and completed work', async () => {
+    const ctx = await setup();
+    const { agent } = await seedReady(ctx);
+    const trial = ctx.agentStore.create(agentBody({ name: 'Replacement' }));
+    const team = (await request(ctx.app).post(base + '/teams').send({ name: 'Trial team', members: [{ role: 'Tester', agentId: trial.id }] }).expect(201)).body;
+    const workflow = ctx.workflowStore.create({ name: 'Verification', agentsDecide: false, nodes:
+      ['Investigate', 'Verify', 'Report'].map(name => node(agent.id, { name, role: 'Tester' })) });
+    const started = (await request(ctx.app).post(base + '/runs').send({ project: 'Demo', input: 'fix', workflowId: workflow.id, requestId: 'reteam' }).expect(201)).body;
+    const url = base + '/runs/' + started.id + '/team';
+    const payload = { expectedUpdatedAt: started.updatedAt, teamId: team.id, stepOverrides: { Report: agent.id } };
+    await request(ctx.app).put(url).send(payload).expect(409);
+    const run = ctx.runStore.get(started.id);
+    const stopped = ctx.runStore.update(run.id, { currentStepIndex: 2, status: 'error', error: 'Not ready', finishedAt: new Date().toISOString(), steps: run.steps.map((step, index) =>
+      index <= 2 ? { ...step, status: index === 2 ? 'failed' : 'complete', sessionId: 'Demo-' + (index + 1), attempt: 1 } : step) });
+    const change = { ...payload, expectedUpdatedAt: stopped.updatedAt };
+    for (const patch of [{ expectedUpdatedAt: null }, { stepOverrides: { Investigate: trial.id } }, { teamId: randomUUID() }, { stepOverrides: { Report: 'bad' } }, { teamId: null }, { unknown: true }]) {
+      await request(ctx.app).put(url).send({ ...change, ...patch }).expect(400);
+    }
+    await request(ctx.app).put(url).send({ ...change, expectedUpdatedAt: '2026-01-01T00:00:00.000Z' }).expect(409);
+    const updated = (await request(ctx.app).put(url).send(change).expect(200)).body;
+    expect(updated.steps.map(step => step.agentName)).toEqual([agent.name, agent.name, trial.name, agent.name]);
+    expect(updated.steps[2]).toMatchObject({ priorSessionIds: ['Demo-3'], sessionId: null, attempt: 1 });
+    expect(updated.status).toBe('error');
+    expect(ctx.runStore.get(run.id).definition.steps[2].agent.id).toBe(trial.id);
+    expect(ctx.workflowStore.get(workflow.id).nodes[1].agentId).toBe(agent.id);
+    // If Verify loops back, the earlier Investigator keeps its original attribution until re-entry.
+    const latest = ctx.runStore.get(run.id);
+    const loop = ctx.runStore.update(run.id, { definition: { ...latest.definition, steps: latest.definition.steps.map((item, index) =>
+      index === 2 ? { ...item, repeat: { mode: 'loop_back', toStepIndex: 1, max: 3 } } : item) } });
+    const queued = await request(ctx.app).put(url).send({ ...change, expectedUpdatedAt: loop.updatedAt }).expect(200);
+    expect(queued.body.steps[1]).toMatchObject({ agentName: agent.name, nextAgentName: trial.name, sessionId: 'Demo-2' });
+  });
+});

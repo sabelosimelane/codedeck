@@ -202,6 +202,7 @@ export function createRunEngine({
     if (!current) throw new Error(`pipeline run ${runId}: not found`);
     const next = applyEvent(current, event);
     return updateRun(runId, {
+      ...(next.definition !== current.definition && { definition: next.definition }),
       status: next.status,
       stopReason: next.stopReason,
       error: next.error,
@@ -1014,7 +1015,8 @@ export function createRunEngine({
         // The step returns to its own terminal, where its agent is cleared with the reset
         // command before the prompt is sent again. It gets a new one only when there is no
         // terminal to return to.
-        const { sessionId } = run.steps[run.currentStepIndex];
+        const latest = loadActionRun(runId, 'resume');
+        const { sessionId } = latest.steps[latest.currentStepIndex];
         const newTerminal = sessionId === null || !terminalStillThere(sessionId);
         const handle = getHandle(runId);
         handle.stopped = false;

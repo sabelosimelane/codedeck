@@ -1,3 +1,4 @@
+import ChangeRunTeam from '../pipelines/ChangeRunTeam';
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'lucide-react';
 import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
@@ -198,6 +199,7 @@ export default function TaskView({
           <div className="pipeline-run-actions">
             {run.actions?.stop && !['interrupted', 'stopped', 'error', 'complete'].includes(run.status) && <button type="button" onClick={() => onStop(run.id)}>Stop</button>}
             {run.actions?.continue && <button type="button" onClick={() => onContinue(run.id)} className={status.primaryAction === 'continue' ? 'pipeline-run-primary' : undefined}>Continue</button>}
+            {run.actions?.resume && <ChangeRunTeam run={run} />}
             {run.actions?.resume && <button type="button" onClick={() => { if (window.confirm(resumeConfirmation(run, current))) onResume(run.id); }} className={status.primaryAction === 'resume' ? 'pipeline-run-primary' : undefined}>Resume</button>}
             {run.actions?.cleanup && (
               <button type="button" onClick={() => onCleanup(run.id)} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}

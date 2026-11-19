@@ -8,6 +8,8 @@ import path from 'node:path';
 import {
   validateAgentBody,
   validateTeamBody,
+  validateTeamChange,
+  firstReassignableStep,
   assignedAgentId,
   validateWorkflowBody,
   validateStepPresetBody,
@@ -22,7 +24,7 @@ import {
   isUuid,
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
-import { computeActions } from '../pipelines/run-machine.js';
+import { computeActions, progressForAgent } from '../pipelines/run-machine.js';
 import { serializeStartParams } from '../pipelines/request-store.js';
 import { createRunProgressReader, readRunProgress, isProgressFileInWorktree } from '../pipelines/run-progress.js';
 import { notePath, feedbackPath } from '../pipelines/run-notes.js';
@@ -143,6 +145,7 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
         readOnly: defStep.readOnly,
         approval: defStep.approval,
         agentName: defStep.agent.name,
+        ...(defStep.nextAgent && { nextAgentName: defStep.nextAgent.name }),
         notePath: notePath(run.definition, index),
         note: latestNotes.get(index) === undefined ? null : (({ status, summary, attempt, pass, createdAt }) => ({ status, summary, attempt, pass, createdAt }))(latestNotes.get(index)),
         repeat: defStep.repeat,
@@ -1267,6 +1270,37 @@ export function createPipelinesRouter(deps) {
 
   router.post(`${BASE}/runs/:id/stop`, route(async (req, res) => {
     await runOwnerAction(req, res, 'stop');
+  }));
+
+  router.put(`${BASE}/runs/:id/team`, route(async (req, res) => {
+    const run = loadRun(req.params.id);
+    const errors = validateTeamChange(req.body);
+    if (errors.length) throw fieldErrors(errors);
+    if (!computeActions(run).resume) throw new PipelineError('Stop the run before changing assignments', 409);
+    const { expectedUpdatedAt, teamId, stepOverrides = {} } = req.body;
+    if (run.updatedAt !== expectedUpdatedAt) throw new PipelineError('The run changed. Reopen Change team.', 409);
+    const team = teamId === undefined ? null : teamStore.get(teamId);
+    if (teamId !== undefined && !team) throw fieldError('teamId', 'Choose an existing team');
+    const first = firstReassignableStep(run.definition.steps, run.currentStepIndex);
+    const eligible = run.definition.steps.slice(first).filter(step => step.kind === 'node');
+    if (Object.keys(stepOverrides).some(name => !eligible.some(step => step.name === name))) {
+      throw fieldError('stepOverrides', 'Choose a current or later workflow step');
+    }
+
+    const progress = [...run.steps];
+    const steps = run.definition.steps.map((step, index) => {
+      if (index < first || step.kind !== 'node') return step;
+      if (!Object.hasOwn(stepOverrides, step.name) && !(team && step.role)) return step;
+      const id = assignedAgentId(step, team, stepOverrides);
+      const agent = id && agentStore.get(id);
+      if (!agent) throw fieldError('stepOverrides', `Choose an agent for ${step.name}`);
+      const replacement = agentSnapshot(agent);
+      if (index < run.currentStepIndex) return { ...step, nextAgent: replacement };
+      progress[index] = progressForAgent(progress[index], step.agent, replacement);
+      return { ...step, agent: replacement };
+    });
+    const updated = runStore.update(run.id, { definition: { ...run.definition, steps }, steps: progress });
+    res.json(await asRunView(updated));
   }));
 
   router.post(`${BASE}/runs/:id/resume`, route(async (req, res) => {

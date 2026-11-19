@@ -198,6 +198,10 @@ function postAction(runId, action, { signal } = {}) {
   return request(`/runs/${encodeURIComponent(runId)}/${action}`, { method: 'POST', signal });
 }
 
+export function changeRunTeam(runId, assignment) {
+  return request(`/runs/${encodeURIComponent(runId)}/team`, { method: 'PUT', body: assignment });
+}
+
 export function stopRun(runId, options) {
   return postAction(runId, 'stop', options);
 }

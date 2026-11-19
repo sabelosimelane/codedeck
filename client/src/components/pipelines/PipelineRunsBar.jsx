@@ -1,3 +1,4 @@
+import ChangeRunTeam from './ChangeRunTeam';
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, Repeat } from 'lucide-react';
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../../../shared/pipeline-definitions.mjs';
@@ -332,7 +333,8 @@ export default function PipelineRunsBar({
               {run.actions?.continue && (
                 <button type="button" onClick={() => onContinue(run.id)} className={status.primaryAction === 'continue' ? 'pipeline-run-primary' : undefined}>Continue</button>
               )}
-              {run.actions?.resume && (
+              {run.actions?.resume && <ChangeRunTeam run={run} />}
+            {run.actions?.resume && (
                 <button type="button" onClick={() => { if (window.confirm(resumeConfirmation(run, currentStep))) onResume(run.id); }} className={status.primaryAction === 'resume' ? 'pipeline-run-primary' : undefined}>Resume</button>
               )}
               {run.actions?.cleanup && (

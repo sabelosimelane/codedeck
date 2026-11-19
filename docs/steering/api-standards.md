@@ -220,6 +220,7 @@ A step the owner continued past its limit has status `limit_accepted`. With no c
 | GET `/runs/:id/reviews` | Paginated owner reviews: step, attempt, `verdict` (`approved` or `sent_back`) and the send-back comment. Sort `createdAt,asc\|desc` (default `asc`); optional exact `stepIndex` filter; 404 for an unknown run |
 | GET `/runs/:id/notes` | Paginated append-only notes: step, attempt, pass, status, summary and written content. Sort `createdAt,asc\|desc` (default `asc`, id tiebreaker); optional exact `stepIndex` filter; 404 for an unknown run |
 | POST `/runs/:id/stop` | Stop automation; repeated Stop is idempotent |
+| PUT `/runs/:id/team` | Changes agents on a resumable run. Send its `expectedUpdatedAt` and a `teamId`, per-step `stepOverrides`, or both. Earlier steps reachable through a loop keep their recorded agent until the next round. A stale or active run returns 409. Resume is a separate action. |
 | POST `/runs/:id/resume` | Fresh attempt; refuses a missing worktree |
 | POST `/runs/:id/continue` | Advance from a pass-limit pause |
 | POST `/runs/:id/answer` | Body `{ answer }` (1–4000 characters; new lines allowed, other control characters refused). Types the answer into the terminal of an agent that signalled NEEDS_INPUT and returns the run; 409 when the run is not waiting on such a request, the agent has stopped waiting, or another answer is being sent |
