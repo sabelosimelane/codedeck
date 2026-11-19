@@ -83,6 +83,7 @@ codedeck/
 │       │   └── WorktreeGroupHeader.jsx # Sidebar row for Main or a task: title, run status and progress
 │       │   ├── tasks/
 │       │   │   ├── NewTaskDialog.jsx  # Title input for a new task
+│       │   │   ├── NewTaskFields.jsx  # The title input and repository list of a new task, shared with the Run workflow dialog
 │       │   │   ├── TaskLandingBar.jsx # How a task stands in Git, and Commit / Merge / PR / Close / Rename
 │       │   │   ├── TaskRepositoriesLanding.jsx # The same for a task with several repositories: one row per repository
 │       │   │   └── TaskView.jsx       # A run as its task: header, step rail, step detail above the terminals

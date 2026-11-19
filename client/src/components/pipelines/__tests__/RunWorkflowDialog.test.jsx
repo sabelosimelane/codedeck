@@ -147,7 +147,7 @@ describe('RunWorkflowDialog', () => {
     mockApi({ worktrees: [
       HOME,
       worktree({ dirty: true }),
-      worktree({ path: '/git/worktrees/demo-busy', name: 'demo-busy', branch: 'busy', selectable: false, reason: { code: 'in_use', message: 'An open workflow run is using this worktree.' } }),
+      worktree({ path: '/git/worktrees/demo-busy', name: 'demo-busy', branch: 'busy', selectable: false, reason: { code: 'in_use', message: 'An open workflow run is already using it.' } }),
     ] });
     const gone = { id: '7a000000-0000-4000-8000-000000000003', project: 'Demo', title: 'Vanished', worktreePath: '/git/worktrees/demo-gone', worktrees: [part('7b000000-0000-4000-8000-000000000008', 'demo', '/git/worktrees/demo-gone')] };
     const foreign = { id: '7a000000-0000-4000-8000-000000000004', project: 'Other', title: 'Elsewhere', worktreePath: '/git/worktrees/other', worktrees: [part('7b000000-0000-4000-8000-000000000009', 'other', '/git/worktrees/other')] };
@@ -157,18 +157,18 @@ describe('RunWorkflowDialog', () => {
     fireEvent.click(where('An open task'));
     expect(taskOptions()).toEqual([
       { value: TASK.id, label: 'Replies · uncommitted changes', disabled: false },
-      { value: BUSY.id, label: 'Busy one — An open workflow run is using this worktree.', disabled: true },
+      { value: BUSY.id, label: 'Busy one — An open workflow run is already using it.', disabled: true },
       { value: gone.id, label: 'Vanished — its files are no longer on disk', disabled: true },
     ]);
   });
 
   it('does not offer an open task when the project has none, or Main when it cannot take a run', async () => {
-    mockApi({ worktrees: [{ ...HOME, selectable: false, reason: { code: 'in_use', message: 'An open workflow run is using this worktree.' } }] });
+    mockApi({ worktrees: [{ ...HOME, selectable: false, reason: { code: 'in_use', message: 'An open workflow run is already using it.' } }] });
     await renderDialog({ tasks: [] });
     expect(where('An open task').disabled).toBe(true);
     expect(where('An open task').title).toBe('This project has no open tasks');
     expect(where('Main').disabled).toBe(true);
-    expect(where('Main').title).toBe('An open workflow run is using this worktree.');
+    expect(where('Main').title).toBe('An open workflow run is already using it.');
   });
 
   it('starts a run in the chosen open task and says what that means', async () => {
@@ -199,6 +199,33 @@ describe('RunWorkflowDialog', () => {
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ worktreePath: '/git/demo' })));
     expect(onStart.mock.calls[0][0]).not.toHaveProperty('newTask');
+  });
+
+  it('opens on a new task when the task the owner is looking at cannot take a run', async () => {
+    mockApi({ worktrees: [
+      HOME,
+      worktree(),
+      worktree({ path: '/git/worktrees/demo-busy', name: 'demo-busy', branch: 'busy', selectable: false, reason: { code: 'in_use', message: 'An open workflow run is already using it.' } }),
+    ] });
+    await renderDialog({ tasks: [BUSY, TASK], defaultTaskId: BUSY.id });
+    expect(chosenPlace()).toBe('A new task');
+    // Asked for an open task, the owner gets the first one that can take a run.
+    fireEvent.click(where('An open task'));
+    expect(screen.getByRole('combobox', { name: 'Task' }).value).toBe(TASK.id);
+    expect(startButton().disabled).toBe(false);
+  });
+
+  it('shows the task the owner is looking at, and why it cannot take a run, when no open task can', async () => {
+    mockApi({ worktrees: [
+      HOME,
+      worktree({ path: '/git/worktrees/demo-busy', name: 'demo-busy', branch: 'busy', selectable: false, reason: { code: 'in_use', message: 'An open workflow run is already using it.' } }),
+    ] });
+    await renderDialog({ tasks: [BUSY], defaultTaskId: BUSY.id });
+    expect(chosenPlace()).toBe('A new task');
+    fireEvent.click(where('An open task'));
+    expect(screen.getByRole('combobox', { name: 'Task' }).value).toBe(BUSY.id);
+    expect(screen.getByText('An open workflow run is already using it.', { selector: '.ui-note' })).toBeTruthy();
+    expect(startButton().disabled).toBe(true);
   });
 
   it('falls back to a new task when the task it opened on is no longer open', async () => {
@@ -298,18 +325,28 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
     mockRepositories();
     const { onStart } = await renderAcross();
     expect(options(startIn())).toEqual([
-      { label: 'demo — from main', disabled: false },
-      { label: 'mobile-app — from develop', disabled: false },
+      { label: 'demo', disabled: false },
+      { label: 'mobile-app', disabled: false },
       { label: 'frontend — This folder is not the top level of a Git working tree.', disabled: true },
     ]);
     expect(startIn().value).toBe('demo');
-    // Nothing but the repository the run starts in is included unless ticked.
-    expect(screen.getByRole('checkbox', { name: 'Also include mobile-app' }).checked).toBe(false);
-    expect(screen.queryByRole('checkbox', { name: 'Also include demo' })).toBeNull();
-    expect(screen.getByRole('checkbox', { name: 'Also include frontend' }).disabled).toBe(true);
+    // The choice is named on screen, not only for assistive technology.
+    expect(screen.getByText('Start in')).toBeTruthy();
+    // The list New task shows: every repository with where its copy would start from.
+    expect(screen.getByRole('group', { name: 'Repositories' })).toBeTruthy();
+    expect(screen.getByText('from main')).toBeTruthy();
+    expect(screen.getByText('from develop')).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: /Also include/ })).toBeNull();
+    // The repository the run starts in is always included; nothing else is unless ticked.
+    expect(screen.getByRole('checkbox', { name: 'demo' }).checked).toBe(true);
+    expect(screen.getByRole('checkbox', { name: 'demo' }).disabled).toBe(true);
+    expect(screen.getByRole('checkbox', { name: 'mobile-app' }).checked).toBe(false);
+    expect(screen.getByRole('checkbox', { name: 'frontend' }).disabled).toBe(true);
     type('docs/todos/replies.md');
     fireEvent.change(startIn(), { target: { value: 'mobile-app' } });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Also include demo' }));
+    expect(screen.getByRole('checkbox', { name: 'mobile-app' }).checked).toBe(true);
+    expect(screen.getByRole('checkbox', { name: 'mobile-app' }).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'demo' }));
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
     expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: 'docs/todos/replies.md', newTask: { repositories: ['mobile-app', 'demo'] }, startIn: 'mobile-app' });
@@ -420,8 +457,8 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     await waitFor(() => expect(screen.getByText('From the Repositories line of docs/todos/tag.md.')).toBeTruthy());
     expect(asked.at(-1)).toEqual({ workflowId: TEMPLATED[0].id, project: 'Demo', input: 'todos/tag.md' });
     expect(startIn().value).toBe('backend');
-    expect(box('Also include frontend').checked).toBe(true);
-    expect(box('Also include mobile-app').checked).toBe(false);
+    expect(box('frontend').checked).toBe(true);
+    expect(box('mobile-app').checked).toBe(false);
     expect(box('Also start a run in mobile-app with docs/todos/tag-phone.md').checked).toBe(true);
 
     fireEvent.click(startButton());
@@ -439,8 +476,8 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     mockPlans({ 'todos/tag.md': plan() });
     const { onStart } = await renderPlanned();
     type('todos/tag.md');
-    await waitFor(() => expect(box('Also include frontend').checked).toBe(true));
-    fireEvent.click(box('Also include frontend'));
+    await waitFor(() => expect(box('frontend').checked).toBe(true));
+    fireEvent.click(box('frontend'));
     fireEvent.click(box('Also start a run in mobile-app with docs/todos/tag-phone.md'));
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
@@ -491,7 +528,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     await renderPlanned();
     type('todos/tag.md');
     await waitFor(() => expect(screen.getByText('The Repositories line of docs/todos/tag.md was not used: backend (major): use this todo, minor, or the path of a .md file inside that repository')).toBeTruthy());
-    expect(box('Also include frontend').checked).toBe(false);
+    expect(box('frontend').checked).toBe(false);
     expect(screen.queryByRole('checkbox', { name: /Also start a run/ })).toBeNull();
   });
 

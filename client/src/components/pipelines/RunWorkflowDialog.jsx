@@ -5,6 +5,7 @@ import { parsePreflight, parseRunPlan, parseWorktree } from '../../utils/pipelin
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
 import { WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { Button, Dialog, Field, Note, SegmentedControl, Select, TextInput } from '../ui/index.jsx';
+import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
 
 function newRequestId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -17,7 +18,6 @@ function newRequestId() {
 const NEW_TASK = 'new';
 const OPEN_TASK = 'task';
 const MAIN = 'main';
-const TASK_TITLE_MAX = 80;
 // Setup prepares the copy of the project a new task gets, so only a new task needs a setup agent.
 const SETUP_AGENT_MISSING = 'setup_agent_missing';
 
@@ -47,8 +47,10 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const [input, setInput] = useState('');
   const [preflight, setPreflight] = useState(null);
   const [worktrees, setWorktrees] = useState([]);
-  const [place, setPlace] = useState(defaultTaskId ? OPEN_TASK : NEW_TASK);
-  const [taskId, setTaskId] = useState(defaultTaskId);
+  // Where the owner chose to work and in which task; null until they choose, and the dialog then
+  // opens on the task they are looking at when it can take a run, or on a new task.
+  const [place, setPlace] = useState(null);
+  const [taskId, setTaskId] = useState(null);
   const [title, setTitle] = useState('');
   // The project's repositories as Git sees them now; empty for a project with only its own.
   const [projectRepositories, setProjectRepositories] = useState([]);
@@ -104,16 +106,22 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const worktreeOf = task => (startsElsewhere(task)
     ? { path: task.worktreePath, dirty: false, selectable: true, reason: null }
     : worktrees.find(worktree => worktree.path === task.worktreePath) ?? null);
+  const takesRun = task => worktreeOf(task)?.selectable === true;
+  // The task the owner is looking at is offered first only when a run can start in it.
+  const viewedTask = projectTasks.find(task => task.id === defaultTaskId && takesRun(task)) ?? null;
+  const asked = place ?? (viewedTask ? OPEN_TASK : NEW_TASK);
   // A task that was open when the dialog opened may have been finished since; then the run goes to a new one.
-  const chosenTask = place === OPEN_TASK ? projectTasks.find(task => task.id === taskId) ?? projectTasks.find(task => worktreeOf(task)?.selectable) ?? projectTasks[0] ?? null : null;
-  const where = place === OPEN_TASK ? (chosenTask ? OPEN_TASK : NEW_TASK) : place;
+  const chosenTask = asked === OPEN_TASK ? projectTasks.find(task => task.id === taskId) ?? viewedTask ?? projectTasks.find(takesRun)
+    ?? projectTasks.find(task => task.id === defaultTaskId) ?? projectTasks[0] ?? null : null;
+  const where = asked === OPEN_TASK ? (chosenTask ? OPEN_TASK : NEW_TASK) : asked;
   // Where the run can start: the repositories of the project for a new task and for Main, the open ones of the task for an open task.
   const openParts = where === OPEN_TASK ? chosenTask.worktrees.filter(worktree => OPEN_STATES.includes(worktree.state)) : [];
   const startOptions = where === OPEN_TASK
     ? (openParts.length > 1 ? openParts.map(worktree => ({ name: worktree.repository, usable: true, label: worktree.repository })) : [])
     : several ? projectRepositories.map(entry => ({
       name: entry.name, usable: entry.usable, path: entry.path, own: entry.own,
-      label: !entry.usable ? `${entry.name} — ${entry.reason.message}` : where === NEW_TASK ? `${entry.name} — ${entry.branch === null ? 'from its current commit' : `from ${entry.branch}`}` : entry.name,
+      // Where a new task's copy starts from is said in its list of repositories, below.
+      label: entry.usable ? entry.name : `${entry.name} — ${entry.reason.message}`,
     })) : [];
   // A new task starts where its todo is, when the backend found it in one of the project's repositories.
   const plannedStart = where === NEW_TASK && plan?.foundIn ? startOptions.find(option => option.name === plan.foundIn && option.usable) : undefined;
@@ -229,9 +237,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
                 { value: OPEN_TASK, label: 'An open task', disabled: projectTasks.length === 0, title: projectTasks.length === 0 ? 'This project has no open tasks' : undefined },
                 { value: MAIN, label: 'Main', disabled: !home?.selectable && !several, title: home?.reason?.message },
               ]} />
-              {where === NEW_TASK && (
-                <TextInput label="Task title" value={title} onChange={setTitle} maxLength={TASK_TITLE_MAX} placeholder="Named from the work once the run starts, or type a title" />
-              )}
+              {where === NEW_TASK && <TaskTitleInput value={title} onChange={setTitle} optional />}
               {where === OPEN_TASK && (
                 <Select label="Task" value={chosenTask.id} onChange={(next) => { setTaskId(next); setStartChoice(null); }}>
                   {projectTasks.map(task => (
@@ -240,17 +246,17 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
                 </Select>
               )}
               {startOptions.length > 0 && start && (
-                <Select label="Start in" value={start.name} onChange={setStartChoice}>
-                  {startOptions.map(option => <option key={option.name} value={option.name} disabled={!option.usable}>{option.label}</option>)}
-                </Select>
+                <>
+                  <span aria-hidden="true" style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>Start in</span>
+                  <Select label="Start in" value={start.name} onChange={setStartChoice}>
+                    {startOptions.map(option => <option key={option.name} value={option.name} disabled={!option.usable}>{option.label}</option>)}
+                  </Select>
+                </>
               )}
-              {where === NEW_TASK && several && start && projectRepositories.filter(entry => entry.name !== start.name).map(entry => (
-                <label key={entry.name} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 13, color: entry.usable ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                  <input type="checkbox" aria-label={`Also include ${entry.name}`} checked={entry.usable && included.has(entry.name)} disabled={!entry.usable}
-                    onChange={() => setIncluded((current) => { const next = new Set(current); if (next.has(entry.name)) next.delete(entry.name); else next.add(entry.name); return next; })} />
-                  <span>{`Also include ${entry.name}`}</span>
-                </label>
-              ))}
+              {where === NEW_TASK && several && start && (
+                <TaskRepositories repositories={projectRepositories} ticked={included} startsIn={start.name} disabled={starting}
+                  onToggle={name => setIncluded((current) => { const next = new Set(current); if (next.has(name)) next.delete(name); else next.add(name); return next; })} />
+              )}
               {otherTodos.map(entry => (
                 <React.Fragment key={entry.repository}>
                   <label style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 13, color: startable(entry) ? 'var(--text-primary)' : 'var(--text-muted)' }}>
@@ -268,7 +274,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
               {unlistedMinor.map(entry => <Note key={entry.repository} tone="warning">{`The todo names ${entry.repository}, which is not one of this project's repositories.`}</Note>)}
               <Note>
                 {where === NEW_TASK && !several && <span>The task gets its own copy of the project{preflight?.branch ? ` from ${preflight.branch}` : ''}, prepared by a Setup step, so other work can carry on beside it.</span>}
-                {where === NEW_TASK && several && <span>The task gets its own copy of each repository it includes, prepared by a Setup step. The run starts in the one chosen; the others stay readable and can be added to the task later.</span>}
+                {where === NEW_TASK && several && <span>A Setup step prepares each copy, and the run starts in the repository chosen under Start in.</span>}
                 {where === OPEN_TASK && <span>Runs in this task as it is, with no Setup step.</span>}
                 {where === MAIN && !mainElsewhere && <span>Runs directly in Main, with no copy of its own and no Setup step.</span>}
                 {mainElsewhere && <span>{`Runs directly in the checkout of ${start.name}, with no copy of its own and no Setup step. It changes that repository only.`}</span>}

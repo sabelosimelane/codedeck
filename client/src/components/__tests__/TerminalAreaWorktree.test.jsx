@@ -31,8 +31,21 @@ describe('TerminalArea new task', () => {
     expect(screen.getByText('No terminals open')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Open terminal' })).toBeTruthy();
     const strip = screen.getByLabelText('Main and tasks');
-    expect([...strip.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Main0', 'New task']);
+    expect([...strip.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Main0', 'New task', 'Run workflow']);
     expect(screen.getAllByRole('button', { name: 'New task' })).toHaveLength(1);
+  });
+
+  it('offers Run workflow beside New task, by name, and nowhere else', () => {
+    const onOpenRunWorkflow = vi.fn();
+    render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo' }} sessionStatus={[]} onOpenRunWorkflow={onOpenRunWorkflow} />);
+    const buttons = screen.getAllByRole('button', { name: 'Run workflow' });
+    expect(buttons).toHaveLength(1);
+    expect(screen.getByLabelText('Main and tasks').contains(buttons[0])).toBe(true);
+    expect(buttons[0].textContent).toBe('Run workflow');
+    expect(buttons[0].title).toBe('Run a workflow in a new task, an open task or Main');
+    fireEvent.click(buttons[0]);
+    expect(onOpenRunWorkflow).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog', { name: 'New task' })).toBeNull();
   });
 
   it('starts a task with an active terminal from the strip', async () => {
@@ -53,6 +66,8 @@ describe('TerminalArea new task', () => {
     render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo', host: 'other' }} sessionStatus={[]} />);
     expect(screen.getByRole('button', { name: 'Open terminal' }).disabled).toBe(false);
     expect(screen.queryByRole('button', { name: 'New task' })).toBeNull();
+    // Workflow runs are for local projects too.
+    expect(screen.queryByRole('button', { name: 'Run workflow' })).toBeNull();
     expect(screen.queryByLabelText('Main and tasks')).toBeNull();
   });
 

@@ -1241,6 +1241,8 @@ export default function TerminalArea({
           return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{runState && <span className="worktree-switcher-state" data-tone={runState.tone}>{runState.label.toLowerCase()}</span>}{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
         })}
         {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked} title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
+        {/* A run works in a task or in Main, so it is started here, beside them, and not among a tab's own actions. */}
+        {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={onOpenRunWorkflow} title="Run a workflow in a new task, an open task or Main"><Play size={11} /><span className="worktree-switcher-title">Run workflow</span></button>}
       </div>}
       {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged}
         canAddRepository={Array.isArray(project.repositories) && project.repositories.length > 0} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
@@ -1377,14 +1379,6 @@ export default function TerminalArea({
             );
           }} >
         {/* Actions */}
-        <button
-          onClick={onOpenRunWorkflow}
-          aria-label="Run workflow"
-          title="Run workflow"
-          style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer' }}
-        >
-          <Play size={14} />
-        </button>
         <ShortcutHint label="Session search" keys={IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S']}>
           <button onClick={onOpenSessionSearch} aria-label="Session search" title={formatShortcutTitle('Session search', IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S'])} style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer' }}>
             <Search size={14} />

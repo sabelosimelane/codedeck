@@ -1,8 +1,8 @@
 import React, { useEffect, useId, useState } from 'react';
-import { Button, Dialog, Field, Note, TextInput } from '../ui/index.jsx';
+import { Button, Dialog, Field, Note } from '../ui/index.jsx';
 import { listProjectRepositories } from '../../utils/projectRepositoriesApi.js';
+import { TaskRepositories, TaskTitleInput } from './NewTaskFields.jsx';
 
-const TITLE_MAX = 80;
 const FALLBACK = 'Something went wrong. Please try again.';
 
 /**
@@ -72,24 +72,10 @@ export default function NewTaskDialog({ projectName, withRepositories = false, o
       </>}>
       <form id={formId} onSubmit={submit} style={{ display: 'contents' }}>
         <Field label="What are you working on?" hint="The copy starts from the project's current commit. Uncommitted changes and files Git ignores are not carried over.">
-          <TextInput label="Task title" value={title} onChange={setTitle} maxLength={TITLE_MAX} placeholder="For example: WhatsApp replies" autoFocus />
+          <TaskTitleInput value={title} onChange={setTitle} autoFocus />
         </Field>
         {withRepositories && repositories === null && error === null && <Note>Reading the project&apos;s repositories…</Note>}
-        {withRepositories && repositories !== null && (
-          <fieldset aria-label="Repositories" style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: 0, padding: 0, border: 'none' }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>Repositories</span>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>The task gets its own copy of each one ticked. The others stay readable and can be added to the task later.</span>
-            {repositories.map(entry => (
-              <label key={entry.name} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 13, color: entry.usable ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                <input type="checkbox" aria-label={entry.name} checked={ticked.has(entry.name)} disabled={!entry.usable || pending} onChange={() => toggle(entry.name)} />
-                <span>{entry.name}</span>
-                {entry.usable && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{entry.branch === null ? 'from its current commit' : `from ${entry.branch}`}</span>}
-                {!entry.usable && <span style={{ fontSize: 12, color: 'var(--warning)' }}>{entry.reason.message}</span>}
-              </label>
-            ))}
-            {chosen.length === 0 && <span style={{ fontSize: 12, color: 'var(--warning)' }}>Tick at least one repository.</span>}
-          </fieldset>
-        )}
+        {withRepositories && repositories !== null && <TaskRepositories repositories={repositories} ticked={ticked} onToggle={toggle} disabled={pending} />}
         {error && <Note tone="danger" role="alert">{error}</Note>}
       </form>
     </Dialog>

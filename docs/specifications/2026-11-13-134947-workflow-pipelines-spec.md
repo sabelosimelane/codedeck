@@ -729,7 +729,8 @@ place of `project.path`; its returned `cwd` reflects it.
 - Every mutation shows a success or failure toast; error text comes from the API's `message`.
 
 **Running**
-- A **Run workflow** button beside Session search in the terminal tab bar opens a dialog: workflow
+- A **Run workflow** button beside New task, in the strip of Main and the project's tasks (it was
+  beside Session search in the terminal tab bar until 2026-11-19), opens a dialog: workflow
   select, input field, the preflight result (ineligible reasons block Start; `dirty` shows the
   warning "Uncommitted changes in this checkout will not be in the run's worktree"), and Start.
 - A **runs bar** above the tab bar lists the active project's open runs: workflow name, one chip per

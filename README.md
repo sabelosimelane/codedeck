@@ -168,9 +168,11 @@ itself: an alias or shell function with the same name (for example `codex='codex
 does not apply to it. Choose **Custom command** to write the command yourself (aliases,
 extra flags, other CLIs). A model ID is not checked until a run launches the agent.
 
-Select a local Git repository project and click **Run workflow** beside Session
-search. Preflight blocks ineligible projects. **Where to work** offers **A new task**
-(the default), each open task of the project, and **Main**. Type a title for the new
+Select a local Git repository project and click **Run workflow** beside **New task**,
+in the strip of Main and the project's tasks above the terminal tabs. Preflight blocks
+ineligible projects. **Where to work** offers **A new task**, each open task of the
+project, and **Main**. The dialog opens on the task you are looking at when a run can
+start in it, and on a new task otherwise. Type a title for the new
 task, or leave it empty: the task is then called after the run's input, and as soon as
 a step of the run writes its note CodeDeck asks the CLI chosen under **Settings →
 Session naming** for a short title that describes the work, and renames the task. A
@@ -187,11 +189,12 @@ uses the place as it is: there is no Setup step and no setup agent is needed.
 **Repositories**: backend (this todo), mobile-app (docs/todos/tag-pings-phone.md), frontend (minor)
 ```
 
-`this todo` is the repository the todo lives in. A path is another repository's own todo, for work there that is big enough to be planned on its own. `minor` is a repository the same run may change without a todo of its own. Whoever writes the todo decides, usually the agent that writes the specification; CodeDeck only reads the line. In the Run workflow dialog, for a new task in a project with several repositories, what the line says is filled in for you: **Start in** is the repository that holds the todo, each `minor` repository is ticked under "Also include…", and each repository with its own todo gets a ticked "Also start a run in…" box. Change any of it; nothing starts before **Start**. Start then starts the run, and one more run in a task of its own for every box left ticked. A repository's own todo is offered only when it is committed there and its path fits the workflow's Progress file; otherwise the box says why. A line CodeDeck cannot read is shown with the reason and nothing is filled in from it. Without the line the dialog still starts where the todo is.
+`this todo` is the repository the todo lives in. A path is another repository's own todo, for work there that is big enough to be planned on its own. `minor` is a repository the same run may change without a todo of its own. Whoever writes the todo decides, usually the agent that writes the specification; CodeDeck only reads the line. In the Run workflow dialog, for a new task in a project with several repositories, what the line says is filled in for you: **Start in** is the repository that holds the todo, each `minor` repository is ticked under **Repositories**, and each repository with its own todo gets a ticked "Also start a run in…" box. Change any of it; nothing starts before **Start**. Start then starts the run, and one more run in a task of its own for every box left ticked. A repository's own todo is offered only when it is committed there and its path fits the workflow's Progress file; otherwise the box says why. A line CodeDeck cannot read is shown with the reason and nothing is filled in from it. Without the line the dialog still starts where the todo is.
 
 **Runs in a project with several repositories.** The Run workflow dialog adds **Start in**: the
 repository whose copy is the run's current directory, where its notes and its progress file are.
-For a new task you also tick the other repositories it includes, and Setup prepares each one. For
+For a new task you also tick the other repositories it includes, in the same **Repositories** list
+New task shows, where the repository the run starts in is always ticked; Setup prepares each one. For
 an open task you choose among the repositories it still has open, and for Main among the
 project's repositories (the run then works in that repository's own folder and changes it only).
 Every step is told which copies of the task it may change, and where the project's remaining

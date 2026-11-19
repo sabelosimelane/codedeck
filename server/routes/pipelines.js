@@ -50,7 +50,8 @@ const WORKTREE_REASONS = {
   missing: 'The worktree directory is missing.',
   unreadable: 'Git cannot read this worktree.',
   detached: 'No branch is checked out in this worktree.',
-  in_use: 'An open workflow run is using this worktree.',
+  // Shown for a task and for Main alike, so it names neither.
+  in_use: 'An open workflow run is already using it.',
 };
 
 const AGENT_SORT = ['name', 'updatedAt'];

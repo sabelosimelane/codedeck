@@ -1472,7 +1472,7 @@ describe('pipelines API — worktrees', () => {
     const response = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo' });
     const byName = Object.fromEntries(response.body.data.map(item => [item.name, item]));
     expect(byName['demo-git-feature']).toMatchObject({
-      selectable: false, reason: { code: 'in_use', message: 'An open workflow run is using this worktree.' },
+      selectable: false, reason: { code: 'in_use', message: 'An open workflow run is already using it.' },
     });
     expect(byName['demo-git-detached']).toMatchObject({
       branch: null, selectable: false, reason: { code: 'detached', message: 'No branch is checked out in this worktree.' },
@@ -1667,7 +1667,7 @@ describe('pipelines API — worktrees', () => {
 
     const second = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { requestId: 'run-second' }));
     expect(second.status).toBe(409);
-    expect(second.body.message).toBe('An open workflow run is using this worktree.');
+    expect(second.body.message).toBe('An open workflow run is already using it.');
 
     // A finished run stays open where it worked, but no longer holds the place.
     ctx.runStore.update(first.body.id, { status: 'complete', finishedAt: new Date().toISOString() });
@@ -1697,7 +1697,7 @@ describe('pipelines API — worktrees', () => {
 
     const response = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, { worktreePath: created.path }));
     expect(response.status).toBe(409);
-    expect(response.body.message).toBe('An open workflow run is using this worktree.');
+    expect(response.body.message).toBe('An open workflow run is already using it.');
   });
 
   it('replays the same request and conflicts when the worktree choice differs', async () => {
@@ -2830,7 +2830,7 @@ describe('pipelines API — runs in tasks', () => {
     expect((await request(busy.app).post(`${base}/runs`).send(busy.body({ taskId: TASK_ID }))).status).toBe(201);
     const second = await request(busy.app).post(`${base}/runs`).send(busy.body({ requestId: 'run-second', taskId: TASK_ID }));
     expect(second.status).toBe(409);
-    expect(second.body.reasons).toEqual([{ code: 'in_use', message: 'An open workflow run is using this worktree.' }]);
+    expect(second.body.reasons).toEqual([{ code: 'in_use', message: 'An open workflow run is already using it.' }]);
 
     setTaskState(busy.taskStore, TASK_ID, { state: 'closed' });
     const finished = await request(busy.app).post(`${base}/runs`).send(busy.body({ requestId: 'run-third', taskId: TASK_ID }));
@@ -3080,7 +3080,7 @@ describe('POST /api/pipelines/runs — one worktree, two starts at once', () => 
     }).toEqual({ statuses: [201, 409], occupyingRows: 1, engineStarts: 1 });
     const loser = responses.find(response => response.status === 409);
     expect(loser.type).toBe('application/problem+json');
-    expect(loser.body.reasons).toEqual([{ code: 'in_use', message: 'An open workflow run is using this worktree.' }]);
+    expect(loser.body.reasons).toEqual([{ code: 'in_use', message: 'An open workflow run is already using it.' }]);
 
     // The existing reuse rule: once the winner is finished, the worktree can be used again.
     const winner = responses.find(response => response.status === 201);

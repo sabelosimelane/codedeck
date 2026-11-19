@@ -36,10 +36,10 @@ beforeEach(() => {
 afterEach(() => { cleanup(); global.fetch = originalFetch; });
 
 describe('TerminalArea worktree view', () => {
-  it('shows only Main and New task, and filters no tabs, when the project has no tasks', async () => {
+  it('shows only Main, New task and Run workflow, and filters no tabs, when the project has no tasks', async () => {
     const view = render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={[groups[0]]} worktreeBySession={new Map()} />);
     await waitFor(() => expect(view.getAllByTestId('terminal-tab')).toHaveLength(2));
-    expect([...view.getByLabelText('Main and tasks').querySelectorAll('button')].map(button => button.textContent)).toEqual(['Main2', 'New task']);
+    expect([...view.getByLabelText('Main and tasks').querySelectorAll('button')].map(button => button.textContent)).toEqual(['Main2', 'New task', 'Run workflow']);
   });
   it.each([['running', 'running', 'active', false], ['complete', 'complete', 'done', false], ['error', 'failed', 'danger', true], ['interrupted', 'interrupted', 'waiting', true]])('says on the strip that the task’s run is %s', async (status, word, tone, flagged) => {
     const stateGroups = [groups[0], { ...groups[1], run: { ...groups[1].run, status } }];
