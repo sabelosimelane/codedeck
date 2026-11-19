@@ -203,8 +203,60 @@ describe('a project\'s repositories', () => {
     });
   });
 
+  describe('a terminal in one of the project\'s repositories', () => {
+    it('opens in the own checkout of the repository asked for', async () => {
+      const { service, mobile, frontendMain, backend, starts } = groupFixture();
+      await service.add('Demo', { path: mobile });
+      await service.add('Demo', { path: frontendMain });
+      expect(await service.openTerminal('Demo', { repository: 'mobile-app' })).toEqual({ sessionId: 'Demo-1', project: 'Demo', repository: 'mobile-app', path: mobile });
+      expect(await service.openTerminal('Demo', { repository: 'frontend' })).toMatchObject({ repository: 'frontend', path: frontendMain });
+      expect(await service.openTerminal('Demo', { repository: 'backend' })).toMatchObject({ repository: 'backend', path: backend });
+      expect(starts).toEqual([['Demo', { cwd: mobile }], ['Demo', { cwd: frontendMain }], ['Demo', { cwd: backend }]]);
+    });
+
+    it.each([
+      ['no body', undefined, [{ field: 'body', message: 'Use an object with repository' }]],
+      ['a list', [], [{ field: 'body', message: 'Use an object with repository' }]],
+      ['a missing name', {}, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['a number', { repository: 7 }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['an empty name', { repository: '' }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['a repository the project does not list', { repository: 'tools' }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['a path instead of a name', { repository: '/etc' }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['an unknown field', { repository: 'backend', cwd: '/etc' }, [{ field: 'cwd', message: 'Unknown field' }]],
+    ])('refuses %s', async (_name, body, errors) => {
+      const { service, starts } = groupFixture();
+      expect(await rejection(service.openTerminal('Demo', body))).toMatchObject({ status: 400, errors });
+      expect(starts).toEqual([]);
+    });
+
+    it('refuses a repository whose folder Git can no longer use, an unknown project and a remote one', async () => {
+      const { service, mobile, starts } = groupFixture();
+      await service.add('Demo', { path: mobile });
+      rmSync(mobile, { recursive: true, force: true });
+      expect(await rejection(service.openTerminal('Demo', { repository: 'mobile-app' }))).toMatchObject({ status: 409, message: 'mobile-app: This folder is not the top level of a Git working tree.' });
+      expect(await rejection(service.openTerminal('Nope', { repository: 'backend' }))).toMatchObject({ status: 404, message: 'Project not found' });
+      expect(await rejection(service.openTerminal('Remote', { repository: 'app' }))).toMatchObject({ status: 409, message: 'Repositories are only available for local projects.' });
+      expect(starts).toEqual([]);
+    });
+
+    it('reports a terminal that could not start', async () => {
+      const ctx = groupFixture();
+      const failing = createProjectRepositories({
+        loadProjects: () => normalizeProjects(ctx.stored()), saveProjects: () => {}, execFile: (await import('node:child_process')).execFile,
+        startSession: async () => { throw Object.assign(new Error('tmux is not installed'), { status: 503 }); },
+      });
+      expect(await rejection(failing.openTerminal('Demo', { repository: 'backend' }))).toMatchObject({ status: 503, message: 'The terminal could not be opened.' });
+      const broken = createProjectRepositories({
+        loadProjects: () => normalizeProjects(ctx.stored()), saveProjects: () => {}, execFile: (await import('node:child_process')).execFile,
+        startSession: async () => ({ id: '' }),
+      });
+      expect(await rejection(broken.openTerminal('Demo', { repository: 'backend' }))).toMatchObject({ status: 500, message: 'The terminal could not be opened.' });
+    });
+  });
+
   it('requires its dependencies', () => {
     expect(() => createProjectRepositories({})).toThrow('loadProjects must be a function');
     expect(() => createProjectRepositories({ loadProjects: () => [], saveProjects: () => {} })).toThrow('execFile must be a function');
+    expect(() => createProjectRepositories({ loadProjects: () => [], saveProjects: () => {}, execFile: () => {} })).toThrow('startSession must be a function');
   });
 });

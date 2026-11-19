@@ -50,14 +50,21 @@ export function groupFixture() {
     { name: 'Remote', path: '/srv/app', host: 'devbox' },
     { name: 'Plain', path: notes },
   ];
+  const starts = [];
   const service = createProjectRepositories({
     loadProjects: () => normalizeProjects(projects),
     saveProjects: next => { projects = next; },
     execFile,
+    // Stands in for the terminal runtime: records what was asked and hands out the next session id.
+    startSession: async (project, options) => {
+      starts.push([project, options]);
+      return { id: `${project}-${starts.length}` };
+    },
   });
   return {
     base, group, backend, mobile, frontend, frontendMain, notes, tools, otherBackend, service,
     stored: () => projects,
+    starts,
     setProjects: next => { projects = next; },
     // A project as the rest of the backend is given it: with every field a stored project has.
     findProject: name => normalizeProjects(projects).find(project => project.name === name) ?? null,

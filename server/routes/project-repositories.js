@@ -10,7 +10,7 @@ import { RepositoryError } from '../project-repositories.js';
 import { parseCollectionQuery, paginate } from './collection-query.js';
 
 // Everything this router answers, and nothing else under /api/projects.
-export const REPOSITORIES_PATH = /^\/api\/projects\/[^/]+\/(?:repositories|repository-candidates)(?:\/|$)/;
+export const REPOSITORIES_PATH = /^\/api\/projects\/[^/]+\/(?:repositories|repository-candidates|terminals)(?:\/|$)/;
 const SORT = { sortFields: ['name'], defaultSort: 'name,asc' };
 
 const fieldError = (field, message) => new RepositoryError('One or more fields failed validation.', 400, [{ field, message }]);
@@ -32,7 +32,7 @@ function repositoryView(entry) {
 const candidateView = entry => ({ name: entry.name, path: entry.path });
 
 export function createProjectRepositoriesRouter({ service } = {}) {
-  for (const method of ['list', 'candidates', 'add', 'remove']) {
+  for (const method of ['list', 'candidates', 'add', 'remove', 'openTerminal']) {
     if (typeof service?.[method] !== 'function') throw new TypeError(`project repositories router requires service.${method}`);
   }
 
@@ -70,6 +70,12 @@ export function createProjectRepositoriesRouter({ service } = {}) {
     res.status(201).json(repositoryView(await service.add(req.params.name, req.body)));
   }));
 
+  // A terminal in the own checkout of one of the project's repositories, so every repository is reached from the project.
+  router.post('/api/projects/:name/terminals', route(async (req, res) => {
+    const opened = await service.openTerminal(req.params.name, req.body);
+    res.status(201).json({ sessionId: opened.sessionId, project: opened.project, repository: opened.repository, path: opened.path });
+  }));
+
   router.delete('/api/projects/:name/repositories/:repository', route(async (req, res) => {
     await service.remove(req.params.name, req.params.repository);
     res.status(204).end();
@@ -79,7 +85,7 @@ export function createProjectRepositoriesRouter({ service } = {}) {
 
   router.use((error, req, res, next) => {
     if (!serves(req)) return next(error);
-    const known = error instanceof RepositoryError && [400, 404, 409].includes(error.status);
+    const known = error instanceof RepositoryError && [400, 404, 409, 500, 503].includes(error.status);
     const status = known ? error.status : error.type === 'entity.parse.failed' ? 400 : error.type === 'entity.too.large' ? 413 : 500;
     const message = known ? error.message
       : status === 400 ? 'One or more fields failed validation.' : status === 413 ? 'Request body too large' : 'The repositories request failed.';

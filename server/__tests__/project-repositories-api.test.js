@@ -5,6 +5,7 @@ import path from 'node:path';
 import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import { groupFixture, repository } from './helpers/group-fixture.js';
 import { createProjectRepositoriesRouter } from '../routes/project-repositories.js';
+import { RepositoryError } from '../project-repositories.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -239,6 +240,62 @@ describe('project repositories API', () => {
       expectProblem(await request(server).delete(`${list('Demo')}/backend`), 404, 'Repository not found');
       expectProblem(await request(server).delete(`${list('Demo')}/${encodeURIComponent('\'; DROP TABLE configs;--')}`), 404, 'Repository not found');
       expectProblem(await request(server).delete(`${list('Demo')}/${'x'.repeat(300)}`), 404, 'Repository not found');
+    });
+  });
+
+  describe('POST /api/projects/:name/terminals', () => {
+    const terminals = name => `/api/projects/${encodeURIComponent(name)}/terminals`;
+
+    it('opens a terminal in the own checkout of one of the project\'s repositories', async () => {
+      const { server, mobile, backend, service, starts } = await setup();
+      await service.add('Demo', { path: mobile });
+      const response = await request(server).post(terminals('Demo')).send({ repository: 'mobile-app' });
+      expect(response.status).toBe(201);
+      expect(response.body).toEqual({ sessionId: 'Demo-1', project: 'Demo', repository: 'mobile-app', path: mobile });
+      expect((await request(server).post(terminals('Demo')).send({ repository: 'backend' })).body).toEqual({ sessionId: 'Demo-2', project: 'Demo', repository: 'backend', path: backend });
+      expect(starts).toEqual([['Demo', { cwd: mobile }], ['Demo', { cwd: backend }]]);
+    });
+
+    it('opens a terminal for each request, also when the same one is sent twice at once', async () => {
+      const { server, starts } = await setup();
+      const responses = await Promise.all([request(server).post(terminals('Demo')).send({ repository: 'backend' }), request(server).post(terminals('Demo')).send({ repository: 'backend' })]);
+      expect(responses.map(response => response.status)).toEqual([201, 201]);
+      expect(new Set(responses.map(response => response.body.sessionId)).size).toBe(2);
+      expect(starts).toHaveLength(2);
+    });
+
+    it.each([
+      ['a missing name', {}, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['null', { repository: null }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['an empty name', { repository: '' }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['a number', { repository: 3 }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['a name of 101 characters', { repository: 'r'.repeat(101) }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['a repository that is not listed', { repository: 'tools' }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['a folder instead of a name', { repository: '../../etc' }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['markup', { repository: '<script>alert(1)</script>' }, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]],
+      ['an unknown field', { repository: 'backend', cwd: '/etc' }, [{ field: 'cwd', message: 'Unknown field' }]],
+      ['a list as the body', [], [{ field: 'body', message: 'Use an object with repository' }]],
+    ])('refuses %s and starts nothing', async (_name, body, errors) => {
+      const { server, starts } = await setup();
+      const response = await request(server).post(terminals('Demo')).send(body);
+      expectFieldErrors(response, errors);
+      expect(JSON.stringify(response.body)).not.toMatch(/<script>|etc/);
+      expect(starts).toEqual([]);
+    });
+
+    it('refuses malformed JSON and a body that is too large', async () => {
+      const { server } = await setup();
+      expectFieldErrors(await request(server).post(terminals('Demo')).set('Content-Type', 'application/json').send('{"repository":'), [{ field: 'body', message: 'Malformed JSON body' }]);
+      expectProblem(await request(server).post(terminals('Demo')).send({ repository: 'r'.repeat(8000) }), 413, 'Request body too large');
+    });
+
+    it('reports an unknown project, a remote one, and a terminal runtime that is not available', async () => {
+      const { server } = await setup();
+      expectProblem(await request(server).post(terminals('Nope')).send({ repository: 'backend' }), 404, 'Project not found');
+      expectProblem(await request(server).post(terminals('Remote')).send({ repository: 'app' }), 409, 'Repositories are only available for local projects.');
+      const failing = { list: vi.fn(), candidates: vi.fn(), add: vi.fn(), remove: vi.fn(), openTerminal: vi.fn(async () => { throw new RepositoryError('The terminal could not be opened.', 503); }) };
+      const down = await setup({ service: failing });
+      expectProblem(await request(down.server).post(terminals('Demo')).send({ repository: 'backend' }), 503, 'The terminal could not be opened.');
     });
   });
 

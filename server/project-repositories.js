@@ -59,11 +59,12 @@ export function createProjectRepositories({
   loadProjects,
   saveProjects,
   execFile,
+  startSession,
   realpath = target => fs.promises.realpath(target),
   readdir = (target, options) => fs.promises.readdir(target, options),
   stat = target => fs.promises.stat(target),
 } = {}) {
-  for (const [name, value] of Object.entries({ loadProjects, saveProjects, execFile, realpath, readdir, stat })) {
+  for (const [name, value] of Object.entries({ loadProjects, saveProjects, execFile, startSession, realpath, readdir, stat })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
 
@@ -177,12 +178,40 @@ export function createProjectRepositories({
     return { name, path: checkout, own: false, ...state };
   }
 
+  /**
+   * Opens a terminal in the own checkout of one of the project's repositories, so that every
+   * repository of a project is reached from the project itself.
+   */
+  async function openTerminal(projectName, body) {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) throw invalid([{ field: 'body', message: 'Use an object with repository' }]);
+    const unknown = Object.keys(body).filter(field => field !== 'repository');
+    if (unknown.length) throw invalid(unknown.map(field => ({ field, message: 'Unknown field' })));
+    const { project, others } = findProject(projectName);
+    const wrongName = invalid([{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]);
+    if (!isRepositoryName(body.repository)) throw wrongName;
+    const ownState = await inspect(project.path);
+    const ownName = path.basename(ownState.usable ? await homeOf(project.path) : project.path);
+    const checkout = body.repository === ownName ? project.path : others.find(entry => entry.name === body.repository)?.path;
+    if (checkout === undefined) throw wrongName;
+    const state = checkout === project.path ? ownState : await inspect(checkout);
+    if (!state.usable) throw new RepositoryError(`${body.repository}: ${state.reason.message}`, 409);
+    let started;
+    try {
+      started = await startSession(project.name, { cwd: checkout });
+      if (typeof started?.id !== 'string' || started.id.length === 0) throw new Error('Terminal session ID is invalid');
+    } catch (error) {
+      throw new RepositoryError('The terminal could not be opened.', error?.status === 503 ? 503 : 500, undefined, { cause: error });
+    }
+    return { sessionId: started.id, project: project.name, repository: body.repository, path: checkout };
+  }
+
   // Additions check Git before they store, so they run one at a time: the same repository asked for twice is stored once.
   let queue = Promise.resolve();
 
   return {
     list,
     candidates,
+    openTerminal,
     add(projectName, body) {
       const run = queue.then(() => addNow(projectName, body));
       queue = run.then(() => undefined, () => undefined);

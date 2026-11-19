@@ -220,7 +220,13 @@ app.use(createProjectsRouter({
   deleteProject: name => deleteProject(name),
 }));
 // A project's other repositories: a list in CodeDeck's configuration, nothing changed on disk.
-app.use(createProjectRepositoriesRouter({ service: createProjectRepositories({ loadProjects, saveProjects, execFile }) }));
+app.use(createProjectRepositoriesRouter({ service: createProjectRepositories({
+  loadProjects,
+  saveProjects,
+  execFile,
+  // The session starter is set up further down; it is read when a terminal is asked for.
+  startSession: (project, options) => startSessionWithWorktree(project, options),
+}) }));
 
 // -------------------------------------------------------------------
 // REST API: Config (generic key-value)
