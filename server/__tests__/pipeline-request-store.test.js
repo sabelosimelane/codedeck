@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { createRequestStore } from '../pipelines/request-store.js';
+import { createRequestStore, serializeStartParams } from '../pipelines/request-store.js';
 
 const REQUEST_ID = 'run-request-1';
 const TASK_ID = '7a000000-0000-4000-8000-000000000001';
@@ -17,6 +17,49 @@ function setup(now = () => STAMP) {
 }
 
 describe('pipeline request store', () => {
+  describe('the repositories a run is started with', () => {
+    const start = { workflowId: TASK_ID, project: 'Demo', input: 'Fix login' };
+
+    it('records a request without them exactly as before they existed', () => {
+      expect(serializeStartParams({ ...start, newTask: {} })).toBe(serialized);
+      expect(serializeStartParams({ ...start, taskId: TASK_ID })).toBe(JSON.stringify({ ...start, place: { kind: 'task', taskId: TASK_ID } }));
+    });
+
+    it('records the repository the run starts in and the ones a new task includes', () => {
+      const plain = serializeStartParams({ ...start, newTask: { title: ' Replies ' } });
+      const withStart = serializeStartParams({ ...start, newTask: { title: ' Replies ' }, startIn: 'backend' });
+      const withList = serializeStartParams({ ...start, newTask: { title: ' Replies ', repositories: ['backend', 'mobile-app'] }, startIn: 'backend' });
+      expect(new Set([plain, withStart, withList]).size).toBe(3);
+      expect(JSON.parse(withList)).toEqual({ ...start, place: { kind: 'newTask', title: 'Replies', repositories: ['backend', 'mobile-app'] }, startIn: 'backend' });
+      expect(serializeStartParams({ ...start, taskId: TASK_ID, startIn: 'backend' }))
+        .not.toBe(serializeStartParams({ ...start, taskId: TASK_ID, startIn: 'mobile-app' }));
+      // The order of a new task's repositories is part of the request: the first is where it starts when no other is named.
+      expect(serializeStartParams({ ...start, newTask: { repositories: ['mobile-app', 'backend'] } }))
+        .not.toBe(serializeStartParams({ ...start, newTask: { repositories: ['backend', 'mobile-app'] } }));
+    });
+
+    it('reserves and reads back a request that names them', () => {
+      const { db, store } = setup();
+      const recorded = serializeStartParams({ ...start, newTask: { repositories: ['backend', 'mobile-app'] }, startIn: 'mobile-app' });
+      expect(store.reserve(REQUEST_ID, recorded).params).toBe(recorded);
+      store.setTaskId(REQUEST_ID, TASK_ID);
+      expect(createRequestStore(db).get(REQUEST_ID)).toMatchObject({ params: recorded, taskId: TASK_ID });
+      const inTask = serializeStartParams({ ...start, taskId: TASK_ID, startIn: 'backend' });
+      expect(store.reserve('run-request-2', inTask).params).toBe(inTask);
+    });
+
+    it('refuses recorded parameters whose repositories are not valid', () => {
+      const { store } = setup();
+      const bad = extra => JSON.stringify({ ...start, place: { kind: 'newTask', title: null, ...extra.place }, ...extra.top });
+      expect(() => store.reserve(REQUEST_ID, bad({ place: { repositories: 'backend' } }))).toThrow(/pipeline_run_requests row run-request-1 field params\.place\.repositories: /);
+      expect(() => store.reserve(REQUEST_ID, bad({ place: { repositories: null } }))).toThrow(/field params\.place\.repositories: /);
+      expect(() => store.reserve(REQUEST_ID, bad({ top: { startIn: '../backend' } }))).toThrow(/field params\.startIn: /);
+      expect(() => store.reserve(REQUEST_ID, bad({ top: { startIn: null } }))).toThrow(/field params\.startIn: /);
+      // A request with no place of its own has no task to start in.
+      expect(() => store.reserve(REQUEST_ID, JSON.stringify({ ...start, place: { kind: 'new' }, startIn: 'backend' }))).toThrow(/field params\.startIn: /);
+    });
+  });
+
   it('persists the first canonical parameters and releases the reservation by id', () => {
     const { db, store } = setup();
     const record = { requestId: REQUEST_ID, params: serialized, taskId: null, createdAt: STAMP };

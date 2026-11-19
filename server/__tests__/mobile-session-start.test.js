@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMobileSessionStarter } from '../mobile-session-start.js';
 
 const INCARNATION = '8d7f3a7e-8a54-4d5b-9d5e-7f4b6a0c2e11';
-const project = (name, extra = {}) => ({ name, path: `/work/${name}`, shelved: false, shelvedAt: null, waiting: false, waitingAt: null, ...extra });
+const project = (name, extra = {}) => ({ name, path: `/work/${name}`, shelved: false, shelvedAt: null, waiting: false, waitingAt: null, repositories: [], ...extra });
 
 function setup({ projects = [project('alpha')], remote = null, createFails = null } = {}) {
   let saved = projects;

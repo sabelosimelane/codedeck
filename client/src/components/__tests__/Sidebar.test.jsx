@@ -45,6 +45,12 @@ vi.mock('../SettingsPanel', () => ({
   default: () => null,
 }));
 
+vi.mock('../ProjectRepositoriesDialog.jsx', () => ({
+  default: ({ project, onClose }) => (
+    <div role="dialog" aria-label={`Repositories of ${project.name}`}><button type="button" onClick={onClose}>Done</button></div>
+  ),
+}));
+
 vi.mock('../BrandMark', () => ({
   default: () => null,
 }));
@@ -93,6 +99,29 @@ function renderSidebar(overrides = {}) {
 }
 
 describe('Sidebar', () => {
+  it('opens a local project\'s repositories from its menu', () => {
+    const view = renderSidebar({ activeProjects: [{ name: 'Alpha', path: '/tmp/group/alpha' }], waitingProjects: [{ name: 'Beta', path: '/tmp/group/beta', waiting: true }] });
+    fireEvent.click(view.getByLabelText('Project actions for Alpha'));
+    fireEvent.click(view.getByText('Repositories…'));
+    expect(view.getByRole('dialog', { name: 'Repositories of Alpha' })).toBeTruthy();
+    // The menu closes behind the dialog.
+    expect(view.queryByText('Rename project')).toBeNull();
+    fireEvent.click(view.getByText('Done'));
+    expect(view.queryByRole('dialog', { name: 'Repositories of Alpha' })).toBeNull();
+    fireEvent.click(view.getByLabelText('Project actions for Beta'));
+    fireEvent.click(view.getByText('Repositories…'));
+    expect(view.getByRole('dialog', { name: 'Repositories of Beta' })).toBeTruthy();
+  });
+
+  it('offers no repositories for a project on another host', () => {
+    const view = renderSidebar({ activeProjects: [{ name: 'Remote', path: '/srv/app', host: 'devbox' }, { name: 'Here', path: '/tmp/here', host: 'local' }] });
+    fireEvent.click(view.getByLabelText('Project actions for Remote'));
+    expect(view.getByText('Rename project')).toBeTruthy();
+    expect(view.queryByText('Repositories…')).toBeNull();
+    fireEvent.click(view.getByLabelText('Project actions for Here'));
+    expect(view.getByText('Repositories…')).toBeTruthy();
+  });
+
   it('selecting an inactive project worktree activates its project', () => {
     const project = { name: 'Demo', path: '/tmp/demo' };
     const onSelect = vi.fn();

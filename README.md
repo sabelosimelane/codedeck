@@ -19,6 +19,7 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Terminal resilience** — debug inspector, transport replay catch-up, visibility-aware recovery, heartbeat monitoring
 - **Durable sessions** — tmux-backed sessions survive browser detaches and server restarts
 - **Tasks** — give a piece of work a title and it gets its own copy of the project, so several things can be built at once; commit, merge, open a pull request or close it from the same place
+- **Several repositories in one project** — list the repositories that belong together; a task then works across the ones you tick, each landed on its own, and Main reaches all of them without a project per repository
 - **Workflow pipelines** — build multi-step workflows from templates or your own saved steps, run them inside a task, and follow each step, its notes and its terminal in one view
 - **Descriptive session titles** — optional background naming through configurable local CLIs, with manual rename and retry
 - **Session search** — find past agent-CLI conversations and resume one in its project
@@ -99,6 +100,22 @@ Nothing is forced: a task with uncommitted work is never removed, and a branch i
 
 Limits: a new task has none of the project's ignored local files (a workflow run's Setup step prepares them; a task started by hand gets none), and two tasks cannot both serve an app on the same ports. Conflicts between tasks show up when you merge; CodeDeck reports them and resolves nothing itself. Tasks are for local projects.
 
+### Projects with several repositories
+
+Many projects are one repository among others that belong with it: a backend, a frontend and a mobile app side by side in one folder. A CodeDeck project is still one of them (its path, called its own repository here), and it can **list the others**. Open the project's menu in the sidebar and choose **Repositories…**. The dialog shows the project's repositories with the branch each is on, offers the repositories found beside the project to add with one click, and adds any other folder with **Add another folder…**. The list lives in CodeDeck only: nothing is moved or changed on disk, no repository needs a project of its own, and removing one from the list leaves its folder alone. A repository's folder may be a worktree that holds its main branch (for example `worktrees/frontend-main`); tasks then start from and merge into that checkout.
+
+With repositories listed:
+
+- **Main reaches all of them.** A chooser beside the new-terminal button says which repository new terminals open in. It follows the active tab; a split stays in the repository it splits. A tab in another repository shows that repository's name.
+- **A task includes the repositories you tick.** **New task** lists them, each with the branch its copy would start from; only the project's own is ticked to begin with. The task gets one copy and one branch per repository, kept together in one folder, `worktrees/<task>/<repository>`, so a reference from one repository to the one beside it (`../../backend/docs/...`) works inside the task as it does outside. The repositories you leave out stay readable at their own folders.
+- **Each repository is landed on its own.** The bar above a task's terminals has one row per repository, with its own Commit changes, Merge, Open a pull request and Close. Merging or closing one keeps the task open for the others and closes only that repository's terminals; the task is finished with its last repository. **Close task** closes all of them, or none when one cannot be closed, and says which.
+
+- **More can be added later.** **Add repository** on the bar gives an open task a copy of another of the project's repositories, also while a run is paused, so a step that stopped because it needs one can be answered by adding it. No Setup runs for a repository added this way.
+
+On the phone, a task in several repositories lists them and says which one its run works in.
+
+A project that lists no other repository works exactly as before.
+
 ## Workflow pipelines
 
 A run is shown as its task. The header names the task and the workflow and describes the run in plain words, such as **Running**, **Needs your input**, **Waiting for your approval**, **Interrupted**, **Failed** and **Complete**; when an action is available, the highlighted button is the next thing to do. Down the left are the run's steps, each with its state in words (for example "Running · round 4 of 12"). Select a step to see how it stands, its role and agent, and to switch to its terminal, which sits below. While a run is working, the terminal shown follows it: when the run moves to another step, that step's terminal comes to the front. A step or tab you pick yourself stays until the run moves again. A question or an approval appears on the step that is waiting for you; that step's **Notes**, the **Decisions** its agent made by itself, and **Your reviews** open in place. A step that has not started has no terminal yet; one whose terminal was closed says so and offers a new one in the task.
@@ -130,7 +147,7 @@ The optional **Progress file** setting names a Markdown todo inside the run's wo
 it may use `{input}`. The task view shows the first `## Phase N` section with unticked
 boxes and its task count. If the file is absent or cannot be read, the bar says
 "Progress file not found" or "Progress file could not be read" with its path.
-A run with a Progress file is refused when that file is not in the repository at its current commit, or in the chosen worktree. Each step's agent is told to create, change and delete files only inside the run's worktree. It may read outside files named by its instructions, skills or project documents. If the task's own files are missing from the worktree, it asks for input instead of searching other repositories.
+A run with a Progress file is refused when that file is not in the repository at its current commit, or in the chosen worktree. When the Progress file uses `{input}`, type either the part that replaces it or the file's whole path inside the project: with `docs/{input}`, both `todos/feature.md` and `docs/todos/feature.md` name `docs/todos/feature.md`. CodeDeck looks for the file as typed first; when it is not there and the whole-path reading is, the run starts with the part, in its prompts as well. A full path from your disk is not accepted. Each step's agent is told to create, change and delete files only inside the run's worktree. It may read outside files named by its instructions, skills or project documents. If the task's own files are missing from the worktree, it asks for input instead of searching other repositories.
 A run started without a progress file follows the workflow's current setting. If its
 input does not form a valid path, the task view shows no phase line. A workflow with no Progress file uses the optional run notes plan above.
 The Feature build template plans phases in that file, then repeats Develop, Review and Test until all tasks pass before committing. The Bug fix template gates Analyse and Specify on owner approval before implementation.
@@ -160,6 +177,17 @@ failure is in the backend log and the next step note tries again. A new task get
 starts with Setup, which must leave that copy clean before the workflow's nodes can
 begin; uncommitted changes in Main are not in it. A run in an open task or in Main
 uses the place as it is: there is no Setup step and no setup agent is needed.
+
+**Runs in a project with several repositories.** The Run workflow dialog adds **Start in**: the
+repository whose copy is the run's current directory, where its notes and its progress file are.
+For a new task you also tick the other repositories it includes, and Setup prepares each one. For
+an open task you choose among the repositories it still has open, and for Main among the
+project's repositories (the run then works in that repository's own folder and changes it only).
+Every step is told which copies of the task it may change, and where the project's remaining
+repositories are so that it can read them and never change them; if one of those must change, the
+step asks you. A task takes one unfinished run at a time. When you type the full path of a file
+that is in one of the project's repositories, the refusal says which repository to start in and
+what to type instead.
 
 **One terminal per agent.** A step opens a tab only when its agent has none yet in that
 worktree. Otherwise it goes to the tab where that agent already runs, clears it with

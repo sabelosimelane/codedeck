@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { create, hasCommittedFile, listDirtyPaths, listWorktrees, planNames, preflight, readWorktreeChanges, remove } from '../pipelines/run-worktree.js';
+import { buildSetupPrompt, buildSetupPromptForRepositories, create, hasCommittedFile, listDirtyPaths, listWorktrees, planNames, preflight, readWorktreeChanges, remove } from '../pipelines/run-worktree.js';
 
 const RUN_ID = '0d9e4b1a-1111-4111-8111-111111111111';
 const HOME = '/Users/me/git/codedeck';
@@ -511,5 +511,32 @@ describe('readWorktreeChanges', () => {
   it('fails loudly on any other git failure', async () => {
     const execFile = status({ error: { code: 128, message: 'Command failed', stderr: 'fatal: unable to read index file\n' } });
     await expect(readWorktreeChanges({ worktreePath: WT, execFile })).rejects.toThrow('Command failed');
+  });
+});
+
+describe('buildSetupPromptForRepositories', () => {
+  const pairs = [
+    { repository: 'mobile-app', homePath: '/group/mobile-app', worktreePath: '/group/worktrees/replies/mobile-app' },
+    { repository: 'backend', homePath: '/group/backend', worktreePath: '/group/worktrees/replies/backend' },
+  ];
+
+  it('is the prompt a run always had when the task has one worktree', () => {
+    expect(buildSetupPromptForRepositories([pairs[0]])).toBe(buildSetupPrompt('/group/mobile-app', '/group/worktrees/replies/mobile-app'));
+  });
+
+  it('names every worktree of the task with the checkout its local files come from, and asks for each to be left clean', () => {
+    const prompt = buildSetupPromptForRepositories(pairs);
+    expect(prompt).toContain('You are preparing 2 fresh git worktrees of one task');
+    expect(prompt).toContain('- mobile-app: home checkout /group/mobile-app, worktree /group/worktrees/replies/mobile-app (your current directory)');
+    expect(prompt).toContain('- backend: home checkout /group/backend, worktree /group/worktrees/replies/backend');
+    expect(prompt).toContain('Do the following for each repository, in its own worktree:');
+    expect(prompt).toContain('Never print, summarise or log the contents of a copied file.');
+    expect(prompt).toContain('change nothing in any home\n   checkout');
+    expect(prompt).toContain('Finish by running `git status --short` in every worktree. Each must print nothing.');
+    expect(prompt).toContain('report NEEDS_INPUT and say which repository and what is missing');
+  });
+
+  it.each([[[]], ['x'], [[{ repository: 'a', homePath: 'relative', worktreePath: '/x' }]], [[{ repository: '', homePath: '/a', worktreePath: '/x' }]], [[{ repository: 'a', homePath: '/a' }]]])('refuses %j', (value) => {
+    expect(() => buildSetupPromptForRepositories(value)).toThrow(/pairs/);
   });
 });

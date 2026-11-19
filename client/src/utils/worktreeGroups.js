@@ -11,6 +11,79 @@ function optionalPath(value, field) {
   return value === null ? null : absolute(value, field);
 }
 
+/**
+ * The repositories of a project: its own, at the project's path, then the others it lists.
+ * The own one is known here by the folder name of the project's path.
+ */
+function projectRepositories(project) {
+  if (!Array.isArray(project.repositories)) throw new Error('worktree groups: project.repositories must be a list');
+  const others = project.repositories.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('worktree groups: repository must be an object');
+    nonempty(entry.name, 'repository.name');
+    absolute(entry.path, 'repository.path');
+    return { name: entry.name, path: entry.path, own: false };
+  });
+  const folder = project.path.replace(/\/+$/, '');
+  return [{ name: nonempty(folder.slice(folder.lastIndexOf('/') + 1), 'project.path folder'), path: project.path, own: true }, ...others];
+}
+
+/** The worktrees of a task as a group needs them: which repository, where, and whether still open. */
+function taskWorktrees(task) {
+  if (!Array.isArray(task.worktrees) || task.worktrees.length === 0) throw new Error('worktree groups: task.worktrees must be a nonempty list');
+  return task.worktrees.map((worktree) => {
+    if (!worktree || typeof worktree !== 'object' || Array.isArray(worktree)) throw new Error('worktree groups: worktree must be an object');
+    nonempty(worktree.id, 'worktree.id');
+    nonempty(worktree.repository, 'worktree.repository');
+    absolute(worktree.worktreePath, 'worktree.worktreePath');
+    nonempty(worktree.branch, 'worktree.branch');
+    nonempty(worktree.state, 'worktree.state');
+    return worktree;
+  });
+}
+
+/**
+ * The group a path belongs to. Every repository of the project is reached from Main, and
+ * every worktree of a task belongs to that task, which is known by the worktree it started in.
+ */
+function groupKeyForPath(project, repositories, tasks, value) {
+  if (value === null || repositories.some(repository => repository.path === value)) return 'main';
+  const task = tasks.find(candidate => candidate.project === project.name && candidate.worktrees.some(worktree => worktree.worktreePath === value));
+  return task ? task.worktreePath : value;
+}
+
+/**
+ * The repository to name beside a terminal at `path` in `group`, or null where there is
+ * nothing to tell apart: the project's own repository in Main, and a task with one worktree.
+ */
+export function repositoryLabelForPath(group, path) {
+  if (!group || typeof group !== 'object' || Array.isArray(group)) throw new Error('worktree groups: group must be an object');
+  if (path === null || path === undefined) return null;
+  if (group.isMain) return (group.repositories ?? []).find(repository => !repository.own && repository.path === path)?.name ?? null;
+  if (!Array.isArray(group.worktrees) || group.worktrees.length < 2) return null;
+  return group.worktrees.find(worktree => worktree.worktreePath === path)?.repository ?? null;
+}
+
+/**
+ * Where a new terminal can open in a group: any repository of the project in Main, any
+ * worktree of a task that is still open in a task. A worktree without a task offers none.
+ */
+export function groupPlaces(group) {
+  if (!group || typeof group !== 'object' || Array.isArray(group)) throw new Error('worktree groups: group must be an object');
+  if (group.isMain) return (group.repositories ?? []).map(repository => ({ id: repository.name, label: repository.name, path: repository.path, own: repository.own }));
+  if (!Array.isArray(group.worktrees)) return [];
+  return group.worktrees.filter(worktree => worktree.state === 'active' || worktree.state === 'pr_open')
+    .map(worktree => ({ id: worktree.id, label: worktree.repository, path: worktree.worktreePath, own: false }));
+}
+
+/**
+ * The place a new terminal opens in when the active one is at `path`: the same place, else the
+ * project's own repository in Main, or the first open worktree of a task. Null when the group offers none.
+ */
+export function placeForPath(group, path) {
+  const places = groupPlaces(group);
+  return places.find(place => place.path === path) ?? places.find(place => place.own) ?? places[0] ?? null;
+}
+
 export function describeWorktreeGroup(group) {
   if (!group || typeof group !== 'object' || Array.isArray(group)) throw new Error('worktree groups: group must be an object');
   absolute(group.path, 'group.path');
@@ -31,7 +104,11 @@ export function describeWorktreeGroup(group) {
   // A task is known by its title; where it lives on disk is detail for the tooltip.
   const title = group.isMain ? 'Main' : group.task ? group.task.title : group.run
     ? `${group.run.workflowName} · ${group.run.id.slice(0, 8)}` : folder;
-  return { title, detail: null, tooltip: [folder, group.branch, group.path].filter(Boolean).join('\n') };
+  // A task in several repositories lists each: where it is and on which branch.
+  const tooltip = !group.isMain && Array.isArray(group.worktrees) && group.worktrees.length > 1
+    ? group.worktrees.map(worktree => `${worktree.repository} · ${worktree.branch}\n${worktree.worktreePath}`).join('\n')
+    : [folder, group.branch, group.path].filter(Boolean).join('\n');
+  return { title, detail: null, tooltip };
 }
 
 export function parseSessionWorktree(row) {
@@ -73,12 +150,16 @@ export function selectTabAfterClose(tabs, closedTabId, groupForTab) {
   return same[0]?.tab.id ?? tabs.filter(tab => tab?.id !== closedTabId).at(-1)?.id ?? null;
 }
 
-export function resolveSessionWorktrees({ project, sessions, runs }) {
+/** Which group each session belongs to: `main`, or the key of a task or of a worktree without one. */
+export function resolveSessionWorktrees({ project, sessions, runs, tasks = [] }) {
   if (!project || typeof project !== 'object' || Array.isArray(project)) throw new Error('worktree groups: project must be an object');
   nonempty(project.name, 'project.name');
   absolute(project.path, 'project.path');
   if (!Array.isArray(sessions)) throw new Error('worktree groups: sessions must be an array');
   if (!Array.isArray(runs)) throw new Error('worktree groups: runs must be an array');
+  if (!Array.isArray(tasks)) throw new Error('worktree groups: tasks must be an array');
+  const repositories = projectRepositories(project);
+  const ownTasks = tasks.filter(task => task?.project === project.name).map(task => ({ ...task, worktrees: taskWorktrees(task) }));
   const bySession = new Map();
   const fallbackRuns = new Map();
   for (const run of runs) {
@@ -110,7 +191,7 @@ export function resolveSessionWorktrees({ project, sessions, runs }) {
     optionalPath(session.worktreePath, 'worktreePath');
     if (session.startedAt !== null) nonempty(session.startedAt, 'startedAt');
     const path = session.worktreePath ?? fallbackRuns.get(session.sessionId)?.worktree.path ?? project.path;
-    bySession.set(session.sessionId, path === project.path ? 'main' : path);
+    bySession.set(session.sessionId, groupKeyForPath(project, repositories, ownTasks, path));
   }
   return bySession;
 }
@@ -122,13 +203,18 @@ export function buildWorktreeGroups({ project, sessions, runs, tasks = [] }) {
   absolute(project.path, 'project.path');
   if (!Array.isArray(sessions)) throw new Error('worktree groups: sessions must be an array');
   if (!Array.isArray(runs)) throw new Error('worktree groups: runs must be an array');
-  const sessionGroups = resolveSessionWorktrees({ project, sessions, runs });
-  const main = { key: 'main', path: project.path, label: 'Main', branch: null, isMain: true, sessionIds: [], run: null, task: null };
+  const repositories = projectRepositories(project);
+  const ownTasks = tasks.filter(task => task?.project === project.name).map(task => ({ ...task, worktrees: taskWorktrees(task) }));
+  const sessionGroups = resolveSessionWorktrees({ project, sessions, runs, tasks });
+  // Main reaches every repository of the project: its own checkout and those of the others.
+  const main = { key: 'main', path: project.path, label: 'Main', branch: null, isMain: true, sessionIds: [], run: null, task: null,
+    repositories, paths: repositories.map(repository => repository.path), worktrees: null };
   const byKey = new Map([['main', main]]);
   const startByKey = new Map();
   const groupForPath = value => {
-    const key = value === null || value === project.path ? 'main' : value;
-    if (!byKey.has(key)) byKey.set(key, { key, path: value, label: value.slice(value.lastIndexOf('/') + 1), branch: null, isMain: false, sessionIds: [], run: null, task: null });
+    const key = groupKeyForPath(project, repositories, ownTasks, value);
+    // A group is known by one path: a task's by the worktree it started in.
+    if (!byKey.has(key)) byKey.set(key, { key, path: key, label: key.slice(key.lastIndexOf('/') + 1), branch: null, isMain: false, sessionIds: [], run: null, task: null, paths: [key], worktrees: null });
     return byKey.get(key);
   };
   for (const session of sessions) {
@@ -136,7 +222,7 @@ export function buildWorktreeGroups({ project, sessions, runs, tasks = [] }) {
     nonempty(session.sessionId, 'sessionId');
     optionalPath(session.worktreePath, 'worktreePath');
     if (session.startedAt !== null) nonempty(session.startedAt, 'startedAt');
-    const group = groupForPath(sessionGroups.get(session.sessionId) === 'main' ? project.path : sessionGroups.get(session.sessionId));
+    const group = groupForPath(sessionGroups.get(session.sessionId) === 'main' ? null : sessionGroups.get(session.sessionId));
     group.sessionIds.push(session.sessionId);
     const prior = startByKey.get(group.key);
     if (session.startedAt && (!prior || session.startedAt < prior)) startByKey.set(group.key, session.startedAt);
@@ -177,8 +263,11 @@ export function buildWorktreeGroups({ project, sessions, runs, tasks = [] }) {
     nonempty(task.createdAt, 'task.createdAt');
     if (task.project !== project.name || task.worktreePath === project.path) continue;
     const group = groupForPath(task.worktreePath);
+    const worktrees = taskWorktrees(task);
     group.task = task;
     group.branch = task.branch;
+    group.worktrees = worktrees;
+    group.paths = worktrees.map(worktree => worktree.worktreePath);
   }
   return [main, ...[...byKey.values()].filter(group => !group.isMain).sort((a, b) => {
     const firstA = startByKey.get(a.key);

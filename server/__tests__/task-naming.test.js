@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskNaming, provisionalTaskTitle } from '../tasks/task-naming.js';
+import { setTaskState, OWN_REPOSITORY } from './helpers/task-state.js';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
 const SETTINGS = { provider: 'codex', model: 'gpt-test', effort: 'low' };
@@ -13,7 +14,7 @@ function setup({ titleSource = 'input', generate = vi.fn(async () => 'First name
   const db = new Database(':memory:');
   databases.push(db);
   const taskStore = createTaskStore(db);
-  taskStore.create({ id: ID, project: 'Demo', title: '/tmp/drops/screenshot.png', worktreePath: '/tmp/worktrees/demo', branch: 'task/demo', baseBranch: 'main', baseCommit: 'a'.repeat(40), titleSource });
+  taskStore.create({ ...OWN_REPOSITORY, id: ID, project: 'Demo', title: '/tmp/drops/screenshot.png', worktreePath: '/tmp/worktrees/demo', branch: 'task/demo', baseBranch: 'main', baseCommit: 'a'.repeat(40), titleSource });
   const warn = vi.fn();
   return { taskStore, generate, warn, naming: createTaskNaming({ taskStore, readSettings, generate, warn }) };
 }
@@ -61,7 +62,7 @@ describe('naming a task from the work of its run', () => {
   it('does nothing for a task that is finished or gone', async () => {
     const { naming, generate, taskStore } = setup();
     expect(await naming.noteWritten(written({ taskId: '7a000000-0000-4000-8000-000000000009' }))).toBeNull();
-    taskStore.setState(ID, { state: 'closed' });
+    setTaskState(taskStore, ID, { state: 'closed' });
     expect(await naming.noteWritten(written())).toBeNull();
     expect(generate).not.toHaveBeenCalled();
   });

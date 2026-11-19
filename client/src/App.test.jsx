@@ -148,7 +148,7 @@ describe('App polling', () => {
       }
 
       if (url === '/api/projects') {
-        return okJson([{ name: 'Gamma', path: '/tmp/gamma' }]);
+        return okJson([{ name: 'Gamma', path: '/tmp/gamma', repositories: [] }]);
       }
 
       if (url === '/api/sessions') {
@@ -181,12 +181,12 @@ describe('App polling', () => {
       if (url === '/api/projects' && !options.method) {
         projectRequestCount += 1;
         return okJson(projectRequestCount === 1
-          ? [{ name: 'Gamma', path: '/tmp/gamma', waiting: true, waitingAt: '2026-05-11T10:00:00.000Z' }]
-          : [{ name: 'Gamma', path: '/tmp/gamma', waiting: false, waitingAt: null }]);
+          ? [{ name: 'Gamma', path: '/tmp/gamma', repositories: [], waiting: true, waitingAt: '2026-05-11T10:00:00.000Z' }]
+          : [{ name: 'Gamma', path: '/tmp/gamma', repositories: [], waiting: false, waitingAt: null }]);
       }
 
       if (url === '/api/projects/Gamma' && options.method === 'PUT') {
-        return okJson({ name: 'Gamma', path: '/tmp/gamma', waiting: false, waitingAt: null });
+        return okJson({ name: 'Gamma', path: '/tmp/gamma', repositories: [], waiting: false, waitingAt: null });
       }
 
       if (url === '/api/sessions') {
@@ -279,7 +279,7 @@ describe('App polling', () => {
   it('shows the project delete problem detail and keeps the project listed', async () => {
     global.fetch = vi.fn((url, options = {}) => {
       if (url === SYSTEM_RESOURCES_URL) return mockSystemResources();
-      if (url === '/api/projects') return okJson([{ name: 'Gamma', path: '/tmp/gamma' }]);
+      if (url === '/api/projects') return okJson([{ name: 'Gamma', path: '/tmp/gamma', repositories: [] }]);
       if (url === '/api/sessions') return okJson([]);
       if (url === '/api/projects/Gamma' && options.method === 'DELETE') {
         return Promise.resolve({ ok: false, json: async () => ({ detail: 'Could not close Gamma-1.' }) });

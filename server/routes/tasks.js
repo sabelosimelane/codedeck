@@ -6,6 +6,7 @@ import { parseCollectionQuery, paginate } from './collection-query.js';
 
 const BASE = '/api/tasks';
 const SORT_FIELDS = ['createdAt', 'updatedAt', 'title'];
+const WORKTREE_SORT_FIELDS = ['repository'];
 const OPEN_STATES = ['active', 'pr_open'];
 
 const fieldError = (field, message) => new TaskError('One or more fields failed validation.', 400, [{ field, message }]);
@@ -39,15 +40,61 @@ function taskView(task) {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     finishedAt: task.finishedAt,
+    folder: task.folder,
+    // One entry per repository of the task, the one it started in first. The fields above are that first one's.
+    worktrees: task.worktrees.map(worktree => ({
+      id: worktree.id,
+      repository: worktree.repository,
+      own: worktree.own,
+      first: worktree.first,
+      worktreePath: worktree.worktreePath,
+      branch: worktree.branch,
+      baseBranch: worktree.baseBranch,
+      baseCommit: worktree.baseCommit,
+      state: worktree.state,
+      prUrl: worktree.prUrl,
+    })),
+  };
+}
+
+const reasonView = reason => ({ code: reason.code, message: reason.message });
+
+/** How one repository of a task stands; spelled out for the same reason as a task. */
+function worktreeLandingView(view) {
+  return {
+    taskId: view.taskId,
+    worktreeId: view.worktreeId,
+    repository: view.repository,
+    own: view.own,
+    first: view.first,
+    worktreePath: view.worktreePath,
+    state: view.state,
+    branch: view.branch,
+    baseBranch: view.baseBranch,
+    prUrl: view.prUrl,
+    filesPresent: view.filesPresent,
+    runActive: view.runActive,
+    uncommitted: view.uncommitted,
+    uncommittedCount: view.uncommittedCount,
+    commitsAhead: view.commitsAhead,
+    commitsBehind: view.commitsBehind,
+    main: { branch: view.main.branch, dirty: view.main.dirty },
+    remotes: view.remotes.map(remote => ({ name: remote.name, host: remote.host, tool: remote.tool })),
+    blockers: {
+      commit: view.blockers.commit.map(reasonView),
+      merge: view.blockers.merge.map(reasonView),
+      pullRequest: view.blockers.pullRequest.map(reasonView),
+      close: view.blockers.close.map(reasonView),
+    },
   };
 }
 
 export function createTasksRouter({ service, taskStore, landing } = {}) {
-  for (const method of ['create', 'get', 'rename', 'openTerminal']) {
+  for (const method of ['create', 'get', 'rename', 'openTerminal', 'addRepository']) {
     if (typeof service?.[method] !== 'function') throw new TypeError(`tasks router requires service.${method}`);
   }
   if (typeof taskStore?.list !== 'function') throw new TypeError('tasks router requires taskStore.list');
-  for (const method of ['status', 'commit', 'merge', 'pullRequest', 'close']) {
+  for (const method of ['status', 'commit', 'merge', 'pullRequest', 'close', 'worktrees', 'closeWorktree']) {
     if (typeof landing?.[method] !== 'function') throw new TypeError(`tasks router requires landing.${method}`);
   }
   const noBody = req => {
@@ -75,8 +122,10 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
   }));
 
   router.post(BASE, route(async (req, res) => {
-    const body = requireBody(req.body, ['project', 'title']);
-    res.status(201).json(taskView(await service.create({ project: body.project, title: body.title })));
+    // `repositories` names the project's repositories the task includes, the one it starts in first; left out, its own only.
+    const body = requireBody(req.body, ['project', 'title', 'repositories']);
+    if (Object.prototype.hasOwnProperty.call(body, 'repositories') && !Array.isArray(body.repositories)) throw fieldError('repositories', 'Use a list of repository names');
+    res.status(201).json(taskView(await service.create({ project: body.project, title: body.title, repositories: body.repositories })));
   }));
 
   router.get(`${BASE}/:id`, route((req, res) => {
@@ -89,8 +138,9 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
   }));
 
   router.post(`${BASE}/:id/terminals`, route(async (req, res) => {
-    if (req.body !== undefined && Object.keys(requireBody(req.body, [])).length) throw fieldError('body', 'This request takes no body');
-    res.status(201).json(await service.openTerminal(req.params.id));
+    // `worktreeId` names the repository of the task to open the terminal in; left out, the one the task started in.
+    const body = req.body === undefined ? {} : requireBody(req.body, ['worktreeId']);
+    res.status(201).json(await service.openTerminal(req.params.id, Object.prototype.hasOwnProperty.call(body, 'worktreeId') ? { worktreeId: body.worktreeId } : {}));
   }));
 
   // --- Landing: how a task's work gets back into the project ---
@@ -120,6 +170,43 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
   router.post(`${BASE}/:id/close`, route(async (req, res) => {
     noBody(req);
     const result = await landing.close(req.params.id);
+    res.json({ ...result, task: taskView(result.task) });
+  }));
+
+  // --- Landing one repository of a task ---
+
+  // One more of the project's repositories for an open task: `{repository}`. The service checks the body, since it knows the project's repositories.
+  router.post(`${BASE}/:id/worktrees`, route(async (req, res) => {
+    res.status(201).json(taskView(await service.addRepository(req.params.id, req.body ?? null)));
+  }));
+
+  router.get(`${BASE}/:id/worktrees`, route(async (req, res) => {
+    const query = parseCollectionQuery(req.query, { sortFields: WORKTREE_SORT_FIELDS, defaultSort: 'repository,asc', filters: [] }, fieldError);
+    const views = await landing.worktrees(req.params.id);
+    const page = paginate(views.map(view => ({ ...view, id: view.worktreeId })), query);
+    res.json({ data: page.data.map(worktreeLandingView), page: page.page });
+  }));
+
+  router.post(`${BASE}/:id/worktrees/:worktreeId/commit`, route(async (req, res) => {
+    const body = requireBody(req.body, ['message']);
+    res.json(worktreeLandingView(await landing.commit(req.params.id, { message: body.message, worktreeId: req.params.worktreeId })));
+  }));
+
+  router.post(`${BASE}/:id/worktrees/:worktreeId/merge`, route(async (req, res) => {
+    noBody(req);
+    const result = await landing.merge(req.params.id, { worktreeId: req.params.worktreeId });
+    res.json({ ...result, task: taskView(result.task) });
+  }));
+
+  router.post(`${BASE}/:id/worktrees/:worktreeId/pull-request`, route(async (req, res) => {
+    const body = requireBody(req.body, ['remote']);
+    const result = await landing.pullRequest(req.params.id, { remote: body.remote, worktreeId: req.params.worktreeId });
+    res.json({ ...result, task: taskView(result.task) });
+  }));
+
+  router.post(`${BASE}/:id/worktrees/:worktreeId/close`, route(async (req, res) => {
+    noBody(req);
+    const result = await landing.closeWorktree(req.params.id, req.params.worktreeId);
     res.json({ ...result, task: taskView(result.task) });
   }));
 

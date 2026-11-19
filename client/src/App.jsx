@@ -120,7 +120,8 @@ function AppContent() {
       startedAt: session.startedAt ?? null,
     })),
     runs: openRunCounts.runsByProject?.get(activeProject.name) ?? [],
-  }) : new Map(), [activeProject, sessionStatus, openRunCounts]);
+    tasks: openTasks,
+  }) : new Map(), [activeProject, sessionStatus, openRunCounts, openTasks]);
   const selectWorktree = (projectName, key) => {
     setWorktreeSelection(current => ({ ...current, [projectName]: key }));
     try { localStorage.setItem(`codedeck-worktree-${projectName}`, key); }
@@ -460,6 +461,7 @@ function AppContent() {
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
       <Sidebar
         activeProjects={activeProjects}
+        onRepositoriesChanged={fetchProjects}
         openRunCounts={openRunCounts}
         worktreeGroupsByProject={worktreeGroupsByProject}
         selectedWorktreeByProject={selectedWorktreeByProject}
@@ -605,6 +607,7 @@ function AppContent() {
       {showRunWorkflow && activeProject && (
         <RunWorkflowDialog
           projectName={activeProject.name}
+          repositories={activeProject.repositories}
           tasks={openTasks}
           defaultTaskId={worktreeGroupsByProject.get(activeProject.name)?.find(group => group.key === selectedWorktreeByProject[activeProject.name])?.task?.id ?? null}
           onClose={() => setShowRunWorkflow(false)}

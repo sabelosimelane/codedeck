@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   composePrompt,
+  inputFromProgressFilePath,
   isProgressFileTemplate,
   validateAgentBody,
   validateRunStartBody,
@@ -277,6 +278,31 @@ describe('validateRunStartBody', () => {
     expect(fields(validateRunStartBody({ ...valid, extra: 1 }))).toContain('extra');
   });
 
+  it('accepts the repositories of a new task and the one a run starts in', () => {
+    expect(validateRunStartBody({ ...valid, newTask: { repositories: ['mobile-app', 'backend'] }, startIn: 'mobile-app' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: { title: 'x', repositories: ['backend'] } })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: {}, startIn: 'mobile-app' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, taskId: UUID2, startIn: 'mobile-app' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: { repositories: Array.from({ length: 9 }, (_, index) => `r${index}`) } })).toEqual([]);
+  });
+
+  it('rejects a bad list of repositories and a bad or misplaced start repository', () => {
+    for (const repositories of [null, 'backend', [], [''], [7], ['a/b'], ['..'], ['backend', 'backend'], ['x'.repeat(101)], Array.from({ length: 10 }, (_, index) => `r${index}`)]) {
+      expect(fields(validateRunStartBody({ ...valid, newTask: { repositories } }))).toEqual(['newTask.repositories']);
+    }
+    for (const startIn of [null, '', 7, 'a/b', '..', 'x'.repeat(101), 'two\nlines']) {
+      expect(fields(validateRunStartBody({ ...valid, taskId: UUID2, startIn }))).toEqual(['startIn']);
+    }
+    // The repository a run starts in must be one the new task includes.
+    expect(validateRunStartBody({ ...valid, newTask: { repositories: ['backend'] }, startIn: 'mobile-app' }))
+      .toEqual([{ field: 'startIn', message: 'Use one of the repositories the new task includes' }]);
+    // A run in a worktree named by path works there; it has no repository to start in.
+    expect(validateRunStartBody({ ...valid, worktreePath: '/tmp/w', startIn: 'backend' }))
+      .toEqual([{ field: 'startIn', message: 'Use it with a task; a run in a worktree named by path works in that worktree' }]);
+    expect(validateRunStartBody({ ...valid, startIn: 'backend' }))
+      .toEqual([{ field: 'startIn', message: 'Use it with a task; a run in a worktree named by path works in that worktree' }]);
+  });
+
   it('accepts an absolute worktreePath of 1–4096 characters, or none', () => {
     expect(validateRunStartBody({ ...valid, worktreePath: '/Users/me/git/worktrees/codedeck-x' })).toEqual([]);
     expect(validateRunStartBody({ ...valid, worktreePath: '/' })).toEqual([]);
@@ -296,6 +322,38 @@ describe('validateRunStartBody', () => {
     expect(validateRunStartBody({ ...valid, worktreePath })).toEqual([
       { field: 'worktreePath', message: 'Use the absolute path of an existing worktree, 1–4096 characters on one line, or leave it out for a new worktree' },
     ]);
+  });
+});
+
+describe('inputFromProgressFilePath', () => {
+  it('reads the part that replaces {input} from the whole path of the progress file', () => {
+    expect(inputFromProgressFilePath('docs/{input}', 'docs/todos/2026-11-19-093544-tag-pings.md')).toBe('todos/2026-11-19-093544-tag-pings.md');
+    expect(inputFromProgressFilePath('docs/todos/{input}.md', 'docs/todos/feature.md')).toBe('feature');
+    expect(inputFromProgressFilePath('{input}.md', 'plan.md')).toBe('plan');
+    // The part composes back to exactly what was typed.
+    expect(composePrompt('docs/{input}', inputFromProgressFilePath('docs/{input}', 'docs/docs/x.md'))).toBe('docs/docs/x.md');
+  });
+
+  it.each([
+    ['an input that is only the part', 'docs/{input}', 'todos/plan.md'],
+    ['an input that is the fixed text and nothing more', 'docs/{input}.md', 'docs/.md'],
+    ['an input shorter than the fixed text around the part', 'docs/a{input}a.md', 'docs/a.md'],
+    ['a template that is all input', '{input}', 'docs/todos/plan.md'],
+    ['a template without {input}', 'docs/todo.md', 'docs/todo.md'],
+    ['a template that uses {input} twice', 'docs/{input}/{input}.md', 'docs/a/a.md'],
+    ['another ending', 'docs/{input}.md', 'docs/todos/plan.txt'],
+    ['a prefix of other letter case', 'docs/{input}', 'Docs/todos/plan.md'],
+  ])('answers null for %s', (_name, template, input) => {
+    expect(inputFromProgressFilePath(template, input)).toBeNull();
+  });
+
+  it.each([
+    ['template', [null, 'docs/todos/plan.md'], 'progress file template must be a string'],
+    ['template', [undefined, 'docs/todos/plan.md'], 'progress file template must be a string'],
+    ['input', ['docs/{input}', undefined], 'input must be a string'],
+    ['input', ['docs/{input}', 12], 'input must be a string'],
+  ])('refuses a %s that is not text', (_name, args, message) => {
+    expect(() => inputFromProgressFilePath(...args)).toThrow(message);
   });
 });
 

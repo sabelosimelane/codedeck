@@ -3,7 +3,7 @@
 // the desktop's own parsers before the app shows it.
 import { isUuid } from '../../../shared/pipeline-definitions.mjs';
 import { parseNotePage, parseRun } from '../utils/pipelineRunRecords';
-import { parseTask } from '../utils/tasksApi';
+import { parseTaskForPhone } from '../utils/tasksApi';
 import { normalizeInstanceUrl, sendToInstance } from './companion';
 
 const TEXT_MAX = 4000;
@@ -53,7 +53,7 @@ export function createRunsApi(address, request = fetch) {
 
   return {
     listOpenRuns: () => listAll('/api/pipelines/runs', 'runs', parseRun),
-    listOpenTasks: () => listAll('/api/tasks', 'tasks', parseTask),
+    listOpenTasks: () => listAll('/api/tasks', 'tasks', parseTaskForPhone),
     /** One page of the notes of one step, newest first. */
     async listNotes(runId, page, stepIndex) {
       requireRun(runId);

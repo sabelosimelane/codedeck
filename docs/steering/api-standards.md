@@ -127,21 +127,34 @@ problem documents with `message`, field `errors` on 400, `traceId` and a matchin
 `conflicts` (file paths). Unknown body and query fields are 400.
 
 A task is `{id, project, title, state, worktreePath, branch, baseBranch, baseCommit, prUrl,
-revision, createdAt, updatedAt, finishedAt}`. `state` is `active`, `pr_open`, `merged` or
-`closed`; `baseBranch` is null for a task started from a detached checkout.
+revision, createdAt, updatedAt, finishedAt, folder, worktrees}`. `state` is `active`, `pr_open`,
+`merged` or `closed`; `baseBranch` is null for a task started from a detached checkout.
+`worktrees` has one entry per repository of the task, the one it started in first:
+`{id, repository, own, first, worktreePath, branch, baseBranch, baseCommit, state, prUrl}`.
+The task's own `worktreePath`, `branch`, `baseBranch`, `baseCommit` and `prUrl` are those of that
+first entry and stay for clients that read only them. `folder` is the folder that holds the
+task's worktrees, or null when each is named on its own.
 
 | Method and path | Contract |
 | --- | --- |
 | GET `/` | Paginated tasks. Filters `project` (exact), `state`, `open=true\|false` (open is `active` or `pr_open`). Sort `createdAt`, `updatedAt` or `title` with `asc\|desc` (default `createdAt,desc`, id tiebreaker); `size` 1–100, default 20 |
-| POST `/` | `{project, title}` (title 1–80 characters on one line). Creates the worktree and branch and returns 201 with the task. Each request creates a task; 404 unknown project, 409 remote project or not a Git repository root |
+| POST `/` | `{project, title, repositories?}` (title 1–80 characters on one line; `repositories` lists the project's repositories the task includes, the one it starts in first, and defaults to the project's own). Creates one worktree and branch per repository and returns 201 with the task; if a later worktree cannot be created the earlier ones are removed again and the answer is 409 naming the repository. Each request creates a task; 400 for a repository the project does not list, 404 unknown project, 409 remote project or not a Git repository root |
 | GET `/:id` | The task; 404 when unknown |
 | PUT `/:id` | `{title, revision}`; 409 on a stale revision |
-| POST `/:id/terminals` | No body. Opens a terminal in the task and returns 201 `{sessionId, taskId, project}`; 409 when the task is finished or its files are gone, 503 when the terminal runtime is unavailable |
+| POST `/:id/terminals` | Optional `{worktreeId}`. Opens a terminal in that repository of the task, or in the one the task started in (the oldest still open once that is finished), and returns 201 `{sessionId, taskId, project, worktreeId}`; 400 for a worktree the task does not have, 409 when the task or that repository is finished or its files are gone, 503 when the terminal runtime is unavailable |
 | GET `/:id/landing` | Read live from Git: `filesPresent`, `runActive`, `uncommitted` (at most 50 paths) and `uncommittedCount`, `commitsAhead`, `commitsBehind`, `main {branch, dirty}`, `remotes [{name, host, tool}]` (`tool` is `gh`, `glab` or null), `prUrl`, and `blockers {commit, merge, pullRequest, close}`, each a list of `{code, message}` that is empty when the action is allowed |
 | POST `/:id/commit` | `{message}` (1–200 characters on one line). Commits every change in the task and returns the landing status; 409 with `reasons` when refused |
 | POST `/:id/merge` | No body. Merges the task's branch into its base branch in the project's checkout, removes the worktree and deletes the merged branch; returns `{task, mergedInto, filesRemoved, filesDetail, branchDeleted, terminalsClosed, terminalsNotClosed}` (the last two are session ids: the task's terminals that were closed, and those that could not be). 409 with `reasons`, or with `conflicts` after an aborted merge |
 | POST `/:id/pull-request` | `{remote}`. Pushes the branch and opens a pull or merge request with `gh` or `glab`; returns `{task, prUrl, remote}` and the task becomes `pr_open`. 409 when the host is unsupported or its CLI is missing, 503 when the push or the request fails |
-| POST `/:id/close` | No body. Removes a clean worktree, keeps the branch; returns `{task, branchKept, unmergedCommits, terminalsClosed, terminalsNotClosed}` |
+| POST `/:id/close` | No body. Closes the task: every repository that is still open, or none. Removes each clean worktree and keeps its branch; returns `{task, branchKept, unmergedCommits, repositories [{repository, branchKept, unmergedCommits}], taskFinished, folderRemoved?, terminalsClosed, terminalsNotClosed}`. 409 with `reasons` (each with its `repository` when the task has several) when any repository cannot be closed |
+| GET `/:id/worktrees` | Paginated. How each repository of the task stands: the fields of `/:id/landing` plus `worktreeId`, `repository`, `own`, `first` and `worktreePath`. Sort `repository` with `asc\|desc` (default `repository,asc`, worktree id tiebreaker); `size` 1–100, default 20 |
+| POST `/:id/worktrees/:worktreeId/commit` | `{message}`. Commits that repository's changes and returns how it stands |
+| POST `/:id/worktrees/:worktreeId/merge` | No body. Merges that repository's branch into its base branch in the checkout the repository is listed with; returns the merge fields plus `repository` and `taskFinished`. The task stays open while another repository is |
+| POST `/:id/worktrees/:worktreeId/pull-request` | `{remote}`, one of that repository's remotes; returns `{task, repository, prUrl, remote}` |
+| POST `/:id/worktrees/:worktreeId/close` | No body. Closes that repository of the task; returns `{task, repository, branchKept, unmergedCommits, taskFinished, terminalsClosed, terminalsNotClosed}` |
+
+The task-level `/:id/landing`, `/commit`, `/merge` and `/pull-request` act on the worktree the task
+started in. An unknown `worktreeId` is 404.
 
 The pull-request action calls a remote host with explicit timeouts (90 seconds for the push
 and for the request) and reports failure as 503. It has no circuit breaker: it is a single
@@ -150,6 +163,27 @@ owner-initiated action, not a path other requests depend on.
 Coverage: `server/__tests__/task-store.test.js`, `task-service.test.js`, `task-landing.test.js`
 (real throwaway repositories), `task-adoption.test.js`, `tasks-api.test.js`, and
 `client/src/utils/__tests__/tasksApi.test.js`.
+
+## Project repositories
+
+A project's own repository is its `path`; the others are a list in CodeDeck's configuration,
+returned on each project of `GET /api/projects` as `repositories: [{name, path}]`. Paths are
+under `/api/projects/:name`; the router owns a 4 KB JSON parser. Errors are RFC 9457 problem
+documents with `message`, field `errors` on 400, `traceId` and a matching `X-Trace-Id`; a
+refused request is logged once with its route and field names. Unknown body and query fields
+are 400. All four answer 404 for an unknown project and 409 for a project on another host.
+
+| Method and path | Contract |
+| --- | --- |
+| GET `/repositories` | Paginated. The own repository (`own: true`) and the others, each `{name, path, own, branch, head, dirty, usable, reason}` read from Git now; `usable` is false with `reason {code, message}` (and null `branch`, `head`, `dirty`) when the folder is not the top level of a Git working tree. Sort `name` with `asc\|desc` (default `name,asc`, path tiebreaker); `size` 1–100, default 20 |
+| GET `/repository-candidates` | Paginated `{name, path}`: Git repositories that are direct children of the own repository's parent folder and not listed yet; the folder `worktrees` and hidden folders are skipped. Same sort and sizes. 409 when the project's own folder is not a repository |
+| POST `/repositories` | `{path}`: an absolute path, at most 1024 characters, of a folder that is the top level of a Git working tree (it may be a worktree that holds the repository's main branch). The entry is named after the repository's own folder. Returns 201 with the entry. 409 for a repository already listed, a name already used, or more than 8 others. The same request twice stores one entry and answers 409 to the second |
+| DELETE `/repositories/:repository` | Removes the entry by name and returns 204; the folder is not touched. 404 when the project does not list it |
+| POST `/terminals` | `{repository}`, the name of the project's own repository or of one it lists. Opens a terminal in that repository's own checkout and returns 201 `{sessionId, project, repository, path}`. Each request opens a terminal. 400 for a name the project does not have, 409 when that folder is no longer a Git working tree, 503 when the terminal runtime is unavailable |
+
+Coverage: `server/__tests__/project-repositories.test.js` and `project-repositories-api.test.js`
+(real throwaway repositories), `client/src/utils/__tests__/projectRepositoriesApi.test.js`,
+`client/src/components/__tests__/ProjectRepositoriesDialog.test.jsx`.
 
 ## Workflow pipelines
 
@@ -168,7 +202,7 @@ stable identity tiebreaker; unknown filters and sorts are rejected.
 | GET/PUT `/settings` | Setup agent selection with revision |
 | GET `/preflight?project=...` | Eligibility reasons and dirty-checkout warning for a local Git repository root |
 | GET `/worktrees?project=...` | Paginated working trees of the project's repository (sort `path,asc\|desc`); each says whether a run may use it and why not |
-| POST `/runs` | `requestId` (1–128 letters, digits, underscores or hyphens), workflow, project and input. Workflow and task IDs are UUIDs. Where the run works is at most one of: `taskId` (an open task of that project: 404 unknown, 400 another project's, 409 finished, files gone or in use; no Setup), `newTask` (a task is created for the run only after every other check passed; the run starts with Setup and needs a setup agent. `{title}` is a title the owner typed, 1–80 characters on one line, and is never replaced. `{}` has the task called after the first 80 characters of the input and named later from the run's first step note by the session-naming CLI; a `title` that is present but blank is 400), or `worktreePath` of an existing worktree (404 unknown, 409 missing, unreadable by git, detached or in use). With none of them the run gets a worktree of its own that it removes when it completes, as before. A run never removes a task's worktree; snapshots definitions with `notesDir`; 400 on `input` when a configured progress file is absent from the repository's current commit or the chosen worktree; 400 on `project` when step guidance exceeds 2,000 characters; requestId replay is idempotent and conflicting reuse is 409 |
+| POST `/runs` | `requestId` (1–128 letters, digits, underscores or hyphens), workflow, project and input. Workflow and task IDs are UUIDs. Where the run works is at most one of: `taskId` (an open task of that project: 404 unknown, 400 another project's, 409 finished, files gone or in use; no Setup), `newTask` (a task is created for the run only after every other check passed; the run starts with Setup and needs a setup agent. `{title}` is a title the owner typed, 1–80 characters on one line, and is never replaced. `{}` has the task called after the first 80 characters of the input and named later from the run's first step note by the session-naming CLI; a `title` that is present but blank is 400), or `worktreePath` of an existing worktree (404 unknown, 409 missing, unreadable by git, detached or in use). With none of them the run gets a worktree of its own that it removes when it completes, as before. A run never removes a task's worktree; snapshots definitions with `notesDir`; 400 on `input` when a configured progress file is absent from the repository's current commit or the chosen worktree. An `input` that is the progress file's whole path is accepted when the file as composed is absent and that path is present (`docs/{input}` with `docs/todos/x.md`): the run is then recorded with the part that replaces `{input}` (`todos/x.md`), which is the `input` the response returns; the refusal names both paths when neither is present. The `requestId` stays recorded with the input as sent; 400 on `project` when step guidance exceeds 4,000 characters; requestId replay is idempotent and conflicting reuse is 409. `startIn` (with `taskId` or `newTask`) names the repository of the task the run starts in: its working directory, and where its notes and progress file are; `newTask.repositories` lists the project's repositories a new task includes (1–9 names; `startIn`, when given, must be one of them and comes first). A `worktreePath` may also be the own checkout of one of the project's listed repositories. A task takes one unfinished run: a second start is 409 with reason `task_in_use`. The progress file of a new task is looked for in the checkout of the repository the run starts in. `startIn` and `newTask.repositories` are part of what a `requestId` is recorded with: a replay that changes either is 409 |
 | GET `/runs`, GET `/runs/:id` | `taskId` (null outside a task); persisted progress, steps (including `role`, `readOnly`, `approval`, and a looping step's `repeat.toStepIndex` and `roundsCompleted`), worktree state, allowed actions including `approve` and `sendBack`, `agentsDecide`, `decisionCount`, `notesDir`, and per-step `notePath` and latest `note`; `approvalRequest` is null except in `awaiting_approval`, when it contains `stepIndex`, `stepName`, and the latest note; `progress` is null or `{file, status, phaseCount, phase, tasksDone, tasksTotal}` (the last two count every phase, or are null) with status `in_progress`, `all_done`, `no_phases`, `missing`, or `unreadable`. A run started without a progress file follows the workflow's current setting; if its input does not compose a valid path, `progress` is null |
 
 A matching start replay returns 200 with the same run, even after its task is renamed. The

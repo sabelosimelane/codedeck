@@ -41,9 +41,10 @@ function readinessTimeoutMessage(agentName, state, timeoutMs) {
   return `Agent ${agentName} did not become ready within ${seconds} seconds (last reason: ${reason}, foreground: ${foreground}).`;
 }
 
-function setupDirtyMessage(paths) {
+/** `repository` is named when the run's task has more than one worktree to tell apart. */
+function setupDirtyMessage(paths, repository) {
   const listed = paths.slice(0, 20).join('\n');
-  return `Setup left uncommitted changes in the worktree${listed ? `\n${listed}` : ''}`.slice(0, 2000);
+  return `Setup left uncommitted changes in the worktree${repository ? ` of ${repository}` : ''}${listed ? `\n${listed}` : ''}`.slice(0, 2000);
 }
 
 export function createRunEngine({
@@ -70,6 +71,9 @@ export function createRunEngine({
   onNoteWritten = () => {},
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
+  // Where a run may work and read: the worktrees of its task and the project's other repositories.
+  // Left out, a run has only its own worktree.
+  listRunPlaces = async () => undefined,
   pathExists = async () => true,
   now = () => new Date().toISOString(),
   setTimeout: setTimeoutFn = setTimeout,
@@ -231,15 +235,20 @@ export function createRunEngine({
   async function failIfSetupDirty(run) {
     const defStep = run.definition.steps[run.currentStepIndex];
     if (defStep?.kind !== 'setup') return false;
-    let dirty;
+    // Setup prepares every worktree of the run's task, so each must be left clean.
+    let checked;
     try {
-      dirty = await listDirtyPaths({ worktreePath: run.worktreePath });
+      const places = await listRunPlaces(run);
+      checked = places === undefined ? [{ repository: null, path: run.worktreePath }]
+        : places.worktrees.map(entry => ({ repository: places.worktrees.length > 1 ? entry.repository : null, path: entry.path }));
+      for (const entry of checked) entry.dirty = await listDirtyPaths({ worktreePath: entry.path });
     } catch (err) {
       failRun(run.id, String(err?.message || err || 'git status failed').slice(0, 2000));
       return true;
     }
-    if (!Array.isArray(dirty) || dirty.length === 0) return false;
-    failRun(run.id, setupDirtyMessage(dirty));
+    const left = checked.find(entry => Array.isArray(entry.dirty) && entry.dirty.length > 0);
+    if (!left) return false;
+    failRun(run.id, setupDirtyMessage(left.dirty, left.repository));
     return true;
   }
 
@@ -628,8 +637,10 @@ export function createRunEngine({
       run = runStore.get(runId);
       if (!run || !['pending', 'running'].includes(run.status)) return;
 
+      // Read now, not when the run began: a repository may have been added to the task, or closed in it, since.
+      const places = await listRunPlaces(run);
       if (run.definition.notesDir !== null) {
-        await prepareNotes({ worktreePath: run.worktreePath, definition: run.definition, input: run.input });
+        await prepareNotes({ worktreePath: run.worktreePath, definition: run.definition, input: run.input, ...(places === undefined ? {} : { places }) });
         await refreshBrief(runId);
       }
       if (handle.stopped) return;
@@ -708,7 +719,7 @@ export function createRunEngine({
       const command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
       const maxIterations = maxIterationsFor(defStep.repeat);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
-      const guidance = buildStepGuidance(current.definition, stepIndex, { worktreePath: current.worktreePath, ...(feedbackFile ? { feedbackPath: feedbackFile } : {}) });
+      const guidance = buildStepGuidance(current.definition, stepIndex, { worktreePath: current.worktreePath, ...(feedbackFile ? { feedbackPath: feedbackFile } : {}), ...(places === undefined ? {} : { places }) });
 
       let settled = false;
       const settleWorkflow = () => {

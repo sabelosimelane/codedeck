@@ -537,20 +537,20 @@ describe('terminal workflow — guidance for the pass', () => {
   it.each([
     ['blank', '   '],
     ['empty', ''],
-    ['longer than 2000 characters', 'x'.repeat(2001)],
+    ['longer than 4000 characters', 'x'.repeat(4001)],
     ['on two lines', 'one\ntwo'],
     ['an escape sequence', 'x\x1b[201~'],
     ['a number', 5],
     ['null', null],
   ])('rejects guidance that is %s', (_label, guidance) => {
     const { workflow, write } = setup();
-    expect(() => workflow.start({ ...request, guidance })).toThrow('Workflow guidance must contain 1–2000 characters on one line without terminal control codes.');
+    expect(() => workflow.start({ ...request, guidance })).toThrow('Workflow guidance must contain 1–4000 characters on one line without terminal control codes.');
     expect(write).not.toHaveBeenCalled();
   });
 
-  it('accepts guidance of exactly 2000 characters', () => {
+  it('accepts guidance of exactly 4000 characters', () => {
     const { workflow } = setup();
-    expect(() => workflow.start({ ...request, guidance: 'x'.repeat(2000) })).not.toThrow();
+    expect(() => workflow.start({ ...request, guidance: 'x'.repeat(4000) })).not.toThrow();
   });
 
   it('rejects a replayed start that differs in guidance', () => {

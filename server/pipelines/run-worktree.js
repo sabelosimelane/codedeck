@@ -59,6 +59,32 @@ export function planNames({ runId, workflowName, homeRepoPath, branchPrefix = 'w
   };
 }
 
+/**
+ * Plan the folder of a task in a project with several repositories: one folder for the task,
+ * holding one worktree per repository under the repository's own folder name, so that a
+ * reference from one repository to the one beside it resolves inside the task as it does
+ * beside the repositories themselves. Every worktree gets the same branch name.
+ * `ownHomePath` is the home repository of the project's own repository.
+ */
+export function planTaskFolder({ taskId, title, ownHomePath, repositories } = {}) {
+  const shortId = shortIdFromRunId(taskId);
+  if (shortId.length !== 8) throw new TypeError('taskId must be a UUID');
+  if (typeof title !== 'string') throw new TypeError('title must be a string');
+  if (typeof ownHomePath !== 'string' || !path.isAbsolute(ownHomePath)) throw new TypeError('ownHomePath must be an absolute path');
+  if (!Array.isArray(repositories) || repositories.length === 0 || new Set(repositories).size !== repositories.length
+    || repositories.some(name => typeof name !== 'string' || !name || name.includes('/') || name === '.' || name === '..')) {
+    throw new TypeError('repositories must be distinct folder names');
+  }
+  const slug = slugifyWorkflowName(title);
+  const suffix = slug ? `${slug}-${shortId}` : shortId;
+  const folder = path.join(path.dirname(ownHomePath), 'worktrees', suffix);
+  return {
+    folder,
+    branch: `task/${suffix}`,
+    worktrees: repositories.map(repository => ({ repository, worktreePath: path.join(folder, repository) })),
+  };
+}
+
 /** Invoke injected execFile with argv arrays; supports callback-style and promise-returning fakes. */
 export function runGit(execFile, args, { timeout = GIT_TIMEOUT_MS } = {}) {
   if (typeof execFile !== 'function') throw new Error('execFile is required');
@@ -356,4 +382,34 @@ Worktree (your current directory, the only place you may change): ${worktreePath
 5. Finish by running \`git status --short\` in the worktree. It must print nothing.
 
 If you cannot tell what the project needs, or a step fails, report NEEDS_INPUT and say what is missing.`;
+}
+
+/**
+ * The Setup prompt for a task created with its run: the same rules, for every worktree of the
+ * task. `pairs`: `{ repository, homePath, worktreePath }`, the worktree the run works in first.
+ */
+export function buildSetupPromptForRepositories(pairs) {
+  if (!Array.isArray(pairs) || pairs.length === 0 || pairs.some(pair => typeof pair?.repository !== 'string' || !pair.repository
+    || typeof pair.homePath !== 'string' || !path.isAbsolute(pair.homePath) || typeof pair.worktreePath !== 'string' || !path.isAbsolute(pair.worktreePath))) {
+    throw new TypeError('pairs must name each repository with its home checkout and its worktree');
+  }
+  if (pairs.length === 1) return buildSetupPrompt(pairs[0].homePath, pairs[0].worktreePath);
+  const listed = pairs.map((pair, index) => `- ${pair.repository}: home checkout ${pair.homePath}, worktree ${pair.worktreePath}${index === 0 ? ' (your current directory)' : ''}`).join('\n');
+  return `You are preparing ${pairs.length} fresh git worktrees of one task so that work can be built and tested in them.
+A home checkout is a read-only source of local files; a worktree is the only place you may change.
+${listed}
+
+Do the following for each repository, in its own worktree:
+1. Work out how the repository installs its dependencies (lock files, build files, README, agent
+   instruction files) and install them in its worktree.
+2. Find files in its home checkout that git ignores and that the repository needs locally to build,
+   test or run (for example .env.local, local.properties, service-account files). Copy each one to
+   the same relative path and the same name in its worktree. Do not copy dependency or build output
+   directories; install or build those in the worktree instead. Do not copy .codedeck/ from a home checkout.
+3. Never print, summarise or log the contents of a copied file. Copy with file operations only.
+4. Do not create, modify or delete tracked files, do not commit, and change nothing in any home
+   checkout.
+5. Finish by running \`git status --short\` in every worktree. Each must print nothing.
+
+If you cannot tell what a repository needs, or a step fails, report NEEDS_INPUT and say which repository and what is missing.`;
 }

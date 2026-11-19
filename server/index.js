@@ -37,6 +37,7 @@ import {
   listWorktrees as listPipelineWorktrees,
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
+import { createRunPlaces } from './pipelines/run-places.js';
 import { setObservedTerminalMuted } from './pipelines/terminal-muting-adapter.js';
 import { createRunProgressReader, readRunProgress } from './pipelines/run-progress.js';
 import { classify as classifyAgentReadiness } from './pipelines/agent-readiness.js';
@@ -63,6 +64,8 @@ import { resolveEditorCommand } from './editor-command.js';
 import { normalizeProjects } from './project-config.js';
 import { createHostsRouter } from './routes/hosts.js';
 import { createProjectsRouter } from './routes/projects.js';
+import { createProjectRepositoriesRouter, REPOSITORIES_PATH } from './routes/project-repositories.js';
+import { createProjectRepositories } from './project-repositories.js';
 import { createProjectDeletionService } from './project-deletion-service.js';
 import { collectSystemResources } from './system-resources.js';
 import { stripNodeWatchEnvironment } from './shell-env.js';
@@ -117,7 +120,7 @@ const privateAccess = createPrivateAccess({
 });
 app.use(privateAccess.middleware);
 // Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
-app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/terminal-worktrees') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/terminal-worktrees') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') || REPOSITORIES_PATH.test(req.path) ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -218,6 +221,14 @@ app.use(createProjectsRouter({
   getReachability: hostReachability.getReachability,
   deleteProject: name => deleteProject(name),
 }));
+// A project's other repositories: a list in CodeDeck's configuration, nothing changed on disk.
+app.use(createProjectRepositoriesRouter({ service: createProjectRepositories({
+  loadProjects,
+  saveProjects,
+  execFile,
+  // The session starter is set up further down; it is read when a terminal is asked for.
+  startSession: (project, options) => startSessionWithWorktree(project, options),
+}) }));
 
 // -------------------------------------------------------------------
 // REST API: Config (generic key-value)
@@ -886,8 +897,10 @@ app.use(createTerminalWorktreesRouter({ service: createTerminalWorktreeService({
   startSession: startSessionWithWorktree,
   pathExists: worktreePathExists,
 }) }));
-const taskStore = createTaskStore(db);
+const taskStore = createTaskStore(db, { findProject: name => loadProjects().find(project => project.name === name) ?? null });
 const taskService = createTaskService({
+  // Read when asked: the run store is created below. A run that is starting or running may be writing in the task.
+  isRunWorking: taskId => pipelineRunStore.list().some(run => run.taskId === taskId && (run.status === 'pending' || run.status === 'running')),
   taskStore,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   execFile,
@@ -906,6 +919,12 @@ const taskLanding = createTaskLanding({
   onTaskFinished: task => {
     for (const run of pipelineRunStore.list()) {
       if (run.taskId === task.id && run.worktreeState === 'external') pipelineRunStore.update(run.id, { worktreeState: 'released', worktreeDetail: null });
+    }
+  },
+  // One repository of a task was merged or closed while the task stays open: the runs that worked in that worktree let go of it.
+  onWorktreeFinished: (task, worktree) => {
+    for (const run of pipelineRunStore.list()) {
+      if (run.taskId === task.id && run.worktreePath === worktree.worktreePath && run.worktreeState === 'external') pipelineRunStore.update(run.id, { worktreeState: 'released', worktreeDetail: null });
     }
   },
   // Its folder is gone, so a terminal left in it has nothing to work in.
@@ -969,6 +988,8 @@ const pipelineRunEngine = createRunEngine({
     execFile,
   }),
   listDirtyPaths: async ({ worktreePath }) => listPipelineDirtyPaths({ worktreePath, execFile }),
+  // Where a run may work and read: the worktrees of its task and the project's other repositories, as they are when a step starts.
+  listRunPlaces: createRunPlaces({ taskStore, findProject: name => loadProjects().find(project => project.name === name) ?? null, execFile }),
   pathExists: async (target) => {
     try {
       await fs.access(target);

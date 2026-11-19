@@ -5,8 +5,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const STATES = ['active', 'pr_open', 'merged', 'closed'];
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const text = value => typeof value === 'string' && value.trim().length > 0;
+const absolute = value => typeof value === 'string' && value.startsWith('/') && !value.includes('\0');
 
-export function parseTask(task, index = 0) {
+/**
+ * A task as every backend release has sent it: what it is called and how it stands, with the
+ * worktree it started in. The phone reads tasks this way, because an installed phone build
+ * also talks to an instance that is older or newer than itself.
+ */
+export function parseTaskSummary(task, index = 0) {
   const identity = typeof task?.id === 'string' ? task.id : `index ${index}`;
   const guard = (condition, field) => { if (!condition) throw new Error(`Invalid task ${identity} field ${field}`); };
   guard(task !== null && typeof task === 'object' && !Array.isArray(task), 'task');
@@ -28,6 +34,49 @@ export function parseTask(task, index = 0) {
     branch: task.branch, baseBranch: task.baseBranch, baseCommit: task.baseCommit, prUrl: task.prUrl,
     revision: task.revision, createdAt: task.createdAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt,
   };
+}
+
+/** The repositories a task includes, one entry each; exactly one is the one it started in. */
+function parseTaskWorktrees(task, taskId) {
+  const guard = (condition, field) => { if (!condition) throw new Error(`Invalid task ${taskId} field ${field}`); };
+  guard(Array.isArray(task.worktrees) && task.worktrees.length >= 1, 'worktrees');
+  const worktrees = task.worktrees.map((worktree) => {
+    const part = (condition, field) => guard(condition, `worktrees.${field}`);
+    part(worktree !== null && typeof worktree === 'object' && !Array.isArray(worktree), 'worktree');
+    part(typeof worktree.id === 'string' && UUID.test(worktree.id), 'id');
+    part(text(worktree.repository) && !worktree.repository.includes('/'), 'repository');
+    part(typeof worktree.own === 'boolean', 'own');
+    part(typeof worktree.first === 'boolean', 'first');
+    part(absolute(worktree.worktreePath), 'worktreePath');
+    part(text(worktree.branch), 'branch');
+    part(worktree.baseBranch === null || text(worktree.baseBranch), 'baseBranch');
+    part(typeof worktree.baseCommit === 'string' && /^[0-9a-f]{40}$/.test(worktree.baseCommit), 'baseCommit');
+    part(STATES.includes(worktree.state), 'state');
+    part(worktree.prUrl === null || (typeof worktree.prUrl === 'string' && /^https?:\/\//.test(worktree.prUrl)), 'prUrl');
+    return {
+      id: worktree.id, repository: worktree.repository, own: worktree.own, first: worktree.first, worktreePath: worktree.worktreePath,
+      branch: worktree.branch, baseBranch: worktree.baseBranch, baseCommit: worktree.baseCommit, state: worktree.state, prUrl: worktree.prUrl,
+    };
+  });
+  guard(worktrees.filter(worktree => worktree.first).length === 1, 'worktrees');
+  return worktrees;
+}
+
+/** A task with the folder that holds its worktrees and every repository it includes, as this release's backend sends it. */
+export function parseTask(task, index = 0) {
+  const summary = parseTaskSummary(task, index);
+  if (!(task.folder === null || absolute(task.folder))) throw new Error(`Invalid task ${summary.id} field folder`);
+  return { ...summary, folder: task.folder, worktrees: parseTaskWorktrees(task, summary.id) };
+}
+
+/**
+ * A task as the phone reads it: the fields every backend release sends, and the task's
+ * repositories when the instance sends them. `worktrees` is null for an instance that does
+ * not say; when it does, they are checked like everywhere else.
+ */
+export function parseTaskForPhone(task, index = 0) {
+  const summary = parseTaskSummary(task, index);
+  return { ...summary, worktrees: Object.hasOwn(task, 'worktrees') ? parseTaskWorktrees(task, summary.id) : null };
 }
 
 async function request(path, { method = 'GET', body, signal } = {}) {
@@ -67,20 +116,27 @@ export async function listOpenTasks({ signal } = {}) {
   }
 }
 
-export async function createTask({ project, title }) {
+/** `repositories`: the project's repositories the task includes, the one it starts in first; left out, its own only. */
+export async function createTask({ project, title, repositories }) {
   if (!text(project)) throw new TypeError('project must be a nonempty string');
   if (!text(title)) throw new TypeError('title must be a nonempty string');
-  return parseTask(await request('', { method: 'POST', body: { project, title: title.trim() } }));
+  if (repositories !== undefined && (!Array.isArray(repositories) || repositories.length === 0 || !repositories.every(text))) throw new TypeError('repositories must be a nonempty list of names');
+  return parseTask(await request('', { method: 'POST', body: { project, title: title.trim(), ...(repositories === undefined ? {} : { repositories }) } }));
 }
 
-/** Opens a terminal inside the task and returns its session id. */
-export async function openTaskTerminal(taskId) {
+/**
+ * Opens a terminal inside the task and returns its session id and the worktree it opened in.
+ * `worktreeId` names one repository of the task; left out, the backend picks the one the task started in.
+ */
+export async function openTaskTerminal(taskId, worktreeId) {
   if (typeof taskId !== 'string' || !UUID.test(taskId)) throw new TypeError('taskId must be a task id');
-  const body = await request(`/${taskId}/terminals`, { method: 'POST' });
+  if (worktreeId !== undefined && (typeof worktreeId !== 'string' || !UUID.test(worktreeId))) throw new TypeError('worktreeId must be a worktree id');
+  const body = await request(`/${taskId}/terminals`, { method: 'POST', ...(worktreeId === undefined ? {} : { body: { worktreeId } }) });
   if (!text(body?.sessionId)) throw new Error('Invalid task terminal response: sessionId');
   if (body.taskId !== taskId) throw new Error('Invalid task terminal response: taskId');
   if (!text(body.project)) throw new Error('Invalid task terminal response: project');
-  return { sessionId: body.sessionId, taskId: body.taskId, project: body.project };
+  if (typeof body.worktreeId !== 'string' || !UUID.test(body.worktreeId) || (worktreeId !== undefined && body.worktreeId !== worktreeId)) throw new Error('Invalid task terminal response: worktreeId');
+  return { sessionId: body.sessionId, taskId: body.taskId, project: body.project, worktreeId: body.worktreeId };
 }
 
 const requireTaskId = taskId => { if (typeof taskId !== 'string' || !UUID.test(taskId)) throw new TypeError('taskId must be a task id'); };
@@ -129,6 +185,84 @@ export function parseLanding(body) {
       close: parseBlockers(body.blockers.close, 'blockers.close'),
     },
   };
+}
+
+/** How one repository of a task stands: the landing status, with which repository and worktree it is. */
+export function parseWorktreeLanding(body) {
+  const landing = parseLanding(body);
+  const guard = (condition, field) => { if (!condition) throw new Error(`Invalid landing response: ${field}`); };
+  guard(typeof body.worktreeId === 'string' && UUID.test(body.worktreeId), 'worktreeId');
+  guard(text(body.repository) && !body.repository.includes('/'), 'repository');
+  guard(typeof body.own === 'boolean', 'own');
+  guard(typeof body.first === 'boolean', 'first');
+  guard(absolute(body.worktreePath), 'worktreePath');
+  const { taskId, ...rest } = landing;
+  return { taskId, worktreeId: body.worktreeId, repository: body.repository, own: body.own, first: body.first, worktreePath: body.worktreePath, ...rest };
+}
+
+const requireWorktreeId = worktreeId => { if (typeof worktreeId !== 'string' || !UUID.test(worktreeId)) throw new TypeError('worktreeId must be a worktree id'); };
+
+/** How every repository of a task stands, the one it started in first. */
+export async function listTaskWorktreeLandings(taskId, { signal } = {}) {
+  requireTaskId(taskId);
+  const landings = [];
+  for (let page = 0; ; page += 1) {
+    const body = await request(`/${taskId}/worktrees?size=100&page=${page}`, { signal });
+    if (!Array.isArray(body?.data) || typeof body?.page?.hasNextPage !== 'boolean') throw new Error('Invalid task worktrees response');
+    body.data.forEach(entry => landings.push(parseWorktreeLanding(entry)));
+    if (!body.page.hasNextPage) break;
+  }
+  return landings.sort((a, b) => Number(b.first) - Number(a.first) || a.repository.localeCompare(b.repository));
+}
+
+/** Gives an open task a copy of one more of the project's repositories and returns the task with it. */
+export async function addTaskRepository(taskId, repository) {
+  requireTaskId(taskId);
+  if (!text(repository)) throw new TypeError('repository must be a nonempty string');
+  return parseTask(await request(`/${taskId}/worktrees`, { method: 'POST', body: { repository } }));
+}
+
+export async function commitTaskWorktree(taskId, worktreeId, message) {
+  requireTaskId(taskId);
+  requireWorktreeId(worktreeId);
+  if (!text(message)) throw new TypeError('message must be a nonempty string');
+  return parseWorktreeLanding(await request(`/${taskId}/worktrees/${worktreeId}/commit`, { method: 'POST', body: { message: message.trim() } }));
+}
+
+/** What every landing of one repository says: which repository, and whether that finished the task. */
+function parseRepositoryOutcome(body, action) {
+  if (!text(body?.repository)) throw new Error(`Invalid ${action} response: repository`);
+  if (typeof body.taskFinished !== 'boolean') throw new Error(`Invalid ${action} response: taskFinished`);
+  return { repository: body.repository, taskFinished: body.taskFinished };
+}
+
+export async function mergeTaskWorktree(taskId, worktreeId) {
+  requireTaskId(taskId);
+  requireWorktreeId(worktreeId);
+  const body = await request(`/${taskId}/worktrees/${worktreeId}/merge`, { method: 'POST' });
+  if (!text(body?.mergedInto) || typeof body.filesRemoved !== 'boolean' || typeof body.branchDeleted !== 'boolean') throw new Error('Invalid merge response');
+  const outcome = parseRepositoryOutcome(body, 'merge');
+  return { task: parseTask(body.task), repository: outcome.repository, mergedInto: body.mergedInto, filesRemoved: body.filesRemoved, filesDetail: text(body.filesDetail) ? body.filesDetail : null,
+    branchDeleted: body.branchDeleted, taskFinished: outcome.taskFinished, ...parseTerminals(body, 'merge') };
+}
+
+export async function openTaskWorktreePullRequest(taskId, worktreeId, remote) {
+  requireTaskId(taskId);
+  requireWorktreeId(worktreeId);
+  if (!text(remote)) throw new TypeError('remote must be a nonempty string');
+  const body = await request(`/${taskId}/worktrees/${worktreeId}/pull-request`, { method: 'POST', body: { remote } });
+  if (typeof body?.prUrl !== 'string' || !/^https?:\/\//.test(body.prUrl)) throw new Error('Invalid pull request response: prUrl');
+  if (!text(body.repository)) throw new Error('Invalid pull request response: repository');
+  return { task: parseTask(body.task), repository: body.repository, prUrl: body.prUrl, remote: String(body.remote) };
+}
+
+export async function closeTaskWorktree(taskId, worktreeId) {
+  requireTaskId(taskId);
+  requireWorktreeId(worktreeId);
+  const body = await request(`/${taskId}/worktrees/${worktreeId}/close`, { method: 'POST' });
+  if (!text(body?.branchKept) || !count(body.unmergedCommits)) throw new Error('Invalid close response');
+  const outcome = parseRepositoryOutcome(body, 'close');
+  return { task: parseTask(body.task), repository: outcome.repository, branchKept: body.branchKept, unmergedCommits: body.unmergedCommits, taskFinished: outcome.taskFinished, ...parseTerminals(body, 'close') };
 }
 
 export async function getTaskLanding(taskId, { signal } = {}) {

@@ -2,12 +2,16 @@ import { isRunRequestId, isUuid, validateRunStartBody } from '../../shared/pipel
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-export function serializeStartParams({ workflowId, project, input, newTask, taskId, worktreePath }) {
+/**
+ * The canonical form of what a run was started with. `startIn` and a new task's `repositories` are
+ * written only when the request names them, so a request recorded before they existed reads the same.
+ */
+export function serializeStartParams({ workflowId, project, input, newTask, taskId, worktreePath, startIn }) {
   let place = { kind: 'new' };
-  if (newTask !== undefined) place = { kind: 'newTask', title: newTask.title === undefined ? null : newTask.title.trim() };
+  if (newTask !== undefined) place = { kind: 'newTask', title: newTask.title === undefined ? null : newTask.title.trim(), repositories: newTask.repositories };
   else if (taskId !== undefined) place = { kind: 'task', taskId };
   else if (worktreePath !== undefined) place = { kind: 'worktree', worktreePath };
-  return JSON.stringify({ workflowId, project, input, place });
+  return JSON.stringify({ workflowId, project, input, place, startIn });
 }
 
 const fail = (id, field, expectation) => {
@@ -31,13 +35,15 @@ function validateParams(requestId, params) {
   if (!place || typeof place !== 'object' || Array.isArray(place)) fail(requestId, 'params.place', 'must be an object');
 
   const body = { requestId, workflowId, project, input };
-  const fields = { 'newTask.title': 'place.title', taskId: 'place.taskId', worktreePath: 'place.worktreePath' };
+  const fields = { 'newTask.title': 'place.title', 'newTask.repositories': 'place.repositories', taskId: 'place.taskId', worktreePath: 'place.worktreePath' };
+  if (Object.hasOwn(parsed, 'startIn')) body.startIn = parsed.startIn;
   switch (place.kind) {
     case 'newTask':
       if (place.title !== null && (typeof place.title !== 'string' || place.title.trim() !== place.title)) {
         fail(requestId, 'params.place.title', 'must be a trimmed title or null');
       }
       body.newTask = place.title === null ? {} : { title: place.title };
+      if (Object.hasOwn(place, 'repositories')) body.newTask.repositories = place.repositories;
       break;
     case 'task':
       if (place.taskId === undefined) fail(requestId, 'params.place.taskId', 'must be a UUID');

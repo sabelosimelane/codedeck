@@ -59,9 +59,11 @@ codedeck/
 │   ├── routes/
 │   │   ├── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)
 │   │   ├── terminal-worktrees.js # POST new worktree terminal (kept for older clients)
-│   │   ├── tasks.js              # Tasks: list, create, rename, terminals, landing (RFC 9457 errors)
+│   │   ├── tasks.js              # Tasks: list, create, rename, terminals, landing of the task and of one repository (RFC 9457 errors)
+│   │   ├── project-repositories.js # A project's repositories: list, candidates, add, remove, terminal (RFC 9457 errors)
 │   │   ├── collection-query.js   # Shared page/size/sort/filter parsing and the page envelope
 │   │   └── agent-sessions.js     # Paginated local agent conversations + resume API
+│   ├── project-repositories.js # A project's other repositories: rules, Git check, the repositories beside it, terminals in them
 │   ├── launch-settings.js # Companion settings read from ~/.codedeck/launch.env at startup
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
@@ -82,6 +84,7 @@ codedeck/
 │       │   ├── tasks/
 │       │   │   ├── NewTaskDialog.jsx  # Title input for a new task
 │       │   │   ├── TaskLandingBar.jsx # How a task stands in Git, and Commit / Merge / PR / Close / Rename
+│       │   │   ├── TaskRepositoriesLanding.jsx # The same for a task with several repositories: one row per repository
 │       │   │   └── TaskView.jsx       # A run as its task: header, step rail, step detail above the terminals
 │       │   ├── Terminal.jsx          # xterm.js + WebSocket per session, snapshot hydration, transport replay, visibility recovery
 │       │   ├── TerminalInspector.jsx # Debug inspector: health, timeline, recovery actions, snapshot copy
@@ -244,3 +247,27 @@ never creates or removes it; a run in a task created for it still gets the Setup
   (`utils/worktreeGroups.js`); a worktree with sessions or a run but no task still appears, by
   folder name, and terminals cannot be opened in it from the UI.
 - A step whose pass or round limit the owner continued past has the status `limit_accepted`.
+
+### Several repositories
+
+A project's `path` is its own repository; `repositories` on the project lists the others
+(`server/project-repositories.js`). A task has one row in `task_worktrees` per repository it
+includes (`server/tasks/task-store.js`): the worktree it started in is its first, and supplies
+the task's `worktreePath`, `branch`, `baseBranch`, `baseCommit` and `prUrl` for callers that read
+one worktree. The task's state is derived from its worktrees and stored with them in one
+transaction. A worktree of the project's own repository has no stored checkout (it is the
+project's path when asked); another repository's checkout is stored on the row.
+
+- `planTaskFolder` (`server/pipelines/run-worktree.js`) puts the worktrees of a task of a project
+  with other repositories in one folder, each under its repository's name; a project with only its
+  own repository keeps `worktrees/<repo>-<slug>-<id>`.
+- `server/tasks/task-landing.js` acts on one worktree against the checkout it is listed with;
+  the task finishes with its last one. A merged branch is deleted from that checkout, because Git
+  deletes a branch only when it is merged into the branch checked out where it is asked.
+- `server/pipelines/run-places.js` says, when a step starts, where a run may work (the open
+  worktrees of its task, or the one checkout it runs in) and read (the project's other
+  repositories). The step guidance, the run notes and the Setup guard all use it.
+- The client keeps every worktree of a task in the task's one group and every repository of the
+  project in Main (`groupKeyForPath` in `utils/worktreeGroups.js`); a group's key is still a path.
+- The phone reads tasks with `parseTaskSummary`, the fields every backend release sends, because
+  an installed phone build also talks to an instance older or newer than itself.

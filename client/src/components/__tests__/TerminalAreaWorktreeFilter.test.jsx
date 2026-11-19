@@ -14,7 +14,7 @@ vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
 vi.mock('../../utils/tasksApi.js', () => tasksApi);
 vi.mock('../tasks/TaskView.jsx', () => ({ default: ({ run, onActivateStep, children }) => <div><span data-testid="visible-runs">{run.id}</span>{run.steps?.map(step => <button key={step.sessionId} onClick={() => onActivateStep(step.sessionId)}>Step {step.sessionId}</button>)}{children}</div> }));
 
-const project = { name: 'Demo', path: '/tmp/demo' };
+const project = { name: 'Demo', path: '/tmp/demo', repositories: [] };
 const sessions = [
   { sessionId: 'Demo-1', cwd: project.path, worktreePath: null, alive: true, startedAt: '2026-01-01T00:00:00.000Z' },
   { sessionId: 'Demo-2', cwd: '/tmp/demo-feature', worktreePath: '/tmp/demo-feature', alive: true, startedAt: '2026-01-02T00:00:00.000Z' },

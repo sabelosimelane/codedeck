@@ -23,6 +23,17 @@ const steps = () => within(screen.getByRole('list', { name: 'Steps' })).getAllBy
 afterEach(cleanup);
 
 describe('a task on the phone', () => {
+  it('lists the repositories of a task with several and where the run works', () => {
+    const handlers = { onBack: vi.fn(), onOpenSession: vi.fn(), onAnswer: vi.fn(), onApprove: vi.fn(), onSendBack: vi.fn(), onLoadNotes: vi.fn(), onAction: vi.fn() };
+    const row = { ...rowOf(run()), repositories: [{ name: 'mobile-app', state: 'active', current: true }, { name: 'backend', state: 'active', current: false }, { name: 'frontend', state: 'merged', current: false }] };
+    render(<TaskScreen row={row} busy={false} {...handlers} />);
+    const items = within(screen.getByRole('list', { name: 'Repositories' })).getAllByRole('listitem').map(item => item.textContent);
+    expect(items).toEqual(['mobile-app · the run works here', 'backend', 'frontend · merged']);
+    cleanup();
+    render(<TaskScreen row={rowOf(run())} busy={false} {...handlers} />);
+    expect(screen.queryByRole('list', { name: 'Repositories' })).toBeNull();
+  });
+
   it('names the task and says how its run stands', () => {
     show(run());
     expect(screen.getByRole('heading', { level: 1, name: 'First name only on the call' })).toBeTruthy();

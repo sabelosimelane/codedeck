@@ -25,7 +25,8 @@ import {
 import { getTerminalTabLabel } from '../utils/terminalTabLabel';
 import SessionTitleActions from './SessionTitleActions';
 import { getTerminalPaneCwd } from '../utils/terminalPaneCwd';
-import { describeWorktreeGroup, parseSessionWorktree, selectTabAfterClose } from '../utils/worktreeGroups';
+import { describeWorktreeGroup, groupPlaces, parseSessionWorktree, placeForPath, repositoryLabelForPath, selectTabAfterClose } from '../utils/worktreeGroups';
+import { openProjectTerminal } from '../utils/projectRepositoriesApi.js';
 import { describeRunStatus } from '../utils/pipelineRunStatus';
 import {
   getTabWaitingKey,
@@ -316,7 +317,9 @@ function getPaneStatusTitle(sessionId, status, session) {
 function TaskFrame({ run, group, children, ...handlers }) {
   if (!run) return <>{children}</>;
   const described = group ? describeWorktreeGroup(group) : { title: run.workflowName, tooltip: undefined };
-  return <TaskView title={described.title} tooltip={described.tooltip} run={run} inTask={Boolean(group?.task)} {...handlers}>{children}</TaskView>;
+  // Named only where there is more than one repository to tell apart.
+  const repository = group ? repositoryLabelForPath(group, run.worktree.path) : null;
+  return <TaskView title={described.title} tooltip={described.tooltip} run={run} inTask={Boolean(group?.task)} repository={repository} {...handlers}>{children}</TaskView>;
 }
 
 export default function TerminalArea({
@@ -363,9 +366,13 @@ export default function TerminalArea({
     onSelectWorktree?.(key);
   };
   const [activePaneId, setActivePaneId] = useState(null);
+  const activePaneIdRef = useRef(activePaneId);
+  activePaneIdRef.current = activePaneId;
   const [pendingSessionIds, setPendingSessionIds] = useState([]);
   const [inspectingSessionId, setInspectingSessionId] = useState(null);
   const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
+  // The repository the owner picked for new terminals in the group on screen; forgotten when they move to another tab or group.
+  const [placeChoice, setPlaceChoice] = useState(null);
   const [terminalRuntimeStatus, setTerminalRuntimeStatus] = useState(null);
   const stateRef = useRef(state);
   const containerRef = useRef(null);
@@ -383,20 +390,37 @@ export default function TerminalArea({
   const pendingSessionIdsRef = useRef(new Set());
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
+  // A path is shown in the group it belongs to: any repository of the project in Main, any worktree of a task in that task.
+  const groupKeyOfPath = (value) => {
+    if (value === undefined || value === null) return undefined;
+    const known = (worktreeGroups ?? []).find(group => (group.paths ?? [group.path]).includes(value));
+    if (known) return known.key;
+    for (const task of createdTasksRef.current.values()) {
+      if (task.worktrees.some(worktree => worktree.worktreePath === value)) return task.worktreePath;
+    }
+    return value;
+  };
   const tabGroupKey = tab => worktreeBySession.get(tab?.panes?.[0]?.sessionId)
-    ?? createdWorktreePathsRef.current.get(`${project.name}:${tab?.panes?.[0]?.sessionId}`)
+    ?? groupKeyOfPath(createdWorktreePathsRef.current.get(`${project.name}:${tab?.panes?.[0]?.sessionId}`))
     ?? 'main';
-  const groups = worktreeGroups ? [...worktreeGroups] : [{ key: 'main', label: 'Main', path: project.path, isMain: true, run: null, task: null }];
+  const groups = worktreeGroups ? [...worktreeGroups] : [{
+    key: 'main', label: 'Main', path: project.path, isMain: true, run: null, task: null, worktrees: null, paths: [project.path],
+    repositories: [{ name: project.path.replace(/\/+$/, '').split('/').pop(), path: project.path, own: true }],
+  }];
   for (const tab of (worktreeGroups ? tabs : [])) {
     const key = tabGroupKey(tab);
-    if (!groups.some(group => group.key === key)) groups.push({ key, label: key.split('/').pop(), path: key, isMain: false, run: null, task: createdTasksRef.current.get(key) ?? null });
+    if (groups.some(group => group.key === key)) continue;
+    // A task made here is known before the next poll of the task list reports it.
+    const task = createdTasksRef.current.get(key) ?? null;
+    groups.push({ key, label: key.split('/').pop(), path: key, isMain: false, run: null, task,
+      worktrees: task ? task.worktrees : null, paths: task ? task.worktrees.map(worktree => worktree.worktreePath) : [key] });
   }
   const requestedGroup = selectedWorktree ?? localWorktreeSelection;
   const visibleGroup = groups.some(group => group.key === requestedGroup) ? requestedGroup : 'main';
   const displayTabs = orderTabsForDisplay(groups.length > 1 ? tabs.filter(tab => tabGroupKey(tab) === visibleGroup) : tabs, waitingSessionIds);
   // The run shown is the newest open run of the place the owner is looking at.
   const visibleRun = pipelineRuns
-    .filter(run => !worktreeGroups || (run.worktree.path === project.path ? 'main' : run.worktree.path) === visibleGroup)
+    .filter(run => !worktreeGroups || (groupKeyOfPath(run.worktree.path) ?? 'main') === visibleGroup)
     .reduce((newest, run) => (!newest || String(run.createdAt ?? '') > String(newest.createdAt ?? '') ? run : newest), null);
   // Tasks need a local Git project; the backend says so if this one is not a repository.
   const canStartTask = !project.host || project.host === 'local';
@@ -416,6 +440,24 @@ export default function TerminalArea({
     getParkedPaneSessionIds(tabs, waitingSessionIds),
   );
   const sessionLookup = new Map(sessionStatus.map(session => [session.sessionId, session]));
+  // Where a terminal is on disk when it is not in the project's own checkout: recorded by the backend, or known here since it was opened.
+  const sessionPathOf = sessionId => sessionLookup.get(sessionId)?.worktreePath
+    ?? createdWorktreePathsRef.current.get(`${project.name}:${sessionId}`)
+    ?? null;
+  const sessionPathOfRef = useRef(sessionPathOf);
+  sessionPathOfRef.current = sessionPathOf;
+  // Where new terminals open in the group on screen: the repository of the active terminal, unless the owner picked another.
+  const visibleGroupEntry = groups.find(group => group.key === visibleGroup) ?? null;
+  const places = visibleGroupEntry ? groupPlaces(visibleGroupEntry) : [];
+  const activePaneOfGroup = activeTab && tabGroupKey(activeTab) === visibleGroup
+    ? (activeTab.panes.find(pane => pane.id === activePaneId) ?? activeTab.panes[0]) : null;
+  const chosenPlace = (placeChoice?.group === visibleGroup ? places.find(place => place.id === placeChoice.id) : undefined)
+    ?? (visibleGroupEntry ? placeForPath(visibleGroupEntry, activePaneOfGroup ? sessionPathOf(activePaneOfGroup.sessionId) : null) : null);
+  // Only a group with more than one place needs to say which: with one, a terminal opens as it always did.
+  const placeForNewTerminalRef = useRef(null);
+  placeForNewTerminalRef.current = places.length > 1 ? chosenPlace : null;
+  // A pick holds while the owner stays on the tab it was made on.
+  useEffect(() => { setPlaceChoice(null); }, [activeTabId, visibleGroup]);
   useEffect(() => {
     for (const session of sessionStatus) {
       if (session.cwd) {
@@ -673,7 +715,7 @@ export default function TerminalArea({
   }, [setSessionsPending, showToast]);
 
   // A terminal opens where the owner is: in Main, or inside the selected task.
-  const requestTerminalSessionId = useCallback(async (successMessage, groupKey = 'main') => {
+  const requestTerminalSessionId = useCallback(async (successMessage, groupKey = 'main', place = null) => {
     if (isTerminalRuntimeBlocked) {
       showToast({ type: 'error', message: terminalRuntimeBlockedMessage });
       return null;
@@ -686,8 +728,25 @@ export default function TerminalArea({
         return null;
       }
       try {
-        const opened = await openTaskTerminal(task.id);
-        createdWorktreePathsRef.current.set(`${project.name}:${opened.sessionId}`, groupKey);
+        // In a task with several repositories the terminal opens in the one named; otherwise where the task started.
+        const opened = place ? await openTaskTerminal(task.id, place.id) : await openTaskTerminal(task.id);
+        createdWorktreePathsRef.current.set(`${project.name}:${opened.sessionId}`, place ? place.path : groupKey);
+        const number = getSessionNumber(project.name, opened.sessionId);
+        if (number !== null) sessionCounter = Math.max(sessionCounter, number);
+        unmarkDeletedSessionIds(project.name, [opened.sessionId]);
+        showToast({ type: 'success', message: successMessage || `Opened ${opened.sessionId}` });
+        return opened.sessionId;
+      } catch (error) {
+        showToast({ type: 'error', message: error instanceof Error ? error.message : 'Something went wrong. Please try again.' });
+        return null;
+      }
+    }
+
+    // Main reaches every repository of the project: one that is not the project's own is opened by the backend, in that repository's checkout.
+    if (place && !place.own) {
+      try {
+        const opened = await openProjectTerminal(project.name, place.id);
+        createdWorktreePathsRef.current.set(`${project.name}:${opened.sessionId}`, opened.path);
         const number = getSessionNumber(project.name, opened.sessionId);
         if (number !== null) sessionCounter = Math.max(sessionCounter, number);
         unmarkDeletedSessionIds(project.name, [opened.sessionId]);
@@ -729,7 +788,13 @@ export default function TerminalArea({
   const splitRight = useCallback(async () => {
     if (!activeTabId) return;
     const activeTabNow = stateRef.current.tabs.find(tab => tab.id === activeTabId);
-    const sessionId = await requestTerminalSessionId('Opened terminal split', tabGroupKeyRef.current(activeTabNow));
+    // A split stays in the repository of the terminal it splits.
+    const splitGroupKey = tabGroupKeyRef.current(activeTabNow);
+    const splitGroup = groupsRef.current.find(group => group.key === splitGroupKey);
+    const splitPlace = splitGroup && groupPlaces(splitGroup).length > 1
+      ? placeForPath(splitGroup, sessionPathOfRef.current((activeTabNow.panes.find(pane => pane.id === activePaneIdRef.current) ?? activeTabNow.panes[0])?.sessionId))
+      : null;
+    const sessionId = await requestTerminalSessionId('Opened terminal split', splitGroupKey, splitPlace);
     if (!sessionId) return;
     const pane = createPane(sessionId);
     intentionalOpenIds.current.add(sessionId);
@@ -747,7 +812,7 @@ export default function TerminalArea({
 
   // New tab with one pane
   const addTab = useCallback(async () => {
-    const sessionId = await requestTerminalSessionId('Opened terminal', visibleGroupRef.current);
+    const sessionId = await requestTerminalSessionId('Opened terminal', visibleGroupRef.current, placeForNewTerminalRef.current);
     if (!sessionId) return;
     const tab = createTab(sessionId);
     intentionalOpenIds.current.add(sessionId);
@@ -759,9 +824,10 @@ export default function TerminalArea({
   }, [requestTerminalSessionId, updateTerminalState, onSelectWorktree]);
 
   // New task: its own place to work is created, and a first terminal opens inside it.
-  const createTaskTab = useCallback(async ({ project: projectName, title }) => {
+  const createTaskTab = useCallback(async ({ project: projectName, title, repositories }) => {
     try {
-      const task = await createTask({ project: projectName, title });
+      // In a project with several repositories the owner says which ones the task includes.
+      const task = await createTask({ project: projectName, title, ...(repositories === undefined ? {} : { repositories }) });
       createdTasksRef.current.set(task.worktreePath, task);
       onTasksChanged();
       const opened = await openTaskTerminal(task.id);
@@ -1176,7 +1242,10 @@ export default function TerminalArea({
         })}
         {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked} title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
       </div>}
-      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }} />}
+      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged}
+        canAddRepository={Array.isArray(project.repositories) && project.repositories.length > 0} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
+        // One repository of the task was merged or closed: its terminals are gone, the task stays on screen.
+        onRepositoryFinished={result => removeClosedSessions(result.terminalsClosed)} />}
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}
         openSessionIds={new Set(tabs.flatMap(tab => tab.panes.map(pane => pane.sessionId)))}
         onActivateStep={activatePipelineSession} onOpenTerminal={addTab}
@@ -1185,6 +1254,9 @@ export default function TerminalArea({
         onLoadReviews={onLoadPipelineRunReviews} onLoadAnswers={onLoadPipelineRunAnswers} onApprove={onApprovePipelineRun} onSendBack={onSendBackPipelineRun}>
       <TerminalTabBar tabs={displayTabs} renderTab={tab => {
             const tabLabel = getTerminalTabLabel(tab.panes, tab.label, sessionTitles);
+            // Where there is more than one repository to tell apart, a tab says which it is in.
+            const tabGroup = groups.find(group => group.key === tabGroupKey(tab));
+            const tabRepository = tabGroup ? repositoryLabelForPath(tabGroup, sessionPathOf(tab.panes[0]?.sessionId)) : null;
             const isActive = tab.id === activeTabId;
             const waitingKey = getTabWaitingKey(tab);
             const isWaiting = isTabWaiting(tab, waitingSessionIds);
@@ -1223,9 +1295,9 @@ export default function TerminalArea({
                   boxShadow: isActive && !isWaiting && tabVisualStatus === 'busy' ? 'inset 0 1px 0 var(--glass-highlight)' : 'none',
                   transition: 'border-color 0.15s ease, background 0.15s ease, color 0.15s ease, opacity 0.15s ease',
                 }}
-                title={isWaiting
+                title={`${tabRepository ? `${tabRepository} · ` : ''}${isWaiting
                   ? `${tabLabel} · ${waitingKey} · ${tabStatus} · waiting — clears when the work finishes`
-                  : `${tabLabel} · ${waitingKey} · ${tabStatus}`}
+                  : `${tabLabel} · ${waitingKey} · ${tabStatus}`}`}
               >
                 <span
                   data-testid="terminal-tab-status-dot"
@@ -1239,6 +1311,12 @@ export default function TerminalArea({
                     flexShrink: 0,
                   }}
                 />
+                {tabRepository && (
+                  <span
+                    data-testid="terminal-tab-repository"
+                    style={{ fontSize: '10px', padding: '0 4px', borderRadius: 3, background: 'var(--bg-hover)', color: 'var(--text-secondary)', flexShrink: 0 }}
+                  >{tabRepository}</span>
+                )}
                 <span
                   data-testid="terminal-tab-label"
                   style={{
@@ -1330,6 +1408,18 @@ export default function TerminalArea({
             <Columns size={14} />
           </button>
         </ShortcutHint>
+        {places.length > 1 && (
+          <select
+            aria-label="Open new terminals in"
+            title="The repository new terminals open in"
+            value={chosenPlace?.id ?? ''}
+            onChange={event => setPlaceChoice({ group: visibleGroup, id: event.target.value })}
+            disabled={isTerminalRuntimeBlocked}
+            style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', padding: '2px 4px', borderRadius: 4, background: 'var(--bg-surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', maxWidth: 140 }}
+          >
+            {places.map(place => <option key={place.id} value={place.id}>{place.label}</option>)}
+          </select>
+        )}
         <ShortcutHint
           label="New terminal"
           keys={newTerminalKeys}
@@ -1664,7 +1754,7 @@ export default function TerminalArea({
 
       </TaskFrame>
 
-      {showWorktreeDialog && <NewTaskDialog projectName={project.name} onCreate={createTaskTab} onClose={() => setShowWorktreeDialog(false)} />}
+      {showWorktreeDialog && <NewTaskDialog projectName={project.name} withRepositories={Array.isArray(project.repositories) && project.repositories.length > 0} onCreate={createTaskTab} onClose={() => setShowWorktreeDialog(false)} />}
 
       {inspectingSessionId && (
         <TerminalInspector

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService, TaskError } from '../tasks/task-service.js';
+import { setTaskState } from './helpers/task-state.js';
 import { createTaskLanding } from '../tasks/task-landing.js';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
@@ -31,8 +32,9 @@ function setup({ host, startSession, gitExec = execFile } = {}) {
   const taskStore = createTaskStore(db);
   const start = startSession ?? vi.fn(async () => ({ id: 'Demo-3' }));
   const ids = [ID, '7b000000-0000-4000-8000-000000000002'];
-  const findProject = name => (name === 'Demo' ? { name: 'Demo', path: repo, ...(host ? { host } : {}) } : null);
+  const findProject = name => (name === 'Demo' ? { name: 'Demo', path: repo, repositories: [], ...(host ? { host } : {}) } : null);
   const service = createTaskService({
+    isRunWorking: () => false,
     taskStore, findProject,
     execFile: gitExec,
     startSession: start,
@@ -88,12 +90,17 @@ describe('task service', () => {
   it('can close a task after interruption between the row and Git while preserving owner files', async () => {
     const { db, repo, findProject, service, taskStore } = setup();
     const plan = await service.plan({ project: 'Demo', title: 'Interrupted', titleSource: 'owner' });
-    const row = taskStore.create({ ...plan, baseCommit: git(repo, ['rev-parse', 'HEAD']) });
+    const [first] = plan.worktrees;
+    const row = taskStore.create({
+      id: plan.id, project: plan.project, title: plan.title, titleSource: plan.titleSource, folder: plan.folder,
+      repository: first.repository, repositoryPath: first.repositoryPath, worktreePath: first.worktreePath,
+      branch: first.branch, baseBranch: first.baseBranch, baseCommit: git(repo, ['rev-parse', 'HEAD']),
+    });
     const reopened = createTaskStore(db);
     const pathExists = vi.fn(async target => existsSync(target));
-    const restarted = createTaskService({ taskStore: reopened, findProject, execFile, pathExists, startSession: vi.fn() });
+    const restarted = createTaskService({ taskStore: reopened, findProject, execFile, pathExists, startSession: vi.fn(), isRunWorking: () => false });
     const landing = createTaskLanding({ taskStore: reopened, findProject, execFile, pathExists,
-      hasActiveRun: () => false, onTaskFinished: () => {}, closeTerminals: async () => ({ closed: [], notClosed: [] }) });
+      hasActiveRun: () => false, onTaskFinished: () => {}, onWorktreeFinished: () => {}, closeTerminals: async () => ({ closed: [], notClosed: [] }) });
     expect(reopened.list()).toEqual([row]);
     expect(restarted.get(row.id)).toEqual(row);
     const status = await landing.status(row.id);
@@ -196,7 +203,7 @@ describe('task service', () => {
   it('opens a terminal in the task worktree', async () => {
     const { service, start } = setup();
     const task = await service.create({ project: 'Demo', title: 'Terminal' });
-    expect(await service.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo' });
+    expect(await service.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo', worktreeId: task.worktrees[0].id });
     expect(start).toHaveBeenCalledWith('Demo', { cwd: task.worktreePath });
   });
 
@@ -206,7 +213,7 @@ describe('task service', () => {
     const task = await service.create({ project: 'Demo', title: 'Gone' });
     rmSync(task.worktreePath, { recursive: true, force: true });
     expect(await rejection(service.openTerminal(ID))).toMatchObject({ status: 409, message: "This task's files are no longer on disk." });
-    taskStore.setState(ID, { state: 'closed' });
+    setTaskState(taskStore, ID, { state: 'closed' });
     expect(await rejection(service.openTerminal(ID))).toMatchObject({ status: 409, message: 'This task is finished.' });
     expect(start).not.toHaveBeenCalled();
   });
@@ -234,10 +241,13 @@ describe('task service', () => {
     expect(existsSync(planned.worktreePath)).toBe(false);
     expect(taskStore.list()).toEqual([]);
     const task = await service.createPlanned(planned);
-    expect(task).toMatchObject({ id: ID, worktreePath: planned.worktreePath, branch: planned.branch, titleSource: 'input' });
+    expect(task).toMatchObject({ id: ID, worktreePath: planned.worktreePath, branch: planned.branch, titleSource: 'input', folder: null });
+    // The task's one worktree is in the project's own repository, known by its folder name.
+    expect(task.worktrees).toMatchObject([{ repository: 'repo', own: true, first: true, repositoryPath: null, worktreePath: planned.worktreePath, branch: planned.branch }]);
     await expect(service.createPlanned({ ...planned, titleSource: 'generated' })).rejects.toThrow('Task plan titleSource is invalid');
     expect(await rejection(service.createPlanned(planned))).toMatchObject({ status: 409 });
-    await expect(service.createPlanned({ ...planned, branch: '' })).rejects.toThrow('Task plan branch is invalid');
+    await expect(service.createPlanned({ ...planned, worktrees: [{ ...planned.worktrees[0], branch: '' }] })).rejects.toThrow('Task plan worktree branch is invalid');
+    await expect(service.createPlanned({ ...planned, worktrees: [] })).rejects.toThrow('Task plan worktrees is invalid');
     await expect(service.createPlanned(null)).rejects.toThrow('A task plan is required');
   });
 
@@ -253,6 +263,6 @@ describe('task service', () => {
   });
 
   it('requires its dependencies', () => {
-    expect(() => createTaskService({})).toThrow('taskStore');
+    expect(() => createTaskService({ isRunWorking: () => false,})).toThrow('taskStore');
   });
 });

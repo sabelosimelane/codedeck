@@ -4,6 +4,7 @@ import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, A
 import { getThemeMode, cycleThemeMode } from '../theme';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
+import ProjectRepositoriesDialog from './ProjectRepositoriesDialog.jsx';
 import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
 import SidebarSessionRows from './SidebarSessionRows';
@@ -160,7 +161,7 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, waitingProjects = [], openRunCounts = new Map(), worktreeGroupsByProject = new Map(), selectedWorktreeByProject = {}, onSelectWorktree = () => {}, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts }) {
+export default function Sidebar({ activeProjects, waitingProjects = [], openRunCounts = new Map(), worktreeGroupsByProject = new Map(), selectedWorktreeByProject = {}, onSelectWorktree = () => {}, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts, onRepositoriesChanged = () => {} }) {
   // Parked sessions stop pulsing and blinking here too — reusing the visual path
   // the mute drives, without joining the mute set the eye icon reports.
   const quietStatusSessionIds = getQuietStatusSessionIds(mutedStatusSessionIds, waitingSessionIds);
@@ -169,6 +170,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+  const [repositoriesProject, setRepositoriesProject] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [shelfExpanded, setShelfExpanded] = useState(() => {
     return localStorage.getItem('codedeck-shelf-expanded') === 'true';
@@ -488,6 +490,13 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
     </div>
   );
 
+  // A project's other repositories are kept for local projects only, as tasks are.
+  const repositoriesMenuItems = (project) => (!project.host || project.host === 'local' ? [{
+    label: 'Repositories…',
+    icon: <FolderTree size={13} />,
+    onClick: () => { setRepositoriesProject(project); setOpenProjectMenu(null); },
+  }] : []);
+
   const removeMenuItem = (project) => (
     confirmDelete === project.name
       ? {
@@ -715,6 +724,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
                         icon: <FolderSearch size={13} />,
                         onClick: () => { onBrowseFiles(project); setOpenProjectMenu(null); },
                       },
+                      ...repositoriesMenuItems(project),
                       {
                         label: 'Rename project',
                         icon: <Pencil size={13} />,
@@ -898,6 +908,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
                             <Archive size={13} />
                           </button>
                           {renderProjectMenu(project, `waiting:${project.name}`, [
+                            ...repositoriesMenuItems(project),
                             {
                               label: 'Rename project',
                               icon: <Pencil size={13} />,
@@ -1205,6 +1216,14 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
           initialPath={defaultPath}
           onSelect={handleBrowseSelect}
           onCancel={() => setShowBrowser(false)}
+        />
+      )}
+
+      {repositoriesProject && (
+        <ProjectRepositoriesDialog
+          project={repositoriesProject}
+          onClose={() => setRepositoriesProject(null)}
+          onChanged={onRepositoriesChanged}
         />
       )}
 

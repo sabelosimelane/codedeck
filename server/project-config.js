@@ -4,6 +4,8 @@ export function normalizeProject(project) {
     shelvedAt: null,
     waiting: false,
     waitingAt: null,
+    // The project's other repositories, beside its own at `path`; a lone repository has none.
+    repositories: [],
     ...project,
   };
 }

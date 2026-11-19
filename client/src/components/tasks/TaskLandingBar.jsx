@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '../ToastContext';
 import { closeTask, commitTask, getTaskLanding, mergeTask, openTaskPullRequest, renameTask } from '../../utils/tasksApi.js';
 import { Button, ConfirmDialog, PromptDialog } from '../ui/index.jsx';
+import TaskRepositoriesLanding from './TaskRepositoriesLanding.jsx';
+import AddRepositoryDialog from './AddRepositoryDialog.jsx';
 import './task-view.css';
 
 const plural = (number, word) => `${number} ${word}${number === 1 ? '' : 's'}`;
@@ -12,7 +14,16 @@ const FALLBACK = 'Something went wrong. Please try again.';
  * backend every few seconds; every button round-trips through the backend and nothing here
  * decides whether an action is allowed.
  */
-export default function TaskLandingBar({ task, onChanged, onFinished }) {
+/** `canAddRepository`: the task's project lists other repositories, so the task can be given a copy of one more. */
+export default function TaskLandingBar({ task, canAddRepository = false, onChanged, onFinished, onRepositoryFinished }) {
+  // A task with several repositories lands each on its own; one with a single worktree is landed as a whole.
+  if (Array.isArray(task.worktrees) && task.worktrees.length > 1) {
+    return <TaskRepositoriesLanding task={task} canAddRepository={canAddRepository} onChanged={onChanged} onFinished={onFinished} onRepositoryFinished={onRepositoryFinished} />;
+  }
+  return <TaskLanding task={task} canAddRepository={canAddRepository} onChanged={onChanged} onFinished={onFinished} />;
+}
+
+function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
   const { showToast } = useToast();
   const [landing, setLanding] = useState(null);
   const [failure, setFailure] = useState(null);
@@ -143,6 +154,7 @@ export default function TaskLandingBar({ task, onChanged, onFinished }) {
             {landing.baseBranch !== null && <Button size="small" variant={canMerge ? 'primary' : 'secondary'} onClick={() => setAsking('merge')} disabled={busy !== null || !canMerge} title={first(landing.blockers.merge)}>{`Merge into ${landing.baseBranch}`}</Button>}
             {tools.length > 1 && <select aria-label="Remote for the pull request" value={chosenRemote.name} onChange={event => setRemote(event.target.value)} disabled={busy !== null}>{tools.map(candidate => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}</select>}
             {tools.length > 0 && landing.baseBranch !== null && landing.prUrl === null && <Button size="small" onClick={() => setAsking('pullRequest')} disabled={busy !== null || landing.blockers.pullRequest.length > 0} title={first(landing.blockers.pullRequest)}>Open a pull request</Button>}
+            {canAddRepository && <Button size="small" onClick={() => setAsking('addRepository')} disabled={busy !== null} title="Give this task a copy of another repository of the project">Add repository</Button>}
             <Button size="small" onClick={() => setAsking('close')} disabled={busy !== null || landing.blockers.close.length > 0} title={first(landing.blockers.close)}>Close task</Button>
           </div>
         )}
@@ -163,6 +175,7 @@ export default function TaskLandingBar({ task, onChanged, onFinished }) {
           <div className="pipeline-run-muted">{task.worktreePath}</div>
         </details>
       )}
+      {asking === 'addRepository' && <AddRepositoryDialog task={task} onAdded={onChanged} onClose={() => setAsking(null)} />}
       {asking === 'rename' && <PromptDialog title="Rename task" label="Task title" initialValue={task.title} maxLength={80} confirmLabel="Rename" requireChange onSubmit={rename} onCancel={() => setAsking(null)} />}
       {asking === 'commit' && <PromptDialog title="Commit changes" subtitle={`Commits ${plural(landing.uncommittedCount, 'changed file')} in this task.`} label="Commit message" initialValue={task.title} maxLength={200} confirmLabel="Commit" onSubmit={commit} onCancel={() => setAsking(null)} />}
       {asking === 'merge' && (

@@ -23,8 +23,14 @@ describe('reading runs and tasks from the instance', () => {
   });
   it('reads the open tasks', async () => {
     const request = vi.fn().mockResolvedValue(ok(pageOf([task()])));
-    expect(await api(request).listOpenTasks()).toEqual([task()]);
+    // An instance of an earlier release does not say which repositories a task includes.
+    expect(await api(request).listOpenTasks()).toEqual([{ ...task(), worktrees: null }]);
     expect(request.mock.calls[0][0]).toBe('https://host.tail.ts.net:8443/api/tasks?open=true&page=0&size=100');
+  });
+  it('reads the repositories of a task from an instance that sends them', async () => {
+    const worktrees = [{ id: '7b000000-0000-4000-8000-000000000001', repository: 'p', own: true, first: true, worktreePath: task().worktreePath, branch: task().branch, baseBranch: 'main', baseCommit: task().baseCommit, state: 'active', prUrl: null }];
+    const request = vi.fn().mockResolvedValue(ok(pageOf([{ ...task(), folder: null, worktrees }])));
+    expect(await api(request).listOpenTasks()).toEqual([{ ...task(), worktrees }]);
   });
   it.each([
     ['a run with an unknown status', pageOf([run({ status: 'paused' })]), `Invalid run ${RUN_ID} field status`],
