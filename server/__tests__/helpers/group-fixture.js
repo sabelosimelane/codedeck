@@ -28,7 +28,7 @@ export function repository(folder) {
  * A group folder as the owner keeps them: repositories side by side, a `worktrees` folder
  * holding a worktree of one of them, and a folder that is not a repository.
  */
-export function groupFixture() {
+export function groupFixture({ exec = execFile } = {}) {
   const base = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'codedeck-repos-')));
   cleanups.push(() => rmSync(base, { recursive: true, force: true }));
   const group = path.join(base, 'group');
@@ -54,7 +54,7 @@ export function groupFixture() {
   const service = createProjectRepositories({
     loadProjects: () => normalizeProjects(projects),
     saveProjects: next => { projects = next; },
-    execFile,
+    execFile: exec,
     // Stands in for the terminal runtime: records what was asked and hands out the next session id.
     startSession: async (project, options) => {
       starts.push([project, options]);

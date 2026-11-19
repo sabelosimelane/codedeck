@@ -7,12 +7,12 @@
 
 ### Technical Details
 * **🛠️ Codebase:**
-  * `server/project-repositories.js`, `server/routes/project-repositories.js` — `GET /api/projects/:name/repository-candidates` returns `branch` with each entry (`null` when no branch is checked out). The field is added; nothing is removed.
+  * `server/project-repositories.js`, `server/routes/project-repositories.js` — `GET /api/projects/:name/repository-candidates` returns `branch` with each entry (`null` when no branch is checked out). The field is added; nothing is removed. The branch is read from the folder's `.git/HEAD` file: no Git command runs in a folder that is not listed yet, because Git can run a program named in a repository's own configuration. A folder whose `.git` holds no `HEAD` Git would accept is not offered.
   * `client/src/utils/projectRepositoriesApi.js` — `parseCandidate` requires `branch` to be text or null.
   * `client/src/components/ProjectRepositoriesDialog.jsx` — the heading, the explanation and the branch on each offered row.
   * `README.md`, `docs/steering/api-standards.md` — the new field and wording.
 * **🧪 Tests:**
-  * `server/__tests__/project-repositories.test.js`, `project-repositories-api.test.js` — the branch of each neighbour, a neighbour with no branch checked out, and the endpoint's envelope.
+  * `server/__tests__/project-repositories.test.js`, `project-repositories-api.test.js` — the branch of each neighbour, a neighbour with no branch checked out, no Git command in an unlisted folder, a folder without a readable `HEAD` left out, and the endpoint's envelope.
   * `client/src/utils/__tests__/projectRepositoriesApi.test.js`, `client/src/components/__tests__/ProjectRepositoriesDialog.test.jsx` — the parser's guard, the heading, the explanation and the three branch states.
 
 ## [2026-11-19] - A run accepts the progress file's whole path as its input

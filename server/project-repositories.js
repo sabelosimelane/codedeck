@@ -17,6 +17,10 @@ const PATH_MAX = 1024;
 const NOT_A_REPOSITORY = { code: 'not_git_toplevel', message: 'This folder is not the top level of a Git working tree.' };
 // The folder that holds worktrees beside the repositories is never one of them.
 const WORKTREES_FOLDER = 'worktrees';
+const BRANCH_REF = 'ref: refs/heads/';
+// A branch name as Git writes it in HEAD: no spaces, control characters or the characters Git forbids in a ref.
+const BRANCH_NAME = /^[^\s~^:?*[\\\x00-\x1f\x7f]{1,255}$/;
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export class RepositoryError extends Error {
   constructor(message, status, errors, options) {
@@ -63,8 +67,9 @@ export function createProjectRepositories({
   realpath = target => fs.promises.realpath(target),
   readdir = (target, options) => fs.promises.readdir(target, options),
   stat = target => fs.promises.stat(target),
+  readFile = target => fs.promises.readFile(target, 'utf8'),
 } = {}) {
-  for (const [name, value] of Object.entries({ loadProjects, saveProjects, execFile, startSession, realpath, readdir, stat })) {
+  for (const [name, value] of Object.entries({ loadProjects, saveProjects, execFile, startSession, realpath, readdir, stat, readFile })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
 
@@ -110,6 +115,26 @@ export function createProjectRepositories({
     return [own, ...rest];
   }
 
+  /**
+   * What a repository's `HEAD` file says, read as a file: no Git command runs in a folder the owner
+   * has not added, because Git can run a program named in that repository's own configuration.
+   * `{ branch }` with the branch checked out, or null for a commit checked out without one;
+   * null when the folder holds no `HEAD` Git would accept, so it is not a repository.
+   */
+  async function readHead(folder) {
+    let text;
+    try { text = await readFile(path.join(folder, '.git', 'HEAD')); }
+    catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR' || error?.code === 'EISDIR') return null;
+      throw error;
+    }
+    if (typeof text !== 'string') throw new Error('readFile must return text');
+    const line = text.trim();
+    if (COMMIT_ID.test(line)) return { branch: null };
+    const branch = line.startsWith(BRANCH_REF) ? line.slice(BRANCH_REF.length) : '';
+    return BRANCH_NAME.test(branch) ? { branch } : null;
+  }
+
   async function candidates(projectName) {
     const { project, others } = findProject(projectName);
     const ownHome = await requireOwnHome(project);
@@ -131,8 +156,10 @@ export function createProjectRepositories({
         if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
         throw error;
       }
-      // The branch its folder is on: a task would start from and merge into that one. Null when none is checked out, or Git cannot read the folder.
-      if (marker.isDirectory()) found.push({ name: entry.name, path: folder, branch: (await inspect(folder)).branch });
+      if (!marker.isDirectory()) continue;
+      // The branch its folder is on: a task would start from and merge into that one.
+      const head = await readHead(folder);
+      if (head !== null) found.push({ name: entry.name, path: folder, branch: head.branch });
     }
     return found.sort((a, b) => a.name.localeCompare(b.name));
   }

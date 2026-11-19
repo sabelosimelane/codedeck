@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createProjectRepositories, readStoredRepositories, RepositoryError, MAX_OTHER_REPOSITORIES } from '../project-repositories.js';
@@ -142,6 +143,26 @@ describe('a project\'s repositories', () => {
       const { service, mobile } = groupFixture();
       git(mobile, ['checkout', '-q', '--detach']);
       expect((await service.candidates('Demo')).find(entry => entry.name === 'mobile-app')).toEqual({ name: 'mobile-app', path: mobile, branch: null });
+    });
+
+    it('runs no Git command in a folder that is not listed yet', async () => {
+      // Git can run a program named in a repository's own configuration, so a neighbour is only read as files until the owner adds it.
+      const ran = [];
+      const exec = (file, args, options, callback) => { ran.push(args); return execFile(file, args, options, callback); };
+      const { service, mobile, frontend, backend } = groupFixture({ exec });
+      expect((await service.candidates('Demo')).map(entry => entry.branch)).toEqual(['feat/setup', 'main']);
+      expect(ran.some(args => args.includes(backend))).toBe(true);
+      expect(ran.filter(args => args.some(arg => typeof arg === 'string' && (arg.startsWith(mobile) || arg.startsWith(frontend))))).toEqual([]);
+    });
+
+    it('does not offer a folder whose .git holds no readable HEAD', async () => {
+      const { service, group } = groupFixture();
+      mkdirSync(path.join(group, 'empty', '.git'), { recursive: true });
+      const broken = repository(path.join(group, 'broken'));
+      writeFileSync(path.join(broken, '.git', 'HEAD'), 'not a head\n');
+      const odd = repository(path.join(group, 'odd'));
+      writeFileSync(path.join(odd, '.git', 'HEAD'), 'ref: refs/heads/bad name\n');
+      expect((await service.candidates('Demo')).map(entry => entry.name)).toEqual(['frontend', 'mobile-app']);
     });
 
     it('leaves out a repository once it is listed, also when its listed checkout is a worktree', async () => {
