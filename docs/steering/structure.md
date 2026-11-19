@@ -189,7 +189,7 @@ codedeck/
 The per-terminal Workflow bar and browser control messages were removed. Only pipeline runs use the loop engine through background terminal attachments.
 
 - `shared/pipeline-definitions.mjs`: shared definition validation and prompt composition.
-- `shared/workflow-templates.mjs`: immutable Bug fix and Feature build starting points, shared by client and server without saved template state.
+- `shared/workflow-templates.mjs`: immutable starting points (Bug fix, Feature build, Feature from requirements, Troubleshoot, Review only), shared by client and server without saved template state.
 - `shared/todo-repositories.mjs`: reads a todo's `**Repositories**:` line (which repositories its work touches, and how). `POST /api/pipelines/run-plans` uses it to say, before a run starts, where its todo is and what that line asks for; the Run workflow dialog fills its choices in from the answer.
 - `server/pipelines/`: revisioned SQLite stores, Git worktree operations, readiness
   classification, pure run state transitions and serialized background execution.
@@ -215,7 +215,7 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 - `server/pipelines/answer-store.js`: append-only owner answers (`pipeline_run_answers`). With the run's input
   and the agents' decisions they make up the run's brief, which `run-notes.js` `writeBrief` writes to
   `brief.md` in the run notes whenever a question is answered. `shared/workflow-templates.mjs` also exports
-  `BUILT_IN_STEPS` (Clarify), offered beside the owner's saved steps.
+  `BUILT_IN_STEPS` (Clarify, Requirements), offered beside the owner's saved steps.
 - `server/pipelines/library-store.js`: owner-saved workflow templates (`pipeline_workflow_templates`)
   and saved steps (`pipeline_step_presets`); both are copied when used and never referenced by a run.
 - `shared/pipeline-definitions.mjs` also holds the workflow kinds, the template mode of the

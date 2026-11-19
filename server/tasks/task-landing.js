@@ -39,6 +39,7 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
       run_active: 'A workflow run is still working in this task. Stop it or let it finish first.',
       uncommitted: 'This task has uncommitted changes. Commit them first.',
       nothing_to_land: 'This task has no commits of its own yet.',
+      already_in_base: () => `This task's commits are already in ${worktree.baseBranch}, so there is nothing left to merge. Close the task to finish it.`,
       no_base_branch: 'This task was started from a commit, not a branch, so there is no branch to merge it into.',
       main_not_on_base: () => `Main is on ${mainBranch ?? 'no branch'}, but this task was started from ${worktree.baseBranch}. Switch Main to ${worktree.baseBranch} to merge.`,
       main_dirty: 'Main has uncommitted changes. Commit or stash them before merging.',
@@ -53,6 +54,7 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
     run_active: 'A workflow run is still working in this task. Stop it or let it finish first.',
     uncommitted: `${repository} has uncommitted changes in this task. Commit them first.`,
     nothing_to_land: `${repository} has no commits of its own in this task yet.`,
+    already_in_base: () => `${repository}'s commits in this task are already in ${worktree.baseBranch}, so there is nothing left to merge. Close ${repository} to finish it.`,
     no_base_branch: `${repository} was started from a commit, not a branch, so there is no branch to merge it into.`,
     main_not_on_base: () => `${repository}'s checkout is on ${mainBranch ?? 'no branch'}, but this task started from ${worktree.baseBranch} there. Switch it to ${worktree.baseBranch} to merge.`,
     main_dirty: `${repository}'s checkout has uncommitted changes. Commit or stash them before merging.`,
@@ -63,7 +65,7 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
 }
 
 // Ignored files the owner agreed may go with a task's folder; any other ignored file is kept.
-const DISPOSABLE = new Set(['node_modules', 'dist', 'build', 'target', '.codedeck']);
+const DISPOSABLE = new Set(['node_modules', 'dist', 'build', 'target', '.gradle', '.codedeck']);
 
 function run(execFile, file, args, { cwd, timeout = GIT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
@@ -143,6 +145,17 @@ export function createTaskLanding({
     return stdout.trim() === 'HEAD' ? null : stdout.trim();
   }
 
+  /**
+   * Whether the checkout has commits made since the commit its task started from. With no
+   * commit that its base lacks, such a task is not untouched: its work is already in the base.
+   */
+  async function movedPast(cwd, baseCommit) {
+    const { stdout } = await git(execFile, cwd, ['rev-list', '--count', `${baseCommit}..HEAD`]);
+    const made = Number(stdout.trim());
+    if (stdout.trim() === '' || !Number.isSafeInteger(made) || made < 0) throw new Error('git rev-list returned an unexpected count');
+    return made > 0;
+  }
+
   async function sameBytes(worktreePath, checkout, file) {
     // Git lists a wholly ignored folder as one entry; it is a copy when everything in it is.
     if (file.endsWith('/')) return sameFolder(path.join(worktreePath, file), path.join(checkout, file));
@@ -212,6 +225,8 @@ export function createTaskLanding({
     let uncommitted = [];
     let ahead = null;
     let behind = null;
+    // Whether the task's work is already in its base branch; null when Git could not be asked.
+    let alreadyInBase = null;
     let checkoutBranch = null;
     let ignoredAtRisk = [];
     if (present) {
@@ -223,6 +238,7 @@ export function createTaskLanding({
       const counts = stdout.trim().split(/\s+/).map(Number);
       if (counts.length !== 2 || counts.some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('git rev-list returned unexpected counts');
       [behind, ahead] = counts;
+      alreadyInBase = ahead === 0 && await movedPast(worktree.worktreePath, worktree.baseCommit);
     }
 
     const mainBranch = await currentBranch(checkout);
@@ -235,7 +251,8 @@ export function createTaskLanding({
     if (active) common.push('run_active');
     const withWork = [...common];
     if (present && uncommitted.length > 0) withWork.push('uncommitted');
-    if (present && ahead === 0) withWork.push('nothing_to_land');
+    // No commit the base lacks is one of two things: the task has done nothing, or its work was merged outside CodeDeck.
+    if (present && ahead === 0) withWork.push(alreadyInBase ? 'already_in_base' : 'nothing_to_land');
     // Landing acts on the worktree's stored branch; work committed on another branch would not go with it.
     if (present && checkoutBranch !== worktree.branch) withWork.push('branch_switched');
 
@@ -282,6 +299,10 @@ export function createTaskLanding({
         uncommittedCount: uncommitted.length,
         commitsAhead: ahead,
         commitsBehind: behind,
+        alreadyInBase,
+        // Ignored files that exist only here; Close deletes them with the folder once the owner says so.
+        ignoredAtRisk: ignoredAtRisk.slice(0, MAX_LISTED),
+        ignoredAtRiskCount: ignoredAtRisk.length,
         main: { branch: mainBranch, dirty: mainDirty },
         remotes: remoteList,
         blockers: {
@@ -295,6 +316,17 @@ export function createTaskLanding({
   }
 
   const withExtra = (error, extra) => Object.assign(error, { extra });
+
+  /** The owner's word that ignored files only the task holds may be deleted with its folder; left out, they may not. */
+  function requireDeleteIgnored(options) {
+    const value = options?.deleteIgnored;
+    if (value !== undefined && typeof value !== 'boolean') {
+      throw new TaskError('One or more fields failed validation.', 400, [{ field: 'deleteIgnored', message: 'Use true or false' }]);
+    }
+    return value === true;
+  }
+  /** What refuses a close. The owner's word lifts only the ignored files; uncommitted work and the rest still refuse. */
+  const closeBlockers = (view, deleteIgnored) => view.blockers.close.filter(blocker => !(deleteIgnored && blocker.code === 'ignored_files'));
   const refuse = blockers => withExtra(new TaskError(blockers[0].message, 409), { reasons: blockers });
 
   const requireClosed = (result) => {
@@ -468,24 +500,28 @@ export function createTaskLanding({
     },
 
     /** Closes one repository of the task: its worktree goes, its branch stays. */
-    closeWorktree(id, worktreeId) {
+    closeWorktree(id, worktreeId, options) {
+      const deleteIgnored = requireDeleteIgnored(options);
       return serial(async () => {
         const inspection = await inspect(id, worktreeId);
-        if (inspection.view.blockers.close.length) throw refuse(inspection.view.blockers.close);
+        const blockers = closeBlockers(inspection.view, deleteIgnored);
+        if (blockers.length) throw refuse(blockers);
         const { after, closed, finish } = await closeInspected(inspection);
         return { task: after, ...closed, ...finish };
       });
     },
 
     /** Closes the task: every repository that is still open, or none of them. */
-    close(id) {
+    close(id, options) {
+      const deleteIgnored = requireDeleteIgnored(options);
       return serial(async () => {
         const { task } = await load(id);
         const open = task.worktrees.filter(worktree => OPEN_STATES.includes(worktree.state));
         if (open.length <= 1) {
           // One repository is left, or none: the task is closed with it, or refused as finished.
           const inspection = await inspect(id, open[0]?.id);
-          if (inspection.view.blockers.close.length) throw refuse(inspection.view.blockers.close);
+          const blockers = closeBlockers(inspection.view, deleteIgnored);
+          if (blockers.length) throw refuse(blockers);
           const { after, closed, finish } = await closeInspected(inspection);
           return { task: after, ...closed, repositories: [closed], ...finish };
         }
@@ -495,7 +531,7 @@ export function createTaskLanding({
         for (const worktree of open) inspections.push(await inspect(id, worktree.id));
         const reasons = [];
         for (const inspection of inspections) {
-          for (const blocker of inspection.view.blockers.close) {
+          for (const blocker of closeBlockers(inspection.view, deleteIgnored)) {
             // A working run blocks the whole task; it is said once.
             if (blocker.code === 'run_active' && reasons.some(reason => reason.code === 'run_active')) continue;
             reasons.push({ ...blocker, repository: inspection.worktree.repository });

@@ -10,6 +10,7 @@ describe('workflow templates', () => {
     expect(WORKFLOW_TEMPLATES.map(({ id, name, kind, nodes }) => [id, name, kind, nodes.map(node => node.name)])).toEqual([
       ['bug-fix', 'Bug fix', 'bugfix', ['Clarify', 'Analyse', 'Specify', 'Develop', 'Review', 'Test', 'Commit']],
       ['feature-build', 'Feature build', 'build', ['Plan', 'Develop', 'Review', 'Test', 'Commit']],
+      ['feature-from-requirements', 'Feature from requirements', 'build', ['Requirements', 'Specify', 'Plan', 'Develop', 'Review', 'Test', 'Commit']],
       ['troubleshoot', 'Troubleshoot', 'troubleshoot', ['Clarify', 'Gather evidence', 'Hypothesise', 'Prove', 'Fix', 'Verify', 'Commit']],
       ['review-only', 'Review only', 'review', ['Survey', 'Review', 'Report']],
     ]);
@@ -71,11 +72,43 @@ describe('workflow templates', () => {
     }
   });
 
-  it('ships Clarify as a step that can be inserted into any workflow', () => {
-    expect(BUILT_IN_STEPS.map(step => [step.id, step.name, step.askOwner, step.readOnly])).toEqual([['clarify', 'Clarify', true, true]]);
-    expect(Object.isFrozen(BUILT_IN_STEPS) && Object.isFrozen(BUILT_IN_STEPS[0])).toBe(true);
-    const { id, ...body } = BUILT_IN_STEPS[0];
-    expect(validateStepPresetBody(body)).toEqual([]);
+  it('ships Clarify and Requirements as steps that can be inserted into any workflow', () => {
+    expect(BUILT_IN_STEPS.map(step => [step.id, step.name, step.askOwner, step.readOnly])).toEqual([
+      ['clarify', 'Clarify', true, true],
+      ['requirements', 'Requirements', true, true],
+    ]);
+    expect(Object.isFrozen(BUILT_IN_STEPS)).toBe(true);
+    for (const step of BUILT_IN_STEPS) {
+      expect(Object.isFrozen(step)).toBe(true);
+      const { id, ...body } = step;
+      expect(validateStepPresetBody(body)).toEqual([]);
+    }
+  });
+
+  it('builds a feature from requirements: asks what is missing, agrees a specification, then plans and builds it', () => {
+    const template = WORKFLOW_TEMPLATES.find(item => item.id === 'feature-from-requirements');
+    const byName = Object.fromEntries(template.nodes.map(node => [node.name, node]));
+    // Requirements asks about a feature, not about a fault, and always asks the owner.
+    expect(byName.Requirements).toMatchObject({ role: 'Analyst', readOnly: true, approval: false, askOwner: true, repeat: { mode: 'once' } });
+    expect(byName.Requirements.prompt).toMatch(/who it is for/);
+    expect(byName.Requirements.prompt).toMatch(/out of scope/);
+    expect(byName.Requirements.prompt).toMatch(/First look for each of these yourself/);
+    expect(byName.Requirements.prompt).toMatch(/Ask nothing you could find out yourself, and when nothing is missing ask nothing/);
+    expect(byName.Requirements.prompt).not.toMatch(/reproduce/);
+    expect(byName.Requirements).toEqual((({ id, ...step }) => step)(BUILT_IN_STEPS.find(step => step.id === 'requirements')));
+    // The specification is a file in the repository, so its step is not read-only; nothing is built before it is approved.
+    expect(byName.Specify).toMatchObject({ readOnly: false, approval: true, askOwner: false, repeat: { mode: 'once' } });
+    expect(byName.Specify.prompt).toMatch(/Read the Requirements note/);
+    expect(byName.Specify.prompt).toMatch(/Change no code/);
+    expect(byName.Specify.prompt).toMatch(/give the path of the file/);
+    // The plan stays in the run notes, where a run without a Progress file reads its progress.
+    expect(byName.Plan).toMatchObject({ readOnly: true, approval: true, repeat: { mode: 'once' } });
+    expect(byName.Plan.prompt).toMatch(/Write plan\.md in the run notes folder/);
+    for (const name of ['Plan', 'Develop', 'Review', 'Test']) expect(byName[name].prompt, name).toMatch(/specification named in the Specify note/);
+    expect(byName.Test.repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 12 });
+    expect(template.nodes.at(-1)).toMatchObject({ name: 'Commit', repeat: { mode: 'once' } });
+    expect(byName.Commit.prompt).toMatch(/Include the specification/);
+    expect(template.nodes.filter(node => node.askOwner).map(node => node.name)).toEqual(['Requirements']);
   });
 
   it('reviews without changing or committing anything', () => {
@@ -115,6 +148,7 @@ describe('workflow templates', () => {
 
   it('uses input in the described steps, no skill invocation, and bounded prompts', () => {
     const inputSteps = { 'bug-fix': ['Clarify', 'Analyse', 'Specify', 'Develop', 'Commit'], 'feature-build': ['Plan', 'Commit'],
+      'feature-from-requirements': ['Requirements', 'Specify', 'Commit'],
       troubleshoot: ['Clarify', 'Gather evidence', 'Hypothesise', 'Prove', 'Commit'], 'review-only': ['Survey'] };
     for (const template of WORKFLOW_TEMPLATES) {
       for (const node of template.nodes) {

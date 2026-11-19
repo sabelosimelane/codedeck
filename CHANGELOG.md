@@ -19,6 +19,54 @@
   * `server/__tests__/pipelines-api.test.js` — Close run for a complete, stopped, failed and interrupted run; a second Close run refused; a terminal not closed still closes the run; the other open runs passed along; a `removal_blocked` run keeps its terminals; no terminal closed on a refused Close run, on Stop or Resume, or when another run takes a finished run's place; a malformed answer from the terminal layer is a 500 problem.
   * `client` — `pipelinesApi.test.js`, `usePipelineRuns.test.jsx`, `TerminalAreaWorktreeFilter.test.jsx` and `TaskView.test.jsx` cover the checked response, the toasts, the tabs removed and kept, and the wording.
 * **Not covered:** a terminal the owner closed by hand whose id, after a backend restart, went to a new terminal opened in the same worktree is taken for the run's and closed with it. Not checked in a browser against a live run; verified by tests only.
+## [2026-11-19] - Close task lists ignored files that exist only in the task and deletes them when you agree
+
+### Executive Summary
+* A task whose folder held a file Git ignores that exists nowhere else could not be closed: Close task was disabled, the reason was only its tooltip, and the files had to be deleted by hand. Two leftover tasks were stuck this way on Gradle caches, `.project` and `logs/`. The bar now counts such files, Close task lists them by name, and **Delete files and close** closes the task and deletes them. Without that choice nothing is deleted.
+* Gradle caches (`.gradle`) now go with a task's folder without asking, like `node_modules` and `build`.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `server/tasks/task-landing.js` — the landing status lists `ignoredAtRisk` (at most 50) with `ignoredAtRiskCount`. `close` and `closeWorktree` take `{deleteIgnored}`; true lifts only the `ignored_files` blocker, and anything but true or false is refused with 400. `.gradle` joined the disposable folders. Merge is unchanged: it still keeps a folder that holds such files.
+  * `server/routes/tasks.js` — `POST /:id/close` and `POST /:id/worktrees/:worktreeId/close` accept no body or `{deleteIgnored}`; a request without a body behaves as before.
+  * `client/src/utils/tasksApi.js` — `parseLanding` requires the two fields; `closeTask` and `closeTaskWorktree` send `{deleteIgnored: true}` only when asked to.
+  * `client/src/components/tasks/ignoredFiles.js` (new), `TaskLandingBar.jsx`, `TaskRepositoriesLanding.jsx` — Close is refused by every reason except ignored files; its dialog lists them, per repository for a whole task, and its button reads "Delete files and close".
+* **📚 Documents:** `README.md` (Tasks) and `docs/steering/api-standards.md`.
+* **Known limit:** the dialog lists the files read at the last refresh (every five seconds). An ignored file created between that and the click is deleted with the folder without having been listed.
+* **🧪 Tests:** `server/__tests__/task-landing.test.js`, `task-landing-repositories.test.js`, `tasks-api.test.js`; `client/src/utils/__tests__/tasksApi.test.js` and the tests of both landing components.
+
+## [2026-11-19] - A task merged outside CodeDeck says its commits are already in the base branch
+
+### Executive Summary
+* A task whose branch was merged into its base branch with plain Git read "No changes yet", and Merge and Open a pull request were disabled because "This task has no commits of its own yet." Both were wrong: the task had commits, and they were already in the base branch. Such a task now reads **Commits already in `main`**, and the two buttons say that there is nothing left to merge and that Close task finishes it. A task that has done nothing reads "No changes yet" as before. Nothing is finished automatically.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * `server/tasks/task-landing.js` — the landing status has `alreadyInBase`: true when the worktree has no commit its base lacks (`commitsAhead` 0) and `git rev-list --count <baseCommit>..HEAD` is above 0, false otherwise, null when Git was not asked (files gone, or the worktree finished). The merge and pull-request blockers then carry `already_in_base` in place of `nothing_to_land`. Each worktree of a task with several repositories is judged on its own, against the checkout it is listed with. A task started from a commit has no base branch and is never reported this way.
+  * `server/routes/tasks.js` — `alreadyInBase` is part of how one repository stands.
+  * `client/src/utils/tasksApi.js` — `parseLanding` requires `alreadyInBase` (true only with `commitsAhead` 0, false or null).
+  * `client/src/components/tasks/TaskLandingBar.jsx`, `TaskRepositoriesLanding.jsx` — show "Commits already in `<base branch>`" in place of "No changes yet"; the reason is the title of the disabled buttons.
+* **📚 Documents:** `README.md` (Tasks) and `docs/steering/api-standards.md` (`GET /:id/landing`).
+* **Known limits:** a task whose branch only caught up with its base branch (for example `git merge main` in it, with no commit of its own) reads the same, because the two histories are identical. A squash or rebase merge outside CodeDeck is not recognised: Git sees different commits, so the task still shows them as not yet in the base branch.
+* **🧪 Tests:**
+  * `server/__tests__/task-landing.test.js` — fresh task, own commit, fast-forward merge outside CodeDeck with the base moved on, new work afterwards, a merge commit with uncommitted files beside it, a task started from a commit, and vanished files.
+  * `server/__tests__/task-landing-repositories.test.js` — one repository already in its base branch and one untouched in the same task.
+  * `server/__tests__/tasks-api.test.js`, `client/src/utils/__tests__/tasksApi.test.js`, and the tests of both landing components.
+
+## [2026-11-19] - A workflow template that starts a feature from its requirements
+
+### Executive Summary
+* Feature build starts from work that is already planned. A new built-in template, **Feature from requirements**, starts from an idea: Requirements asks you only what it could not find out, Specify writes the specification into the repository and waits for your approval, Plan turns it into phases and waits again, then the same Develop, Review and Test loop builds it and Commit commits it, specification included.
+* **Requirements** is also a built-in step under **Insert a saved step…**, beside Clarify. It asks what a feature needs settled (who it is for, each case, what is out of scope, how it will be shown to work); Clarify asks about a fault.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `shared/workflow-templates.mjs` — the `feature-from-requirements` template and the `requirements` built-in step. No engine change: the plan is the run's `plan.md`, as in Feature build, and the template has no Progress file.
+* **📚 Documents:** `README.md`, `docs/steering/product.md`, `docs/steering/structure.md` and the workflow pipelines specification.
+* **🧪 Tests:**
+  * `server/__tests__/workflow-templates.test.js` — the template's steps, gates, loop and prompts; Requirements as a valid built-in step.
+  * `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx` — the chooser offers the template and the step list offers Requirements.
+  * Not run live: no run has been started from the template yet.
 
 ## [2026-11-19] - Resume waits for an agent that is still working, and Codex is read as working while it writes
 

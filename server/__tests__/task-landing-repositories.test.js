@@ -69,6 +69,20 @@ describe('landing a task with several repositories', { timeout: 30_000 }, () => 
     expect(git(backend, ['status', '--porcelain'])).toBe('');
   });
 
+  it('judges each repository on its own: one already in its base branch, one untouched', async () => {
+    const { landing, first, second, frontendMain } = await setup();
+    write(second.worktreePath, 'page.txt', 'work\n');
+    commitAll(second.worktreePath, 'page');
+    // Merged with plain Git in the checkout frontend is listed with.
+    git(frontendMain, ['merge', '--ff-only', second.branch]);
+    const [own, other] = await landing.worktrees(ID);
+    expect(own).toMatchObject({ worktreeId: first.id, repository: 'backend', commitsAhead: 0, alreadyInBase: false });
+    expect(own.blockers.merge).toEqual([{ code: 'nothing_to_land', message: 'backend has no commits of its own in this task yet.' }]);
+    expect(other).toMatchObject({ worktreeId: second.id, repository: 'frontend', commitsAhead: 0, alreadyInBase: true });
+    expect(other.blockers.merge).toEqual([{ code: 'already_in_base', message: "frontend's commits in this task are already in main, so there is nothing left to merge. Close frontend to finish it." }]);
+    expect(other.blockers.close).toEqual([]);
+  });
+
   it('says where a checkout stands when it is on another branch', async () => {
     const { landing, second, frontendMain } = await setup();
     git(frontendMain, ['checkout', '-q', '-b', 'elsewhere']);
@@ -162,6 +176,37 @@ describe('landing a task with several repositories', { timeout: 30_000 }, () => 
     expect(existsSync(first.worktreePath)).toBe(true);
     expect(onTaskFinished).not.toHaveBeenCalled();
     expect(await rejection(landing.closeWorktree(ID, second.id))).toMatchObject({ status: 409, message: 'This repository of the task is finished.' });
+  });
+
+  it('deletes ignored files with a repository or the whole task only on the owner\'s word', async () => {
+    const { landing, first, second } = await setup();
+    for (const worktree of [first, second]) {
+      write(worktree.worktreePath, '.gitignore', 'owner.local\n');
+      commitAll(worktree.worktreePath, 'ignore');
+      write(worktree.worktreePath, 'owner.local', 'exists nowhere else\n');
+    }
+    expect((await landing.worktrees(ID)).map(view => [view.repository, view.ignoredAtRisk])).toEqual([['backend', ['owner.local']], ['frontend', ['owner.local']]]);
+    expect(await rejection(landing.closeWorktree(ID, second.id))).toMatchObject({ status: 409 });
+    expect(await rejection((async () => landing.closeWorktree(ID, second.id, { deleteIgnored: 'yes' }))())).toMatchObject({ status: 400 });
+    const one = await landing.closeWorktree(ID, second.id, { deleteIgnored: true });
+    expect(one.task.worktrees.map(worktree => worktree.state)).toEqual(['active', 'closed']);
+    expect(existsSync(second.worktreePath)).toBe(false);
+    expect(existsSync(first.worktreePath)).toBe(true);
+  });
+
+  it('closes every repository of a task with their ignored files on the owner\'s word, or none without it', async () => {
+    const { landing, first, second } = await setup();
+    write(second.worktreePath, '.gitignore', 'owner.local\n');
+    commitAll(second.worktreePath, 'ignore');
+    write(second.worktreePath, 'owner.local', 'exists nowhere else\n');
+    const refused = await rejection(landing.close(ID));
+    expect(refused).toMatchObject({ status: 409 });
+    expect(refused.extra.reasons.map(reason => [reason.code, reason.repository])).toEqual([['ignored_files', 'frontend']]);
+    expect(existsSync(first.worktreePath)).toBe(true);
+    const result = await landing.close(ID, { deleteIgnored: true });
+    expect(result.task.state).toBe('closed');
+    expect(existsSync(first.worktreePath)).toBe(false);
+    expect(existsSync(second.worktreePath)).toBe(false);
   });
 
   it('closes the whole task only when every repository can be closed, and says which cannot', async () => {
