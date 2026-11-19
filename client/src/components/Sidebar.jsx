@@ -9,6 +9,7 @@ import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
 import SidebarSessionRows from './SidebarSessionRows';
 import WorktreeGroupHeader from './WorktreeGroupHeader';
+import { sidebarSessionsForGroup } from '../utils/worktreeGroups';
 import { countWaitingSessionsForProject, getQuietStatusSessionIds } from '../utils/terminalWaiting';
 import {
   createNotificationAudioContext,
@@ -24,6 +25,7 @@ import {
   getTerminalCompletionNotification,
   getTerminalStatus,
   resolveTerminalCompletionNotificationMs,
+  getVisualTerminalStatus,
 } from '../utils/terminalActivity';
 import { doesSessionBelongToProject } from '../utils/terminalProjectMatch';
 
@@ -744,7 +746,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
                 {!isCompact && (showWorktreeGroups ? groups.map(group => (
                   <React.Fragment key={group.key}>
                     <WorktreeGroupHeader group={group} selected={selectedWorktreeByProject[project.name] === group.key} onClick={() => { if (!isActive) onSelect(project); onSelectWorktree(project.name, group.key); }} />
-                    <SidebarSessionRows sessions={projSessions.filter(session => group.sessionIds.includes(session.sessionId))} finishedSessionIds={finishedSessionIds} quietStatusSessionIds={quietStatusSessionIds} mutedStatusSessionIds={mutedStatusSessionIds} waitingSessionIds={waitingSessionIds} />
+                    <SidebarSessionRows sessions={sidebarSessionsForGroup(group, projSessions, session => getVisualTerminalStatus(session, finishedSessionIds, quietStatusSessionIds))} finishedSessionIds={finishedSessionIds} quietStatusSessionIds={quietStatusSessionIds} mutedStatusSessionIds={mutedStatusSessionIds} waitingSessionIds={waitingSessionIds} />
                   </React.Fragment>
                 )) : <SidebarSessionRows sessions={projSessions} finishedSessionIds={finishedSessionIds} quietStatusSessionIds={quietStatusSessionIds} mutedStatusSessionIds={mutedStatusSessionIds} waitingSessionIds={waitingSessionIds} />)}
               </div>

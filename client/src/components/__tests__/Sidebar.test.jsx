@@ -133,6 +133,23 @@ describe('Sidebar', () => {
     expect(onSelect).toHaveBeenCalledWith(project);
     expect(onSelectWorktree).toHaveBeenCalledWith(project.name, group.key);
   });
+  it('shows a task with a run as one entry: the run\'s terminals are folded away, the ones opened by hand stay', () => {
+    const project = { name: 'Demo', path: '/tmp/demo' };
+    const now = new Date().toISOString();
+    const row = (sessionId, title) => ({ sessionId, cwd: '/tmp/demo-task', alive: true, title, lastOutputAt: now, lastOutputLine: `${title} output` });
+    const sessionStatus = [row('Demo-1', 'Setup terminal'), row('Demo-2', 'Develop terminal'), row('Demo-3', 'My own terminal'), { ...row('Demo-5', 'Main terminal'), cwd: project.path }];
+    const run = { id: 'r1', status: 'running', workflowName: 'Build', steps: [{ name: 'Setup', status: 'complete', sessionId: 'Demo-1' }, { name: 'Develop', status: 'running', sessionId: 'Demo-2' }], progress: null };
+    const task = { key: '/tmp/demo-task', path: '/tmp/demo-task', label: 'demo-task', branch: 'task/x', isMain: false, sessionIds: ['Demo-1', 'Demo-2', 'Demo-3'], run, task: { id: '7a000000-0000-4000-8000-000000000001', title: 'Tag pings' } };
+    const main = { key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Demo-5'], run: null };
+    const view = renderSidebar({ activeProjects: [project], activeProject: project, sessionStatus, worktreeGroupsByProject: new Map([[project.name, [main, task]]]) });
+    expect(view.getByRole('button', { name: 'Select Tag pings worktree' }).textContent).toContain('running');
+    expect(view.queryByText('Setup terminal')).toBeNull();
+    expect(view.queryByText('Develop terminal')).toBeNull();
+    expect(view.queryByText('Develop terminal output')).toBeNull();
+    expect(view.getByText('My own terminal')).toBeTruthy();
+    expect(view.getByText('Main terminal')).toBeTruthy();
+  });
+
   it('keeps legacy session rows and omits a header for a main-only project without a run', () => {
     const project = { name: 'Demo', path: '/tmp/demo' };
     const sessionStatus = [{ sessionId: 'Demo-1', cwd: project.path, alive: true, title: 'Existing terminal' }];

@@ -278,3 +278,23 @@ export function buildWorktreeGroups({ project, sessions, runs, tasks = [] }) {
     return (b.task?.createdAt ?? '').localeCompare(a.task?.createdAt ?? '') || a.path.localeCompare(b.path);
   })];
 }
+
+// What a terminal must show for the sidebar to keep listing it although it belongs to a run.
+const NEEDS_ATTENTION = ['finished', 'dead'];
+
+/**
+ * The terminals of a group that the sidebar lists under it. A run's own terminals, the ones its
+ * steps work in or worked in, are folded into the group's line, which already says how the run
+ * stands; one of them is listed only while it needs attention. Terminals opened by hand stay.
+ * `visualStatusOf` says how a terminal shows now (muted and waiting terminals show as idle).
+ */
+export function sidebarSessionsForGroup(group, sessions, visualStatusOf) {
+  if (!Array.isArray(group?.sessionIds)) throw new TypeError('group.sessionIds must be a list');
+  if (!Array.isArray(sessions)) throw new TypeError('sessions must be a list');
+  if (typeof visualStatusOf !== 'function') throw new TypeError('visualStatusOf must be a function');
+  const own = sessions.filter(session => group.sessionIds.includes(session.sessionId));
+  if (!group.run) return own;
+  if (!Array.isArray(group.run.steps)) throw new TypeError('group.run.steps must be a list');
+  const ofRun = new Set(group.run.steps.flatMap(step => [step.sessionId, ...(Array.isArray(step.priorSessionIds) ? step.priorSessionIds : [])]));
+  return own.filter(session => !ofRun.has(session.sessionId) || NEEDS_ATTENTION.includes(visualStatusOf(session)));
+}

@@ -52,7 +52,7 @@ Open `http://localhost:43000` in your browser.
 3. Use **Split right** (columns icon) to add side-by-side terminal panes — drag dividers to resize, double-click to reset.
 4. Use **+** in the tab bar to open new terminal tabs. Each tab has its own set of panes.
 5. Use the branch-plus icon beside **+**, or **New task** on the **No terminals open** card, to start a task: type what you are working on and CodeDeck opens a terminal in the task's own copy of the project. See **Tasks** below.
-   The sidebar lists **Main** and each open task under its project; the switcher above the terminal tabs does the same. A new terminal, a split and **Cmd/Ctrl+Shift+T** open in whichever of them you are looking at, and stay there.
+   The sidebar lists **Main** and each open task under its project; the switcher above the terminal tabs does the same. A task with a workflow run takes one entry there: its title, how the run stands and the phase it is on. The run's own terminals are not listed under it; one of them appears only while it needs your attention, and a terminal you opened in the task yourself stays listed. A new terminal, a split and **Cmd/Ctrl+Shift+T** open in whichever of them you are looking at, and stay there.
 6. The sidebar shows live status per project: terminal count, activity indicator (green = active, gray = idle, red = dead), and elapsed time.
 
 Agent status comes from the live prompt, status, and footer region of each CLI pane, with 20 seconds of silence vetoing a stale working marker. Input dialogs appear as **Needs input**; working sub-agent panes and background shells keep the session **Running**. An idle agent with a live background shell therefore shows as Running.

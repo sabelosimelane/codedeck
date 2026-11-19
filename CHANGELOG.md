@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-11-19] - A workflow run takes one entry in the sidebar
+
+### Executive Summary
+* Every task with a run listed all of the run's terminals under it in the sidebar, two lines each, so three runs filled the column. A task with a run is now one entry: its title, how the run stands and the phase it is on. The run's own terminals are folded into that entry. One of them is listed again only while it needs attention (finished and waiting for you, or dead), and a terminal you opened in the task yourself stays listed. Main and tasks without a run are unchanged.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `client/src/utils/worktreeGroups.js` — `sidebarSessionsForGroup` chooses the terminals listed under a group: all of them without a run; with a run, those that are not a step's terminal (current or earlier) or that show as finished or dead.
+  * `client/src/components/Sidebar.jsx` — uses it for each group's rows.
+  * `README.md` — the sidebar's entry for a task with a run.
+* **🧪 Tests:**
+  * `client/src/utils/__tests__/worktreeGroups.test.js` — 5 cases: no run, the run's terminals folded (also one a step used before, and while busy), kept when finished or dead, and refused inputs.
+  * `client/src/components/__tests__/Sidebar.test.jsx` — a task with a run shows its entry and the hand-opened terminal, not the run's terminals or their last output.
+
 ## [2026-11-19] - A todo says which repositories its work touches; one Start for all of them
 
 ### Executive Summary
