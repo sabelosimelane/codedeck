@@ -66,7 +66,7 @@ describe('RunWorkflowDialog', () => {
     workflows[1].progressFile = 'docs/todo.md';
     try {
       await renderDialog();
-      expect(screen.getByText('This workflow reads its progress from docs/{input}. Type only the part that replaces {input}: a path inside the project, not a full path from your disk.')).toBeTruthy();
+      expect(screen.getByText("This workflow reads its progress from docs/{input}. Type the part that replaces {input}, or the file's whole path inside the project. A full path from your disk is not accepted.")).toBeTruthy();
       expect(screen.queryByText('A description of the work, or the path of a file its steps should work from.')).toBeNull();
       fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: workflows[1].id } });
       expect(screen.queryByText(/so this must be that file/)).toBeNull();

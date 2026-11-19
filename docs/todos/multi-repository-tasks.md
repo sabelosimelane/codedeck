@@ -1,7 +1,7 @@
 # Multi-repository Tasks
 
 **Spec**: `docs/specifications/multi-repository-tasks.md`
-**Status**: Built, but behind `main`: four commits landed there since `26380fc` and a trial merge conflicts in nine files. The branch must take `main` in and pass again before it can be merged or checked live
+**Status**: Built and up to date with `main` (`dbcdd5c` merged in as `ba8867b`). Not merged into `main`, not pushed, not checked live: each waits for the owner's go-ahead
 **Last completed**: Phase 7: Phone, Documentation and Final Verification (the live check and the migration check on a copy of the live database wait for the owner's go-ahead)
 **Created**: 2026-11-19
 
@@ -247,3 +247,17 @@
 - `POST /runs` on `main` reserves a request before its first wait (`server/pipelines/request-store.js`) and compares a replay with the parameters it recorded; the new `startIn` and `newTask.repositories` have to be part of what is recorded.
 - The two closing fixes change the ignored-files guard that `task-landing.js` here applies per worktree.
 **Next**: merge `main` into this branch, resolve the nine files, run both suites again. Only then the live check and the merge into `main`.
+
+### Session — 2026-11-19 (`main` merged in; an input typed as the progress file's whole path)
+**Completed**: the merge of `main` (`dbcdd5c`) into this branch, with the owner's go-ahead ("Yes, update it"), as `ba8867b`; then, at the owner's request ("make it work, be flexible"), a run start that accepts the progress file's whole path as its input.
+**How the nine conflicts were settled**:
+- `task-store.js`: `create` takes the first worktree and an optional list of the others and writes the task and all its worktree rows in one transaction. `remove(id)` deletes a task that is still active at revision 1, with its worktree rows; `removeWorktree(id, worktreeId)` deletes an active worktree that is not the first.
+- `task-service.js`: rows first, then Git, as `3d1a8d1` does for one worktree. Every worktree is created at the commit recorded for it. When one fails the earlier ones are taken back; no folder left removes the row; a refused undo keeps the task with the copies on disk and removes the rows of the others (not the first one's). `addRepository` records before Git and removes the row when Git left no folder.
+- `task-landing.js`: `sameFolder` and `sameFile` of `778f776` compare a worktree with the checkout it is listed with; `target` is disposable.
+- `routes/pipelines.js`: the reservation and replay of `3d1a8d1` around the start in a repository. A start interrupted after its task was recorded is finished in that task, in the repository named, with Setup for each of its open repositories.
+- `request-store.js`: `startIn` and `newTask.repositories` are part of the recorded parameters, written only when sent, so a request recorded on `main` reads the same.
+**The whole path as input**: `inputFromProgressFilePath` in `shared/pipeline-definitions.mjs`; `POST /runs` looks for the file as composed first, then for the input itself as the path, and records the run with the part that replaces `{input}`. The file as typed wins when both exist; the refusal names both paths when neither does. A full path from disk is still refused, as before.
+**Evidence** (Node v22.22.0):
+- On the merge `ba8867b`: server `npx vitest run --maxWorkers=1` → 3076 passed, 5 failed, all in `pipeline-run-live.test.js` (live tmux; the same file failed 8 tests with `server/` at `603362f`, before any of this; the 5 were not rerun on `main`'s tip). Client → 86 files, 1581 passed; `npx vite build` built.
+- With the whole-path input: `pipeline-definitions.test.js` and `pipelines-api.test.js` → 434 passed; client → 86 files, 1581 passed; `npx vite build` built. Full server suite → 3096 passed, 5 failed, the same 5 live-tmux tests as on the merge.
+**Not done**: the live check, the merge into `main` and a push, all waiting for the owner. The changelog has no entry for multi-repository tasks themselves yet; it belongs with shipping.

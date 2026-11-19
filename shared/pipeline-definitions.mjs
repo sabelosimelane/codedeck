@@ -360,5 +360,22 @@ export function composePrompt(prompt, input, errors, field = 'input') {
   return composed;
 }
 
+/**
+ * The part that replaces {input} in a progress file template when `input` is the file's whole
+ * path: `docs/{input}` and `docs/todos/plan.md` give `todos/plan.md`. Null when the input cannot be
+ * read that way: the template has no single {input}, has nothing around it, or the input does not
+ * begin and end as the template does with something in between.
+ */
+export function inputFromProgressFilePath(template, input) {
+  if (typeof template !== 'string') throw new TypeError('progress file template must be a string');
+  if (typeof input !== 'string') throw new TypeError('input must be a string');
+  const pieces = template.split('{input}');
+  if (pieces.length !== 2) return null;
+  const [before, after] = pieces;
+  const fixed = before.length + after.length;
+  if (fixed === 0 || input.length <= fixed || !input.startsWith(before) || !input.endsWith(after)) return null;
+  return input.slice(before.length, input.length - after.length);
+}
+
 export const PROMPT_COMPOSED_MAX = COMPOSED_PROMPT_MAX;
 export const NO_PROGRESS_ROUNDS = 2;

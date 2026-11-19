@@ -471,6 +471,94 @@ describe('pipelines API — progress file start boundary', () => {
     }
   });
 
+  describe('an input typed as the whole path of the progress file', () => {
+    const committed = files => vi.fn((_command, args, _options, callback) => {
+      const file = args.at(-1);
+      callback(null, files.includes(file) ? `100644 blob abc\t${file}\0` : '', '');
+    });
+    const templated = (ctx, progressFile = 'docs/{input}') => ctx.workflowStore.create({ name: 'Templated', agentsDecide: false, progressFile,
+      nodes: [node(ctx.agentStore.list()[0].id, { prompt: 'Work through docs/{input} now' })] });
+    const looked = execFile => execFile.mock.calls.map(([, args]) => args.at(-1));
+
+    it('starts the run with the part that replaces {input}, in its prompts and its progress file', async () => {
+      const execFile = committed(['docs/todos/tag-pings.md']);
+      const { ctx, body } = await ready({ routerDeps: { execFile } });
+      const result = await request(ctx.app).post(`${base}/runs`).send({ ...body, workflowId: templated(ctx).id, input: 'docs/todos/tag-pings.md' });
+      expect(result.status).toBe(201);
+      // As typed first, then the whole-path reading.
+      expect(looked(execFile)).toEqual(['docs/docs/todos/tag-pings.md', 'docs/todos/tag-pings.md']);
+      const run = ctx.runStore.get(result.body.id);
+      expect(run.input).toBe('todos/tag-pings.md');
+      expect(result.body.input).toBe('todos/tag-pings.md');
+      expect(run.definition.progressFile).toBe('docs/todos/tag-pings.md');
+      expect(run.definition.steps.at(-1).prompt).toContain('Work through docs/todos/tag-pings.md now');
+    });
+
+    it('reads the input as typed when that file is there, even if the whole-path reading is there too', async () => {
+      const execFile = committed(['docs/docs/todos/tag-pings.md', 'docs/todos/tag-pings.md']);
+      const { ctx, body } = await ready({ routerDeps: { execFile } });
+      const result = await request(ctx.app).post(`${base}/runs`).send({ ...body, workflowId: templated(ctx).id, input: 'docs/todos/tag-pings.md' });
+      expect(result.status).toBe(201);
+      expect(looked(execFile)).toEqual(['docs/docs/todos/tag-pings.md']);
+      expect(ctx.runStore.get(result.body.id)).toMatchObject({ input: 'docs/todos/tag-pings.md', definition: { progressFile: 'docs/docs/todos/tag-pings.md' } });
+    });
+
+    it('refuses with both places it looked when neither file is there', async () => {
+      const execFile = committed([]);
+      const { ctx, body } = await ready({ routerDeps: { execFile } });
+      const result = await request(ctx.app).post(`${base}/runs`).send({ ...body, workflowId: templated(ctx).id, input: 'docs/todos/tag-pings.md' });
+      expect(result.status).toBe(400);
+      expect(result.body.errors).toEqual([{ field: 'input', message: 'Neither docs/docs/todos/tag-pings.md nor docs/todos/tag-pings.md is in this repository at its current commit. Commit it, or start the run from the project that contains it.' }]);
+      expect(ctx.runStore.list()).toEqual([]);
+    });
+
+    it('takes the part from a template that also ends the path', async () => {
+      const execFile = committed(['docs/todos/feature.md']);
+      const { ctx, body } = await ready({ routerDeps: { execFile } });
+      const result = await request(ctx.app).post(`${base}/runs`).send({ ...body, workflowId: templated(ctx, 'docs/todos/{input}.md').id, input: 'docs/todos/feature.md' });
+      expect(result.status).toBe(201);
+      expect(ctx.runStore.get(result.body.id)).toMatchObject({ input: 'feature', definition: { progressFile: 'docs/todos/feature.md' } });
+    });
+
+    it('keeps the one place in the refusal when the input cannot be a whole path', async () => {
+      const execFile = committed([]);
+      const { ctx, body } = await ready({ routerDeps: { execFile } });
+      const result = await request(ctx.app).post(`${base}/runs`).send({ ...body, workflowId: templated(ctx).id, input: 'todos/tag-pings.md' });
+      expect(result.status).toBe(400);
+      expect(result.body.errors).toEqual([{ field: 'input', message: 'docs/todos/tag-pings.md is not in this repository at its current commit. Commit it, or start the run from the project that contains it.' }]);
+      expect(looked(execFile)).toEqual(['docs/todos/tag-pings.md']);
+    });
+
+    it('answers a replay of the same request with the same run', async () => {
+      const execFile = committed(['docs/todos/tag-pings.md']);
+      const { ctx, body } = await ready({ routerDeps: { execFile } });
+      const start = { ...body, workflowId: templated(ctx).id, input: 'docs/todos/tag-pings.md' };
+      const first = await request(ctx.app).post(`${base}/runs`).send(start);
+      const replay = await request(ctx.app).post(`${base}/runs`).send(start);
+      expect([first.status, replay.status]).toEqual([201, 200]);
+      expect(replay.body.id).toBe(first.body.id);
+      // The request is known by what was typed: the part alone under the same id is another request.
+      expect((await request(ctx.app).post(`${base}/runs`).send({ ...start, input: 'todos/tag-pings.md' })).status).toBe(409);
+    });
+
+    it('finds the whole path in a chosen worktree too', async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'cd-progress-whole-'));
+      cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+      const worktreePath = path.join(root, 'worktree');
+      mkdirSync(path.join(worktreePath, 'docs/todos'), { recursive: true });
+      writeFileSync(path.join(worktreePath, 'docs/todos/tag-pings.md'), '# todo');
+      const listWorktrees = vi.fn(async () => [{ path: worktreePath, head: 'a'.repeat(40), branch: 'feature/x', missing: false }]);
+      const { ctx, body } = await ready({ routerDeps: { listWorktrees, readWorktreeChanges: async () => ({ readable: true, dirty: false }) } });
+      const start = { ...body, workflowId: templated(ctx).id, worktreePath };
+      const absent = await request(ctx.app).post(`${base}/runs`).send({ ...start, requestId: 'whole-absent', input: 'docs/todos/other.md' });
+      expect(absent.status).toBe(400);
+      expect(absent.body.errors).toEqual([{ field: 'input', message: 'Neither docs/docs/todos/other.md nor docs/todos/other.md is in the chosen worktree. Add it there, or choose the worktree that contains it.' }]);
+      const found = await request(ctx.app).post(`${base}/runs`).send({ ...start, input: 'docs/todos/tag-pings.md' });
+      expect(found.status).toBe(201);
+      expect(ctx.runStore.get(found.body.id)).toMatchObject({ input: 'todos/tag-pings.md', definition: { progressFile: 'docs/todos/tag-pings.md' } });
+    });
+  });
+
   it('does not check progress on an idempotent replay after the file disappears', async () => {
     const execFile = vi.fn((_command, _args, _options, callback) => callback(null, '100644 blob abc\tdocs/todo.md\0', ''));
     const { ctx, body } = await ready({ routerDeps: { execFile } });

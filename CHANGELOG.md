@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-11-19] - A run accepts the progress file's whole path as its input
+
+### Executive Summary
+* A workflow whose Progress file is `docs/{input}` refused a run started with `docs/todos/feature.md`, because it looked for `docs/docs/todos/feature.md`. The run now starts: when the file as typed is not there and the input is the file's whole path, the input is read as the part that replaces `{input}`, in the progress file and in every prompt. The Run workflow dialog says both forms are accepted.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `shared/pipeline-definitions.mjs` — `inputFromProgressFilePath(template, input)` returns the part of a whole path that replaces `{input}`, or null when the input cannot be read that way.
+  * `server/routes/pipelines.js` — `POST /api/pipelines/runs` looks for the progress file as composed first; when it is absent, it looks for the input itself as the path and, if present, records the run with the part. The file as typed wins when both exist. When neither is present the refusal names both paths. The request reservation keeps the input as sent.
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx` — the hint under "What is this run about?" names both forms.
+  * `README.md`, `docs/steering/api-standards.md` — the rule and the `input` a response returns.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-definitions.test.js` — 13 cases for the function: the part from a prefix, from a prefix and an ending, null for each input that cannot be a whole path, and a non-text argument refused.
+  * `server/__tests__/pipelines-api.test.js` — 7 cases: the run starts with the part in its prompts and progress file; the file as typed wins; both paths in the refusal; a template that also ends the path; an input that cannot be a whole path keeps the one-path refusal; a replay returns the same run and the part alone under the same id is 409; a chosen worktree.
+  * `client/src/components/pipelines/__tests__/RunWorkflowDialog.test.jsx` — the hint.
+
 ## [2026-11-19] - Build output in `target` goes with a closed task
 
 ### Executive Summary

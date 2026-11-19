@@ -13,6 +13,7 @@ import {
   validateRunApproveBody,
   validateRunSendBackBody,
   composePrompt,
+  inputFromProgressFilePath,
   isProgressFilePath,
   isUuid,
   loopTargetIndex,
@@ -948,38 +949,55 @@ export function createPipelinesRouter(deps) {
       places = { current: ownName, worktrees: [{ repository: ownName, path: names.worktreePath }], readOnly: checkouts.slice(1) };
     }
 
-    const definition = buildDefinitionSnapshot({
-      workflow,
-      agentStore,
-      settings,
-      input: body.input,
-      setupPairs: setupPairs ?? [{ repository: startRepository, homePath, worktreePath: names.worktreePath }],
-      checkouts,
-      withSetup: !useExisting,
-    });
-    definition.notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
-    for (let index = 0; index < definition.steps.length; index++) {
-      const guidance = buildStepGuidance(definition, index, { worktreePath: names.worktreePath, places,
-        ...(definition.steps[index].approval ? { feedbackPath: feedbackPath(definition, index) } : {}) });
-      if (guidance !== undefined && guidance.length > GUIDANCE_MAX) {
-        throw fieldError('project', places.worktrees.length + places.readOnly.length > 1
-          ? `The paths of this project's repositories are too long for the step instructions: ${[...places.worktrees, ...places.readOnly].map(entry => entry.repository).join(', ')}`
-          : 'The worktree path is too long for the step instructions');
+    // The definition a run with this input would have; refuses what cannot be told to its steps.
+    const snapshot = (forInput) => {
+      const built = buildDefinitionSnapshot({
+        workflow,
+        agentStore,
+        settings,
+        input: forInput,
+        setupPairs: setupPairs ?? [{ repository: startRepository, homePath, worktreePath: names.worktreePath }],
+        checkouts,
+        withSetup: !useExisting,
+      });
+      built.notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
+      for (let index = 0; index < built.steps.length; index++) {
+        const guidance = buildStepGuidance(built, index, { worktreePath: names.worktreePath, places,
+          ...(built.steps[index].approval ? { feedbackPath: feedbackPath(built, index) } : {}) });
+        if (guidance !== undefined && guidance.length > GUIDANCE_MAX) {
+          throw fieldError('project', places.worktrees.length + places.readOnly.length > 1
+            ? `The paths of this project's repositories are too long for the step instructions: ${[...places.worktrees, ...places.readOnly].map(entry => entry.repository).join(', ')}`
+            : 'The worktree path is too long for the step instructions');
+        }
       }
-    }
+      return built;
+    };
+    // The input the run is recorded with: what was typed, or the part of it that replaces {input} (below).
+    let input = body.input;
+    let definition = snapshot(input);
 
     if (definition.progressFile !== null) {
       // The progress file is read in the worktree the run works in: a new one copies the commit of its repository's checkout.
-      const present = useExisting
-        ? await isProgressFileInWorktree({ worktreePath: names.worktreePath, progressFile: definition.progressFile })
-        : await hasCommittedFile({ repoPath: checkoutPath, progressFile: definition.progressFile, execFile });
-      if (!present) {
-        const message = useExisting
-          ? `${definition.progressFile} is not in the chosen worktree. Add it there, or choose the worktree that contains it.`
-          : several
-            ? `${definition.progressFile} is not in ${startRepository} at its current commit. Commit it there, or start the run in the repository that contains it.`
-            : `${definition.progressFile} is not in this repository at its current commit. Commit it, or start the run from the project that contains it.`;
-        throw fieldError('input', message);
+      const present = file => (useExisting
+        ? isProgressFileInWorktree({ worktreePath: names.worktreePath, progressFile: file })
+        : hasCommittedFile({ repoPath: checkoutPath, progressFile: file, execFile }));
+      if (!(await present(definition.progressFile))) {
+        // The owner may have typed the file's whole path, not only the part that replaces {input}.
+        // Read that way the progress file is the input itself, and the run starts with the part.
+        const part = inputFromProgressFilePath(workflow.progressFile, body.input);
+        const whole = part !== null && isProgressFilePath(body.input, 512) ? body.input : null;
+        if (whole === null || !(await present(whole))) {
+          const missing = whole === null ? `${definition.progressFile} is not` : `Neither ${definition.progressFile} nor ${whole} is`;
+          const message = useExisting
+            ? `${missing} in the chosen worktree. Add it there, or choose the worktree that contains it.`
+            : several
+              ? `${missing} in ${startRepository} at its current commit. Commit it there, or start the run in the repository that contains it.`
+              : `${missing} in this repository at its current commit. Commit it, or start the run from the project that contains it.`;
+          throw fieldError('input', message);
+        }
+        input = part;
+        definition = snapshot(input);
+        if (definition.progressFile !== whole) throw new Error(`pipelines: progress file ${definition.progressFile} does not match the path typed`);
       }
     }
 
@@ -1009,7 +1027,7 @@ export function createPipelinesRouter(deps) {
         requestId: body.requestId,
         workflowId: workflow.id,
         project: project.name,
-        input: body.input,
+        input,
         status: 'pending',
         stopReason: null,
         currentStepIndex: 0,
