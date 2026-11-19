@@ -1,7 +1,7 @@
 # Multi-repository Tasks
 
 **Spec**: `docs/specifications/multi-repository-tasks.md`
-**Status**: Built; waiting for the owner's go-ahead to check it live and to merge
+**Status**: Built, but behind `main`: four commits landed there since `26380fc` and a trial merge conflicts in nine files. The branch must take `main` in and pass again before it can be merged or checked live
 **Last completed**: Phase 7: Phone, Documentation and Final Verification (the live check and the migration check on a copy of the live database wait for the owner's go-ahead)
 **Created**: 2026-11-19
 
@@ -33,7 +33,7 @@
 - [x] Switch the readers with no change in behaviour: `server/tasks/task-service.js`, `server/tasks/task-landing.js` (state changes go through `setWorktreeState`), `server/tasks/task-terminals.js`, `server/tasks/task-adoption.js`, `server/routes/tasks.js` (`taskView` adds `worktrees` and `folder`), `server/routes/pipelines.js` (`POST /runs` in a task)
 - [x] `server/__tests__/tasks-api.test.js`: a fixture of what the released phone and desktop send and read (`GET /api/tasks?open=true&page=0&size=100`) replays unchanged; `parseTask` in `client/src/utils/tasksApi.js` accepts the new response
 - [x] Run the full server suite and the client suite; record the counts in the session notes
-- [ ] With the owner's go-ahead only: run the migration against a copy of `~/.codedeck.db` and record the row counts before and after
+- [x] With the owner's go-ahead only: run the migration against a copy of `~/.codedeck.db` and record the row counts before and after
 
 ## Phase 2: A Project's Repositories
 > A project names the repositories that belong to it. One vertical slice: storage, endpoints, dialog.
@@ -229,3 +229,21 @@
   - **Found**: an installed phone build also talks to an instance that does not send them.
   - **Did**: `worktrees` is null when the instance does not say, and checked when it does; the list appears only for a task with several.
   - **Follow-up**: none.
+
+### Session — 2026-11-19 (migration on a copy of the live database; `main` has moved)
+**Completed**: the migration check of Phase 1, with the owner's go-ahead ("Yes, try it").
+**How**: the live `~/.codedeck.db` was copied with SQLite's backup through a read-only connection into the session scratchpad; the live file's size and modification time were the same afterwards. `createTaskStore` was then run on the copy with `findProject` reading the copy's own `projects`.
+**Evidence** (Node v22.22.0, branch tip `396cd50`):
+- Before: 12 `tasks` rows (6 `closed`, 6 `merged`), naming 3 projects, all 3 still stored; 86 projects stored; no `task_worktrees` table; index `tasks_open_worktree` present.
+- A start without `findProject` stopped with `tasks: findProject is required to carry over stored tasks` and left the copy as it was: no `task_worktrees` table, the old index still there.
+- The migration took 1 ms and wrote 12 `task_worktrees` rows (6 `closed`, 6 `merged`). The 14 old columns of every `tasks` row were byte for byte what they had been; `tasks_open_worktree` was gone and `task_folder` was there.
+- All 12 tasks read back through the store with one worktree each, first and own, carrying the task's path, branch, base branch, base commit, state, pull request address and times: 0 mismatches. Each repository was named after its project's folder.
+- A second start changed nothing; `PRAGMA integrity_check` answered `ok` before and after.
+**Not covered by this check**: the live database holds no open task at the moment, so `active` and `pr_open` rows were migrated only in the fixture tests of `task-store.test.js`.
+
+**`main` has moved.** `git log 26380fc..main`: `3d1a8d1` (pipeline starts reserved once, replay by original parameters, the task row written before Git), `778f776` and `dbcdd5c` (closing a task: a copied settings folder, build output in `target`), and the merge `d9f7c2d`. `git merge-tree --write-tree HEAD main` reports conflicts in `server/tasks/task-store.js`, `task-service.js`, `task-landing.js`, `server/routes/pipelines.js`, `shared/pipeline-definitions.mjs`, their three test files and `docs/steering/api-standards.md`.
+**What that means for this work**:
+- `3d1a8d1` writes the task row first and creates the worktree at the recorded commit, removing the row again if no folder was made (`taskStore.remove`). Creating several worktrees here still creates them first and records them after; it must follow the new order, row by row, with the same undo.
+- `POST /runs` on `main` reserves a request before its first wait (`server/pipelines/request-store.js`) and compares a replay with the parameters it recorded; the new `startIn` and `newTask.repositories` have to be part of what is recorded.
+- The two closing fixes change the ignored-files guard that `task-landing.js` here applies per worktree.
+**Next**: merge `main` into this branch, resolve the nine files, run both suites again. Only then the live check and the merge into `main`.
