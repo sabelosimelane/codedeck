@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PipelineApiError } from '../pipelinesApi';
-import { loadDefinitions, parseAgent, parsePreflight, parseSettings, parseStepPreset, parseTemplate, parseWorkflow, parseWorktree } from '../pipelineRecords';
+import { loadDefinitions, parseAgent, parsePreflight, parseRunPlan, parseSettings, parseStepPreset, parseTemplate, parseWorkflow, parseWorktree } from '../pipelineRecords';
 
 const A1 = '11111111-1111-4111-8111-111111111111';
 const W1 = '33333333-3333-4333-8333-333333333333';
@@ -203,6 +203,53 @@ describe('parseWorktree', () => {
     ['selectable', worktree({ selectable: false, reason: null })],
   ])('rejects an invalid %s', (field, record) => {
     rejects(parseWorktree, record, field);
+  });
+});
+
+describe('parseRunPlan', () => {
+  const entry = (patch = {}) => ({ repository: 'mobile-app', role: 'todo', todo: 'docs/todos/phone.md', input: 'todos/phone.md', listed: true, present: true, ...patch });
+  const plan = (patch = {}) => ({ progressFile: 'docs/todos/tag.md', input: 'todos/tag.md', foundIn: 'backend', problem: null,
+    repositories: [{ repository: 'backend', role: 'this', todo: null, input: null, listed: true, present: null }, entry(), { repository: 'frontend', role: 'minor', todo: null, input: null, listed: false, present: null }], ...patch });
+  const empty = { progressFile: null, input: 'fix the login', foundIn: null, problem: null, repositories: null };
+
+  it('returns the plan with only the fields it knows', () => {
+    expect(parseRunPlan({ ...plan(), extra: 1 })).toEqual(plan());
+    expect(parseRunPlan(empty)).toEqual(empty);
+    expect(parseRunPlan(plan({ repositories: null, problem: 'backend (major): use this todo' }))).toMatchObject({ repositories: null, problem: 'backend (major): use this todo' });
+    expect(parseRunPlan(plan({ repositories: [entry({ input: null, present: false })] })).repositories).toEqual([entry({ input: null, present: false })]);
+  });
+
+  it.each([
+    ['plan', null], ['plan', []],
+  ])('refuses a %s that is not an object (%j)', (_field, value) => {
+    expect(() => parseRunPlan(value)).toThrow('Invalid run plan field plan');
+  });
+
+  it.each([
+    ['progressFile', ''], ['progressFile', 7], ['progressFile', undefined],
+    ['input', ''], ['input', null],
+    ['foundIn', ''], ['foundIn', 7], ['foundIn', undefined],
+    ['problem', ''], ['problem', undefined],
+    ['repositories', undefined], ['repositories', 'backend'],
+  ])('refuses an invalid %s (%j)', (field, value) => {
+    expect(() => parseRunPlan(plan({ [field]: value }))).toThrow(`Invalid run plan field ${field}`);
+  });
+
+  it.each([
+    ['repository', ''], ['repository', 7],
+    ['role', 'major'], ['role', undefined],
+    ['todo', ''], ['todo', undefined],
+    ['input', ''], ['input', undefined],
+    ['listed', 'yes'], ['listed', undefined],
+    ['present', 'yes'], ['present', undefined],
+  ])('refuses a repository with an invalid %s (%j)', (field, value) => {
+    expect(() => parseRunPlan(plan({ repositories: [entry({ [field]: value })] }))).toThrow(`Invalid run plan field repositories[0].${field}`);
+  });
+
+  it('refuses a repository whose todo does not go with its role', () => {
+    expect(() => parseRunPlan(plan({ repositories: [entry({ role: 'minor' })] }))).toThrow('Invalid run plan field repositories[0].todo');
+    expect(() => parseRunPlan(plan({ repositories: [entry({ todo: null })] }))).toThrow('Invalid run plan field repositories[0].todo');
+    expect(() => parseRunPlan(plan({ repositories: [null] }))).toThrow('Invalid run plan field repositories[0]');
   });
 });
 

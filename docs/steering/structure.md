@@ -190,6 +190,7 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 
 - `shared/pipeline-definitions.mjs`: shared definition validation and prompt composition.
 - `shared/workflow-templates.mjs`: immutable Bug fix and Feature build starting points, shared by client and server without saved template state.
+- `shared/todo-repositories.mjs`: reads a todo's `**Repositories**:` line (which repositories its work touches, and how). `POST /api/pipelines/run-plans` uses it to say, before a run starts, where its todo is and what that line asks for; the Run workflow dialog fills its choices in from the answer.
 - `server/pipelines/`: revisioned SQLite stores, Git worktree operations, readiness
   classification, pure run state transitions and serialized background execution.
   `step-guidance.js` builds what a looping or self-deciding step is told beyond the

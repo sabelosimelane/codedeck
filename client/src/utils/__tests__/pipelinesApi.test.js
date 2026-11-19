@@ -20,6 +20,7 @@ import {
   listWorktrees,
   preflightProject,
   resumeRun,
+  planRun,
   startRun,
   stopRun,
   answerRun,
@@ -142,6 +143,18 @@ describe('pipelinesApi', () => {
     await startRun({ ...fields, worktreePath: undefined });
     const bodies = global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
     expect(bodies).toEqual([{ ...fields, worktreePath: '/git/worktrees/demo-feature' }, fields]);
+  });
+
+  it('asks what a run would work from', async () => {
+    const plan = { progressFile: null, input: 'x', foundIn: null, problem: null, repositories: null };
+    global.fetch = vi.fn(async () => jsonResponse(plan));
+    const signal = new AbortController().signal;
+    expect(await planRun({ workflowId: '11111111-1111-1111-1111-111111111111', project: 'Demo', input: 'x' }, { signal })).toEqual(plan);
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toBe('/api/pipelines/run-plans');
+    expect(options.method).toBe('POST');
+    expect(options.signal).toBe(signal);
+    expect(JSON.parse(options.body)).toEqual({ workflowId: '11111111-1111-1111-1111-111111111111', project: 'Demo', input: 'x' });
   });
 
   it('sends the repository the run starts in, with an open task and with a new one', async () => {

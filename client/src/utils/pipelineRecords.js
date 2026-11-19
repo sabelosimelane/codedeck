@@ -159,6 +159,33 @@ export function parseWorktree(record) {
   return { path, name, branch, head, current, dirty, selectable, reason };
 }
 
+const PLAN_ROLES = ['this', 'minor', 'todo'];
+
+/** The POST /run-plans response: where a run's todo is and what its Repositories line asks for. */
+export function parseRunPlan(record) {
+  const bad = field => new Error(`Invalid run plan field ${field}`);
+  if (!isObject(record)) throw bad('plan');
+  const { progressFile, input, foundIn, problem } = record;
+  if (progressFile !== null && !isText(progressFile)) throw bad('progressFile');
+  if (!isText(input)) throw bad('input');
+  if (foundIn !== null && !isText(foundIn)) throw bad('foundIn');
+  if (problem !== null && !isText(problem)) throw bad('problem');
+  if (record.repositories !== null && !Array.isArray(record.repositories)) throw bad('repositories');
+  const repositories = record.repositories === null ? null : record.repositories.map((entry, index) => {
+    const at = `repositories[${index}]`;
+    if (!isObject(entry)) throw bad(at);
+    if (!isText(entry.repository)) throw bad(`${at}.repository`);
+    if (!PLAN_ROLES.includes(entry.role)) throw bad(`${at}.role`);
+    // Only another repository's own todo has a path.
+    if (entry.role === 'todo' ? !isText(entry.todo) : entry.todo !== null) throw bad(`${at}.todo`);
+    if (entry.input !== null && !isText(entry.input)) throw bad(`${at}.input`);
+    if (typeof entry.listed !== 'boolean') throw bad(`${at}.listed`);
+    if (entry.present !== null && typeof entry.present !== 'boolean') throw bad(`${at}.present`);
+    return { repository: entry.repository, role: entry.role, todo: entry.todo, input: entry.input, listed: entry.listed, present: entry.present };
+  });
+  return { progressFile, input, foundIn, problem, repositories };
+}
+
 /** The GET /preflight response for a project. */
 export function parsePreflight(record) {
   if (!isObject(record)) throw invalid('preflight', 'preflight');

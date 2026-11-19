@@ -4,6 +4,7 @@ import React from 'react';
 
 const mocks = vi.hoisted(() => ({
   showToast: vi.fn(),
+  startRun: vi.fn(),
 }));
 
 vi.mock('./components/Sidebar', () => ({
@@ -25,7 +26,21 @@ vi.mock('./components/Sidebar', () => ({
 }));
 
 vi.mock('./components/TerminalArea', () => ({
-  default: () => null,
+  default: ({ selectedWorktree, onOpenRunWorkflow }) => (
+    <div>
+      <button onClick={onOpenRunWorkflow}>Open run workflow</button>
+      <span data-testid="selected-worktree">{selectedWorktree ?? 'none'}</span>
+    </div>
+  ),
+}));
+
+vi.mock('./components/pipelines/RunWorkflowDialog', () => ({
+  default: ({ onStart }) => (
+    <div>
+      <button onClick={() => onStart({ requestId: 'first' })}>Start first run</button>
+      <button onClick={() => onStart({ requestId: 'other' }, { follow: false })}>Start another run</button>
+    </div>
+  ),
 }));
 
 vi.mock('./components/FileTree', () => ({
@@ -65,7 +80,7 @@ vi.mock('./hooks/usePipelineRuns', () => ({
   usePipelineRuns: () => ({
     runs: [],
     locallyStartedRunIds: new Set(),
-    startRun: vi.fn(),
+    startRun: mocks.startRun,
     stopRun: vi.fn(),
     resumeRun: vi.fn(),
     continueRun: vi.fn(),
@@ -137,6 +152,38 @@ describe('App polling', () => {
 
     await vi.advanceTimersByTimeAsync(2000);
     expect(sessionRequestCount).toBe(1);
+  });
+
+  it('goes to the task of a run it starts, but stays put for a further run started with it', async () => {
+    const STAMP = '2026-11-19T08:00:00.000Z';
+    const task = (n, worktreePath) => {
+      const fields = { worktreePath, branch: `task/t${n}`, baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null };
+      return { id: `7a000000-0000-4000-8000-00000000000${n}`, project: 'Gamma', title: `Task ${n}`, revision: 1, createdAt: STAMP, updatedAt: STAMP, finishedAt: null, folder: null,
+        ...fields, worktrees: [{ id: `7b000000-0000-4000-8000-00000000000${n}`, repository: 'gamma', own: true, first: true, ...fields }] };
+    };
+    global.fetch = vi.fn((url) => {
+      if (url === SYSTEM_RESOURCES_URL) return mockSystemResources();
+      if (url === '/api/projects') return okJson([{ name: 'Gamma', path: '/tmp/gamma', repositories: [] }]);
+      if (url === '/api/sessions') return okJson([]);
+      if (String(url).startsWith('/api/tasks')) return okJson({ data: [task(1, '/tmp/worktrees/first'), task(2, '/tmp/worktrees/other')], page: { currentPage: 0, size: 100, totalElements: 2, totalPages: 1, hasNextPage: false } });
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    mocks.startRun.mockReset();
+    mocks.startRun
+      .mockResolvedValueOnce({ id: 'r1', worktree: { path: '/tmp/worktrees/first' } })
+      .mockResolvedValueOnce({ id: 'r2', worktree: { path: '/tmp/worktrees/other' } });
+
+    render(<App />);
+    await vi.advanceTimersByTimeAsync(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Gamma' }));
+    await vi.advanceTimersByTimeAsync(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Open run workflow' }));
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start first run' })); await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByTestId('selected-worktree').textContent).toBe('/tmp/worktrees/first');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start another run' })); await vi.advanceTimersByTimeAsync(0); });
+    expect(mocks.startRun.mock.calls.map(([request]) => request.requestId)).toEqual(['first', 'other']);
+    expect(screen.getByTestId('selected-worktree').textContent).toBe('/tmp/worktrees/first');
   });
 
   it('refreshes /api/sessions immediately when selecting a project', async () => {

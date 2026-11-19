@@ -102,6 +102,11 @@ export function previewPrompt({ workflow, nodeIndex, input }, { signal } = {}) {
   return request('/prompt-previews', { method: 'POST', body: { workflow, nodeIndex, input }, signal });
 }
 
+/** What a run of this workflow with this input would work from: where its todo is and which repositories it names. Reads only. */
+export function planRun({ workflowId, project, input }, { signal } = {}) {
+  return request('/run-plans', { method: 'POST', body: { workflowId, project, input }, signal });
+}
+
 /** Workflow templates the owner saved; the built-in ones are shared code, not records. */
 export function listTemplates({ signal } = {}) {
   return listAll('/templates', { signal });

@@ -178,6 +178,14 @@ starts with Setup, which must leave that copy clean before the workflow's nodes 
 begin; uncommitted changes in Main are not in it. A run in an open task or in Main
 uses the place as it is: there is no Setup step and no setup agent is needed.
 
+**A todo can say which repositories its work touches.** Among its header lines, before the first section, a todo may carry one line:
+
+```
+**Repositories**: backend (this todo), mobile-app (docs/todos/tag-pings-phone.md), frontend (minor)
+```
+
+`this todo` is the repository the todo lives in. A path is another repository's own todo, for work there that is big enough to be planned on its own. `minor` is a repository the same run may change without a todo of its own. Whoever writes the todo decides, usually the agent that writes the specification; CodeDeck only reads the line. In the Run workflow dialog, for a new task in a project with several repositories, what the line says is filled in for you: **Start in** is the repository that holds the todo, each `minor` repository is ticked under "Also include…", and each repository with its own todo gets a ticked "Also start a run in…" box. Change any of it; nothing starts before **Start**. Start then starts the run, and one more run in a task of its own for every box left ticked. A repository's own todo is offered only when it is committed there and its path fits the workflow's Progress file; otherwise the box says why. A line CodeDeck cannot read is shown with the reason and nothing is filled in from it. Without the line the dialog still starts where the todo is.
+
 **Runs in a project with several repositories.** The Run workflow dialog adds **Start in**: the
 repository whose copy is the run's current directory, where its notes and its progress file are.
 For a new task you also tick the other repositories it includes, and Setup prepares each one. For

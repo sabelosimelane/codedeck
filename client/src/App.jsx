@@ -611,13 +611,13 @@ function AppContent() {
           tasks={openTasks}
           defaultTaskId={worktreeGroupsByProject.get(activeProject.name)?.find(group => group.key === selectedWorktreeByProject[activeProject.name])?.task?.id ?? null}
           onClose={() => setShowRunWorkflow(false)}
-          onStart={async (request) => {
+          onStart={async (request, { follow = true } = {}) => {
             const projectName = activeProject.name;
             const started = await startRun(request);
-            // The run's task is where the owner wants to be next.
+            // The run's task is where the owner wants to be next; a further run started with it stays in the background.
             if (started?.worktree?.path) {
               await refreshTasks();
-              selectWorktree(projectName, started.worktree.path === activeProject.path ? 'main' : started.worktree.path);
+              if (follow) selectWorktree(projectName, started.worktree.path === activeProject.path ? 'main' : started.worktree.path);
             }
             return started;
           }}

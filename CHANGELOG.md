@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-11-19] - A todo says which repositories its work touches; one Start for all of them
+
+### Executive Summary
+* Starting work that spans repositories meant choosing every repository by hand and starting each run separately. A todo can now carry one line, `**Repositories**: backend (this todo), mobile-app (docs/todos/…-phone.md), frontend (minor)`, written by whoever writes the todo. The Run workflow dialog reads it for a new task: it starts in the repository that holds the todo, ticks the `minor` repositories to include, and offers a run for each repository that has a todo of its own. One Start then starts them all, each in its own task. Every choice can be changed first, and a line that cannot be read is shown with the reason, never guessed at.
+* The Run dialog's **Start in** now reaches the backend for an open task. It was dropped on the way, so a run in an open task with several repositories started where the task started.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `shared/todo-repositories.mjs` — `parseTodoRepositories` reads the line from a todo's header: names, `this todo`, `minor` or a `.md` path; at most 9 repositories; one `this todo`; a format it cannot read is a `problem`.
+  * `server/routes/pipelines.js` — `POST /api/pipelines/run-plans` takes `{workflowId, project, input}` and returns where the progress file is among the project's repositories at their current commit and what its line asks for, with, for each other todo, whether it is committed there and the input a run takes for it. It reads only. `server/pipelines/run-worktree.js` — `readCommittedFile`.
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx` — looks the todo up 400 ms after typing stops, pre-fills Start in, "Also include…" and "Also start a run in…", and starts the ticked runs after the first. `client/src/App.jsx` — a further run does not move the view away from the first.
+  * `client/src/utils/pipelinesApi.js`, `client/src/hooks/usePipelineRuns.js` — `startIn` is passed through to `POST /runs`; `planRun` and `parseRunPlan` are new.
+  * `README.md`, `docs/steering/api-standards.md`, `docs/steering/structure.md` — the line, the endpoint and the module.
+* **🧪 Tests:**
+  * `server/__tests__/todo-repositories.test.js` — 16 cases for the parser.
+  * `server/__tests__/pipelines-api.test.js` — 8 cases for the endpoint: the answer and its repeatability, a todo in another repository and one typed as its whole path, nothing to read, a line that cannot be used, a todo that is not committed or does not fit, each refused field with its boundaries, hostile input, and 404s.
+  * `client` — the plan parser's guards, the request, 8 dialog cases, the app keeping its view for a further run, and `startIn` reaching the request from the hook and the API client.
+
 ## [2026-11-19] - The Repositories dialog says what is not added yet, and on which branch
 
 ### Executive Summary

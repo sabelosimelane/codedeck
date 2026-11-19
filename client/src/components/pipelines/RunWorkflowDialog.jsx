@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { listWorkflows, listWorktrees, preflightProject } from '../../utils/pipelinesApi';
+import { listWorkflows, listWorktrees, planRun, preflightProject } from '../../utils/pipelinesApi';
 import { listProjectRepositories } from '../../utils/projectRepositoriesApi.js';
-import { parsePreflight, parseWorktree } from '../../utils/pipelineRecords';
+import { parsePreflight, parseRunPlan, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
 import { WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { Button, Dialog, Field, Note, SegmentedControl, Select, TextInput } from '../ui/index.jsx';
@@ -29,12 +29,19 @@ function placeLabel(name, worktree) {
 }
 
 const OPEN_STATES = ['active', 'pr_open'];
+// How long the owner stops typing before the todo is looked up.
+const PLAN_DELAY_MS = 400;
+
+/** Another repository's own todo can be started as a run when it is committed in a repository of the project and fits the workflow. */
+const startable = entry => entry.role === 'todo' && entry.listed && entry.input !== null && entry.present === true;
 
 /**
  * `repositories`: the other repositories the project lists, beside its own. With any, the
- * owner also says which repository the run starts in, and which ones a new task includes.
+ * owner also says which repository the run starts in, and which ones a new task includes. The todo
+ * a new task works from can say this itself in its Repositories line; what it says is filled in
+ * for the owner to change, and nothing starts before Start.
  */
-export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, onClose, onStart }) {
+export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, planDelay = PLAN_DELAY_MS, onClose, onStart }) {
   const [workflows, setWorkflows] = useState([]);
   const [workflowId, setWorkflowId] = useState('');
   const [input, setInput] = useState('');
@@ -48,6 +55,10 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   // The repository the run starts in, when the owner picked one; the ones a new task also includes.
   const [startChoice, setStartChoice] = useState(null);
   const [included, setIncluded] = useState(new Set());
+  // What the todo's Repositories line asks for, as the backend read it; the repositories whose own todo also gets a run.
+  const [plan, setPlan] = useState(null);
+  const [planFailure, setPlanFailure] = useState(null);
+  const [extras, setExtras] = useState(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(false);
@@ -104,7 +115,9 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
       name: entry.name, usable: entry.usable, path: entry.path, own: entry.own,
       label: !entry.usable ? `${entry.name} — ${entry.reason.message}` : where === NEW_TASK ? `${entry.name} — ${entry.branch === null ? 'from its current commit' : `from ${entry.branch}`}` : entry.name,
     })) : [];
-  const startDefault = where === OPEN_TASK ? startOptions[0] : startOptions.find(option => option.own && option.usable) ?? startOptions.find(option => option.usable);
+  // A new task starts where its todo is, when the backend found it in one of the project's repositories.
+  const plannedStart = where === NEW_TASK && plan?.foundIn ? startOptions.find(option => option.name === plan.foundIn && option.usable) : undefined;
+  const startDefault = where === OPEN_TASK ? startOptions[0] : plannedStart ?? startOptions.find(option => option.own && option.usable) ?? startOptions.find(option => option.usable);
   const start = startOptions.find(option => option.name === startChoice && option.usable) ?? startDefault ?? null;
   // In Main a run works in the own checkout of the repository chosen; the project's own is what Main always was.
   const mainElsewhere = where === MAIN && start !== null && !start.own;
@@ -119,6 +132,39 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const placeUsable = where === NEW_TASK ? typedTitle.length > 0 || input.trim().length > 0 : Boolean(chosenWorktree?.selectable);
   const eligible = preflight !== null && reasons.length === 0 && placeUsable;
   const canStart = !loading && !starting && eligible && Boolean(workflowId);
+
+  // The todo is looked up for a new task of a workflow that reads a Progress file, in a project with several repositories.
+  const wantsPlan = !loading && !error && several && where === NEW_TASK && Boolean(selectedWorkflow?.progressFile) && input.trim().length > 0;
+  useEffect(() => {
+    setPlan(null);
+    setPlanFailure(null);
+    if (!wantsPlan) return undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const next = parseRunPlan(await planRun({ workflowId, project: projectName, input }, { signal: controller.signal }));
+        if (controller.signal.aborted) return;
+        setPlan(next);
+        if (next.repositories !== null) {
+          setIncluded(new Set(next.repositories.filter(entry => entry.role === 'minor' && entry.listed).map(entry => entry.repository)));
+          setExtras(new Set(next.repositories.filter(startable).map(entry => entry.repository)));
+        }
+      } catch (failure) {
+        if (controller.signal.aborted) return;
+        setPlanFailure(failure.message || 'Something went wrong. Please try again.');
+      }
+    }, planDelay);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [wantsPlan, workflowId, input, projectName, planDelay]);
+
+  const planned = where === NEW_TASK && plan?.repositories ? plan.repositories : [];
+  // The other repositories that have a todo of their own, and the ones of them that get a run when Start is pressed.
+  const otherTodos = planned.filter(entry => entry.role === 'todo' && entry.repository !== start?.name);
+  const extraRuns = otherTodos.filter(entry => startable(entry) && extras.has(entry.repository));
+  const unlistedMinor = planned.filter(entry => entry.role === 'minor' && !entry.listed);
+  const whyNot = entry => (!entry.listed ? `${entry.repository} is not one of this project's repositories.`
+    : entry.input === null ? `${entry.todo} does not fit this workflow's Progress file, ${selectedWorkflow.progressFile}.`
+      : `${entry.todo} is not committed in ${entry.repository}.`);
 
   const handleStart = async () => {
     if (!canStart) return;
@@ -135,7 +181,12 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
           : where === OPEN_TASK ? { taskId: chosenTask.id, ...(start ? { startIn: start.name } : {}) }
             : { worktreePath: chosenWorktree.path }),
       });
-      if (started) onClose();
+      if (!started) return;
+      // Each of the other todos gets a task and a run of its own; a failure is reported by the caller as the first one's would be.
+      for (const entry of extraRuns) {
+        await onStart({ requestId: newRequestId(), workflowId, input: entry.input, newTask: { repositories: [entry.repository] }, startIn: entry.repository }, { follow: false });
+      }
+      onClose();
     } finally {
       setStarting(false);
     }
@@ -200,6 +251,21 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
                   <span>{`Also include ${entry.name}`}</span>
                 </label>
               ))}
+              {otherTodos.map(entry => (
+                <React.Fragment key={entry.repository}>
+                  <label style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 13, color: startable(entry) ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                    <input type="checkbox" aria-label={`Also start a run in ${entry.repository} with ${entry.todo}`} checked={startable(entry) && extras.has(entry.repository)} disabled={!startable(entry)}
+                      onChange={() => setExtras((current) => { const next = new Set(current); if (next.has(entry.repository)) next.delete(entry.repository); else next.add(entry.repository); return next; })} />
+                    <span>{`Also start a run in ${entry.repository} with ${entry.todo}`}</span>
+                  </label>
+                  {!startable(entry) && <span className="ui-field-hint">{whyNot(entry)}</span>}
+                </React.Fragment>
+              ))}
+              {where === NEW_TASK && plan?.repositories && <span className="ui-field-hint">{`From the Repositories line of ${plan.progressFile}.`}</span>}
+              {where === NEW_TASK && plan && plan.repositories === null && plan.problem === null && plan.foundIn !== null && <span className="ui-field-hint">{`${plan.progressFile} is in ${plan.foundIn}.`}</span>}
+              {where === NEW_TASK && plan?.problem && <Note tone="warning">{`The Repositories line of ${plan.progressFile} was not used: ${plan.problem}`}</Note>}
+              {where === NEW_TASK && planFailure && <Note tone="warning">{`The todo could not be looked up: ${planFailure}`}</Note>}
+              {unlistedMinor.map(entry => <Note key={entry.repository} tone="warning">{`The todo names ${entry.repository}, which is not one of this project's repositories.`}</Note>)}
               <Note>
                 {where === NEW_TASK && !several && <span>The task gets its own copy of the project{preflight?.branch ? ` from ${preflight.branch}` : ''}, prepared by a Setup step, so other work can carry on beside it.</span>}
                 {where === NEW_TASK && several && <span>The task gets its own copy of each repository it includes, prepared by a Setup step. The run starts in the one chosen; the others stay readable and can be added to the task later.</span>}

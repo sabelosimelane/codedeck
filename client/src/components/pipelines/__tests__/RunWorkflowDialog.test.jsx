@@ -369,3 +369,165 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
     expect(screen.queryByRole('button', { name: 'Start' })).toBeNull();
   });
 });
+
+describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
+  const OTHERS = [{ name: 'mobile-app', path: '/git/mobile-app' }, { name: 'frontend', path: '/git/frontend' }];
+  const repo = (name, path, own = false) => ({ name, path, own, branch: 'main', head: HEAD, dirty: false, usable: true, reason: null });
+  const REPOSITORIES = [repo('backend', '/git/demo', true), repo('mobile-app', '/git/mobile-app'), repo('frontend', '/git/frontend')];
+  const TEMPLATED = [{ id: '33333333-3333-3333-3333-333333333333', name: 'Build', progressFile: 'docs/{input}' }, { id: '44444444-4444-4444-4444-444444444444', name: 'Loose', progressFile: null }];
+  const entry = (repository, role, patch = {}) => ({ repository, role, todo: null, input: null, listed: true, present: null, ...patch });
+  const PHONE = entry('mobile-app', 'todo', { todo: 'docs/todos/tag-phone.md', input: 'todos/tag-phone.md', present: true });
+  const plan = (patch = {}) => ({ progressFile: 'docs/todos/tag.md', input: 'todos/tag.md', foundIn: 'backend', problem: null,
+    repositories: [entry('backend', 'this'), PHONE, entry('frontend', 'minor')], ...patch });
+  const NOTHING = { progressFile: 'docs/x.md', input: 'x.md', foundIn: null, problem: null, repositories: null };
+
+  /** `plans`: what the backend answers for each input typed; a function answers by itself. */
+  function mockPlans(plans) {
+    const asked = [];
+    global.fetch = vi.fn(async (url, options) => {
+      const target = String(url);
+      const json = body => ({ ok: true, status: 200, json: async () => body });
+      if (target.includes('/run-plans')) {
+        const body = JSON.parse(options.body);
+        asked.push(body);
+        const answer = typeof plans === 'function' ? plans(body) : plans[body.input] ?? NOTHING;
+        return answer instanceof Error ? { ok: false, status: 409, json: async () => ({ message: answer.message }) } : json(answer);
+      }
+      if (target.includes('/workflows')) return json({ data: TEMPLATED, page: { hasNextPage: false } });
+      if (target.includes('/preflight')) return json(eligible());
+      if (target.includes('/worktrees')) return json({ data: [HOME], page: { hasNextPage: false } });
+      if (target.includes('/repositories')) return json({ data: REPOSITORIES, page: { hasNextPage: false, totalElements: REPOSITORIES.length } });
+      throw new Error(`unexpected request ${target}`);
+    });
+    return asked;
+  }
+  async function renderPlanned(props = {}) {
+    const onStart = props.onStart ?? vi.fn(async request => ({ id: `run-${request.startIn}` }));
+    const onClose = vi.fn();
+    render(<RunWorkflowDialog projectName="Demo" repositories={props.repositories ?? OTHERS} tasks={props.tasks ?? []} planDelay={0} onClose={onClose} onStart={onStart} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Workflow' })).toBeTruthy());
+    return { onStart, onClose };
+  }
+  const type = value => fireEvent.change(screen.getByRole('textbox', { name: 'Input' }), { target: { value } });
+  const startIn = () => screen.getByRole('combobox', { name: 'Start in' });
+  const box = name => screen.getByRole('checkbox', { name });
+  const calls = onStart => onStart.mock.calls.map(([request, options]) => { const { requestId, ...rest } = request; expect(requestId).toEqual(expect.any(String)); return [rest, options]; });
+
+  it('pre-fills where the run starts, what the task includes and the other runs to start, and starts them all on Start', async () => {
+    const asked = mockPlans({ 'todos/tag.md': plan() });
+    const { onStart, onClose } = await renderPlanned();
+    type('todos/tag.md');
+    await waitFor(() => expect(screen.getByText('From the Repositories line of docs/todos/tag.md.')).toBeTruthy());
+    expect(asked.at(-1)).toEqual({ workflowId: TEMPLATED[0].id, project: 'Demo', input: 'todos/tag.md' });
+    expect(startIn().value).toBe('backend');
+    expect(box('Also include frontend').checked).toBe(true);
+    expect(box('Also include mobile-app').checked).toBe(false);
+    expect(box('Also start a run in mobile-app with docs/todos/tag-phone.md').checked).toBe(true);
+
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    const ids = onStart.mock.calls.map(([request]) => request.requestId);
+    expect(new Set(ids).size).toBe(2);
+    expect(calls(onStart)).toEqual([
+      [{ workflowId: TEMPLATED[0].id, input: 'todos/tag.md', newTask: { repositories: ['backend', 'frontend'] }, startIn: 'backend' }, undefined],
+      // The other run gets a task of its own and does not take the owner away from the first.
+      [{ workflowId: TEMPLATED[0].id, input: 'todos/tag-phone.md', newTask: { repositories: ['mobile-app'] }, startIn: 'mobile-app' }, { follow: false }],
+    ]);
+  });
+
+  it('starts only what stays ticked, and lets the owner change every choice', async () => {
+    mockPlans({ 'todos/tag.md': plan() });
+    const { onStart } = await renderPlanned();
+    type('todos/tag.md');
+    await waitFor(() => expect(box('Also include frontend').checked).toBe(true));
+    fireEvent.click(box('Also include frontend'));
+    fireEvent.click(box('Also start a run in mobile-app with docs/todos/tag-phone.md'));
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(calls(onStart)).toEqual([[{ workflowId: TEMPLATED[0].id, input: 'todos/tag.md', newTask: { repositories: ['backend'] }, startIn: 'backend' }, undefined]]);
+  });
+
+  it('starts in the repository that holds the todo, until the owner picks another', async () => {
+    mockPlans({ 'todos/tag-phone.md': { progressFile: 'docs/todos/tag-phone.md', input: 'todos/tag-phone.md', foundIn: 'mobile-app', problem: null, repositories: null } });
+    await renderPlanned();
+    expect(startIn().value).toBe('backend');
+    type('todos/tag-phone.md');
+    await waitFor(() => expect(startIn().value).toBe('mobile-app'));
+    expect(screen.getByText('docs/todos/tag-phone.md is in mobile-app.')).toBeTruthy();
+    expect(screen.queryByText(/From the Repositories line/)).toBeNull();
+    fireEvent.change(startIn(), { target: { value: 'frontend' } });
+    type('todos/tag-phone.md ');
+    await waitFor(() => expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/run-plans')).length).toBeGreaterThan(1));
+    expect(startIn().value).toBe('frontend');
+  });
+
+  it('does not offer a run it could not start, and says why', async () => {
+    mockPlans({ 'todos/tag.md': plan({ repositories: [
+      entry('backend', 'this'),
+      entry('mobile-app', 'todo', { todo: 'docs/todos/tag-phone.md', input: 'todos/tag-phone.md', present: false }),
+      entry('frontend', 'todo', { todo: 'plans/console.md', input: null, present: true }),
+      entry('website', 'todo', { todo: 'docs/todos/site.md', input: 'todos/site.md', listed: false }),
+      entry('tools', 'minor', { listed: false }),
+    ] }) });
+    const { onStart } = await renderPlanned();
+    type('todos/tag.md');
+    await waitFor(() => expect(screen.getByText('From the Repositories line of docs/todos/tag.md.')).toBeTruthy());
+    for (const [name, reason] of [
+      ['Also start a run in mobile-app with docs/todos/tag-phone.md', 'docs/todos/tag-phone.md is not committed in mobile-app.'],
+      ['Also start a run in frontend with plans/console.md', 'plans/console.md does not fit this workflow\'s Progress file, docs/{input}.'],
+      ['Also start a run in website with docs/todos/site.md', 'website is not one of this project\'s repositories.'],
+    ]) {
+      expect(box(name).disabled).toBe(true);
+      expect(box(name).checked).toBe(false);
+      expect(screen.getByText(reason)).toBeTruthy();
+    }
+    expect(screen.getByText('The todo names tools, which is not one of this project\'s repositories.')).toBeTruthy();
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows a line that could not be read and pre-fills nothing from it', async () => {
+    mockPlans({ 'todos/tag.md': plan({ repositories: null, problem: 'backend (major): use this todo, minor, or the path of a .md file inside that repository' }) });
+    await renderPlanned();
+    type('todos/tag.md');
+    await waitFor(() => expect(screen.getByText('The Repositories line of docs/todos/tag.md was not used: backend (major): use this todo, minor, or the path of a .md file inside that repository')).toBeTruthy());
+    expect(box('Also include frontend').checked).toBe(false);
+    expect(screen.queryByRole('checkbox', { name: /Also start a run/ })).toBeNull();
+  });
+
+  it('says so when the todo cannot be looked up, and still lets the run start', async () => {
+    mockPlans(() => new Error('Workflow runs are only available for local projects.'));
+    const { onStart } = await renderPlanned();
+    type('todos/tag.md');
+    await waitFor(() => expect(screen.getByText('The todo could not be looked up: Workflow runs are only available for local projects.')).toBeTruthy());
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps the dialog open when the first run does not start, and starts no other', async () => {
+    mockPlans({ 'todos/tag.md': plan() });
+    const onStart = vi.fn(async () => null);
+    const { onClose } = await renderPlanned({ onStart });
+    type('todos/tag.md');
+    await waitFor(() => expect(box('Also start a run in mobile-app with docs/todos/tag-phone.md').checked).toBe(true));
+    fireEvent.click(startButton());
+    await waitFor(() => expect(startButton().disabled).toBe(false));
+    expect(onStart).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('asks only for a new task of a workflow that reads a Progress file', async () => {
+    const asked = mockPlans({ 'todos/tag.md': plan() });
+    await renderPlanned();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: TEMPLATED[1].id } });
+    type('todos/tag.md');
+    fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: TEMPLATED[0].id } });
+    await waitFor(() => expect(screen.getByText('From the Repositories line of docs/todos/tag.md.')).toBeTruthy());
+    expect(asked.every(body => body.workflowId === TEMPLATED[0].id)).toBe(true);
+    const before = asked.length;
+    fireEvent.click(where('Main'));
+    type('todos/other.md');
+    await waitFor(() => expect(screen.queryByText(/From the Repositories line/)).toBeNull());
+    expect(asked.length).toBe(before);
+  });
+});
