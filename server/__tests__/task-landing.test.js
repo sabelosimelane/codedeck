@@ -63,6 +63,60 @@ describe('task landing — status', () => {
     expect(status.blockers.close).toEqual([]);
   });
 
+  it('tells a task whose commits are already in its base branch from one that has done nothing', async () => {
+    const { landing, repo, wt, task } = await setup();
+    expect(await landing.status(ID)).toMatchObject({ commitsAhead: 0, alreadyInBase: false });
+    write(wt, 'feature.txt', 'work\n');
+    commitAll(wt, 'feature');
+    expect(await landing.status(ID)).toMatchObject({ commitsAhead: 1, alreadyInBase: false });
+    // Merged with plain Git, outside CodeDeck, and the base branch has moved on since.
+    git(repo, ['merge', '--ff-only', task.branch]);
+    write(repo, 'other.txt', 'main moved\n');
+    commitAll(repo, 'main moved');
+    const status = await landing.status(ID);
+    expect(status).toMatchObject({ state: 'active', uncommittedCount: 0, commitsAhead: 0, commitsBehind: 1, alreadyInBase: true });
+    const reason = { code: 'already_in_base', message: "This task's commits are already in main, so there is nothing left to merge. Close the task to finish it." };
+    expect(status.blockers.merge).toEqual([reason]);
+    expect(status.blockers.pullRequest[0]).toEqual(reason);
+    expect(codes(status.blockers.pullRequest)).toEqual(['already_in_base', 'no_remote']);
+    expect(status.blockers.close).toEqual([]);
+    // New work on top of what was merged is work of its own again.
+    write(wt, 'more.txt', 'more\n');
+    commitAll(wt, 'more');
+    const again = await landing.status(ID);
+    expect(again).toMatchObject({ commitsAhead: 1, alreadyInBase: false });
+    expect(again.blockers.merge).toEqual([]);
+  });
+
+  it('counts a merge commit made outside CodeDeck as already in the base branch, and uncommitted files beside it', async () => {
+    const { landing, repo, wt, task } = await setup();
+    write(wt, 'feature.txt', 'work\n');
+    commitAll(wt, 'feature');
+    write(repo, 'other.txt', 'main moved\n');
+    commitAll(repo, 'main moved');
+    git(repo, ['merge', '--no-ff', '--no-edit', task.branch]);
+    write(wt, 'draft.txt', 'not yet\n');
+    const status = await landing.status(ID);
+    expect(status).toMatchObject({ uncommittedCount: 1, commitsAhead: 0, commitsBehind: 2, alreadyInBase: true });
+    expect(codes(status.blockers.merge)).toEqual(['uncommitted', 'already_in_base']);
+    expect(await rejection(landing.merge(ID))).toMatchObject({ status: 409, extra: { reasons: [{ code: 'uncommitted' }, { code: 'already_in_base' }] } });
+  });
+
+  it('reads a task that only caught up with its base branch the same way: Git cannot tell the two apart', async () => {
+    const { landing, repo, wt } = await setup();
+    write(repo, 'other.txt', 'main moved\n');
+    commitAll(repo, 'main moved');
+    git(wt, ['merge', '--ff-only', 'main']);
+    expect(await landing.status(ID)).toMatchObject({ commitsAhead: 0, commitsBehind: 0, alreadyInBase: true });
+  });
+
+  it('does not call a task started from a commit already landed', async () => {
+    const { landing, repo, service } = await setup();
+    git(repo, ['checkout', '--detach']);
+    const detached = await service.create({ project: 'Demo', title: 'Detached' });
+    expect(await landing.status(detached.id)).toMatchObject({ baseBranch: null, commitsAhead: 0, alreadyInBase: false });
+  });
+
   it('counts uncommitted files and commits ahead and behind, and names what blocks a merge', async () => {
     const { landing, repo, wt, state } = await setup();
     write(wt, 'feature.txt', 'work\n');
@@ -98,7 +152,7 @@ describe('task landing — status', () => {
     const { landing, wt, taskStore } = await setup();
     rmSync(wt, { recursive: true, force: true });
     const gone = await landing.status(ID);
-    expect(gone).toMatchObject({ filesPresent: false, commitsAhead: null, uncommittedCount: 0 });
+    expect(gone).toMatchObject({ filesPresent: false, commitsAhead: null, alreadyInBase: null, uncommittedCount: 0 });
     expect(codes(gone.blockers.merge)).toContain('files_missing');
     expect(gone.blockers.close).toEqual([]);
     setTaskState(taskStore, ID, { state: 'closed' });

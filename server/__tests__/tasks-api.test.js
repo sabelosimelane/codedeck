@@ -71,7 +71,7 @@ async function setup({ openTerminal, landing } = {}) {
     worktrees: vi.fn(async taskId => real.get(taskId).worktrees.map(worktree => ({
       taskId, worktreeId: worktree.id, repository: worktree.repository, own: worktree.own, first: worktree.first, worktreePath: worktree.worktreePath,
       state: worktree.state, branch: worktree.branch, baseBranch: worktree.baseBranch, prUrl: worktree.prUrl, filesPresent: true, runActive: false,
-      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false, secret: 'never shown' },
+      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false, secret: 'never shown' },
       remotes: [{ name: 'origin', host: 'github.com', tool: 'gh', url: 'never shown' }],
       blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.', internal: 'never shown' }], pullRequest: [], close: [] },
       secretColumn: 'never shown',
@@ -438,7 +438,7 @@ describe('tasks API — the repositories of a task', () => {
     expect(response.body.data[1]).toEqual({
       taskId: id(1), worktreeId: secondId, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/t-1-mobile',
       state: 'active', branch: 'task/t-1', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false },
+      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
       remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }],
       blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] },
     });

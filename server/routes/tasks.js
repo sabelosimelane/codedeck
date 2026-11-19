@@ -78,6 +78,7 @@ function worktreeLandingView(view) {
     uncommittedCount: view.uncommittedCount,
     commitsAhead: view.commitsAhead,
     commitsBehind: view.commitsBehind,
+    alreadyInBase: view.alreadyInBase,
     main: { branch: view.main.branch, dirty: view.main.dirty },
     remotes: view.remotes.map(remote => ({ name: remote.name, host: remote.host, tool: remote.tool })),
     blockers: {

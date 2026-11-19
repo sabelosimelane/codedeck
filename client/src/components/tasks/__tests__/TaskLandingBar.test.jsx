@@ -18,7 +18,7 @@ import TaskLandingBar from '../TaskLandingBar.jsx';
 const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'Replies', revision: 3, worktreePath: '/tmp/worktrees/demo-replies' };
 const landing = (overrides = {}) => ({
   taskId: TASK.id, state: 'active', branch: 'task/replies-7a000000', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-  uncommitted: [], uncommittedCount: 0, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false },
+  uncommitted: [], uncommittedCount: 0, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
   remotes: [{ name: 'origin', host: 'gitlab.com', tool: 'glab' }],
   blockers: { commit: [{ code: 'nothing_to_commit', message: 'There is nothing to commit.' }], merge: [], pullRequest: [], close: [] },
   ...overrides,
@@ -189,6 +189,37 @@ describe('TaskLandingBar', () => {
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Task closed. Branch task/replies-7a000000 was kept.' });
     expect(toast).toHaveBeenCalledWith({ type: 'error', message: '1 terminal could not be closed: Demo-3. Close it from its tab.' });
     expect(onFinished).toHaveBeenCalledWith(expect.objectContaining({ terminalsClosed: [] }));
+  });
+
+  it('says when the commits of a task are already in its base branch, and why it cannot be merged', async () => {
+    const reason = "This task's commits are already in main, so there is nothing left to merge. Close the task to finish it.";
+    await mount(landing({
+      commitsAhead: 0, commitsBehind: 1, alreadyInBase: true,
+      blockers: { commit: [{ code: 'nothing_to_commit', message: 'There is nothing to commit.' }], merge: [{ code: 'already_in_base', message: reason }], pullRequest: [{ code: 'already_in_base', message: reason }], close: [] },
+    }));
+    expect(screen.getByText('Commits already in main')).toBeTruthy();
+    expect(screen.queryByText('No changes yet')).toBeNull();
+    expect(screen.getByText('main has moved on by 1 commit')).toBeTruthy();
+    const merge = screen.getByRole('button', { name: 'Merge into main' });
+    expect(merge.disabled).toBe(true);
+    expect(merge.getAttribute('title')).toBe(reason);
+    const request = screen.getByRole('button', { name: 'Open a pull request' });
+    expect(request.disabled).toBe(true);
+    expect(request.getAttribute('title')).toBe(reason);
+    expect(screen.getByRole('button', { name: 'Close task' }).disabled).toBe(false);
+    // The reason is the bar's fact and the buttons' title; it is not repeated as a warning line.
+    expect(screen.queryByText(reason)).toBeNull();
+  });
+
+  it('keeps saying the commits are already in the base branch beside uncommitted files, without repeating it', async () => {
+    const reason = "This task's commits are already in main, so there is nothing left to merge. Close the task to finish it.";
+    await mount(landing({
+      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 0, alreadyInBase: true,
+      blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }, { code: 'already_in_base', message: reason }], pullRequest: [], close: [] },
+    }));
+    expect(screen.getByText('1 uncommitted file')).toBeTruthy();
+    expect(screen.getByText('Commits already in main')).toBeTruthy();
+    expect(screen.queryByText(reason)).toBeNull();
   });
 
   it('has no merge for a task started without a branch, and says when nothing has changed', async () => {

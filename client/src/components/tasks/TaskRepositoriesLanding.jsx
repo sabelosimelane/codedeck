@@ -186,7 +186,8 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
                   {isOpen && !entry.filesPresent && <span className="pipeline-run-warning">Its files in this task are no longer on disk.</span>}
                   {isOpen && entry.uncommittedCount > 0 && <span className="pipeline-run-warning">{plural(entry.uncommittedCount, 'uncommitted file')}</span>}
                   {isOpen && entry.commitsAhead > 0 && <span>{`${plural(entry.commitsAhead, 'commit')} not yet in ${entry.baseBranch ?? 'its repository'}`}</span>}
-                  {isOpen && entry.filesPresent && entry.uncommittedCount === 0 && entry.commitsAhead === 0 && <span className="pipeline-run-muted">No changes yet</span>}
+                  {isOpen && entry.alreadyInBase && <span>{`Commits already in ${entry.baseBranch}`}</span>}
+                  {isOpen && !entry.alreadyInBase && entry.filesPresent && entry.uncommittedCount === 0 && entry.commitsAhead === 0 && <span className="pipeline-run-muted">No changes yet</span>}
                   {isOpen && entry.commitsBehind > 0 && <span className="pipeline-run-muted">{`${entry.baseBranch} has moved on by ${plural(entry.commitsBehind, 'commit')}`}</span>}
                   {entry.prUrl && <a href={entry.prUrl} target="_blank" rel="noreferrer noopener" className="task-landing-link">Pull request</a>}
                   {isOpen && (

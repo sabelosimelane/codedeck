@@ -164,7 +164,7 @@ describe('tasks API client', () => {
 describe('landing API client', () => {
   const landing = (overrides = {}) => ({
     taskId: ID, state: 'active', branch: 'task/replies', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false },
+    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
     remotes: [{ name: 'origin', host: 'gitlab.com', tool: 'glab' }],
     blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] }, ...overrides,
   });
@@ -177,9 +177,15 @@ describe('landing API client', () => {
 
   it.each([
     ['taskId', 'x'], ['state', 'done'], ['branch', ''], ['baseBranch', 12], ['prUrl', 'ftp://x'], ['filesPresent', 'yes'], ['runActive', null],
-    ['uncommitted', 'a.txt'], ['uncommittedCount', 0], ['commitsAhead', -1], ['commitsBehind', 'x'], ['main', null], ['remotes', {}], ['blockers', null],
+    ['uncommitted', 'a.txt'], ['uncommittedCount', 0], ['commitsAhead', -1], ['commitsBehind', 'x'], ['alreadyInBase', 'yes'], ['alreadyInBase', undefined], ['alreadyInBase', true], ['main', null], ['remotes', {}], ['blockers', null],
   ])('refuses a landing status with an invalid %s', (field, value) => {
     expect(() => parseLanding(landing({ [field]: value }))).toThrow(`Invalid landing response: ${field}`);
+  });
+
+  it('reads whether the work is already in the base branch: yes, no, or not known', () => {
+    expect(parseLanding(landing({ commitsAhead: 0, alreadyInBase: true })).alreadyInBase).toBe(true);
+    expect(parseLanding(landing({ commitsAhead: 0, alreadyInBase: false })).alreadyInBase).toBe(false);
+    expect(parseLanding(landing({ filesPresent: false, commitsAhead: null, commitsBehind: null, alreadyInBase: null })).alreadyInBase).toBeNull();
   });
 
   it('refuses malformed remotes and blockers', () => {
@@ -233,7 +239,7 @@ describe('landing one repository of a task', () => {
   const standing = (overrides = {}) => ({
     taskId: ID, worktreeId: WT2, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/replies/mobile-app',
     state: 'active', branch: 'task/replies', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false },
+    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
     remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }],
     blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] }, ...overrides,
   });

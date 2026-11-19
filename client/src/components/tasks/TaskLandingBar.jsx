@@ -126,15 +126,18 @@ function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
     if (!landing.filesPresent) facts.push({ tone: 'warning', text: "This task's files are no longer on disk." });
     if (landing.uncommittedCount > 0) facts.push({ tone: 'warning', text: `${plural(landing.uncommittedCount, 'uncommitted file')}` });
     if (landing.commitsAhead > 0) facts.push({ tone: 'plain', text: `${plural(landing.commitsAhead, 'commit')} not yet in ${landing.baseBranch ?? 'the project'}` });
-    if (landing.filesPresent && landing.uncommittedCount === 0 && landing.commitsAhead === 0) facts.push({ tone: 'muted', text: 'No changes yet' });
+    // No commit the base lacks is one of two things: work that is already there, or none at all.
+    if (landing.alreadyInBase) facts.push({ tone: 'plain', text: `Commits already in ${landing.baseBranch}` });
+    else if (landing.filesPresent && landing.uncommittedCount === 0 && landing.commitsAhead === 0) facts.push({ tone: 'muted', text: 'No changes yet' });
     if (landing.commitsBehind > 0) facts.push({ tone: 'muted', text: `${landing.baseBranch} has moved on by ${plural(landing.commitsBehind, 'commit')}` });
   }
   const hasWork = landing && (landing.uncommittedCount > 0 || landing.commitsAhead > 0);
   const canMerge = landing && landing.blockers.merge.length === 0;
   // What stands between the work and a merge is said outright, but only once merging is the
   // next thing to do. While a run is working the task is simply in progress, and "no commits
-  // yet" and "commit first" are already told by the uncommitted count and its button.
-  const SAID_ELSEWHERE = new Set(['uncommitted', 'nothing_to_land', 'run_active']);
+  // yet", "already in the base branch" and "commit first" are already told by the facts above
+  // and the Commit button.
+  const SAID_ELSEWHERE = new Set(['uncommitted', 'nothing_to_land', 'already_in_base', 'run_active']);
   const mergeHint = landing && !landing.runActive && hasWork && !canMerge
     ? landing.blockers.merge.filter(item => !SAID_ELSEWHERE.has(item.code)).map(item => item.message)
     : [];

@@ -39,6 +39,7 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
       run_active: 'A workflow run is still working in this task. Stop it or let it finish first.',
       uncommitted: 'This task has uncommitted changes. Commit them first.',
       nothing_to_land: 'This task has no commits of its own yet.',
+      already_in_base: () => `This task's commits are already in ${worktree.baseBranch}, so there is nothing left to merge. Close the task to finish it.`,
       no_base_branch: 'This task was started from a commit, not a branch, so there is no branch to merge it into.',
       main_not_on_base: () => `Main is on ${mainBranch ?? 'no branch'}, but this task was started from ${worktree.baseBranch}. Switch Main to ${worktree.baseBranch} to merge.`,
       main_dirty: 'Main has uncommitted changes. Commit or stash them before merging.',
@@ -53,6 +54,7 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
     run_active: 'A workflow run is still working in this task. Stop it or let it finish first.',
     uncommitted: `${repository} has uncommitted changes in this task. Commit them first.`,
     nothing_to_land: `${repository} has no commits of its own in this task yet.`,
+    already_in_base: () => `${repository}'s commits in this task are already in ${worktree.baseBranch}, so there is nothing left to merge. Close ${repository} to finish it.`,
     no_base_branch: `${repository} was started from a commit, not a branch, so there is no branch to merge it into.`,
     main_not_on_base: () => `${repository}'s checkout is on ${mainBranch ?? 'no branch'}, but this task started from ${worktree.baseBranch} there. Switch it to ${worktree.baseBranch} to merge.`,
     main_dirty: `${repository}'s checkout has uncommitted changes. Commit or stash them before merging.`,
@@ -143,6 +145,17 @@ export function createTaskLanding({
     return stdout.trim() === 'HEAD' ? null : stdout.trim();
   }
 
+  /**
+   * Whether the checkout has commits made since the commit its task started from. With no
+   * commit that its base lacks, such a task is not untouched: its work is already in the base.
+   */
+  async function movedPast(cwd, baseCommit) {
+    const { stdout } = await git(execFile, cwd, ['rev-list', '--count', `${baseCommit}..HEAD`]);
+    const made = Number(stdout.trim());
+    if (stdout.trim() === '' || !Number.isSafeInteger(made) || made < 0) throw new Error('git rev-list returned an unexpected count');
+    return made > 0;
+  }
+
   async function sameBytes(worktreePath, checkout, file) {
     // Git lists a wholly ignored folder as one entry; it is a copy when everything in it is.
     if (file.endsWith('/')) return sameFolder(path.join(worktreePath, file), path.join(checkout, file));
@@ -212,6 +225,8 @@ export function createTaskLanding({
     let uncommitted = [];
     let ahead = null;
     let behind = null;
+    // Whether the task's work is already in its base branch; null when Git could not be asked.
+    let alreadyInBase = null;
     let checkoutBranch = null;
     let ignoredAtRisk = [];
     if (present) {
@@ -223,6 +238,7 @@ export function createTaskLanding({
       const counts = stdout.trim().split(/\s+/).map(Number);
       if (counts.length !== 2 || counts.some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('git rev-list returned unexpected counts');
       [behind, ahead] = counts;
+      alreadyInBase = ahead === 0 && await movedPast(worktree.worktreePath, worktree.baseCommit);
     }
 
     const mainBranch = await currentBranch(checkout);
@@ -235,7 +251,8 @@ export function createTaskLanding({
     if (active) common.push('run_active');
     const withWork = [...common];
     if (present && uncommitted.length > 0) withWork.push('uncommitted');
-    if (present && ahead === 0) withWork.push('nothing_to_land');
+    // No commit the base lacks is one of two things: the task has done nothing, or its work was merged outside CodeDeck.
+    if (present && ahead === 0) withWork.push(alreadyInBase ? 'already_in_base' : 'nothing_to_land');
     // Landing acts on the worktree's stored branch; work committed on another branch would not go with it.
     if (present && checkoutBranch !== worktree.branch) withWork.push('branch_switched');
 
@@ -282,6 +299,7 @@ export function createTaskLanding({
         uncommittedCount: uncommitted.length,
         commitsAhead: ahead,
         commitsBehind: behind,
+        alreadyInBase,
         main: { branch: mainBranch, dirty: mainDirty },
         remotes: remoteList,
         blockers: {

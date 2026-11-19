@@ -165,13 +165,15 @@ export function parseLanding(body) {
   guard(count(body.uncommittedCount) && body.uncommittedCount >= body.uncommitted.length, 'uncommittedCount');
   guard(body.commitsAhead === null || count(body.commitsAhead), 'commitsAhead');
   guard(body.commitsBehind === null || count(body.commitsBehind), 'commitsBehind');
+  // Work that is already in the base branch leaves no commit the base lacks.
+  guard(body.alreadyInBase === null || body.alreadyInBase === false || (body.alreadyInBase === true && body.commitsAhead === 0), 'alreadyInBase');
   guard(body.main !== null && typeof body.main === 'object' && (body.main.branch === null || text(body.main.branch)) && typeof body.main.dirty === 'boolean', 'main');
   guard(Array.isArray(body.remotes), 'remotes');
   guard(body.blockers !== null && typeof body.blockers === 'object', 'blockers');
   return {
     taskId: body.taskId, state: body.state, branch: body.branch, baseBranch: body.baseBranch, prUrl: body.prUrl,
     filesPresent: body.filesPresent, runActive: body.runActive, uncommitted: [...body.uncommitted], uncommittedCount: body.uncommittedCount,
-    commitsAhead: body.commitsAhead, commitsBehind: body.commitsBehind, main: { branch: body.main.branch, dirty: body.main.dirty },
+    commitsAhead: body.commitsAhead, commitsBehind: body.commitsBehind, alreadyInBase: body.alreadyInBase, main: { branch: body.main.branch, dirty: body.main.dirty },
     remotes: body.remotes.map((remote) => {
       guard(text(remote?.name), 'remotes.name');
       guard(remote.host === null || text(remote.host), 'remotes.host');

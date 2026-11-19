@@ -69,6 +69,20 @@ describe('landing a task with several repositories', { timeout: 30_000 }, () => 
     expect(git(backend, ['status', '--porcelain'])).toBe('');
   });
 
+  it('judges each repository on its own: one already in its base branch, one untouched', async () => {
+    const { landing, first, second, frontendMain } = await setup();
+    write(second.worktreePath, 'page.txt', 'work\n');
+    commitAll(second.worktreePath, 'page');
+    // Merged with plain Git in the checkout frontend is listed with.
+    git(frontendMain, ['merge', '--ff-only', second.branch]);
+    const [own, other] = await landing.worktrees(ID);
+    expect(own).toMatchObject({ worktreeId: first.id, repository: 'backend', commitsAhead: 0, alreadyInBase: false });
+    expect(own.blockers.merge).toEqual([{ code: 'nothing_to_land', message: 'backend has no commits of its own in this task yet.' }]);
+    expect(other).toMatchObject({ worktreeId: second.id, repository: 'frontend', commitsAhead: 0, alreadyInBase: true });
+    expect(other.blockers.merge).toEqual([{ code: 'already_in_base', message: "frontend's commits in this task are already in main, so there is nothing left to merge. Close frontend to finish it." }]);
+    expect(other.blockers.close).toEqual([]);
+  });
+
   it('says where a checkout stands when it is on another branch', async () => {
     const { landing, second, frontendMain } = await setup();
     git(frontendMain, ['checkout', '-q', '-b', 'elsewhere']);

@@ -29,7 +29,7 @@ const blocked = message => [{ code: 'x', message }];
 const standing = (worktreeId, repository, overrides = {}) => ({
   taskId: ID, worktreeId, repository, own: repository === 'backend', first: repository === 'backend', worktreePath: `${FOLDER}/${repository}`,
   state: 'active', branch: 'task/replies-7a000000', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
-  uncommitted: [], uncommittedCount: 0, commitsAhead: 0, commitsBehind: 0, main: { branch: 'main', dirty: false },
+  uncommitted: [], uncommittedCount: 0, commitsAhead: 0, commitsBehind: 0, alreadyInBase: false, main: { branch: 'main', dirty: false },
   remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }], blockers: { ...none, commit: [{ code: 'nothing_to_commit', message: 'There is nothing to commit.' }] }, ...overrides,
 });
 const clean = { commitsAhead: 2 };
@@ -62,6 +62,24 @@ describe('TaskLandingBar for a task with several repositories', () => {
     expect(merge.disabled).toBe(true);
     expect(merge.getAttribute('title')).toBe('mobile-app has uncommitted changes in this task. Commit them first.');
     expect(row('mobile-app').getByRole('button', { name: 'Commit changes in mobile-app' }).disabled).toBe(false);
+  });
+
+  it('tells a repository whose commits are already in its base branch from one that is untouched', async () => {
+    const reason = "mobile-app's commits in this task are already in main, so there is nothing left to merge. Close mobile-app to finish it.";
+    const untouched = 'backend has no commits of its own in this task yet.';
+    await mount([
+      standing(BACKEND, 'backend', { blockers: { ...none, merge: [{ code: 'nothing_to_land', message: untouched }], pullRequest: [{ code: 'nothing_to_land', message: untouched }] } }),
+      standing(MOBILE, 'mobile-app', { alreadyInBase: true, commitsBehind: 1, blockers: { ...none, merge: [{ code: 'already_in_base', message: reason }], pullRequest: [{ code: 'already_in_base', message: reason }] } }),
+    ]);
+    expect(row('backend').getByText('No changes yet')).toBeTruthy();
+    expect(row('backend').queryByText('Commits already in main')).toBeNull();
+    expect(row('mobile-app').getByText('Commits already in main')).toBeTruthy();
+    expect(row('mobile-app').queryByText('No changes yet')).toBeNull();
+    const merge = row('mobile-app').getByRole('button', { name: 'Merge mobile-app into main' });
+    expect(merge.disabled).toBe(true);
+    expect(merge.getAttribute('title')).toBe(reason);
+    expect(row('mobile-app').getByRole('button', { name: 'Open a pull request for mobile-app' }).getAttribute('title')).toBe(reason);
+    expect(row('mobile-app').getByRole('button', { name: 'Close mobile-app' }).disabled).toBe(false);
   });
 
   it('shows a repository that is already merged or closed without anything to do', async () => {

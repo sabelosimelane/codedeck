@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-11-19] - A task merged outside CodeDeck says its commits are already in the base branch
+
+### Executive Summary
+* A task whose branch was merged into its base branch with plain Git read "No changes yet", and Merge and Open a pull request were disabled because "This task has no commits of its own yet." Both were wrong: the task had commits, and they were already in the base branch. Such a task now reads **Commits already in `main`**, and the two buttons say that there is nothing left to merge and that Close task finishes it. A task that has done nothing reads "No changes yet" as before. Nothing is finished automatically.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * `server/tasks/task-landing.js` — the landing status has `alreadyInBase`: true when the worktree has no commit its base lacks (`commitsAhead` 0) and `git rev-list --count <baseCommit>..HEAD` is above 0, false otherwise, null when Git was not asked (files gone, or the worktree finished). The merge and pull-request blockers then carry `already_in_base` in place of `nothing_to_land`. Each worktree of a task with several repositories is judged on its own, against the checkout it is listed with. A task started from a commit has no base branch and is never reported this way.
+  * `server/routes/tasks.js` — `alreadyInBase` is part of how one repository stands.
+  * `client/src/utils/tasksApi.js` — `parseLanding` requires `alreadyInBase` (true only with `commitsAhead` 0, false or null).
+  * `client/src/components/tasks/TaskLandingBar.jsx`, `TaskRepositoriesLanding.jsx` — show "Commits already in `<base branch>`" in place of "No changes yet"; the reason is the title of the disabled buttons.
+* **📚 Documents:** `README.md` (Tasks) and `docs/steering/api-standards.md` (`GET /:id/landing`).
+* **Known limits:** a task whose branch only caught up with its base branch (for example `git merge main` in it, with no commit of its own) reads the same, because the two histories are identical. A squash or rebase merge outside CodeDeck is not recognised: Git sees different commits, so the task still shows them as not yet in the base branch.
+* **🧪 Tests:**
+  * `server/__tests__/task-landing.test.js` — fresh task, own commit, fast-forward merge outside CodeDeck with the base moved on, new work afterwards, a merge commit with uncommitted files beside it, a task started from a commit, and vanished files.
+  * `server/__tests__/task-landing-repositories.test.js` — one repository already in its base branch and one untouched in the same task.
+  * `server/__tests__/tasks-api.test.js`, `client/src/utils/__tests__/tasksApi.test.js`, and the tests of both landing components.
+
 ## [2026-11-19] - Resume waits for an agent that is still working, and Codex is read as working while it writes
 
 ### Executive Summary
