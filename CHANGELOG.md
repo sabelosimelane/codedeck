@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-19] - Run workflow sits beside New task, and both ask for a new task the same way
+
+### Executive Summary
+* **Run workflow** was an unlabelled Play icon among a tab's own actions, beside Session search, although a run works in a task or in Main and by default creates a new task. It is now a labelled button beside **New task**, in the strip of Main and the project's tasks, and is offered for local projects only, as New task is.
+* The two dialogs asked for the same thing, a new task, with different controls: New task had one tick list of repositories with the branch each copy starts from, Run workflow had a select and "Also include …" boxes with no branch. Both now show the same title input and the same **Repositories** list. In Run workflow the repository the run starts in is ticked, cannot be unticked and is marked "the run starts here"; **Start in** has a visible label.
+* The Run workflow dialog opened on the task being looked at even when that task could not take a run, with Start disabled. It now opens on a new task in that case, and choosing **An open task** selects the first one a run can start in. The reason shown for a busy task or a busy Main no longer says "worktree".
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `client/src/components/tasks/NewTaskFields.jsx` (new) — `TaskTitleInput` (the title, at most `TASK_TITLE_MAX` characters, with the placeholder for a required or an optional title) and `TaskRepositories` (the tick list, with `startsIn` for the repository that is always included). `TaskRepositories` refuses a `repositories` that is not an array, a `ticked` that is not a Set, an `onToggle` that is not a function and a `startsIn` that is not one of the repositories.
+  * `client/src/components/tasks/NewTaskDialog.jsx` — uses the two shared pieces in place of its own input and fieldset.
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx` — uses the shared pieces for a new task; the Start in options are named by repository alone, since the list says where each copy starts from, and the select has a visible label. `place` and `taskId` now hold only what the owner chose: until then the dialog shows the task named by `defaultTaskId` when its worktree is selectable, and a new task otherwise.
+  * `client/src/components/TerminalArea.jsx` — the Run workflow button moved from the tab bar's actions to the strip of Main and tasks, with its name and a tooltip, shown where New task is.
+  * `client/src/styles/global.css` — the strip's action buttons keep their extra margin only after a task, not between each other.
+  * `server/routes/pipelines.js` — the `in_use` reason reads "An open workflow run is already using it.", in the worktree list, the preflight reasons and the 409 a refused start returns.
+* **📚 Documents:** `README.md`, `docs/steering/structure.md` and the workflow pipelines specification.
+* **🧪 Tests:**
+  * `client/src/components/tasks/__tests__/NewTaskFields.test.jsx` (new, 12 cases) — the title input and its two placeholders; the list with each copy's starting point; an unusable repository; toggling; nothing ticked; the repository a run starts in kept ticked; disabled; the four refused inputs.
+  * `client/src/components/pipelines/__tests__/RunWorkflowDialog.test.jsx` — the shared list in a project with several repositories and with a todo's Repositories line; the visible Start in label; opening on a new task when the task looked at cannot take a run, and showing that task with its reason when no open task can.
+  * `client/src/components/__tests__/TerminalAreaWorktree.test.jsx`, `TerminalAreaWorktreeFilter.test.jsx` — Run workflow in the strip, by name, once, calling `onOpenRunWorkflow`; none for a remote project.
+  * `server/__tests__/pipelines-api.test.js` — the new `in_use` wording in the five places it is returned.
+* **Not covered:** the dialog opening on a new task for a busy task was not seen in a browser, because that needs a live run; it is verified by tests only. The other reasons a place cannot be chosen (folder missing, unreadable, no branch checked out) still say "worktree".
+
 ## [2026-11-19] - Close run closes the terminals the run used
 
 ### Executive Summary
