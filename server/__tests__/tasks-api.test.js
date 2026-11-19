@@ -24,7 +24,8 @@ async function setup({ openTerminal, landing } = {}) {
   let created = 0;
   const real = createTaskService({ taskStore, findProject: () => null, execFile: () => {}, startSession: async () => ({ id: 'Demo-1' }), pathExists: async () => true });
   const service = {
-    create: vi.fn(async ({ project, title }) => {
+    create: vi.fn(async ({ project, title, repositories }) => {
+      if (repositories !== undefined && (!Array.isArray(repositories) || repositories.includes('nope'))) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'repositories', message: 'nope is not a repository of this project' }]);
       if (typeof project !== 'string' || !project) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'project', message: 'A project name is required' }]);
       if (typeof title !== 'string' || !title.trim() || title.length > 80) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'title', message: 'Use 1–80 characters on one line' }]);
       if (project === 'Nope') throw new TaskError('Project not found', 404);
@@ -57,6 +58,19 @@ async function setup({ openTerminal, landing } = {}) {
       return { task: setTaskState(taskStore, taskId, { state: 'pr_open', prUrl: 'https://example.test/pr/1' }), prUrl: 'https://example.test/pr/1', remote };
     }),
     close: vi.fn(async taskId => { real.get(taskId); return { task: setTaskState(taskStore, taskId, { state: 'closed' }), branchKept: 'task/t-1', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'] }; }),
+    worktrees: vi.fn(async taskId => real.get(taskId).worktrees.map(worktree => ({
+      taskId, worktreeId: worktree.id, repository: worktree.repository, own: worktree.own, first: worktree.first, worktreePath: worktree.worktreePath,
+      state: worktree.state, branch: worktree.branch, baseBranch: worktree.baseBranch, prUrl: worktree.prUrl, filesPresent: true, runActive: false,
+      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false, secret: 'never shown' },
+      remotes: [{ name: 'origin', host: 'github.com', tool: 'gh', url: 'never shown' }],
+      blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.', internal: 'never shown' }], pullRequest: [], close: [] },
+      secretColumn: 'never shown',
+    }))),
+    closeWorktree: vi.fn(async (taskId, worktreeId) => {
+      const task = real.get(taskId);
+      return { task: { ...taskStore.setWorktreeState(taskId, worktreeId, { state: 'closed' }), secretColumn: 'never shown' }, repository: task.worktrees.find(worktree => worktree.id === worktreeId).repository,
+        branchKept: 'task/t-1', unmergedCommits: 1, taskFinished: false, terminalsClosed: ['Demo-4'], terminalsNotClosed: [] };
+    }),
     ...landing,
   };
   app.use(createTasksRouter({ service, taskStore, landing: land }));
@@ -231,7 +245,7 @@ describe('tasks API', () => {
     const response = await request(server).post(`${base}/${id(1)}/terminals`);
     expect(response.status).toBe(201);
     expect(response.body).toEqual({ sessionId: 'Demo-4', taskId: id(1), project: 'Demo' });
-    expect(openTerminal).toHaveBeenCalledWith(id(1));
+    expect(openTerminal).toHaveBeenCalledWith(id(1), {});
   });
 
   it('reports terminal refusals and refuses a body', async () => {
@@ -336,5 +350,171 @@ describe('tasks API', () => {
 
   it('requires its dependencies', () => {
     expect(() => createTasksRouter({})).toThrow('service.create');
+  });
+});
+
+describe('tasks API — the repositories of a task', () => {
+  const second = { repository: 'mobile-app', repositoryPath: '/tmp/group/mobile-app', worktreePath: '/tmp/worktrees/t-1-mobile', branch: 'task/t-1', baseBranch: 'main', baseCommit: 'b'.repeat(40) };
+  async function withTask(options) {
+    const ctx = await setup(options);
+    await request(ctx.server).post(base).send({ project: 'Demo', title: 'Across' });
+    const task = ctx.taskStore.addWorktree(id(1), second);
+    return { ...ctx, task, firstId: task.worktrees[0].id, secondId: task.worktrees[1].id };
+  }
+
+  it('creates a task in the repositories asked for', async () => {
+    const { server, service } = await setup();
+    const response = await request(server).post(base).send({ project: 'Demo', title: 'Across', repositories: ['mobile-app', 'backend'] });
+    expect(response.status).toBe(201);
+    expect(service.create).toHaveBeenCalledWith({ project: 'Demo', title: 'Across', repositories: ['mobile-app', 'backend'] });
+    // Without the field the request is what it always was.
+    await request(server).post(base).send({ project: 'Demo', title: 'Alone' });
+    expect(service.create).toHaveBeenLastCalledWith({ project: 'Demo', title: 'Alone', repositories: undefined });
+  });
+
+  it.each([
+    [{ repositories: ['nope'] }], [{ repositories: 'backend' }], [{ repositories: null }], [{ repositories: {} }],
+  ])('refuses %j with the field to fix', async (fields) => {
+    const { server } = await setup();
+    const response = await request(server).post(base).send({ project: 'Demo', title: 'Across', ...fields });
+    expectProblem(response, 400);
+    expect(response.body.errors.map(error => error.field)).toEqual(['repositories']);
+  });
+
+  it('returns every repository of a task with it', async () => {
+    const { server, firstId, secondId } = await withTask();
+    const response = await request(server).get(`${base}/${id(1)}`);
+    expect(response.body.worktrees).toEqual([
+      { id: firstId, repository: 'demo', own: true, first: true, worktreePath: '/tmp/worktrees/t-1', branch: 'task/t-1', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null },
+      { id: secondId, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/t-1-mobile', branch: 'task/t-1', baseBranch: 'main', baseCommit: 'b'.repeat(40), state: 'active', prUrl: null },
+    ]);
+    // Where a repository's checkout is on disk is not part of a task's public fields.
+    expect(JSON.stringify(response.body)).not.toContain('/tmp/group/mobile-app');
+    expect(response.body.worktreePath).toBe('/tmp/worktrees/t-1');
+  });
+
+  it('opens a terminal in the repository asked for', async () => {
+    const openTerminal = vi.fn(async (taskId, { worktreeId }) => ({ sessionId: 'Demo-7', taskId, project: 'Demo', worktreeId: worktreeId ?? 'first' }));
+    const { server, secondId } = await withTask({ openTerminal });
+    const url = `${base}/${id(1)}/terminals`;
+    const named = await request(server).post(url).send({ worktreeId: secondId });
+    expect(named.status).toBe(201);
+    expect(named.body).toEqual({ sessionId: 'Demo-7', taskId: id(1), project: 'Demo', worktreeId: secondId });
+    expect(openTerminal).toHaveBeenLastCalledWith(id(1), { worktreeId: secondId });
+    expect((await request(server).post(url)).body.worktreeId).toBe('first');
+    expect((await request(server).post(url).send({})).body.worktreeId).toBe('first');
+    const unknown = await request(server).post(url).send({ worktreeId: secondId, cwd: '/etc' });
+    expectProblem(unknown, 400, url);
+    expect(unknown.body.errors.map(error => error.field)).toEqual(['cwd']);
+  });
+
+  it('refuses a terminal in a repository the task does not have', async () => {
+    const { server } = await withTask();
+    const url = `${base}/${id(1)}/terminals`;
+    for (const worktreeId of ['7b000000-0000-4000-8000-000000000099', 'nope', 7, null, '']) {
+      const response = await request(server).post(url).send({ worktreeId });
+      expectProblem(response, 400, url);
+      expect(response.body.errors).toEqual([{ field: 'worktreeId', message: 'Use the id of one of this task\'s worktrees' }]);
+    }
+  });
+
+  it('lists how each repository of a task stands, in a paginated envelope with only public fields', async () => {
+    const { server, firstId, secondId } = await withTask();
+    const url = `${base}/${id(1)}/worktrees`;
+    const response = await request(server).get(url);
+    expect(response.status).toBe(200);
+    expect(response.body.page).toEqual({ currentPage: 0, size: 20, totalElements: 2, totalPages: 1, hasNextPage: false });
+    expect(response.body.data.map(entry => [entry.repository, entry.worktreeId])).toEqual([['demo', firstId], ['mobile-app', secondId]]);
+    expect(response.body.data[1]).toEqual({
+      taskId: id(1), worktreeId: secondId, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/t-1-mobile',
+      state: 'active', branch: 'task/t-1', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
+      uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false },
+      remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }],
+      blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] },
+    });
+    expect(JSON.stringify(response.body)).not.toContain('never shown');
+    const paged = await request(server).get(`${url}?size=1&page=1&sort=repository,asc`);
+    expect(paged.body.data.map(entry => entry.repository)).toEqual(['mobile-app']);
+    expect(paged.body.page).toEqual({ currentPage: 1, size: 1, totalElements: 2, totalPages: 2, hasNextPage: false });
+    expect((await request(server).get(`${url}?sort=repository,desc`)).body.data.map(entry => entry.repository)).toEqual(['mobile-app', 'demo']);
+  });
+
+  it.each([
+    ['size=0', 'size'], ['size=101', 'size'], ['page=-1', 'page'], ['sort=branch,asc', 'sort'], ['sort=repository', 'sort'], ['state=active', 'state'],
+  ])('refuses the worktrees query %s', async (query, field) => {
+    const { server } = await withTask();
+    const url = `${base}/${id(1)}/worktrees`;
+    const response = await request(server).get(`${url}?${query}`);
+    expectProblem(response, 400, url);
+    expect(response.body.errors.map(error => error.field)).toEqual([field]);
+  });
+
+  it('reports an unknown task when its repositories are asked for', async () => {
+    const { server } = await setup();
+    const url = `${base}/${id(9)}/worktrees`;
+    expectProblem(await request(server).get(url), 404, url);
+    expectProblem(await request(server).get(`${base}/nope/worktrees`), 404, `${base}/nope/worktrees`);
+  });
+
+  it('commits, merges, opens a pull request for and closes one repository of a task', async () => {
+    const { server, landing, secondId } = await withTask();
+    const root = `${base}/${id(1)}/worktrees/${secondId}`;
+
+    // The landing of one repository answers with how that repository stands afterwards.
+    landing.commit.mockImplementationOnce(async (taskId, { worktreeId }) => (await landing.worktrees(taskId)).find(view => view.worktreeId === worktreeId));
+    const committed = await request(server).post(`${root}/commit`).send({ message: 'Mobile part' });
+    expect(committed.status).toBe(200);
+    expect(committed.body).toMatchObject({ worktreeId: secondId, repository: 'mobile-app' });
+    expect(JSON.stringify(committed.body)).not.toContain('never shown');
+    expect(landing.commit).toHaveBeenLastCalledWith(id(1), { message: 'Mobile part', worktreeId: secondId });
+
+    const opened = await request(server).post(`${root}/pull-request`).send({ remote: 'origin' });
+    expect(opened.status).toBe(200);
+    expect(landing.pullRequest).toHaveBeenLastCalledWith(id(1), { remote: 'origin', worktreeId: secondId });
+    expect(opened.body.task.id).toBe(id(1));
+
+    const merged = await request(server).post(`${root}/merge`);
+    expect(merged.status).toBe(200);
+    expect(landing.merge).toHaveBeenLastCalledWith(id(1), { worktreeId: secondId });
+    expect(merged.body.task).not.toHaveProperty('secretColumn');
+  });
+
+  it('closes one repository and returns only the task\'s public fields', async () => {
+    const { server, landing, secondId } = await withTask();
+    const url = `${base}/${id(1)}/worktrees/${secondId}/close`;
+    const response = await request(server).post(url);
+    expect(response.status).toBe(200);
+    expect(landing.closeWorktree).toHaveBeenCalledWith(id(1), secondId);
+    expect(response.body).toMatchObject({ repository: 'mobile-app', branchKept: 'task/t-1', unmergedCommits: 1, taskFinished: false, terminalsClosed: ['Demo-4'], terminalsNotClosed: [] });
+    expect(response.body.task.worktrees.map(worktree => worktree.state)).toEqual(['active', 'closed']);
+    expect(response.body.task).not.toHaveProperty('secretColumn');
+  });
+
+  it('refuses bodies the worktree actions do not take, and paths it does not serve', async () => {
+    const { server, landing, secondId } = await withTask();
+    const root = `${base}/${id(1)}/worktrees/${secondId}`;
+    for (const [action, body, field] of [['merge', { force: true }, 'force'], ['close', { force: true }, 'force'], ['commit', { message: 'x', amend: true }, 'amend'], ['pull-request', { remote: 'origin', draft: true }, 'draft']]) {
+      const response = await request(server).post(`${root}/${action}`).send(body);
+      expectProblem(response, 400, `${root}/${action}`);
+      expect(response.body.errors.map(error => error.field)).toEqual([field]);
+    }
+    expect(landing.merge).not.toHaveBeenCalled();
+    expect(landing.closeWorktree).not.toHaveBeenCalled();
+    expectProblem(await request(server).post(`${root}/force-push`), 404, `${root}/force-push`);
+    expectProblem(await request(server).post(`${root}/commit`).send({}), 400, `${root}/commit`);
+  });
+
+  it('passes on why a repository could not be landed', async () => {
+    const refusal = Object.assign(new TaskError('mobile-app has uncommitted changes in this task. Commit them first.', 409), { extra: { reasons: [{ code: 'uncommitted', message: 'mobile-app has uncommitted changes in this task. Commit them first.' }] } });
+    const { server, secondId } = await withTask({ landing: { closeWorktree: vi.fn(async () => { throw refusal; }), merge: vi.fn(async () => { throw new TaskError('This task has no such repository.', 404); }) } });
+    const closed = await request(server).post(`${base}/${id(1)}/worktrees/${secondId}/close`);
+    expectProblem(closed, 409, `${base}/${id(1)}/worktrees/${secondId}/close`);
+    expect(closed.body.reasons).toEqual(refusal.extra.reasons);
+    expectProblem(await request(server).post(`${base}/${id(1)}/worktrees/nope/merge`), 404, `${base}/${id(1)}/worktrees/nope/merge`);
+  });
+
+  it('requires the landing of single repositories', () => {
+    const landing = { status() {}, commit() {}, merge() {}, pullRequest() {}, close() {} };
+    expect(() => createTasksRouter({ service: { create() {}, get() {}, rename() {}, openTerminal() {} }, taskStore: { list() {} }, landing })).toThrow('tasks router requires landing.worktrees');
   });
 });

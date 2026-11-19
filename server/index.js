@@ -911,6 +911,12 @@ const taskLanding = createTaskLanding({
       if (run.taskId === task.id && run.worktreeState === 'external') pipelineRunStore.update(run.id, { worktreeState: 'released', worktreeDetail: null });
     }
   },
+  // One repository of a task was merged or closed while the task stays open: the runs that worked in that worktree let go of it.
+  onWorktreeFinished: (task, worktree) => {
+    for (const run of pipelineRunStore.list()) {
+      if (run.taskId === task.id && run.worktreePath === worktree.worktreePath && run.worktreeState === 'external') pipelineRunStore.update(run.id, { worktreeState: 'released', worktreeDetail: null });
+    }
+  },
   // Its folder is gone, so a terminal left in it has nothing to work in.
   closeTerminals: createTaskTerminalCloser({
     listWorktreeRecords: () => terminalSessionWorktreeStore.all(),

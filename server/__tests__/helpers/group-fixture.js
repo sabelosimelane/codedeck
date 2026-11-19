@@ -55,5 +55,11 @@ export function groupFixture() {
     saveProjects: next => { projects = next; },
     execFile,
   });
-  return { base, group, backend, mobile, frontend, frontendMain, notes, tools, otherBackend, service, stored: () => projects, setProjects: next => { projects = next; } };
+  return {
+    base, group, backend, mobile, frontend, frontendMain, notes, tools, otherBackend, service,
+    stored: () => projects,
+    setProjects: next => { projects = next; },
+    // A project as the rest of the backend is given it: with every field a stored project has.
+    findProject: name => normalizeProjects(projects).find(project => project.name === name) ?? null,
+  };
 }

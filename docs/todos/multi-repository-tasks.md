@@ -2,7 +2,7 @@
 
 **Spec**: `docs/specifications/multi-repository-tasks.md`
 **Status**: In Progress
-**Last completed**: Phase 1: Task Worktrees in the Database (one task left for the owner's go-ahead)
+**Last completed**: Phase 2: A Project's Repositories (Phase 1 has one task left for the owner's go-ahead)
 **Created**: 2026-11-19
 
 > Working rules for every phase: strict TDD (red test first), Vitest with `--maxWorkers=1`, per-field
@@ -159,5 +159,6 @@
 ### Session — 2026-11-19 (Phase 2)
 **Completed**: Phase 2. `server/project-repositories.js` (rules, Git check, neighbour scan), `server/routes/project-repositories.js` (four endpoints), `client/src/utils/projectRepositoriesApi.js`, `client/src/components/ProjectRepositoriesDialog.jsx`, the "Repositories…" entry in the project menu of local active and waiting projects, `docs/steering/api-standards.md`.
 **Key decisions**: a stored entry's path is the real path of the checkout; an added repository is refused when its repository (not only its folder) is already listed, so `frontend/` and `worktrees/frontend-main` cannot both be listed; additions run one at a time, so the same request twice stores one entry; a neighbour is a direct child folder with a `.git` directory (no Git process per folder, since `~/git` has hundreds); "Add all" is offered only when every neighbour fits in the limit of 8.
+**Evidence**: `cd server && npx vitest run --maxWorkers=1` → Tests 9 failed | 2873 passed (2882): the 8 live-tmux failures of Phase 1, and `mobile-session-start.test.js` "restores a shelved project", whose expected stored project lacked the new `repositories: []`; that test was corrected and its file passes, the full server suite was not run again after that one-line change. `cd client && npx vitest run --maxWorkers=1` → Test Files 82 passed, Tests 1468 passed. `cd client && npx vite build` → built. Commit `9019024`.
 **Quirks**: three sidebar test files mock `lucide-react` with a fixed icon list, so a new icon import in `Sidebar.jsx` breaks them; the menu entry reuses `FolderTree`. The global JSON parser in `server/index.js` skips these paths so the router's own 4 KB limit applies.
 **Next**: Phase 3. Read `server/ws-handler.js`, `client/src/components/Terminal.jsx`, `TerminalArea.jsx`, `TerminalTabBar.jsx` and `client/src/utils/terminalPaneCwd.js` first.

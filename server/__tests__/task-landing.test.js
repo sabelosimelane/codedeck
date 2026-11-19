@@ -31,14 +31,14 @@ async function setup({ exec = execFile, activeRun = false } = {}) {
   const db = new Database(':memory:');
   cleanups.push(() => { db.close(); rmSync(base, { recursive: true, force: true }); });
   const taskStore = createTaskStore(db);
-  const findProject = name => (name === 'Demo' ? { name: 'Demo', path: repo } : null);
+  const findProject = name => (name === 'Demo' ? { name: 'Demo', path: repo, repositories: [] } : null);
   const pathExists = async target => existsSync(target);
   const ids = [ID, '7b000000-0000-4000-8000-000000000002'];
   const service = createTaskService({ taskStore, findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists, newId: () => ids.shift() });
   const state = { activeRun, terminals: { closed: [], notClosed: [] } };
   const onTaskFinished = vi.fn();
   const closeTerminals = vi.fn(async () => state.terminals);
-  const landing = createTaskLanding({ taskStore, findProject, execFile: exec, pathExists, hasActiveRun: () => state.activeRun, onTaskFinished, closeTerminals });
+  const landing = createTaskLanding({ taskStore, findProject, execFile: exec, pathExists, hasActiveRun: () => state.activeRun, onTaskFinished, onWorktreeFinished: vi.fn(), closeTerminals });
   const task = await service.create({ project: 'Demo', title: 'Replies' });
   return { base, repo, taskStore, service, landing, task, wt: task.worktreePath, state, onTaskFinished, closeTerminals };
 }

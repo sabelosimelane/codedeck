@@ -1,11 +1,15 @@
 /**
- * Landing a task: how its work gets back into the project. Everything here is read live
- * from Git or done only on the owner's request. Nothing is forced: a worktree with
- * uncommitted work is never removed, a conflicting merge is aborted and reported, and a
- * branch is deleted only once Git agrees it is merged.
+ * Landing a task: how its work gets back into the project. A task has one worktree in each
+ * repository it includes, and each is landed on its own: status, commit, merge, pull request
+ * and close act on one repository, against the checkout that repository is listed with. The
+ * task is finished when its last repository is merged or closed.
+ *
+ * Everything here is read live from Git or done only on the owner's request. Nothing is
+ * forced: a worktree with uncommitted work is never removed, a conflicting merge is aborted
+ * and reported, and a branch is deleted only once Git agrees it is merged.
  */
 
-import { lstat } from 'node:fs/promises';
+import { lstat, rmdir as removeDirectory } from 'node:fs/promises';
 import path from 'node:path';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
 import { listDirtyPaths, remove as removeWorktree, resolveHomeRepoPath } from '../pipelines/run-worktree.js';
@@ -16,23 +20,45 @@ const GIT_TIMEOUT_MS = 30_000;
 const REMOTE_TIMEOUT_MS = 90_000;
 const MAX_LISTED = 50;
 const OPEN_STATES = ['active', 'pr_open'];
+const FINISHED_STATES = ['merged', 'closed'];
 const MESSAGE_MAX = 200;
 const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-const BLOCKERS = {
-  finished: 'This task is finished.',
-  files_missing: "This task's files are no longer on disk.",
-  run_active: 'A workflow run is still working in this task. Stop it or let it finish first.',
-  uncommitted: 'This task has uncommitted changes. Commit them first.',
-  nothing_to_land: 'This task has no commits of its own yet.',
-  no_base_branch: 'This task was started from a commit, not a branch, so there is no branch to merge it into.',
-  main_not_on_base: null, // message names the branches
-  main_dirty: 'Main has uncommitted changes. Commit or stash them before merging.',
-  no_remote: 'This project has no remote to push to.',
-  no_pr_tool: null, // message names the tool
-  branch_switched: null, // message names the branches
-  ignored_files: null, // message names the files
-};
+/**
+ * Why an action is refused, in words. A task with one worktree is spoken of as the task; in a
+ * task with several, the repository is named.
+ */
+function blockerMessage(code, { several, repository, worktree, checkoutBranch, mainBranch, ignoredAtRisk }) {
+  const listed = () => `${ignoredAtRisk.slice(0, 5).join(', ')}${ignoredAtRisk.length > 5 ? ', …' : ''}`;
+  if (!several) {
+    return {
+      finished: 'This task is finished.',
+      files_missing: "This task's files are no longer on disk.",
+      run_active: 'A workflow run is still working in this task. Stop it or let it finish first.',
+      uncommitted: 'This task has uncommitted changes. Commit them first.',
+      nothing_to_land: 'This task has no commits of its own yet.',
+      no_base_branch: 'This task was started from a commit, not a branch, so there is no branch to merge it into.',
+      main_not_on_base: () => `Main is on ${mainBranch ?? 'no branch'}, but this task was started from ${worktree.baseBranch}. Switch Main to ${worktree.baseBranch} to merge.`,
+      main_dirty: 'Main has uncommitted changes. Commit or stash them before merging.',
+      no_remote: 'This project has no remote to push to.',
+      branch_switched: () => `This task's folder is on ${checkoutBranch ?? 'no branch'}, not on its branch ${worktree.branch}. Switch it back to ${worktree.branch} first.`,
+      ignored_files: () => `This task has files Git ignores that exist nowhere else: ${listed()}. Move or delete them first.`,
+    }[code];
+  }
+  return {
+    finished: 'This repository of the task is finished.',
+    files_missing: `The files of ${repository} in this task are no longer on disk.`,
+    run_active: 'A workflow run is still working in this task. Stop it or let it finish first.',
+    uncommitted: `${repository} has uncommitted changes in this task. Commit them first.`,
+    nothing_to_land: `${repository} has no commits of its own in this task yet.`,
+    no_base_branch: `${repository} was started from a commit, not a branch, so there is no branch to merge it into.`,
+    main_not_on_base: () => `${repository}'s checkout is on ${mainBranch ?? 'no branch'}, but this task started from ${worktree.baseBranch} there. Switch it to ${worktree.baseBranch} to merge.`,
+    main_dirty: `${repository}'s checkout has uncommitted changes. Commit or stash them before merging.`,
+    no_remote: `${repository} has no remote to push to.`,
+    branch_switched: () => `The task's copy of ${repository} is on ${checkoutBranch ?? 'no branch'}, not on its branch ${worktree.branch}. Switch it back to ${worktree.branch} first.`,
+    ignored_files: () => `The task's copy of ${repository} has files Git ignores that exist nowhere else: ${listed()}. Move or delete them first.`,
+  }[code];
+}
 
 // Ignored files the owner agreed may go with a task's folder; any other ignored file is kept.
 const DISPOSABLE = new Set(['node_modules', 'dist', 'build', '.codedeck']);
@@ -63,9 +89,12 @@ export function describeRemote(url) {
   return { host, repository, tool: host === 'github.com' || host.endsWith('.github.com') ? 'gh' : host.includes('gitlab') ? 'glab' : null };
 }
 
-export function createTaskLanding({ taskStore, findProject, execFile, pathExists, hasActiveRun, onTaskFinished, closeTerminals } = {}) {
+export function createTaskLanding({
+  taskStore, findProject, execFile, pathExists, hasActiveRun, onTaskFinished, onWorktreeFinished, closeTerminals,
+  rmdir = removeDirectory,
+} = {}) {
   if (typeof taskStore?.get !== 'function' || typeof taskStore?.setWorktreeState !== 'function') throw new TypeError('taskStore is required');
-  for (const [name, value] of Object.entries({ findProject, execFile, pathExists, hasActiveRun, onTaskFinished, closeTerminals })) {
+  for (const [name, value] of Object.entries({ findProject, execFile, pathExists, hasActiveRun, onTaskFinished, onWorktreeFinished, closeTerminals, rmdir })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
 
@@ -78,19 +107,21 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     return { task, project };
   }
 
-  /** Records how the worktree the task started in now stands; the task's state follows from it. */
-  const setState = (task, change) => {
-    const first = task.worktrees.find(worktree => worktree.first);
-    if (!first) throw new Error(`Task ${task.id} has no first worktree`);
-    return taskStore.setWorktreeState(task.id, first.id, change);
-  };
+  /** The worktree an action is about: the one named, or the one the task started in. */
+  function pick(task, worktreeId) {
+    const worktree = worktreeId === undefined
+      ? task.worktrees.find(candidate => candidate.first)
+      : isUuid(worktreeId) ? task.worktrees.find(candidate => candidate.id === worktreeId) : undefined;
+    if (!worktree) throw new TaskError('This task has no such repository.', 404);
+    return worktree;
+  }
 
-  async function remotes(projectPath) {
-    const { stdout } = await git(execFile, projectPath, ['remote']);
+  async function remotes(checkout) {
+    const { stdout } = await git(execFile, checkout, ['remote']);
     const names = stdout.split('\n').map(name => name.trim()).filter(name => REMOTE_NAME.test(name));
     return Promise.all(names.map(async name => {
       // The configured address names the host; `remote get-url` would apply the owner's URL rewrites.
-      const { stdout: url } = await git(execFile, projectPath, ['config', '--get', `remote.${name}.url`]);
+      const { stdout: url } = await git(execFile, checkout, ['config', '--get', `remote.${name}.url`]);
       const { host, tool } = describeRemote(url);
       return { name, host, tool };
     }));
@@ -102,35 +133,38 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     return stdout.trim() === 'HEAD' ? null : stdout.trim();
   }
 
-  async function sameBytes(worktreePath, homePath, file) {
+  async function sameBytes(worktreePath, checkout, file) {
     if (file.endsWith('/')) return false;
-    // Only a regular file in Main can hold the same bytes; a folder or link of that name cannot.
-    const home = await lstat(path.join(homePath, file)).catch(error => {
+    // Only a regular file in the checkout can hold the same bytes; a folder or link of that name cannot.
+    const home = await lstat(path.join(checkout, file)).catch(error => {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
       throw error;
     });
     if (!home?.isFile()) return false;
     const hash = async cwd => (await git(execFile, cwd, ['hash-object', '--no-filters', '--', file])).stdout.trim();
-    return (await hash(worktreePath)) === (await hash(homePath));
+    return (await hash(worktreePath)) === (await hash(checkout));
   }
 
-  /** Ignored files in the task that removing its folder would lose: not disposable, and not copied byte for byte in Main. */
-  async function listIgnoredAtRisk(worktreePath, homePath) {
+  /** Ignored files in the worktree that removing its folder would lose: not disposable, and not copied byte for byte in the checkout. */
+  async function listIgnoredAtRisk(worktreePath, checkout) {
     const { stdout } = await git(execFile, worktreePath, ['status', '--porcelain', '-z', '--ignored']);
     const ignored = stdout.split('\0').filter(entry => entry.startsWith('!! ')).map(entry => entry.slice(3));
     const atRisk = [];
     for (const file of ignored) {
       if (file.split('/').some(segment => DISPOSABLE.has(segment))) continue;
-      if (!(await sameBytes(worktreePath, homePath, file))) atRisk.push(file);
+      if (!(await sameBytes(worktreePath, checkout, file))) atRisk.push(file);
     }
     return atRisk;
   }
 
-  /** Everything the owner needs to decide how to land the task, read from Git now. */
-  async function inspect(id) {
+  /** Everything the owner needs to decide how to land one repository of the task, read from Git now. */
+  async function inspect(id, worktreeId) {
     const { task, project } = await load(id);
-    const open = OPEN_STATES.includes(task.state);
-    const present = open && await pathExists(task.worktreePath);
+    const worktree = pick(task, worktreeId);
+    // The checkout this repository merges into: the project's path for its own repository, else the one it is listed with.
+    const checkout = worktree.own ? project.path : worktree.repositoryPath;
+    const open = OPEN_STATES.includes(worktree.state);
+    const present = open && await pathExists(worktree.worktreePath);
     if (typeof present !== 'boolean') throw new Error('pathExists must return a boolean');
     const active = open && hasActiveRun(task.id) === true;
 
@@ -140,19 +174,19 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     let checkoutBranch = null;
     let ignoredAtRisk = [];
     if (present) {
-      uncommitted = await listDirtyPaths({ worktreePath: task.worktreePath, execFile });
-      checkoutBranch = await currentBranch(task.worktreePath);
-      ignoredAtRisk = await listIgnoredAtRisk(task.worktreePath, project.path);
-      const base = task.baseBranch ?? task.baseCommit;
-      const { stdout } = await git(execFile, task.worktreePath, ['rev-list', '--left-right', '--count', `${base}...HEAD`]);
+      uncommitted = await listDirtyPaths({ worktreePath: worktree.worktreePath, execFile });
+      checkoutBranch = await currentBranch(worktree.worktreePath);
+      ignoredAtRisk = await listIgnoredAtRisk(worktree.worktreePath, checkout);
+      const base = worktree.baseBranch ?? worktree.baseCommit;
+      const { stdout } = await git(execFile, worktree.worktreePath, ['rev-list', '--left-right', '--count', `${base}...HEAD`]);
       const counts = stdout.trim().split(/\s+/).map(Number);
       if (counts.length !== 2 || counts.some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('git rev-list returned unexpected counts');
       [behind, ahead] = counts;
     }
 
-    const mainBranch = await currentBranch(project.path);
-    const mainDirty = (await listDirtyPaths({ worktreePath: project.path, execFile })).length > 0;
-    const remoteList = await remotes(project.path);
+    const mainBranch = await currentBranch(checkout);
+    const mainDirty = (await listDirtyPaths({ worktreePath: checkout, execFile })).length > 0;
+    const remoteList = await remotes(checkout);
 
     const common = [];
     if (!open) common.push('finished');
@@ -161,44 +195,46 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
     const withWork = [...common];
     if (present && uncommitted.length > 0) withWork.push('uncommitted');
     if (present && ahead === 0) withWork.push('nothing_to_land');
-    // Landing acts on the task's stored branch; work committed on another branch would not go with it.
-    if (present && checkoutBranch !== task.branch) withWork.push('branch_switched');
+    // Landing acts on the worktree's stored branch; work committed on another branch would not go with it.
+    if (present && checkoutBranch !== worktree.branch) withWork.push('branch_switched');
 
     const merge = [...withWork];
-    if (open && task.baseBranch === null) merge.push('no_base_branch');
-    else if (open && mainBranch !== task.baseBranch) merge.push('main_not_on_base');
+    if (open && worktree.baseBranch === null) merge.push('no_base_branch');
+    else if (open && mainBranch !== worktree.baseBranch) merge.push('main_not_on_base');
     if (open && mainDirty) merge.push('main_dirty');
 
-    const describe = code => ({
-      code,
-      message: code === 'main_not_on_base'
-        ? `Main is on ${mainBranch ?? 'no branch'}, but this task was started from ${task.baseBranch}. Switch Main to ${task.baseBranch} to merge.`
-        : code === 'branch_switched'
-          ? `This task's folder is on ${checkoutBranch ?? 'no branch'}, not on its branch ${task.branch}. Switch it back to ${task.branch} first.`
-          : code === 'ignored_files'
-            ? `This task has files Git ignores that exist nowhere else: ${ignoredAtRisk.slice(0, 5).join(', ')}${ignoredAtRisk.length > 5 ? ', …' : ''}. Move or delete them first.`
-            : BLOCKERS[code],
-    });
+    const words = { several: task.worktrees.length > 1, repository: worktree.repository, worktree, checkoutBranch, mainBranch, ignoredAtRisk };
+    const describe = (code) => {
+      const message = blockerMessage(code, words);
+      return { code, message: typeof message === 'function' ? message() : message };
+    };
     const pullRequest = [...withWork];
     if (remoteList.length === 0) pullRequest.push('no_remote');
 
-    // A task whose files are already gone can still be closed; there is nothing left to lose.
+    // A worktree whose files are already gone can still be closed; there is nothing left to lose.
     const close = common.filter(code => code !== 'files_missing');
     if (present && uncommitted.length > 0) close.push('uncommitted');
     // Closing removes the folder and keeps only the stored branch; commits on another branch or a detached HEAD would be lost with it.
-    if (present && checkoutBranch !== task.branch) close.push('branch_switched');
+    if (present && checkoutBranch !== worktree.branch) close.push('branch_switched');
     if (present && ignoredAtRisk.length > 0) close.push('ignored_files');
 
     return {
       task,
       project,
+      worktree,
+      checkout,
       ignoredAtRisk: ignoredAtRisk.length > 0 ? describe('ignored_files') : null,
       view: {
         taskId: task.id,
-        state: task.state,
-        branch: task.branch,
-        baseBranch: task.baseBranch,
-        prUrl: task.prUrl,
+        worktreeId: worktree.id,
+        repository: worktree.repository,
+        own: worktree.own,
+        first: worktree.first,
+        worktreePath: worktree.worktreePath,
+        state: worktree.state,
+        branch: worktree.branch,
+        baseBranch: worktree.baseBranch,
+        prUrl: worktree.prUrl,
         filesPresent: present,
         runActive: active,
         uncommitted: uncommitted.slice(0, MAX_LISTED),
@@ -220,20 +256,59 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
   const withExtra = (error, extra) => Object.assign(error, { extra });
   const refuse = blockers => withExtra(new TaskError(blockers[0].message, 409), { reasons: blockers });
 
-  /** The finished task's runs are released and its terminals closed; says how the terminals went. */
-  async function finish(task) {
-    onTaskFinished(task);
-    const result = await closeTerminals(task);
+  const requireClosed = (result) => {
     for (const field of ['closed', 'notClosed']) {
       if (!Array.isArray(result?.[field]) || result[field].some(id => typeof id !== 'string' || id.length === 0)) throw new TypeError(`closeTerminals: ${field} must be an array of session ids`);
     }
     return { terminalsClosed: result.closed, terminalsNotClosed: result.notClosed };
+  };
+
+  /** The folder that held the task's worktrees goes when it is empty; one that holds something else stays. Says whether it is gone. */
+  async function removeFolder(folder) {
+    try {
+      await rmdir(folder);
+      return true;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return true;
+      if (error?.code === 'ENOTEMPTY' || error?.code === 'EEXIST') return false;
+      throw error;
+    }
   }
 
-  async function finishWorktree(task, project) {
-    const home = await resolveHomeRepoPath({ projectPath: project.path, execFile });
-    const removed = await removeWorktree({ homePath: home, worktreePath: task.worktreePath, execFile });
+  /**
+   * After one repository of a task was merged or closed. When that finished the task, its runs
+   * are released and all its terminals closed; otherwise only the runs and terminals of that
+   * one worktree, and the rest of the task is left as it is.
+   */
+  async function afterFinished(task, worktree) {
+    if (FINISHED_STATES.includes(task.state)) {
+      const folderRemoved = task.folder === null ? {} : { folderRemoved: await removeFolder(task.folder) };
+      onTaskFinished(task);
+      return { taskFinished: true, ...folderRemoved, ...requireClosed(await closeTerminals(task)) };
+    }
+    onWorktreeFinished(task, worktree);
+    return { taskFinished: false, ...requireClosed(await closeTerminals(task, worktree)) };
+  }
+
+  async function removeFiles(worktree, checkout) {
+    const home = await resolveHomeRepoPath({ projectPath: checkout, execFile });
+    const removed = await removeWorktree({ homePath: home, worktreePath: worktree.worktreePath, execFile });
     return { home, removed };
+  }
+
+  /** Closes one worktree whose blockers were already checked. */
+  async function closeInspected({ task, worktree, checkout, view }) {
+    if (view.filesPresent) {
+      const { removed } = await removeFiles(worktree, checkout);
+      if (!removed.ok) {
+        throw new TaskError(task.worktrees.length > 1
+          ? `The files of ${worktree.repository} in this task could not be removed: ${firstLine(removed.detail)}`
+          : `The task's files could not be removed: ${firstLine(removed.detail)}`, 409);
+      }
+    }
+    // The branch stays: it may hold commits that are not merged anywhere.
+    const after = taskStore.setWorktreeState(task.id, worktree.id, { state: 'closed' });
+    return { after, closed: { repository: worktree.repository, branchKept: worktree.branch, unmergedCommits: view.commitsAhead ?? 0 }, finish: await afterFinished(after, worktree) };
   }
 
   // Git refuses two operations at once in one repository; landing actions run one at a time.
@@ -245,114 +320,174 @@ export function createTaskLanding({ taskStore, findProject, execFile, pathExists
   };
 
   return {
-    async status(id) {
-      return (await inspect(id)).view;
+    /** How one repository of the task stands: the one named, or the one the task started in. */
+    async status(id, { worktreeId } = {}) {
+      return (await inspect(id, worktreeId)).view;
     },
 
-    commit(id, { message } = {}) {
+    /** How every repository of the task stands, the one it started in first. */
+    async worktrees(id) {
+      const { task } = await load(id);
+      const views = [];
+      for (const worktree of task.worktrees) views.push((await inspect(id, worktree.id)).view);
+      return views;
+    },
+
+    commit(id, { message, worktreeId } = {}) {
       if (typeof message !== 'string' || message.trim().length < 1 || message.trim().length > MESSAGE_MAX || /[\x00-\x1f\x7f]/.test(message)) {
         throw new TaskError('One or more fields failed validation.', 400, [{ field: 'message', message: `Use 1–${MESSAGE_MAX} characters on one line` }]);
       }
       return serial(async () => {
-        const { task, view } = await inspect(id);
+        const { worktree, view } = await inspect(id, worktreeId);
         if (view.blockers.commit.length) throw refuse(view.blockers.commit);
-        await git(execFile, task.worktreePath, ['add', '--all']);
+        await git(execFile, worktree.worktreePath, ['add', '--all']);
         try {
-          await git(execFile, task.worktreePath, ['commit', '--message', message.trim()]);
+          await git(execFile, worktree.worktreePath, ['commit', '--message', message.trim()]);
         } catch (error) {
           throw new TaskError(`Git could not commit: ${firstLine(error.stderr || error.stdout || error.message)}`, 409, undefined, { cause: error });
         }
-        return (await inspect(id)).view;
+        return (await inspect(id, worktree.id)).view;
       });
     },
 
-    merge(id) {
+    merge(id, { worktreeId } = {}) {
       return serial(async () => {
-        const { task, project, view, ignoredAtRisk } = await inspect(id);
+        const { task, worktree, checkout, view, ignoredAtRisk } = await inspect(id, worktreeId);
         if (view.blockers.merge.length) throw refuse(view.blockers.merge);
         try {
-          await git(execFile, project.path, ['merge', '--no-edit', task.branch]);
+          await git(execFile, checkout, ['merge', '--no-edit', worktree.branch]);
         } catch (error) {
-          const { stdout } = await git(execFile, project.path, ['diff', '--name-only', '--diff-filter=U']);
+          const { stdout } = await git(execFile, checkout, ['diff', '--name-only', '--diff-filter=U']);
           const conflicts = stdout.split('\n').map(line => line.trim()).filter(Boolean).slice(0, MAX_LISTED);
-          // Leave Main exactly as it was; a merge that never started has nothing to abort.
-          await git(execFile, project.path, ['merge', '--abort']).catch(() => undefined);
+          // Leave the checkout exactly as it was; a merge that never started has nothing to abort.
+          await git(execFile, checkout, ['merge', '--abort']).catch(() => undefined);
           const message = conflicts.length
-            ? `This task conflicts with ${task.baseBranch} in ${conflicts.length} ${conflicts.length === 1 ? 'file' : 'files'}. Nothing was merged.`
+            ? `${task.worktrees.length > 1 ? worktree.repository : 'This task'} conflicts with ${worktree.baseBranch} in ${conflicts.length} ${conflicts.length === 1 ? 'file' : 'files'}. Nothing was merged.`
             : `Git could not merge: ${firstLine(error.stderr || error.stdout || error.message)}`;
           throw withExtra(new TaskError(message, 409, undefined, { cause: error }), { conflicts });
         }
         // The work is merged either way; a folder holding ignored files that exist nowhere else is kept and reported.
-        const { home, removed } = ignoredAtRisk
-          ? { home: null, removed: { ok: false, detail: `The task's folder was kept. ${ignoredAtRisk.message}` } }
-          : await finishWorktree(task, project);
+        const { removed } = ignoredAtRisk
+          ? { removed: { ok: false, detail: `The task's folder was kept. ${ignoredAtRisk.message}` } }
+          : await removeFiles(worktree, checkout);
         let branchDeleted = false;
         if (removed.ok) {
           try {
-            await git(execFile, home, ['branch', '-d', task.branch]);
+            // Asked in the checkout that was merged into: Git deletes a branch only when it is merged into the branch checked out where it is asked.
+            await git(execFile, checkout, ['branch', '-d', worktree.branch]);
             branchDeleted = true;
           } catch (error) {
-            console.warn(`[tasks] merged branch kept task=${task.id}: ${firstLine(error.stderr || error.message)}`);
+            console.warn(`[tasks] merged branch kept task=${task.id} repository=${worktree.repository}: ${firstLine(error.stderr || error.message)}`);
           }
         }
-        const finished = setState(task, { state: 'merged' });
-        // Runs and terminals that worked in the task have nothing left to work in; they are closed with it.
-        const terminals = await finish(finished);
-        return { task: finished, mergedInto: task.baseBranch, filesRemoved: removed.ok, filesDetail: removed.ok ? null : removed.detail, branchDeleted, ...terminals };
+        const after = taskStore.setWorktreeState(task.id, worktree.id, { state: 'merged' });
+        // Runs and terminals that worked in what is now gone have nothing left to work in; they are closed with it.
+        const finish = await afterFinished(after, worktree);
+        return { task: after, repository: worktree.repository, mergedInto: worktree.baseBranch, filesRemoved: removed.ok, filesDetail: removed.ok ? null : removed.detail, branchDeleted, ...finish };
       });
     },
 
-    pullRequest(id, { remote } = {}) {
+    pullRequest(id, { remote, worktreeId } = {}) {
       if (typeof remote !== 'string' || !REMOTE_NAME.test(remote)) {
         throw new TaskError('One or more fields failed validation.', 400, [{ field: 'remote', message: 'Use the name of one of the project remotes' }]);
       }
       return serial(async () => {
-        const { task, project, view } = await inspect(id);
+        const { task, worktree, checkout, view } = await inspect(id, worktreeId);
         if (view.blockers.pullRequest.length) throw refuse(view.blockers.pullRequest);
         const chosen = view.remotes.find(candidate => candidate.name === remote);
         if (!chosen) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'remote', message: 'Use the name of one of the project remotes' }]);
         if (chosen.tool === null) throw new TaskError(`CodeDeck can open pull requests on GitHub and GitLab only; ${remote} is on ${chosen.host ?? 'an unknown host'}.`, 409);
-        if (task.baseBranch === null) throw new TaskError(BLOCKERS.no_base_branch, 409);
+        if (worktree.baseBranch === null) throw new TaskError(blockerMessage('no_base_branch', { several: task.worktrees.length > 1, repository: worktree.repository }), 409);
         try {
           await run(execFile, chosen.tool, ['--version'], { timeout: GIT_TIMEOUT_MS });
         } catch (error) {
           throw new TaskError(`Install ${chosen.tool === 'gh' ? 'the GitHub CLI (gh)' : 'the GitLab CLI (glab)'} and sign in to open a pull request from here.`, 409, undefined, { cause: error });
         }
-        const { stdout: url } = await git(execFile, project.path, ['config', '--get', `remote.${remote}.url`]);
+        const { stdout: url } = await git(execFile, checkout, ['config', '--get', `remote.${remote}.url`]);
         const { repository } = describeRemote(url);
         if (!repository) throw new Error('Remote repository could not be read');
         try {
-          await git(execFile, task.worktreePath, ['push', '--set-upstream', remote, task.branch], { timeout: REMOTE_TIMEOUT_MS });
+          await git(execFile, worktree.worktreePath, ['push', '--set-upstream', remote, worktree.branch], { timeout: REMOTE_TIMEOUT_MS });
         } catch (error) {
           throw new TaskError(`The branch could not be pushed to ${remote}: ${firstLine(error.stderr || error.message)}`, 503, undefined, { cause: error });
         }
         const args = chosen.tool === 'gh'
-          ? ['pr', 'create', '--fill', '--repo', repository, '--head', task.branch, '--base', task.baseBranch]
-          : ['mr', 'create', '--fill', '--yes', '--repo', repository, '--source-branch', task.branch, '--target-branch', task.baseBranch];
+          ? ['pr', 'create', '--fill', '--repo', repository, '--head', worktree.branch, '--base', worktree.baseBranch]
+          : ['mr', 'create', '--fill', '--yes', '--repo', repository, '--source-branch', worktree.branch, '--target-branch', worktree.baseBranch];
         let output;
         try {
-          output = await run(execFile, chosen.tool, args, { cwd: task.worktreePath, timeout: REMOTE_TIMEOUT_MS });
+          output = await run(execFile, chosen.tool, args, { cwd: worktree.worktreePath, timeout: REMOTE_TIMEOUT_MS });
         } catch (error) {
           throw new TaskError(`The branch was pushed to ${remote}, but the pull request could not be opened: ${firstLine(error.stderr || error.message)}`, 503, undefined, { cause: error });
         }
         const prUrl = /https?:\/\/[^\s"'<>]+/.exec(`${output.stdout}\n${output.stderr}`)?.[0];
         if (!prUrl) throw new TaskError(`The branch was pushed to ${remote}, but ${chosen.tool} did not report the pull request's address.`, 503);
-        return { task: setState(task, { state: 'pr_open', prUrl }), prUrl, remote };
+        return { task: taskStore.setWorktreeState(task.id, worktree.id, { state: 'pr_open', prUrl }), repository: worktree.repository, prUrl, remote };
       });
     },
 
+    /** Closes one repository of the task: its worktree goes, its branch stays. */
+    closeWorktree(id, worktreeId) {
+      return serial(async () => {
+        const inspection = await inspect(id, worktreeId);
+        if (inspection.view.blockers.close.length) throw refuse(inspection.view.blockers.close);
+        const { after, closed, finish } = await closeInspected(inspection);
+        return { task: after, ...closed, ...finish };
+      });
+    },
+
+    /** Closes the task: every repository that is still open, or none of them. */
     close(id) {
       return serial(async () => {
-        const { task, project, view } = await inspect(id);
-        if (view.blockers.close.length) throw refuse(view.blockers.close);
-        if (view.filesPresent) {
-          const { removed } = await finishWorktree(task, project);
-          if (!removed.ok) throw new TaskError(`The task's files could not be removed: ${firstLine(removed.detail)}`, 409);
+        const { task } = await load(id);
+        const open = task.worktrees.filter(worktree => OPEN_STATES.includes(worktree.state));
+        if (open.length <= 1) {
+          // One repository is left, or none: the task is closed with it, or refused as finished.
+          const inspection = await inspect(id, open[0]?.id);
+          if (inspection.view.blockers.close.length) throw refuse(inspection.view.blockers.close);
+          const { after, closed, finish } = await closeInspected(inspection);
+          return { task: after, ...closed, repositories: [closed], ...finish };
         }
-        // The branch stays: it may hold commits that are not merged anywhere.
-        const finished = setState(task, { state: 'closed' });
-        const terminals = await finish(finished);
-        return { task: finished, branchKept: task.branch, unmergedCommits: view.commitsAhead ?? 0, ...terminals };
+
+        // Everything is checked before anything is removed.
+        const inspections = [];
+        for (const worktree of open) inspections.push(await inspect(id, worktree.id));
+        const reasons = [];
+        for (const inspection of inspections) {
+          for (const blocker of inspection.view.blockers.close) {
+            // A working run blocks the whole task; it is said once.
+            if (blocker.code === 'run_active' && reasons.some(reason => reason.code === 'run_active')) continue;
+            reasons.push({ ...blocker, repository: inspection.worktree.repository });
+          }
+        }
+        if (reasons.length) throw withExtra(new TaskError(`Nothing was closed. ${reasons[0].message}`, 409), { reasons });
+
+        const repositories = [];
+        const terminals = { terminalsClosed: [], terminalsNotClosed: [] };
+        let after = task;
+        let finish = null;
+        for (const inspection of inspections) {
+          let outcome;
+          try {
+            outcome = await closeInspected(inspection);
+          } catch (error) {
+            if (!(error instanceof TaskError) || repositories.length === 0) throw error;
+            throw new TaskError(`${error.message}. Already closed: ${repositories.map(entry => entry.repository).join(', ')}.`, error.status, undefined, { cause: error });
+          }
+          after = outcome.after;
+          finish = outcome.finish;
+          repositories.push(outcome.closed);
+          terminals.terminalsClosed.push(...finish.terminalsClosed);
+          terminals.terminalsNotClosed.push(...finish.terminalsNotClosed);
+        }
+        return {
+          task: after,
+          branchKept: repositories[0].branchKept,
+          unmergedCommits: repositories.reduce((sum, entry) => sum + entry.unmergedCommits, 0),
+          repositories,
+          ...finish,
+          ...terminals,
+        };
       });
     },
   };

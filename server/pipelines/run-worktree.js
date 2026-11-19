@@ -59,6 +59,32 @@ export function planNames({ runId, workflowName, homeRepoPath, branchPrefix = 'w
   };
 }
 
+/**
+ * Plan the folder of a task in a project with several repositories: one folder for the task,
+ * holding one worktree per repository under the repository's own folder name, so that a
+ * reference from one repository to the one beside it resolves inside the task as it does
+ * beside the repositories themselves. Every worktree gets the same branch name.
+ * `ownHomePath` is the home repository of the project's own repository.
+ */
+export function planTaskFolder({ taskId, title, ownHomePath, repositories } = {}) {
+  const shortId = shortIdFromRunId(taskId);
+  if (shortId.length !== 8) throw new TypeError('taskId must be a UUID');
+  if (typeof title !== 'string') throw new TypeError('title must be a string');
+  if (typeof ownHomePath !== 'string' || !path.isAbsolute(ownHomePath)) throw new TypeError('ownHomePath must be an absolute path');
+  if (!Array.isArray(repositories) || repositories.length === 0 || new Set(repositories).size !== repositories.length
+    || repositories.some(name => typeof name !== 'string' || !name || name.includes('/') || name === '.' || name === '..')) {
+    throw new TypeError('repositories must be distinct folder names');
+  }
+  const slug = slugifyWorkflowName(title);
+  const suffix = slug ? `${slug}-${shortId}` : shortId;
+  const folder = path.join(path.dirname(ownHomePath), 'worktrees', suffix);
+  return {
+    folder,
+    branch: `task/${suffix}`,
+    worktrees: repositories.map(repository => ({ repository, worktreePath: path.join(folder, repository) })),
+  };
+}
+
 /** Invoke injected execFile with argv arrays; supports callback-style and promise-returning fakes. */
 export function runGit(execFile, args, { timeout = GIT_TIMEOUT_MS } = {}) {
   if (typeof execFile !== 'function') throw new Error('execFile is required');

@@ -33,7 +33,7 @@ function setup({ host, startSession } = {}) {
   const ids = [ID, '7b000000-0000-4000-8000-000000000002'];
   const service = createTaskService({
     taskStore,
-    findProject: name => (name === 'Demo' ? { name: 'Demo', path: repo, ...(host ? { host } : {}) } : null),
+    findProject: name => (name === 'Demo' ? { name: 'Demo', path: repo, repositories: [], ...(host ? { host } : {}) } : null),
     execFile,
     startSession: start,
     pathExists: async target => existsSync(target),
@@ -117,7 +117,7 @@ describe('task service', () => {
   it('opens a terminal in the task worktree', async () => {
     const { service, start } = setup();
     const task = await service.create({ project: 'Demo', title: 'Terminal' });
-    expect(await service.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo' });
+    expect(await service.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo', worktreeId: task.worktrees[0].id });
     expect(start).toHaveBeenCalledWith('Demo', { cwd: task.worktreePath });
   });
 
@@ -160,7 +160,8 @@ describe('task service', () => {
     expect(task.worktrees).toMatchObject([{ repository: 'repo', own: true, first: true, repositoryPath: null, worktreePath: planned.worktreePath, branch: planned.branch }]);
     await expect(service.createPlanned({ ...planned, titleSource: 'generated' })).rejects.toThrow('Task plan titleSource is invalid');
     expect(await rejection(service.createPlanned(planned))).toMatchObject({ status: 409 });
-    await expect(service.createPlanned({ ...planned, branch: '' })).rejects.toThrow('Task plan branch is invalid');
+    await expect(service.createPlanned({ ...planned, worktrees: [{ ...planned.worktrees[0], branch: '' }] })).rejects.toThrow('Task plan worktree branch is invalid');
+    await expect(service.createPlanned({ ...planned, worktrees: [] })).rejects.toThrow('Task plan worktrees is invalid');
     await expect(service.createPlanned(null)).rejects.toThrow('A task plan is required');
   });
 
