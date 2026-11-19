@@ -261,6 +261,31 @@ export async function resolveHomeRepoPath({ projectPath, execFile } = {}) {
 }
 
 const COMMIT_ID = /^[0-9a-f]{40}$/;
+
+/** Inspect the actual checkout, including untracked files even when the owner's Git configuration hides them. */
+export async function inspectCommitWorktree(entry, execFile) {
+  if (typeof entry?.repository !== 'string' || !entry.repository.trim()) throw new TypeError('Commit inspection requires a repository name');
+  const { repository, path: checkout, branch, repositoryPath } = entry;
+  try {
+    if (typeof checkout !== 'string' || !path.isAbsolute(checkout)) throw new TypeError('expected an absolute worktree path');
+    if (typeof repositoryPath !== 'string' || !path.isAbsolute(repositoryPath)) throw new TypeError('expected an absolute repository path');
+    if (typeof branch !== 'string' || !branch.trim()) throw new TypeError('expected a recorded branch');
+    const git = async (...args) => (await runGit(execFile, ['-C', checkout, ...args])).stdout;
+    const top = (await git('rev-parse', '--show-toplevel')).trimEnd();
+    if (await fs.promises.realpath(checkout) !== await fs.promises.realpath(top)) throw new Error(`expected Git root at ${checkout}, found ${top}`);
+    const commonDir = async dir => fs.promises.realpath((await runGit(execFile, ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trimEnd());
+    if (await commonDir(checkout) !== await commonDir(repositoryPath)) throw new Error(`worktree does not belong to the expected repository at ${repositoryPath}`);
+    const ref = (await git('rev-parse', '--symbolic-full-name', 'HEAD')).trimEnd();
+    if (ref !== `refs/heads/${branch}`) throw new Error(`expected branch ${branch}, found ${ref}`);
+    const head = (await git('rev-parse', '--verify', 'HEAD^{commit}')).trim();
+    if (!COMMIT_ID.test(head)) throw new Error('Git did not return a commit id for HEAD');
+    const status = await git('status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none');
+    return { repository, branch, head, dirty: status.length > 0 };
+  } catch (error) {
+    throw new Error(`Commit inspection for ${repository}: ${error.message}`, { cause: error });
+  }
+}
+
 const LOCAL_BRANCH_PREFIX = 'refs/heads/';
 
 /**

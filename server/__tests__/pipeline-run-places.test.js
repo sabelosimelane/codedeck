@@ -80,3 +80,14 @@ describe('where a run may work and read', { timeout: 30_000 }, () => {
     expect(() => createRunPlaces({})).toThrow('taskStore is required');
   });
 });
+
+it('resolves recorded branches, repository checkouts and base revisions for verification and Commit', async () => {
+  const { tasks, places, backend, mobile } = await setup();
+  const task = await tasks.create({ project: 'Demo', title: 'Proof', repositories: ['backend', 'mobile-app'] });
+  const run = { project: 'Demo', taskId: ID, worktreePath: task.worktrees[0].worktreePath, worktreeBranch: task.branch, baseCommit: task.baseCommit, homePath: backend };
+  const work = await places(run, { includeGit: true });
+  expect(work.worktrees).toEqual(task.worktrees.map(w => ({ repository: w.repository, path: w.worktreePath, branch: w.branch, baseCommit: w.baseCommit, repositoryPath: w.repository === 'backend' ? backend : mobile })));
+  const standalone = await places({ ...run, taskId: null }, { includeGit: true });
+  expect(standalone.worktrees).toEqual([work.worktrees[0]]);
+  await expect(places({ ...run, taskId: '7a000000-0000-4000-8000-000000000002' }, { includeGit: true })).rejects.toThrow(/task.*no longer exists/);
+});

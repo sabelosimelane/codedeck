@@ -11,7 +11,7 @@ describe('workflow templates', () => {
       ['bug-fix', 'Bug fix', 'bugfix', ['Clarify', 'Analyse', 'Specify', 'Develop', 'Review', 'Test', 'Commit']],
       ['feature-build', 'Feature build', 'build', ['Plan', 'Develop', 'Review', 'Test', 'Commit']],
       ['feature-from-requirements', 'Feature from requirements', 'build', ['Requirements', 'Specify', 'Plan', 'Develop', 'Review', 'Test', 'Commit']],
-      ['troubleshoot', 'Troubleshoot', 'troubleshoot', ['Clarify', 'Gather evidence', 'Hypothesise', 'Prove', 'Fix', 'Verify', 'Commit']],
+      ['troubleshoot', 'Troubleshoot', 'troubleshoot', ['Clarify', 'Investigate', 'Prove', 'Fix', 'Verify', 'Commit']],
       ['review-only', 'Review only', 'review', ['Survey', 'Review', 'Report']],
     ]);
     expect(Object.isFrozen(WORKFLOW_TEMPLATES)).toBe(true);
@@ -49,13 +49,25 @@ describe('workflow templates', () => {
   it('troubleshoots by evidence, an approved hypothesis and a failing test before any fix', () => {
     const template = WORKFLOW_TEMPLATES.find(item => item.id === 'troubleshoot');
     const byName = Object.fromEntries(template.nodes.map(node => [node.name, node]));
-    expect(byName['Gather evidence']).toMatchObject({ readOnly: true, approval: false });
-    expect(byName.Hypothesise).toMatchObject({ readOnly: true, approval: true });
+    expect(byName.Investigate.prompt).toMatch(/evidence against/);
+    expect(byName.Investigate).toMatchObject({ readOnly: true, approval: true });
     expect(byName.Prove).toMatchObject({ readOnly: false });
+    expect(byName.Prove.prompt).toMatch(/Investigate note/);
     expect(byName.Prove.prompt).toMatch(/Change no production code/);
     expect(byName.Fix.prompt).toMatch(/Do not weaken or delete the test/);
     expect(byName.Verify.repeat).toEqual({ mode: 'loop_back', to: 'Fix', max: 5 });
     expect(template.nodes.at(-1).name).toBe('Commit');
+  });
+
+  it.each([['bug-fix', 'Specify', 'Test'], ['troubleshoot', 'Clarify', 'Verify']])('records acceptance and reserves evidence decisions for the owner in %s', (id, source, check) => {
+    const { nodes } = buildTemplateDraft(id);
+    expect(nodes.find(node => node.name === source).prompt).toMatch(/agreed acceptance checks/i);
+    const verify = nodes.find(node => node.name === check);
+    expect(verify.askOwner).toBe(true);
+    for (const term of ['CONTINUE', 'base commit', 'equivalent conditions', 'smallest comparison', 'NEEDS_INPUT', 'COMPLETE', 'owner', 'evidence for each']) {
+      expect(verify.prompt).toContain(term);
+    }
+    expect(nodes.at(-1).prompt).toMatch(/owner-approved/);
   });
 
   it('opens the fix and troubleshoot workflows by checking the report, asking the owner only for what is missing', () => {
@@ -149,7 +161,7 @@ describe('workflow templates', () => {
   it('uses input in the described steps, no skill invocation, and bounded prompts', () => {
     const inputSteps = { 'bug-fix': ['Clarify', 'Analyse', 'Specify', 'Develop', 'Commit'], 'feature-build': ['Plan', 'Commit'],
       'feature-from-requirements': ['Requirements', 'Specify', 'Commit'],
-      troubleshoot: ['Clarify', 'Gather evidence', 'Hypothesise', 'Prove', 'Commit'], 'review-only': ['Survey'] };
+      troubleshoot: ['Clarify', 'Investigate', 'Prove', 'Commit'], 'review-only': ['Survey'] };
     for (const template of WORKFLOW_TEMPLATES) {
       for (const node of template.nodes) {
         expect(node.prompt.includes('{input}'), `${template.name} / ${node.name}`).toBe(inputSteps[template.id].includes(node.name));

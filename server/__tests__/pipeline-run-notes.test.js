@@ -344,3 +344,11 @@ describe('the run brief', () => {
     expect(buildReadme(definition, 'x')).toContain("read this file, .codedeck/runs/abcdef12/brief.md (the owner's request and every question answered so far) and every earlier step note");
   });
 });
+
+it('lists the recorded base commit for each writable repository in the run README', () => {
+  const definition = { workflowName: 'Bug fix', notesDir: '.codedeck/runs/abcdef12', steps: [] };
+  const entry = { repository: 'phone', path: '/repo/phone', baseCommit: 'a'.repeat(40) };
+  const places = { current: 'phone', worktrees: [entry], readOnly: [] };
+  expect(buildReadme(definition, 'Watch', places)).toContain('phone — ' + entry.baseCommit);
+  expect(() => buildReadme(definition, 'Watch', { ...places, worktrees: [{ ...entry, baseCommit: 'invalid' }] })).toThrow(/base commit/i);
+});

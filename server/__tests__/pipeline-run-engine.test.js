@@ -1,3 +1,10 @@
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { notePath } from '../pipelines/run-notes.js';
+import { buildTemplateDraft } from '../../shared/workflow-templates.mjs';
+import { createTaskChanges } from '../tasks/task-changes.js';
+import { groupFixture, git } from './helpers/group-fixture.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createRunStore } from '../pipelines/run-store.js';
@@ -1247,7 +1254,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       await vi.advanceTimersByTimeAsync(100);
       await vi.advanceTimersByTimeAsync(1000);
       await done;
-      expect(listRunPlaces).toHaveBeenCalledWith(expect.objectContaining({ id: run.id, worktreePath: run.worktreePath }));
+      expect(listRunPlaces).toHaveBeenCalledWith(expect.objectContaining({ id: run.id, worktreePath: run.worktreePath }), { includeGit: false });
       const guidance = ctx.getWorkflowStartArgs().guidance;
       expect(guidance).toContain(`Work only inside this task's worktrees: mobile-app at ${run.worktreePath}, backend at /group/worktrees/replies/backend. Your current directory is the mobile-app one.`);
       expect(guidance).toContain('These repositories of the project are not part of this task: frontend at /group/frontend.');
@@ -2907,5 +2914,185 @@ describe('createRunEngine — a step reuses the terminal of its agent', () => {
     expect(run.status).toBe('complete');
     expect(ctx.startSession).toHaveBeenCalledTimes(1);
     expect(run.steps[1]).toMatchObject({ sessionId: 'Demo-1', priorSessionIds: ['Demo-9'] });
+  });
+});
+
+describe('standard final Commit', () => {
+  const outcome = '# Watch shows the missing-tag prompt\nBackend verified. Phone prompt deferred by the owner.';
+  function prepareRun({ custom = false, approval = false, engineExtras = {}, marker = !custom } = {}) {
+    const { backend, mobile } = groupFixture();
+    const places = {
+      current: 'backend', readOnly: [],
+      worktrees: [['backend', backend], ['mobile', mobile]].map(([repository, path]) => ({ repository, path, repositoryPath: path, branch: 'main', baseCommit: git(path, ['rev-parse', 'HEAD']) })),
+    };
+    const ctx = setupEngine({ readinessPollMs: 1, launchEnterDelayMs: 1, engineExtras: { listRunPlaces: async () => places, ...engineExtras } });
+    const test = { ...definition().steps[0], name: 'Test' };
+    const commit = { ...test, name: 'Commit', prompt: custom ? 'Write release notes and commit.' : buildTemplateDraft('bug-fix').nodes.at(-1).prompt.replace('{input}', 'ship it'), approval, ...(marker ? { inspectCleanCommit: true } : {}) };
+    const def = definition({ workflowName: 'Bug fix', notesDir: '.codedeck/runs/abcdef12', steps: [test, commit] });
+    const taskId = '7a000000-0000-4000-8000-000000000001';
+    const run = ctx.runStore.create(validRun({ taskId, definition: def, status: 'running', worktreeState: 'external', homePath: backend, worktreePath: backend, worktreeBranch: 'main', baseCommit: places.worktrees[0].baseCommit,
+      steps: [step({ status: 'complete', attempt: 1, iteration: 1 }), step()], currentStepIndex: 1 }));
+    ctx.noteStore.add({ runId: run.id, stepIndex: 0, stepName: 'Test', attempt: 1, pass: 1, status: 'written', summary: outcome.split('\n')[0].slice(2), content: outcome });
+    return { ...ctx, run, places, backend, mobile, taskId };
+  }
+
+  it('keeps the verified outcome in one final Changes entry without opening or resetting a terminal', async () => {
+    const ctx = prepareRun();
+    await ctx.engine.start(ctx.run.id);
+    expect(ctx.runStore.get(ctx.run.id)).toMatchObject({ status: 'complete', steps: [{}, { sessionId: null }] });
+    expect(ctx.startSession).not.toHaveBeenCalled();
+    expect(ctx.attachBackground).not.toHaveBeenCalled();
+    expect(ctx.noteStore.count(ctx.run.id, 1)).toBe(1);
+    const task = { id: ctx.taskId, title: 'Watch', project: 'Demo', worktrees: ctx.places.worktrees.map(w => ({ ...w, state: 'merged', finishedAt: '2026-11-19T12:00:00Z' })) };
+    const changes = createTaskChanges({ taskStore: { list: () => [task] }, noteStore: ctx.noteStore, listRuns: () => ctx.runStore.list() }).list();
+    expect(changes).toHaveLength(1);
+    expect(changes[0].summary).toBe('Watch shows the missing-tag prompt');
+    expect(changes[0].detail).toContain(outcome);
+    for (const w of ctx.places.worktrees) {
+      expect(changes[0].detail).toContain(w.repository);
+      expect(changes[0].detail).toContain(w.baseCommit);
+      expect(changes[0].detail).toContain(w.branch);
+    }
+  });
+
+  it.each(['untracked', 'staged', 'unstaged', 'custom'])('runs the normal agent for %s work', async mode => {
+    const ctx = prepareRun({ custom: mode === 'custom' });
+    if (mode === 'untracked') {
+      git(ctx.mobile, ['config', 'status.showUntrackedFiles', 'no']);
+      writeFileSync(path.join(ctx.mobile, 'new-file'), 'untracked');
+    }
+    if (['staged', 'unstaged'].includes(mode)) writeFileSync(path.join(ctx.mobile, 'README.md'), 'modified');
+    if (mode === 'staged') git(ctx.mobile, ['add', 'README.md']);
+    await ctx.engine.start(ctx.run.id);
+    expect(ctx.startSession).toHaveBeenCalledOnce();
+    expect(ctx.runStore.get(ctx.run.id).status).toBe('complete');
+  });
+
+  it.each(['wrong branch', 'missing', 'nested path', 'failed status', 'other repository'])('stops with the repository and reason on %s, even if the first tree is dirty', async mode => {
+    const ctx = prepareRun();
+    writeFileSync(path.join(ctx.backend, 'pending'), 'work');
+    const second = ctx.places.worktrees[1];
+    if (mode === 'wrong branch') git(ctx.mobile, ['switch', '-c', 'unexpected']);
+    if (mode === 'missing') second.path += '/gone';
+    if (mode === 'nested path') { second.path += '/nested'; mkdirSync(second.path); }
+    if (mode === 'failed status') writeFileSync(path.join(ctx.mobile, '.git/index'), 'corrupt');
+    if (mode === 'other repository') second.repositoryPath = ctx.backend;
+    await ctx.engine.start(ctx.run.id);
+    expect(ctx.runStore.get(ctx.run.id)).toMatchObject({ status: 'error', steps: [{}, { status: 'failed', attempt: 1 }], error: expect.stringMatching(/mobile.+(branch|gone|root|index|repository)/is) });
+    expect(ctx.startSession).not.toHaveBeenCalled();
+  });
+
+  it('preserves approval and executes owner feedback in a terminal', async () => {
+    const ctx = prepareRun({ approval: true });
+    await ctx.engine.start(ctx.run.id);
+    expect(ctx.runStore.get(ctx.run.id).status).toBe('awaiting_approval');
+    expect(ctx.startSession).not.toHaveBeenCalled();
+    await ctx.engine.sendBack(ctx.run.id, 'Please explain the staged rollout');
+    await vi.waitFor(() => expect(ctx.runStore.get(ctx.run.id).status).toBe('awaiting_approval'));
+    expect(ctx.startSession).toHaveBeenCalledOnce();
+  });
+
+  it('discards an inspection stopped in flight and inspects again on resume', async () => {
+    const inspected = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const inspect = vi.fn(async () => { inspected.resolve(); await release.promise; throw new Error('mobile changed during inspection'); });
+    const ctx = prepareRun({ engineExtras: { inspectCommitWorktree: inspect } });
+    const running = ctx.engine.start(ctx.run.id);
+    await inspected.promise;
+    await ctx.engine.stop(ctx.run.id);
+    const resumed = ctx.engine.resume(ctx.run.id);
+    release.resolve();
+    await running;
+    await resumed;
+    await vi.waitFor(() => expect(ctx.runStore.get(ctx.run.id).status).toBe('error'));
+    expect(inspect).toHaveBeenCalledTimes(2);
+    expect(ctx.noteStore.count(ctx.run.id, 1)).toBe(0);
+    expect(ctx.startSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('Troubleshoot verification decisions through the runner', () => {
+  const question = '1. Backend verified. Phone prompt pending. Can you confirm the missing-tag prompt on a paired phone?';
+  const owner = 'Ship the verified backend and explicitly defer the paired-phone check.';
+  async function exercise({ omitProof = false } = {}) {
+    const { backend } = groupFixture();
+    writeFileSync(path.join(backend, 'legacy.cjs'), 'console.error("E42"); process.exitCode = 1;');
+    git(backend, ['add', 'legacy.cjs']);
+    git(backend, ['commit', '-m', 'Existing unrelated failure']);
+    const draft = buildTemplateDraft('troubleshoot');
+    const checkout = { repository: 'backend', path: backend, repositoryPath: backend, branch: 'main', baseCommit: git(backend, ['rev-parse', 'HEAD']) };
+    writeFileSync(path.join(backend, 'watch.txt'), 'Backend detects missing tags.');
+    git(backend, ['add', 'watch.txt']);
+    git(backend, ['commit', '-m', 'Detect missing tags']);
+    const head = git(backend, ['rev-parse', 'HEAD']);
+    const comparison = [checkout.baseCommit, head].map(revision => spawnSync(process.execPath, ['-'], {
+      cwd: backend, input: git(backend, ['show', revision + ':legacy.cjs']), encoding: 'utf8',
+    }));
+    for (const result of comparison) expect(result).toMatchObject({ status: 1, stderr: 'E42\n' });
+    const def = definition({ workflowName: draft.name, agentsDecide: true, notesDir: '.codedeck/runs/abcdef12',
+      steps: draft.nodes.map((node, index) => ({
+        ...definition().steps[0], name: node.name, prompt: node.prompt, readOnly: node.readOnly, askOwner: node.askOwner, approval: node.approval,
+        repeat: node.repeat.mode === 'loop_back' ? { mode: 'loop_back', toStepIndex: draft.nodes.findIndex(n => n.name === node.repeat.to), max: node.repeat.max } : node.repeat,
+        ...(index === draft.nodes.length - 1 ? { inspectCleanCommit: true } : {}),
+      })) });
+    const starts = [];
+    let rounds = 0;
+    let run;
+    const ctx = setupEngine({ readinessPollMs: 1, launchEnterDelayMs: 1,
+      engineExtras: { listRunPlaces: async () => ({ current: 'backend', worktrees: [checkout], readOnly: [] }) },
+      readScreen: async () => ['[[CDW:proof:QUESTIONS]]', question, 'Recommended: provide a device observation.', '[[CDW:proof:NEEDS_INPUT]]'],
+      createWorkflow: ({ notify }) => {
+        let state = 'stopped';
+        const signal = (status, limitReached = false) => { state = status; notify({ status, iteration: 1, limitReached }); };
+        const write = (index, note) => writeFileSync(path.join(backend, notePath(def, index)), note);
+        return {
+          start() {
+            const index = ctx.runStore.get(run.id).currentStepIndex;
+            const name = def.steps[index].name;
+            starts.push(name);
+            if (name !== 'Verify') { write(index, '# ' + name); signal('complete'); return; }
+            if (omitProof) { signal('complete'); return; }
+            if (++rounds === 1) {
+              write(index, '# New regression: missing implementation\nReproduce with phone-prompt test. Fix the missing branch.');
+              signal('stopped', true);
+            } else { signal('needs_input'); }
+          },
+          signalIdentifier: () => 'proof', snapshot: () => ({ status: state, iteration: 1 }), answerText: text => text,
+          input(text) {
+            signal('running');
+            write(4, '# Backend detects missing tags\nBackend check passed. Owner decision: ' + text
+              + '\nUnrelated failure: same `git show REV:legacy.cjs | node -`, same runtime and fixture, matching E42 on base ' + checkout.baseCommit + ' and HEAD ' + git(backend, ['rev-parse', 'HEAD']) + '.');
+            signal('complete');
+          },
+          stop() {},
+        };
+      },
+    });
+    run = ctx.runStore.create(validRun({ definition: def, homePath: backend, worktreePath: backend, worktreeBranch: 'main', baseCommit: checkout.baseCommit, worktreeState: 'external' }));
+    await ctx.engine.start(run.id);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'awaiting_approval', currentStepIndex: 1 });
+    expect(starts).toEqual(['Clarify', 'Investigate']);
+    await ctx.engine.approve(run.id);
+    return { ctx, run, starts };
+  }
+
+  it('refuses COMPLETE without a verification note while Verify is still resumable', async () => {
+    const { ctx, run } = await exercise({ omitProof: true });
+    await vi.waitFor(() => expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', currentStepIndex: 4, error: expect.stringMatching(/verification note/i) }));
+  });
+
+  it('returns a regression to Fix, pauses for device proof, and records the owner decision and matching baseline failure in the same run', async () => {
+    const { ctx, run, starts } = await exercise();
+    await vi.waitFor(() => expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: { questions: expect.stringContaining(question) } }));
+    expect(starts).toEqual(['Clarify', 'Investigate', 'Prove', 'Fix', 'Verify', 'Fix', 'Verify']);
+    expect(ctx.decisionStore.count(run.id)).toBe(0);
+    expect(ctx.noteStore.lastContent(run.id, 4)).toContain('New regression');
+    await ctx.engine.answer(run.id, owner);
+    await vi.waitFor(() => expect(ctx.runStore.get(run.id).status).toBe('complete'));
+    const note = ctx.noteStore.lastContent(run.id, 5);
+    expect(note).toContain(owner);
+    expect(note).toMatch(/git show REV:legacy.cjs.*matching E42 on base [a-f0-9]{40} and HEAD [a-f0-9]{40}/);
+    expect(ctx.answerStore.list(run.id)).toMatchObject([{ stepName: 'Verify', answer: owner }]);
+    expect(starts).not.toContain('Commit');
   });
 });

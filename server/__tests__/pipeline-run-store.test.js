@@ -85,6 +85,14 @@ function validRun(overrides = {}) {
 }
 
 describe('pipeline run store', () => {
+  it.each([false, null, 'yes', true])('rejects misplaced or malformed clean Commit marker %j on hydration', marker => {
+    const { store, db } = setup();
+    const run = store.create(validRun());
+    const invalid = { ...run.definition, steps: [{ ...run.definition.steps[0], name: 'Commit', inspectCleanCommit: marker }, run.definition.steps[0]] };
+    db.prepare('UPDATE pipeline_runs SET definition = ?, steps = ? WHERE id = ?').run(JSON.stringify(invalid), JSON.stringify([step(), step()]), run.id);
+    expect(() => store.get(run.id)).toThrow(/inspectCleanCommit/);
+  });
+
   it('stores a step whose limit the owner accepted', () => {
     const { store } = setup();
     const created = store.create(validRun({ status: 'complete', finishedAt: '2026-11-18T10:00:00.000Z', steps: [step({ status: 'limit_accepted', attempt: 1 })] }));

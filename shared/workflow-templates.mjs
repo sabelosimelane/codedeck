@@ -19,17 +19,21 @@ export const BUILT_IN_STEPS = Object.freeze([
   Object.freeze({ id: 'requirements', ...requirements() }),
 ]);
 
+const acceptance = 'Record the agreed acceptance checks in your note, including how each outcome will be verified and which checks need external evidence.';
+const verification = 'Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. When implementation exists but proof needs a device, account or other external access, use NEEDS_INPUT. Say what passed, what is pending and exactly what would verify it (for example, "Backend verified. Phone prompt pending."). Only the owner may explicitly defer a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence or an explicit owner-approved scope change.';
+const commitOutcome = 'In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD.';
+
 export const WORKFLOW_TEMPLATES = Object.freeze([
   Object.freeze({
     id: 'bug-fix', name: 'Bug fix', kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       clarify(),
       node('Analyse', 'Investigator', 'Investigate {input} and reproduce it where possible. Change no code. In your run note record observations, the root cause and its evidence with files and lines and commands and output, what you ruled out, options for a fix, and your recommendation.', once(), true, true),
-      node('Specify', 'Planner', 'Read the Analyse note. In your run note specify the fix for {input}: the behaviour to change, what must stay the same, likely files, and tests that will prove it. Change no code.', once(), true, true),
+      node('Specify', 'Planner', 'Read the Analyse note. In your run note specify the fix for {input}: the behaviour to change, what must stay the same, likely files, and tests that will prove it. Change no code. ' + acceptance, once(), true, true),
       node('Develop', 'Developer', 'Implement the Specify note for {input}. Write a failing test first, then make it pass. Keep the change as small as the specification allows. Record what changed and what remains.'),
       node('Review', 'Reviewer', 'Review the uncommitted changes against the Specify note. Fix every defect you find and record your findings and fixes.'),
-      node('Test', 'Tester', 'Run tests covering the change and the checks named in the Specify note. If anything fails or the specification is incomplete, record exactly what and report CONTINUE so Develop runs again. Report COMPLETE only when everything passes.', loop(5)),
-      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the fix for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree.'),
+      node('Test', 'Tester', 'Run tests covering the change and the agreed checks from the Specify note. ' + verification, loop(5), false, false, true),
+      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the fix for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
   Object.freeze({
@@ -39,7 +43,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Develop', 'Developer', 'Build the first phase in plan.md with unticked tasks. Write failing tests first, make them pass, tick each task when done, and record what changed.'),
       node('Review', 'Reviewer', 'Review the uncommitted feature changes against plan.md and the task. Fix every defect and record findings and fixes.'),
       node('Test', 'Tester', 'Test the phase just built. Untick any task that does not hold. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and tests pass.', loop(12)),
-      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree.'),
+      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
   Object.freeze({
@@ -58,13 +62,12 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   Object.freeze({
     id: 'troubleshoot', name: 'Troubleshoot', kind: 'troubleshoot', description: 'Gather evidence, agree on a cause, prove it with a failing test, fix and verify.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
-      clarify(),
-      node('Gather evidence', 'Investigator', 'Investigate {input}. Change no code. Collect evidence from three independent angles before forming any opinion: what the logs and error output show, what the data or state shows, and what the code does on the path involved. In your run note record each observation with the command you ran and its output, or the file and line you read. Keep what you saw separate from what you conclude, and list what you could not check.', once(), true),
-      node('Hypothesise', 'Investigator', 'Read the Gather evidence note. Change no code. In your run note state the most likely cause of {input}, the evidence for it, the evidence against it, the other causes you ruled out and why, and the single test that would prove or disprove the cause. If the evidence does not support one cause, say so and ask for what is missing.', once(), true, true),
-      node('Prove', 'Tester', 'Write the test named in the Hypothesise note so that it fails for the stated cause of {input}, and run it. Change no production code. If the test passes, the hypothesis is wrong: record what you saw and report NEEDS_INPUT. Otherwise record the test and its failing output.'),
+      node('Clarify', 'Investigator', CLARIFY_PROMPT + ' ' + acceptance, once(), true, false, true),
+      node('Investigate', 'Investigator', 'Investigate {input}. Change no code. Record observations from logs or error output, data or state, and the relevant code path. Cite commands and output or files and lines. Identify the original symptom check for Verify to repeat. State the likely cause, evidence for it, evidence against it, alternatives ruled out and why, what you could not check, and one test that would disprove the cause. If evidence is insufficient, use NEEDS_INPUT with the specific question.', once(), true, true),
+      node('Prove', 'Tester', 'Write the test named in the approved Investigate note so that it fails for the stated cause of {input}, and run it. Change no production code. If the test passes, the hypothesis is wrong: record what you saw and report NEEDS_INPUT. Otherwise record the test and its failing output.'),
       node('Fix', 'Developer', 'Make the failing test from the Prove note pass with the smallest change that removes the cause. Do not weaken or delete the test. Record what changed and why it removes the cause.'),
-      node('Verify', 'Tester', 'Run the test from the Prove note and the tests around the change, and repeat the checks from the Gather evidence note that showed the problem. If the problem still shows or anything else fails, record exactly what and report CONTINUE so Fix runs again. Report COMPLETE only when the symptom is gone and the tests pass.', loop(5, 'Fix')),
-      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree.'),
+      node('Verify', 'Tester', 'Read the agreed checks in the Clarify note. Repeat the original symptom check from the Investigate note, run the Prove test and tests around the change. ' + verification, loop(5, 'Fix'), false, false, true),
+      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
   Object.freeze({

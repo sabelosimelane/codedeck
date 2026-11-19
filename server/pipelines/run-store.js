@@ -123,7 +123,7 @@ function validateDefinitionStep(id, index, step) {
   const prefix = `definition.steps[${index}]`;
   if (!isPlainObject(step)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(step)) {
-    if (!['kind', 'name', 'role', 'prompt', 'repeat', 'agent', 'readOnly', 'approval', 'askOwner'].includes(key)) {
+    if (!['kind', 'name', 'role', 'prompt', 'repeat', 'agent', 'readOnly', 'approval', 'askOwner', 'inspectCleanCommit'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
@@ -133,6 +133,10 @@ function validateDefinitionStep(id, index, step) {
   if (typeof step.readOnly !== 'boolean') fieldError(id, `${prefix}.readOnly`, 'must be true or false');
   if (typeof step.approval !== 'boolean') fieldError(id, `${prefix}.approval`, 'must be true or false');
   if (typeof step.askOwner !== 'boolean') fieldError(id, `${prefix}.askOwner`, 'must be true or false');
+  if (Object.hasOwn(step, 'inspectCleanCommit') && (step.inspectCleanCommit !== true || step.kind !== 'node'
+    || step.name !== 'Commit' || step.repeat?.mode !== 'once' || step.askOwner || step.readOnly)) {
+    fieldError(id, `${prefix}.inspectCleanCommit`, 'must mark a standard commit-only node');
+  }
   if (step.kind === 'setup' && (step.readOnly || step.approval || step.askOwner)) fieldError(id, prefix, 'Setup flags must be false');
   // What the step is there to do, as its workflow named it; empty when it named none.
   if (typeof step.role !== 'string' || step.role.length > 32 || SINGLE_LINE.test(step.role)) fieldError(id, `${prefix}.role`, 'must be up to 32 characters on one line');
@@ -144,6 +148,7 @@ function validateDefinitionStep(id, index, step) {
     name: requireString(id, `${prefix}.name`, step.name, { max: 64 }).trim(),
     role: step.role,
     askOwner: step.askOwner,
+    ...(step.inspectCleanCommit === true ? { inspectCleanCommit: true } : {}),
     prompt: requireString(id, `${prefix}.prompt`, step.prompt, { max: 16384, singleLine: false }),
     repeat: validateRepeat(id, `${prefix}.repeat`, step.repeat, index),
     agent: validateDefinitionAgent(id, `${prefix}.agent`, step.agent),
@@ -170,6 +175,8 @@ function validateDefinition(id, definition) {
     fieldError(id, 'definition.steps', 'must contain 1–33 steps');
   }
   const steps = definition.steps.map((step, index) => validateDefinitionStep(id, index, step));
+  const misplaced = steps.findIndex((step, index) => step.inspectCleanCommit && (index === 0 || index !== steps.length - 1));
+  if (misplaced >= 0) fieldError(id, `definition.steps[${misplaced}].inspectCleanCommit`, 'requires a preceding step and must be last');
   validateLoops(id, steps);
   return {
     workflowId: definition.workflowId,

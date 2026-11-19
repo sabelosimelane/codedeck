@@ -1,3 +1,4 @@
+import { buildTemplateDraft } from '../../shared/workflow-templates.mjs';
 import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -388,6 +389,22 @@ describe('pipelines API — agents', () => {
 });
 
 describe('pipelines API — run notes', () => {
+  it.each([
+    ['bug-fix', null, true], ['troubleshoot', null, true], ['feature-build', null, false],
+    ['bug-fix', 'Also write release notes.', false],
+  ])('snapshots the standard final Commit only (%s, %s)', async (id, extra, eligible) => {
+    const ctx = await setup();
+    await seedReady(ctx);
+    const draft = buildTemplateDraft(id);
+    for (const node of draft.nodes) node.agentId = ctx.agentStore.list()[0].id;
+    if (extra) draft.nodes.at(-1).prompt += ' ' + extra;
+    const workflow = ctx.workflowStore.create(draft);
+    const response = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'snapshot', workflowId: workflow.id, project: 'Demo', input: 'Watch' });
+    expect(response.status).toBe(201);
+    const commit = ctx.runStore.get(response.body.id).definition.steps.at(-1);
+    expect(commit.inspectCleanCommit === true).toBe(eligible);
+  });
+
   it('creates a notes directory and exposes a paged notes list and latest step note', async () => {
     const ctx = await setup();
     const { workflow } = await seedReady(ctx);

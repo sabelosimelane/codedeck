@@ -1,3 +1,4 @@
+import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { execFile as defaultExecFile } from 'node:child_process';
@@ -283,6 +284,7 @@ function buildDefinitionSnapshot({
     return { mode: 'loop_back', toStepIndex: firstNodeStep + loopTargetIndex(workflow.nodes, index), max: repeat.max };
   };
 
+  const standardCommit = WORKFLOW_TEMPLATES.find(template => ['bug-fix', 'troubleshoot'].includes(template.id) && template.kind === workflow.kind)?.nodes.at(-1);
   const nodeSteps = workflow.nodes.map((node, index) => {
     const agent = agentStore.get(node.agentId);
     if (!agent) {
@@ -292,6 +294,8 @@ function buildDefinitionSnapshot({
     const prompt = composePrompt(node.prompt, input, errors, 'input');
     return {
       kind: 'node',
+      ...(index > 0 && index === workflow.nodes.length - 1 && node.name === 'Commit' && node.repeat.mode === 'once'
+        && !node.readOnly && !node.askOwner && node.prompt === standardCommit?.prompt ? { inspectCleanCommit: true } : {}),
       name: node.name,
       role: node.role,
       askOwner: node.askOwner,

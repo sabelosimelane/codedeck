@@ -1,3 +1,6 @@
+import { execFile } from 'node:child_process';
+import { inspectCommitWorktree as inspectGitWorktree } from './run-worktree.js';
+import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
 /**
  * Per-run promise-chain executor (Spec §8.3–§8.9).
  * All I/O (worktree, session, attach, workflow, readiness) is injected.
@@ -9,9 +12,10 @@ import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
 import { planRunTerminalMuting } from './run-terminal-muting.js';
-import { prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
+import { writeCommitNote, prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
+const verificationPrompts = new Set(WORKFLOW_TEMPLATES.filter(t => ['bugfix', 'troubleshoot'].includes(t.kind)).map(t => t.nodes.at(-2).prompt));
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
@@ -73,6 +77,7 @@ export function createRunEngine({
   onNoteWritten = () => {},
   removeWorktree = async () => ({ ok: true }),
   listDirtyPaths = async () => [],
+  inspectCommitWorktree = entry => inspectGitWorktree(entry, execFile),
   // Where a run may work and read: the worktrees of its task and the project's other repositories.
   // Left out, a run has only its own worktree.
   listRunPlaces = async () => undefined,
@@ -504,6 +509,17 @@ export function createRunEngine({
     return true;
   }
 
+  // Read the exact attempt: a note from a previous failed round cannot substantiate this one.
+  function verificationOutcome(run, index) {
+    const note = noteStore.latestByStep(run.id).get(index);
+    if (note?.attempt !== run.steps[index].attempt || note.status !== 'written') {
+      throw new Error(`${run.definition.steps[index].name} requires an updated verification note for this attempt`);
+    }
+    const content = noteStore.lastContent(run.id, index);
+    if (!content?.trim()) throw new Error('The verification note must describe the outcome');
+    return content;
+  }
+
   async function applyWorkflowSnapshot(runId, snapshot) {
     if (!runStore.get(runId)) return { terminal: true };
     // The loop moved on, so the agent is past any dialog it was showing.
@@ -515,6 +531,7 @@ export function createRunEngine({
 
     if (snapshot.status === 'complete') {
       if (current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
+      if (verificationPrompts.has(current.definition.steps[current.currentStepIndex].prompt)) verificationOutcome(current, current.currentStepIndex);
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received' });
       }
@@ -618,6 +635,22 @@ export function createRunEngine({
     return { terminal: false };
   }
 
+  async function completeCleanCommit(run, inspected, handle) {
+    const index = run.currentStepIndex;
+    if (run.steps[index - 1].status !== 'complete') throw new Error('Commit requires a completed verification step');
+    const outcome = verificationOutcome(run, index - 1);
+    const content = [outcome.trimEnd(), '', '## Verified clean worktrees', '',
+      ...inspected.map(tree => `- ${tree.repository} — ${tree.branch} — ${tree.head}`), ''].join('\n');
+    await writeCommitNote(run, content);
+    if (handle.stopped) return;
+    const summary = outcome.trimStart().split(/\r?\n/, 1)[0].replace(/^#+/, '').trim().slice(0, 200);
+    noteStore.add({ runId: run.id, stepIndex: index, stepName: 'Commit', attempt: run.steps[index].attempt, pass: 1, status: 'written', summary, content });
+    onNoteWritten({ runId: run.id, taskId: run.taskId, input: run.input, stepIndex: index, content });
+    persistTransition(run.id, { type: 'step_running' });
+    persistTransition(run.id, { type: run.definition.steps[index].approval ? 'approval_requested' : 'step_complete', at: now() });
+    if (runStore.get(run.id).status === 'complete') await finishComplete(run.id);
+  }
+
   async function runStep(runId) {
     const handle = getHandle(runId);
     let attachment = null;
@@ -646,18 +679,8 @@ export function createRunEngine({
       if (!run || !['pending', 'running'].includes(run.status)) return;
 
       // Read now, not when the run began: a repository may have been added to the task, or closed in it, since.
-      const places = await listRunPlaces(run);
-      if (run.definition.notesDir !== null) {
-        await prepareNotes({ worktreePath: run.worktreePath, definition: run.definition, input: run.input, ...(places === undefined ? {} : { places }) });
-        await refreshBrief(runId);
-      }
-      if (handle.stopped) return;
-
       const stepIndex = run.currentStepIndex;
       const defStep = run.definition.steps[stepIndex];
-      const feedback = reviewStore.listSentBack(run.id, stepIndex);
-      const feedbackFile = feedback.length ? await writeFeedback({ worktreePath: run.worktreePath, definition: run.definition, stepIndex, reviews: feedback }) : undefined;
-      const agent = defStep.agent;
       let step = run.steps[stepIndex];
 
       // First step of a new run, or the next pending step after advance.
@@ -667,7 +690,32 @@ export function createRunEngine({
         step = run.steps[stepIndex];
       }
 
+      const places = await listRunPlaces(run, { includeGit: defStep.inspectCleanCommit === true || verificationPrompts.has(defStep.prompt) });
+      const inspected = [];
+      if (defStep.inspectCleanCommit) {
+        if (!places?.worktrees?.length || !places.worktrees.some(entry => entry.path === run.worktreePath && entry.branch === run.worktreeBranch)) {
+          throw new Error(`Commit inspection: missing recorded worktree or branch for ${run.worktreePath}`);
+        }
+        for (const tree of places.worktrees) {
+          if (handle.stopped) return;
+          inspected.push(await inspectCommitWorktree(tree));
+        }
+      }
       if (handle.stopped) return;
+      if (run.definition.notesDir !== null) {
+        await prepareNotes({ worktreePath: run.worktreePath, definition: run.definition, input: run.input, ...(places === undefined ? {} : { places }) });
+        await refreshBrief(runId);
+      }
+      if (handle.stopped) return;
+      const feedback = reviewStore.listSentBack(run.id, stepIndex);
+      const feedbackFile = feedback.length ? await writeFeedback({ worktreePath: run.worktreePath, definition: run.definition, stepIndex, reviews: feedback }) : undefined;
+      const agent = defStep.agent;
+      if (handle.stopped) return;
+
+      if (defStep.inspectCleanCommit && feedback.length === 0 && inspected.every(tree => !tree.dirty)) {
+        await completeCleanCommit(run, inspected, handle);
+        return;
+      }
 
       // A step works in the terminal of its agent: the one it used before (an earlier round of
       // a loop, or the attempt being resumed), else one where the same agent already runs in

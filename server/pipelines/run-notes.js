@@ -119,6 +119,15 @@ export function buildReadme(definition, input, places) {
     for (const entry of places.readOnly) lines.push(`- ${entry.repository} — not part of this task: read only, never change — ${entry.path}`);
     lines.push('', 'A reference in a document to one of these repositories means the path given here. If a repository that is not part of this task must change, use NEEDS_INPUT.');
   }
+  if (places?.worktrees.some(entry => Object.hasOwn(entry, 'baseCommit'))) {
+    lines.push('', '## Recorded base commits', '');
+    for (const entry of places.worktrees) {
+      if (typeof entry.repository !== 'string' || !entry.repository.trim() || typeof entry.baseCommit !== 'string' || !/^[0-9a-f]{40}$/.test(entry.baseCommit)) {
+        throw new TypeError(`Expected a recorded base commit for ${entry.repository}`);
+      }
+      lines.push(`- ${entry.repository} — ${entry.baseCommit}`);
+    }
+  }
   lines.push('', '## How notes work', '', `Before starting, read this file, ${definition.notesDir}/brief.md (the owner's request and every question answered so far) and every earlier step note that exists.`, 'Before your final signal, write or replace your own note.', 'Start your note with one line `# <one-line summary>`. Then record what was done, what was decided and why, what is left, and where things are (paths).', `If the work has phases, keep ${definition.notesDir}/plan.md with ## Phase N: <title> sections and - [ ] or - [x] tasks. CodeDeck shows the current phase from it.`, 'This folder is ignored by git, belongs to this run, and is safe to delete once the run is over.', '');
   return lines.join('\n');
 }
@@ -203,6 +212,16 @@ export async function prepare({ worktreePath, definition, input, places, fs = de
     if (error?.code === 1) throw unignored();
     throw error;
   }
+}
+
+export async function writeCommitNote(run, content) {
+  requireWorktree(run.worktreePath);
+  const relative = notePath(run.definition, run.currentStepIndex);
+  if (!relative || typeof content !== 'string' || !content.trim() || Buffer.byteLength(content) > LIMIT) {
+    throw new Error('Commit requires a writable final note within the run note size limit');
+  }
+  const folder = await verifiedRunFolder(defaultFs, run.worktreePath, run.definition.notesDir);
+  await replaceFile(defaultFs, folder, path.basename(relative), content);
 }
 
 export async function readNote({ worktreePath, definition, stepIndex, fs = defaultFs } = {}) {

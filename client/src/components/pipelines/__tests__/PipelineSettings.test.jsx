@@ -595,7 +595,7 @@ describe('PipelineSettings workflows', () => {
     click('Save workflow');
     await waitFor(() => expect(backend.mutations()).toHaveLength(1));
     expect(backend.mutations()[0].body.nodes[5].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 5 });
-    expect(backend.mutations()[0].body.nodes.map(node => node.askOwner)).toEqual([true, false, false, false, false, false, false]);
+    expect(backend.mutations()[0].body.nodes.map(node => node.askOwner)).toEqual([true, false, false, false, false, true, false]);
     expect(backend.mutations()[0].body.nodes[0].role).toBe('Investigator');
     expect(backend.mutations()[0].body).toMatchObject({ kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.' });
   });
@@ -1081,8 +1081,8 @@ describe('PipelineSettings — reuse: saved templates and saved steps', () => {
     click(/Troubleshoot.*Gather evidence/);
     expect(screen.getByLabelText('Workflow kind').value).toBe('troubleshoot');
     expect(nodeNames()[0]).toBe('Clarify');
-    expect(screen.getByLabelText('Node 6 loops back to').selectedOptions[0].textContent).toBe('Node 5: Fix');
-    expect(screen.getByLabelText('Node 3 wait for my approval').checked).toBe(true);
+    expect(screen.getByLabelText('Node 5 loops back to').selectedOptions[0].textContent).toBe('Node 4: Fix');
+    expect(screen.getByLabelText('Node 2 wait for my approval').checked).toBe(true);
   });
 
   it('starts a workflow from a template the owner saved, with no agents chosen yet', async () => {
