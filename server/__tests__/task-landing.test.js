@@ -63,6 +63,60 @@ describe('task landing — status', () => {
     expect(status.blockers.close).toEqual([]);
   });
 
+  it('tells a task whose commits are already in its base branch from one that has done nothing', async () => {
+    const { landing, repo, wt, task } = await setup();
+    expect(await landing.status(ID)).toMatchObject({ commitsAhead: 0, alreadyInBase: false });
+    write(wt, 'feature.txt', 'work\n');
+    commitAll(wt, 'feature');
+    expect(await landing.status(ID)).toMatchObject({ commitsAhead: 1, alreadyInBase: false });
+    // Merged with plain Git, outside CodeDeck, and the base branch has moved on since.
+    git(repo, ['merge', '--ff-only', task.branch]);
+    write(repo, 'other.txt', 'main moved\n');
+    commitAll(repo, 'main moved');
+    const status = await landing.status(ID);
+    expect(status).toMatchObject({ state: 'active', uncommittedCount: 0, commitsAhead: 0, commitsBehind: 1, alreadyInBase: true });
+    const reason = { code: 'already_in_base', message: "This task's commits are already in main, so there is nothing left to merge. Close the task to finish it." };
+    expect(status.blockers.merge).toEqual([reason]);
+    expect(status.blockers.pullRequest[0]).toEqual(reason);
+    expect(codes(status.blockers.pullRequest)).toEqual(['already_in_base', 'no_remote']);
+    expect(status.blockers.close).toEqual([]);
+    // New work on top of what was merged is work of its own again.
+    write(wt, 'more.txt', 'more\n');
+    commitAll(wt, 'more');
+    const again = await landing.status(ID);
+    expect(again).toMatchObject({ commitsAhead: 1, alreadyInBase: false });
+    expect(again.blockers.merge).toEqual([]);
+  });
+
+  it('counts a merge commit made outside CodeDeck as already in the base branch, and uncommitted files beside it', async () => {
+    const { landing, repo, wt, task } = await setup();
+    write(wt, 'feature.txt', 'work\n');
+    commitAll(wt, 'feature');
+    write(repo, 'other.txt', 'main moved\n');
+    commitAll(repo, 'main moved');
+    git(repo, ['merge', '--no-ff', '--no-edit', task.branch]);
+    write(wt, 'draft.txt', 'not yet\n');
+    const status = await landing.status(ID);
+    expect(status).toMatchObject({ uncommittedCount: 1, commitsAhead: 0, commitsBehind: 2, alreadyInBase: true });
+    expect(codes(status.blockers.merge)).toEqual(['uncommitted', 'already_in_base']);
+    expect(await rejection(landing.merge(ID))).toMatchObject({ status: 409, extra: { reasons: [{ code: 'uncommitted' }, { code: 'already_in_base' }] } });
+  });
+
+  it('reads a task that only caught up with its base branch the same way: Git cannot tell the two apart', async () => {
+    const { landing, repo, wt } = await setup();
+    write(repo, 'other.txt', 'main moved\n');
+    commitAll(repo, 'main moved');
+    git(wt, ['merge', '--ff-only', 'main']);
+    expect(await landing.status(ID)).toMatchObject({ commitsAhead: 0, commitsBehind: 0, alreadyInBase: true });
+  });
+
+  it('does not call a task started from a commit already landed', async () => {
+    const { landing, repo, service } = await setup();
+    git(repo, ['checkout', '--detach']);
+    const detached = await service.create({ project: 'Demo', title: 'Detached' });
+    expect(await landing.status(detached.id)).toMatchObject({ baseBranch: null, commitsAhead: 0, alreadyInBase: false });
+  });
+
   it('counts uncommitted files and commits ahead and behind, and names what blocks a merge', async () => {
     const { landing, repo, wt, state } = await setup();
     write(wt, 'feature.txt', 'work\n');
@@ -98,7 +152,7 @@ describe('task landing — status', () => {
     const { landing, wt, taskStore } = await setup();
     rmSync(wt, { recursive: true, force: true });
     const gone = await landing.status(ID);
-    expect(gone).toMatchObject({ filesPresent: false, commitsAhead: null, uncommittedCount: 0 });
+    expect(gone).toMatchObject({ filesPresent: false, commitsAhead: null, alreadyInBase: null, uncommittedCount: 0, ignoredAtRisk: [], ignoredAtRiskCount: 0 });
     expect(codes(gone.blockers.merge)).toContain('files_missing');
     expect(gone.blockers.close).toEqual([]);
     setTaskState(taskStore, ID, { state: 'closed' });
@@ -419,6 +473,52 @@ describe('task landing — work that ordinary status does not show', () => {
     expect({ refused: closed.refused, status: closed.status, taskState: taskStore.get(ID).state, ownerFile: fingerprint(wt, 'owner.local') })
       .toEqual({ refused: true, status: 409, taskState: 'active', ownerFile: before });
     expect(closed.reasons.map(item => item.code)).toEqual(['ignored_files']);
+  });
+
+  it('lists the ignored files only the task holds, and Close deletes them once the owner said so', async () => {
+    const { wt, landing, taskStore } = await setup();
+    write(wt, '.gitignore', 'owner.local\nlogs/\n');
+    commitAll(wt, 'ignore');
+    write(wt, 'owner.local', 'exists nowhere else\n');
+    mkdirSync(path.join(wt, 'logs'));
+    write(path.join(wt, 'logs'), 'run.log', 'log\n');
+    const status = await landing.status(ID);
+    expect(status).toMatchObject({ ignoredAtRisk: ['logs/', 'owner.local'], ignoredAtRiskCount: 2 });
+    expect(codes(status.blockers.close)).toEqual(['ignored_files']);
+    // Without the owner's word, and with anything but a yes or no, nothing is removed.
+    expect(await rejection(landing.close(ID))).toMatchObject({ status: 409 });
+    expect(await rejection(landing.close(ID, { deleteIgnored: false }))).toMatchObject({ status: 409 });
+    for (const bad of ['yes', 1, null]) {
+      expect(await rejection((async () => landing.close(ID, { deleteIgnored: bad }))())).toMatchObject({ status: 400, errors: [{ field: 'deleteIgnored', message: 'Use true or false' }] });
+    }
+    expect(existsSync(path.join(wt, 'owner.local'))).toBe(true);
+    const closed = await landing.close(ID, { deleteIgnored: true });
+    expect(closed.task.state).toBe('closed');
+    expect(taskStore.get(ID).state).toBe('closed');
+    expect(existsSync(wt)).toBe(false);
+  });
+
+  it('the owner\'s word about ignored files lifts nothing else: uncommitted work still refuses Close', async () => {
+    const { wt, landing } = await setup();
+    write(wt, '.gitignore', 'owner.local\n');
+    commitAll(wt, 'ignore');
+    write(wt, 'owner.local', 'exists nowhere else\n');
+    write(wt, 'draft.txt', 'not committed\n');
+    const refused = await rejection(landing.close(ID, { deleteIgnored: true }));
+    expect(refused).toMatchObject({ status: 409 });
+    expect(codes(refused.extra.reasons)).toEqual(['uncommitted']);
+    expect(existsSync(path.join(wt, 'draft.txt'))).toBe(true);
+  });
+
+  it('lets a Gradle cache go with the folder, like other build output', async () => {
+    const { wt, landing } = await setup();
+    write(wt, '.gitignore', '.gradle/\n');
+    commitAll(wt, 'ignore');
+    mkdirSync(path.join(wt, 'core', '.gradle'), { recursive: true });
+    write(path.join(wt, 'core', '.gradle'), 'cache.bin', 'x\n');
+    mkdirSync(path.join(wt, '.gradle'));
+    write(path.join(wt, '.gradle'), 'cache.bin', 'x\n');
+    expect(await landing.status(ID)).toMatchObject({ ignoredAtRisk: [], ignoredAtRiskCount: 0, blockers: { close: [] } });
   });
 
   it('Close lets disposable ignored folders and byte-identical copies of Main go with the folder', async () => {
