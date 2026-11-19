@@ -35,7 +35,9 @@ export function parseCandidate(entry, index = 0) {
   guard(entry !== null && typeof entry === 'object' && !Array.isArray(entry), 'candidate');
   guard(folderName(entry.name), 'name');
   guard(absolute(entry.path), 'path');
-  return { name: entry.name, path: entry.path };
+  // The branch the folder is on; null when none is checked out.
+  guard(entry.branch === null || text(entry.branch), 'branch');
+  return { name: entry.name, path: entry.path, branch: entry.branch };
 }
 
 function base(project) {

@@ -22,7 +22,7 @@ const PROJECT = { name: 'Demo', path: '/tmp/group/backend' };
 const HEAD = 'a'.repeat(40);
 const repo = (name, overrides = {}) => ({ name, path: `/tmp/group/${name}`, own: false, branch: 'main', head: HEAD, dirty: false, usable: true, reason: null, ...overrides });
 const OWN = repo('backend', { own: true });
-const candidate = name => ({ name, path: `/tmp/group/${name}` });
+const candidate = name => ({ name, path: `/tmp/group/${name}`, branch: 'main' });
 const candidates = (names, { hasNextPage = false, total = names.length } = {}) => ({ candidates: names.map(candidate), hasNextPage, total });
 
 async function mount({ repositories = [OWN], beside = candidates(['frontend', 'mobile-app']) } = {}) {
@@ -54,6 +54,22 @@ describe('ProjectRepositoriesDialog', () => {
     expect(within(rows[2]).getByText('This folder is not the top level of a Git working tree.')).toBeTruthy();
     expect(api.listProjectRepositories).toHaveBeenCalledWith('Demo');
     expect(api.getRepositoryCandidates).toHaveBeenCalledWith('Demo', 0);
+  });
+
+  it('says the repositories beside the project are not added yet, and which branch each folder is on', async () => {
+    await mount({ beside: { candidates: [{ ...candidate('frontend'), branch: 'feat/setup' }, { ...candidate('mobile-app'), branch: null }, candidate('tools')], hasNextPage: false, total: 3 } });
+    expect(screen.getByRole('heading', { name: /Beside this project, not added yet/ })).toBeTruthy();
+    expect(screen.getByText('A task starts from and merges into the folder you add, on the branch shown. Where a repository\'s main branch is checked out in another folder, add that folder with Add another folder….')).toBeTruthy();
+    const rows = beside().getAllByRole('listitem');
+    expect(rows.map(row => row.getAttribute('data-repository'))).toEqual(['frontend', 'mobile-app', 'tools']);
+    expect(within(rows[0]).getByText('on feat/setup')).toBeTruthy();
+    expect(within(rows[1]).getByText('no branch checked out')).toBeTruthy();
+    expect(within(rows[2]).getByText('on main')).toBeTruthy();
+  });
+
+  it('leaves the explanation out when no repository is beside the project', async () => {
+    await mount({ beside: candidates([]) });
+    expect(screen.queryByText(/A task starts from and merges into the folder you add/)).toBeNull();
   });
 
   it('says so when the project has no other repository and none is beside it', async () => {

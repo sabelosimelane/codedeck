@@ -180,18 +180,24 @@ export default function ProjectRepositoriesDialog({ project, onClose, onChanged 
         {repositories !== null && (
           <section style={styles.section}>
             <h3 style={styles.heading}>
-              <span>Beside this project</span>
+              <span>Beside this project, not added yet</span>
               {canAddAll && <Button size="small" onClick={() => add(beside.candidates)} disabled={busy}>{`Add all ${beside.candidates.length}`}</Button>}
             </h3>
             {beside.failure && <span style={styles.warning}>{beside.failure}</span>}
             {!beside.failure && beside.candidates.length === 0 && <span style={styles.muted}>No other repository is beside this project.</span>}
             {beside.total > room && beside.total > beside.candidates.length && <span style={styles.muted}>{`${plural(beside.total, 'repository')} are beside this project.`}</span>}
             {beside.candidates.length > 0 && (
+              <span style={styles.muted}>A task starts from and merges into the folder you add, on the branch shown. Where a repository's main branch is checked out in another folder, add that folder with Add another folder….</span>
+            )}
+            {beside.candidates.length > 0 && (
               <ul aria-label={`Repositories beside ${project.name}`} style={styles.list}>
                 {beside.candidates.map(entry => (
                   <li key={entry.path} data-repository={entry.name} style={styles.row}>
                     <div style={styles.text}>
-                      <span style={styles.line}><strong>{entry.name}</strong></span>
+                      <span style={styles.line}>
+                        <strong>{entry.name}</strong>
+                        <span style={styles.muted}>{entry.branch === null ? 'no branch checked out' : `on ${entry.branch}`}</span>
+                      </span>
                       <span style={styles.path} title={entry.path}>{entry.path}</span>
                     </div>
                     <Button size="small" aria-label={`Add ${entry.name}`} onClick={() => add([entry])} disabled={busy || full}>Add</Button>

@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-11-19] - The Repositories dialog says what is not added yet, and on which branch
+
+### Executive Summary
+* The repositories found beside a project looked as if they already belonged to it. Their section is now headed "Beside this project, not added yet", and each one shows the branch its folder is on, with a line explaining that a task starts from and merges into the folder you add. A repository whose folder is on a feature branch, with its main branch checked out in another folder, is now visible as such before it is added.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `server/project-repositories.js`, `server/routes/project-repositories.js` — `GET /api/projects/:name/repository-candidates` returns `branch` with each entry (`null` when no branch is checked out). The field is added; nothing is removed.
+  * `client/src/utils/projectRepositoriesApi.js` — `parseCandidate` requires `branch` to be text or null.
+  * `client/src/components/ProjectRepositoriesDialog.jsx` — the heading, the explanation and the branch on each offered row.
+  * `README.md`, `docs/steering/api-standards.md` — the new field and wording.
+* **🧪 Tests:**
+  * `server/__tests__/project-repositories.test.js`, `project-repositories-api.test.js` — the branch of each neighbour, a neighbour with no branch checked out, and the endpoint's envelope.
+  * `client/src/utils/__tests__/projectRepositoriesApi.test.js`, `client/src/components/__tests__/ProjectRepositoriesDialog.test.jsx` — the parser's guard, the heading, the explanation and the three branch states.
+
 ## [2026-11-19] - A run accepts the progress file's whole path as its input
 
 ### Executive Summary

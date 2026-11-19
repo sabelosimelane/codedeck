@@ -119,11 +119,11 @@ describe('project repositories API', () => {
       const response = await request(server).get(candidates('Demo'));
       expect(response.status).toBe(200);
       expect(response.body).toEqual({
-        data: [{ name: 'frontend', path: frontend }, { name: 'mobile-app', path: mobile }],
+        data: [{ name: 'frontend', path: frontend, branch: 'feat/setup' }, { name: 'mobile-app', path: mobile, branch: 'main' }],
         page: { currentPage: 0, size: 20, totalElements: 2, totalPages: 1, hasNextPage: false },
       });
       const paged = await request(server).get(`${candidates('Demo')}?size=1&page=1&sort=name,asc`);
-      expect(paged.body.data).toEqual([{ name: 'mobile-app', path: mobile }]);
+      expect(paged.body.data).toEqual([{ name: 'mobile-app', path: mobile, branch: 'main' }]);
       expect(paged.body.page).toEqual({ currentPage: 1, size: 1, totalElements: 2, totalPages: 2, hasNextPage: false });
     });
 

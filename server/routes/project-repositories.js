@@ -29,7 +29,7 @@ function repositoryView(entry) {
   };
 }
 
-const candidateView = entry => ({ name: entry.name, path: entry.path });
+const candidateView = entry => ({ name: entry.name, path: entry.path, branch: entry.branch });
 
 export function createProjectRepositoriesRouter({ service } = {}) {
   for (const method of ['list', 'candidates', 'add', 'remove', 'openTerminal']) {

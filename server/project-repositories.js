@@ -131,7 +131,8 @@ export function createProjectRepositories({
         if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
         throw error;
       }
-      if (marker.isDirectory()) found.push({ name: entry.name, path: folder });
+      // The branch its folder is on: a task would start from and merge into that one. Null when none is checked out, or Git cannot read the folder.
+      if (marker.isDirectory()) found.push({ name: entry.name, path: folder, branch: (await inspect(folder)).branch });
     }
     return found.sort((a, b) => a.name.localeCompare(b.name));
   }

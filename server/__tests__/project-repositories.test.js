@@ -134,13 +134,20 @@ describe('a project\'s repositories', () => {
   describe('the repositories beside the project', () => {
     it('offers the repositories in the project\'s parent folder that are not listed yet', async () => {
       const { service, mobile, frontend } = groupFixture();
-      expect(await service.candidates('Demo')).toEqual([{ name: 'frontend', path: frontend }, { name: 'mobile-app', path: mobile }]);
+      // Each says which branch its folder is on: a task would start from and merge into that one.
+      expect(await service.candidates('Demo')).toEqual([{ name: 'frontend', path: frontend, branch: 'feat/setup' }, { name: 'mobile-app', path: mobile, branch: 'main' }]);
+    });
+
+    it('says a neighbour has no branch checked out', async () => {
+      const { service, mobile } = groupFixture();
+      git(mobile, ['checkout', '-q', '--detach']);
+      expect((await service.candidates('Demo')).find(entry => entry.name === 'mobile-app')).toEqual({ name: 'mobile-app', path: mobile, branch: null });
     });
 
     it('leaves out a repository once it is listed, also when its listed checkout is a worktree', async () => {
       const { service, mobile, frontendMain } = groupFixture();
       await service.add('Demo', { path: frontendMain });
-      expect(await service.candidates('Demo')).toEqual([{ name: 'mobile-app', path: mobile }]);
+      expect(await service.candidates('Demo')).toEqual([{ name: 'mobile-app', path: mobile, branch: 'main' }]);
       await service.add('Demo', { path: mobile });
       expect(await service.candidates('Demo')).toEqual([]);
     });

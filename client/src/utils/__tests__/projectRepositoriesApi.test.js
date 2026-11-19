@@ -40,11 +40,12 @@ describe('parseRepository', () => {
 });
 
 describe('parseCandidate', () => {
-  it('returns the name and the path', () => {
-    expect(parseCandidate({ name: 'frontend', path: '/tmp/group/frontend', extra: 1 })).toEqual({ name: 'frontend', path: '/tmp/group/frontend' });
+  it('returns the name, the path and the branch', () => {
+    expect(parseCandidate({ name: 'frontend', path: '/tmp/group/frontend', branch: 'feat/setup', extra: 1 })).toEqual({ name: 'frontend', path: '/tmp/group/frontend', branch: 'feat/setup' });
+    expect(parseCandidate({ name: 'frontend', path: '/tmp/group/frontend', branch: null })).toEqual({ name: 'frontend', path: '/tmp/group/frontend', branch: null });
   });
-  it.each([['name', ''], ['name', 'a/b'], ['path', 'frontend'], ['path', undefined]])('refuses an invalid %s (%j)', (field, value) => {
-    expect(() => parseCandidate({ name: 'frontend', path: '/tmp/group/frontend', [field]: value })).toThrow(new RegExp(`field ${field}`));
+  it.each([['name', ''], ['name', 'a/b'], ['path', 'frontend'], ['path', undefined], ['branch', undefined], ['branch', ''], ['branch', 7]])('refuses an invalid %s (%j)', (field, value) => {
+    expect(() => parseCandidate({ name: 'frontend', path: '/tmp/group/frontend', branch: 'main', [field]: value })).toThrow(new RegExp(`field ${field}`));
   });
 });
 
@@ -62,9 +63,9 @@ describe('project repositories API client', () => {
   });
 
   it('reads one page of the repositories beside the project', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(reply(page([{ name: 'frontend', path: '/tmp/group/frontend' }], { hasNextPage: true, totalElements: 31 })));
+    const fetchMock = vi.fn().mockResolvedValue(reply(page([{ name: 'frontend', path: '/tmp/group/frontend', branch: 'feat/setup' }], { hasNextPage: true, totalElements: 31 })));
     vi.stubGlobal('fetch', fetchMock);
-    expect(await getRepositoryCandidates('Demo', 2)).toEqual({ candidates: [{ name: 'frontend', path: '/tmp/group/frontend' }], hasNextPage: true, total: 31 });
+    expect(await getRepositoryCandidates('Demo', 2)).toEqual({ candidates: [{ name: 'frontend', path: '/tmp/group/frontend', branch: 'feat/setup' }], hasNextPage: true, total: 31 });
     expect(fetchMock.mock.calls[0][0]).toBe('/api/projects/Demo/repository-candidates?size=20&page=2');
     await expect(getRepositoryCandidates('Demo', -1)).rejects.toThrow('page must be a whole number from 0');
   });
