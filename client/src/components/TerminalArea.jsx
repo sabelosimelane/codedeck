@@ -1240,7 +1240,9 @@ export default function TerminalArea({
         })}
         {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked} title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
       </div>}
-      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }} />}
+      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
+        // One repository of the task was merged or closed: its terminals are gone, the task stays on screen.
+        onRepositoryFinished={result => removeClosedSessions(result.terminalsClosed)} />}
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}
         openSessionIds={new Set(tabs.flatMap(tab => tab.panes.map(pane => pane.sessionId)))}
         onActivateStep={activatePipelineSession} onOpenTerminal={addTab}

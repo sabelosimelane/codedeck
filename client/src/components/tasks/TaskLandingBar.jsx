@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '../ToastContext';
 import { closeTask, commitTask, getTaskLanding, mergeTask, openTaskPullRequest, renameTask } from '../../utils/tasksApi.js';
 import { Button, ConfirmDialog, PromptDialog } from '../ui/index.jsx';
+import TaskRepositoriesLanding from './TaskRepositoriesLanding.jsx';
 import './task-view.css';
 
 const plural = (number, word) => `${number} ${word}${number === 1 ? '' : 's'}`;
@@ -12,7 +13,15 @@ const FALLBACK = 'Something went wrong. Please try again.';
  * backend every few seconds; every button round-trips through the backend and nothing here
  * decides whether an action is allowed.
  */
-export default function TaskLandingBar({ task, onChanged, onFinished }) {
+export default function TaskLandingBar({ task, onChanged, onFinished, onRepositoryFinished }) {
+  // A task with several repositories lands each on its own; one with a single worktree is landed as a whole.
+  if (Array.isArray(task.worktrees) && task.worktrees.length > 1) {
+    return <TaskRepositoriesLanding task={task} onChanged={onChanged} onFinished={onFinished} onRepositoryFinished={onRepositoryFinished} />;
+  }
+  return <TaskLanding task={task} onChanged={onChanged} onFinished={onFinished} />;
+}
+
+function TaskLanding({ task, onChanged, onFinished }) {
   const { showToast } = useToast();
   const [landing, setLanding] = useState(null);
   const [failure, setFailure] = useState(null);

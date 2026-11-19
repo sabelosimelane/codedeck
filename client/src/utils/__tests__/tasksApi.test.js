@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { closeTask, commitTask, createTask, getTaskLanding, listOpenTasks, mergeTask, openTaskPullRequest, openTaskTerminal, parseLanding, parseTask, parseTaskSummary, renameTask } from '../tasksApi';
+import {
+  closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, mergeTask, mergeTaskWorktree,
+  openTaskPullRequest, openTaskTerminal, openTaskWorktreePullRequest, parseLanding, parseTask, parseTaskSummary, parseWorktreeLanding, renameTask,
+} from '../tasksApi';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
 const WT = '7b000000-0000-4000-8000-000000000001';
@@ -208,5 +211,83 @@ describe('landing API client', () => {
     vi.stubGlobal('fetch', vi.fn(async () => reply({ message: 'Nothing was merged.', conflicts: ['shared.txt', 12], reasons: [{ code: 'main_dirty', message: 'Main has uncommitted changes.' }, { code: 'bad' }] }, { ok: false, status: 409 })));
     const error = await mergeTask(ID).catch(failure => failure);
     expect(error).toMatchObject({ message: 'Nothing was merged.', status: 409, conflicts: ['shared.txt'], reasons: [{ code: 'main_dirty', message: 'Main has uncommitted changes.' }] });
+  });
+});
+
+describe('landing one repository of a task', () => {
+  const standing = (overrides = {}) => ({
+    taskId: ID, worktreeId: WT2, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/replies/mobile-app',
+    state: 'active', branch: 'task/replies', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
+    uncommitted: ['a.txt'], uncommittedCount: 1, commitsAhead: 2, commitsBehind: 0, main: { branch: 'main', dirty: false },
+    remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }],
+    blockers: { commit: [], merge: [{ code: 'uncommitted', message: 'Commit first.' }], pullRequest: [], close: [] }, ...overrides,
+  });
+  const finishedBody = extra => ({ task: task(), repository: 'mobile-app', taskFinished: false, terminalsClosed: ['Demo-4'], terminalsNotClosed: [], ...extra });
+
+  it('reads how a repository stands and keeps exactly its known fields', () => {
+    expect(parseWorktreeLanding({ ...standing(), surprise: 1 })).toEqual(standing());
+  });
+
+  it.each([
+    ['worktreeId', 'nope'], ['repository', ''], ['own', 'no'], ['first', 0], ['worktreePath', 'relative'], ['state', 'done'], ['uncommittedCount', 0], ['blockers', null],
+  ])('refuses a standing with an invalid %s', (field, value) => {
+    expect(() => parseWorktreeLanding(standing({ [field]: value }))).toThrow(`Invalid landing response: ${field}`);
+  });
+
+  it('lists every repository of a task, the one it started in first', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(reply(page([standing()], true)))
+      .mockResolvedValueOnce(reply(page([standing({ worktreeId: WT, repository: 'backend', own: true, first: true })])));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await listTaskWorktreeLandings(ID)).map(entry => entry.repository)).toEqual(['backend', 'mobile-app']);
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([`/api/tasks/${ID}/worktrees?size=100&page=0`, `/api/tasks/${ID}/worktrees?size=100&page=1`]);
+    vi.stubGlobal('fetch', vi.fn(async () => reply([standing()])));
+    await expect(listTaskWorktreeLandings(ID)).rejects.toThrow('Invalid task worktrees response');
+    await expect(listTaskWorktreeLandings('nope')).rejects.toThrow('taskId');
+  });
+
+  it('commits one repository with a trimmed message', async () => {
+    const fetchMock = vi.fn(async () => reply(standing({ uncommitted: [], uncommittedCount: 0 })));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await commitTaskWorktree(ID, WT2, '  Mobile part ')).uncommittedCount).toBe(0);
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/tasks/${ID}/worktrees/${WT2}/commit`);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ message: 'Mobile part' });
+    await expect(commitTaskWorktree(ID, WT2, ' ')).rejects.toThrow('message');
+    await expect(commitTaskWorktree(ID, 'nope', 'x')).rejects.toThrow('worktreeId');
+  });
+
+  it('merges one repository and says whether that finished the task', async () => {
+    const fetchMock = vi.fn(async () => reply(finishedBody({ mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true })));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await mergeTaskWorktree(ID, WT2)).toEqual({
+      task: task(), repository: 'mobile-app', mergedInto: 'main', filesRemoved: true, filesDetail: null, branchDeleted: true, taskFinished: false,
+      terminalsClosed: ['Demo-4'], terminalsNotClosed: [],
+    });
+    expect(fetchMock.mock.calls[0]).toEqual([`/api/tasks/${ID}/worktrees/${WT2}/merge`, { method: 'POST', signal: undefined }]);
+    vi.stubGlobal('fetch', vi.fn(async () => reply(finishedBody({ mergedInto: 'main', filesRemoved: true, branchDeleted: true, taskFinished: 'no' }))));
+    await expect(mergeTaskWorktree(ID, WT2)).rejects.toThrow('Invalid merge response: taskFinished');
+  });
+
+  it('opens a pull request for one repository', async () => {
+    const fetchMock = vi.fn(async () => reply({ task: task(), repository: 'mobile-app', prUrl: 'https://example.test/pr/2', remote: 'origin' }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await openTaskWorktreePullRequest(ID, WT2, 'origin')).toEqual({ task: task(), repository: 'mobile-app', prUrl: 'https://example.test/pr/2', remote: 'origin' });
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/tasks/${ID}/worktrees/${WT2}/pull-request`);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ remote: 'origin' });
+    await expect(openTaskWorktreePullRequest(ID, WT2, '')).rejects.toThrow('remote');
+  });
+
+  it('closes one repository and says which branch was kept', async () => {
+    const fetchMock = vi.fn(async () => reply(finishedBody({ branchKept: 'task/replies', unmergedCommits: 2, taskFinished: true })));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await closeTaskWorktree(ID, WT2)).toEqual({ task: task(), repository: 'mobile-app', branchKept: 'task/replies', unmergedCommits: 2, taskFinished: true, terminalsClosed: ['Demo-4'], terminalsNotClosed: [] });
+    expect(fetchMock.mock.calls[0]).toEqual([`/api/tasks/${ID}/worktrees/${WT2}/close`, { method: 'POST', signal: undefined }]);
+    vi.stubGlobal('fetch', vi.fn(async () => reply(finishedBody({ branchKept: '', unmergedCommits: 2 }))));
+    await expect(closeTaskWorktree(ID, WT2)).rejects.toThrow('Invalid close response');
+  });
+
+  it('passes on why a repository could not be landed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ message: 'mobile-app conflicts with main in 1 file. Nothing was merged.', conflicts: ['README.md'] }, { ok: false, status: 409 })));
+    await expect(mergeTaskWorktree(ID, WT2)).rejects.toMatchObject({ message: 'mobile-app conflicts with main in 1 file. Nothing was merged.', status: 409, conflicts: ['README.md'] });
   });
 });

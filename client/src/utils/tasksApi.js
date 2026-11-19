@@ -173,6 +173,77 @@ export function parseLanding(body) {
   };
 }
 
+/** How one repository of a task stands: the landing status, with which repository and worktree it is. */
+export function parseWorktreeLanding(body) {
+  const landing = parseLanding(body);
+  const guard = (condition, field) => { if (!condition) throw new Error(`Invalid landing response: ${field}`); };
+  guard(typeof body.worktreeId === 'string' && UUID.test(body.worktreeId), 'worktreeId');
+  guard(text(body.repository) && !body.repository.includes('/'), 'repository');
+  guard(typeof body.own === 'boolean', 'own');
+  guard(typeof body.first === 'boolean', 'first');
+  guard(absolute(body.worktreePath), 'worktreePath');
+  const { taskId, ...rest } = landing;
+  return { taskId, worktreeId: body.worktreeId, repository: body.repository, own: body.own, first: body.first, worktreePath: body.worktreePath, ...rest };
+}
+
+const requireWorktreeId = worktreeId => { if (typeof worktreeId !== 'string' || !UUID.test(worktreeId)) throw new TypeError('worktreeId must be a worktree id'); };
+
+/** How every repository of a task stands, the one it started in first. */
+export async function listTaskWorktreeLandings(taskId, { signal } = {}) {
+  requireTaskId(taskId);
+  const landings = [];
+  for (let page = 0; ; page += 1) {
+    const body = await request(`/${taskId}/worktrees?size=100&page=${page}`, { signal });
+    if (!Array.isArray(body?.data) || typeof body?.page?.hasNextPage !== 'boolean') throw new Error('Invalid task worktrees response');
+    body.data.forEach(entry => landings.push(parseWorktreeLanding(entry)));
+    if (!body.page.hasNextPage) break;
+  }
+  return landings.sort((a, b) => Number(b.first) - Number(a.first) || a.repository.localeCompare(b.repository));
+}
+
+export async function commitTaskWorktree(taskId, worktreeId, message) {
+  requireTaskId(taskId);
+  requireWorktreeId(worktreeId);
+  if (!text(message)) throw new TypeError('message must be a nonempty string');
+  return parseWorktreeLanding(await request(`/${taskId}/worktrees/${worktreeId}/commit`, { method: 'POST', body: { message: message.trim() } }));
+}
+
+/** What every landing of one repository says: which repository, and whether that finished the task. */
+function parseRepositoryOutcome(body, action) {
+  if (!text(body?.repository)) throw new Error(`Invalid ${action} response: repository`);
+  if (typeof body.taskFinished !== 'boolean') throw new Error(`Invalid ${action} response: taskFinished`);
+  return { repository: body.repository, taskFinished: body.taskFinished };
+}
+
+export async function mergeTaskWorktree(taskId, worktreeId) {
+  requireTaskId(taskId);
+  requireWorktreeId(worktreeId);
+  const body = await request(`/${taskId}/worktrees/${worktreeId}/merge`, { method: 'POST' });
+  if (!text(body?.mergedInto) || typeof body.filesRemoved !== 'boolean' || typeof body.branchDeleted !== 'boolean') throw new Error('Invalid merge response');
+  const outcome = parseRepositoryOutcome(body, 'merge');
+  return { task: parseTask(body.task), repository: outcome.repository, mergedInto: body.mergedInto, filesRemoved: body.filesRemoved, filesDetail: text(body.filesDetail) ? body.filesDetail : null,
+    branchDeleted: body.branchDeleted, taskFinished: outcome.taskFinished, ...parseTerminals(body, 'merge') };
+}
+
+export async function openTaskWorktreePullRequest(taskId, worktreeId, remote) {
+  requireTaskId(taskId);
+  requireWorktreeId(worktreeId);
+  if (!text(remote)) throw new TypeError('remote must be a nonempty string');
+  const body = await request(`/${taskId}/worktrees/${worktreeId}/pull-request`, { method: 'POST', body: { remote } });
+  if (typeof body?.prUrl !== 'string' || !/^https?:\/\//.test(body.prUrl)) throw new Error('Invalid pull request response: prUrl');
+  if (!text(body.repository)) throw new Error('Invalid pull request response: repository');
+  return { task: parseTask(body.task), repository: body.repository, prUrl: body.prUrl, remote: String(body.remote) };
+}
+
+export async function closeTaskWorktree(taskId, worktreeId) {
+  requireTaskId(taskId);
+  requireWorktreeId(worktreeId);
+  const body = await request(`/${taskId}/worktrees/${worktreeId}/close`, { method: 'POST' });
+  if (!text(body?.branchKept) || !count(body.unmergedCommits)) throw new Error('Invalid close response');
+  const outcome = parseRepositoryOutcome(body, 'close');
+  return { task: parseTask(body.task), repository: outcome.repository, branchKept: body.branchKept, unmergedCommits: body.unmergedCommits, taskFinished: outcome.taskFinished, ...parseTerminals(body, 'close') };
+}
+
 export async function getTaskLanding(taskId, { signal } = {}) {
   requireTaskId(taskId);
   return parseLanding(await request(`/${taskId}/landing`, { signal }));
