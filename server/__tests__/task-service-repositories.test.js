@@ -14,7 +14,7 @@ const databases = [];
 afterEach(() => databases.splice(0).forEach(db => db.close()));
 
 /** A project whose own repository is `backend`, listing `mobile-app` and `frontend` (through its main worktree). */
-async function setup({ exec = execFile, link = true } = {}) {
+async function setup({ exec = execFile, link = true, working = { now: false } } = {}) {
   const ctx = groupFixture();
   if (link) {
     await ctx.service.add('Demo', { path: ctx.mobile });
@@ -26,11 +26,12 @@ async function setup({ exec = execFile, link = true } = {}) {
   const start = vi.fn(async () => ({ id: 'Demo-3' }));
   const ids = [ID, '7a000000-0000-4000-8000-000000000002'];
   const service = createTaskService({
+    isRunWorking: () => working.now,
     taskStore, findProject: ctx.findProject, execFile: exec, startSession: start,
     pathExists: async target => existsSync(target), newId: () => ids.shift(),
   });
   const folder = path.join(ctx.group, 'worktrees', 'whatsapp-replies-7a000000');
-  return { ...ctx, taskStore, tasks: service, start, folder };
+  return { ...ctx, taskStore, tasks: service, start, folder, working };
 }
 
 async function rejection(promise) {
@@ -193,6 +194,80 @@ describe('a task across the repositories of a project', { timeout: 30_000 }, () 
       expect(await rejection(tasks.openTerminal(ID, { worktreeId: '7b000000-0000-4000-8000-000000000099' })))
         .toMatchObject({ status: 400, errors: [{ field: 'worktreeId', message: 'Use the id of one of this task\'s worktrees' }] });
       expect(await rejection(tasks.openTerminal(ID, { worktreeId: 7 }))).toMatchObject({ status: 400, errors: [{ field: 'worktreeId', message: 'Use the id of one of this task\'s worktrees' }] });
+    });
+  });
+
+  describe('adding a repository to an open task', () => {
+    it('gives the task a copy of the repository beside its others, on the task\'s branch, from the repository\'s current commit', async () => {
+      const { tasks, folder, mobile, taskStore } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      const task = await tasks.addRepository(ID, { repository: 'mobile-app' });
+      expect(task.worktrees.map(worktree => [worktree.repository, worktree.first, worktree.worktreePath, worktree.branch])).toEqual([
+        ['backend', true, path.join(folder, 'backend'), 'task/whatsapp-replies-7a000000'],
+        ['mobile-app', false, path.join(folder, 'mobile-app'), 'task/whatsapp-replies-7a000000'],
+      ]);
+      expect(task.worktrees[1]).toMatchObject({ own: false, repositoryPath: mobile, baseBranch: 'main', baseCommit: git(mobile, ['rev-parse', 'HEAD']), state: 'active' });
+      expect(git(path.join(folder, 'mobile-app'), ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('task/whatsapp-replies-7a000000');
+      expect(taskStore.get(ID)).toEqual(task);
+    });
+
+    it('adds the same repository once when asked twice at once', async () => {
+      const { tasks, taskStore } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      const outcomes = await Promise.allSettled([tasks.addRepository(ID, { repository: 'mobile-app' }), tasks.addRepository(ID, { repository: 'mobile-app' })]);
+      expect(outcomes.map(outcome => outcome.status).sort()).toEqual(['fulfilled', 'rejected']);
+      expect(outcomes.find(outcome => outcome.status === 'rejected').reason).toMatchObject({ status: 409, message: 'mobile-app is already part of this task.' });
+      expect(taskStore.get(ID).worktrees).toHaveLength(2);
+    });
+
+    it('names a copy the way the task\'s own is named when the task has no folder of its own', async () => {
+      const { tasks, group, service, mobile } = await setup({ link: false });
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      // The project lists another repository only after the task was made.
+      await service.add('Demo', { path: mobile });
+      const task = await tasks.addRepository(ID, { repository: 'mobile-app' });
+      expect(task.folder).toBeNull();
+      expect(task.worktrees[1]).toMatchObject({ worktreePath: path.join(group, 'worktrees', 'mobile-app-whatsapp-replies-7a000000'), branch: 'task/whatsapp-replies-7a000000' });
+    });
+
+    it('refuses while a run is working in the task, and allows it once the run waits', async () => {
+      const { tasks, working, taskStore } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      working.now = true;
+      expect(await rejection(tasks.addRepository(ID, { repository: 'mobile-app' }))).toMatchObject({ status: 409, message: 'A workflow run is working in this task. Add the repository when it pauses or finishes.' });
+      expect(taskStore.get(ID).worktrees).toHaveLength(1);
+      working.now = false;
+      expect((await tasks.addRepository(ID, { repository: 'mobile-app' })).worktrees).toHaveLength(2);
+    });
+
+    it('refuses a repository the task has or had, one the project does not list, and a finished or unknown task', async () => {
+      const { tasks, taskStore } = await setup();
+      const task = await tasks.create({ project: 'Demo', title: 'WhatsApp replies', repositories: ['backend', 'mobile-app'] });
+      expect(await rejection(tasks.addRepository(ID, { repository: 'backend' }))).toMatchObject({ status: 409, message: 'backend is already part of this task.' });
+      taskStore.setWorktreeState(ID, task.worktrees[1].id, { state: 'closed' });
+      expect(await rejection(tasks.addRepository(ID, { repository: 'mobile-app' }))).toMatchObject({ status: 409, message: 'mobile-app was already merged or closed in this task and cannot be added again.' });
+      expect(await rejection(tasks.addRepository(ID, { repository: 'tools' }))).toMatchObject({ status: 400, errors: [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }] });
+      for (const body of [undefined, null, [], 'frontend']) {
+        expect(await rejection(tasks.addRepository(ID, body))).toMatchObject({ status: 400, errors: [{ field: 'body', message: 'Use an object with repository' }] });
+      }
+      for (const repository of [undefined, null, '', 7, 'a/b']) {
+        expect(await rejection(tasks.addRepository(ID, { repository }))).toMatchObject({ status: 400, errors: [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }] });
+      }
+      expect(await rejection(tasks.addRepository(ID, { repository: 'frontend', branch: 'x' }))).toMatchObject({ status: 400, errors: [{ field: 'branch', message: 'Unknown field' }] });
+      expect(await rejection(tasks.addRepository('7a000000-0000-4000-8000-000000000009', { repository: 'frontend' }))).toMatchObject({ status: 404 });
+      taskStore.setWorktreeState(ID, task.worktrees[0].id, { state: 'closed' });
+      expect(await rejection(tasks.addRepository(ID, { repository: 'frontend' }))).toMatchObject({ status: 409, message: 'This task is finished.' });
+    });
+
+    it('says why when the copy cannot be created, and adds nothing', async () => {
+      const { tasks, mobile, folder, taskStore } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      git(mobile, ['branch', 'task/whatsapp-replies-7a000000']);
+      const error = await rejection(tasks.addRepository(ID, { repository: 'mobile-app' }));
+      expect(error.status).toBe(409);
+      expect(error.message).toMatch(/^The copy of mobile-app could not be created: .*already exists\.$/);
+      expect(existsSync(path.join(folder, 'mobile-app'))).toBe(false);
+      expect(taskStore.get(ID).worktrees).toHaveLength(1);
     });
   });
 });

@@ -31,7 +31,7 @@ function setup({ host, startSession } = {}) {
   const taskStore = createTaskStore(db);
   const start = startSession ?? vi.fn(async () => ({ id: 'Demo-3' }));
   const ids = [ID, '7b000000-0000-4000-8000-000000000002'];
-  const service = createTaskService({
+  const service = createTaskService({ isRunWorking: () => false,
     taskStore,
     findProject: name => (name === 'Demo' ? { name: 'Demo', path: repo, repositories: [], ...(host ? { host } : {}) } : null),
     execFile,
@@ -177,6 +177,6 @@ describe('task service', () => {
   });
 
   it('requires its dependencies', () => {
-    expect(() => createTaskService({})).toThrow('taskStore');
+    expect(() => createTaskService({ isRunWorking: () => false,})).toThrow('taskStore');
   });
 });

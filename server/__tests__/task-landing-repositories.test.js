@@ -26,7 +26,7 @@ async function setup({ exec = execFile, repositories = ['backend', 'frontend'] }
   const taskStore = createTaskStore(db);
   const pathExists = async target => existsSync(target);
   const ids = [ID];
-  const tasks = createTaskService({ taskStore, findProject: ctx.findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists, newId: () => ids.shift() });
+  const tasks = createTaskService({ isRunWorking: () => false, taskStore, findProject: ctx.findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists, newId: () => ids.shift() });
   const state = { activeRun: false };
   const onTaskFinished = vi.fn();
   const onWorktreeFinished = vi.fn();

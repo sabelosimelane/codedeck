@@ -22,7 +22,7 @@ async function setup({ openTerminal, landing } = {}) {
   let tick = 0;
   const taskStore = createTaskStore(db, { now: () => new Date(Date.UTC(2026, 10, 18, 10, 0, tick++)).toISOString() });
   let created = 0;
-  const real = createTaskService({ taskStore, findProject: () => null, execFile: () => {}, startSession: async () => ({ id: 'Demo-1' }), pathExists: async () => true });
+  const real = createTaskService({ isRunWorking: () => false, taskStore, findProject: () => null, execFile: () => {}, startSession: async () => ({ id: 'Demo-1' }), pathExists: async () => true });
   const service = {
     create: vi.fn(async ({ project, title, repositories }) => {
       if (repositories !== undefined && (!Array.isArray(repositories) || repositories.includes('nope'))) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'repositories', message: 'nope is not a repository of this project' }]);
@@ -35,6 +35,16 @@ async function setup({ openTerminal, landing } = {}) {
     get: real.get,
     rename: real.rename,
     openTerminal: openTerminal ?? real.openTerminal,
+    // Stands in for Git: records the worktree the real service would have created, and refuses what it would refuse.
+    addRepository: vi.fn(async (taskId, body) => {
+      const task = real.get(taskId);
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'body', message: 'Use an object with repository' }]);
+      const unknown = Object.keys(body).filter(field => field !== 'repository');
+      if (unknown.length) throw new TaskError('One or more fields failed validation.', 400, unknown.map(field => ({ field, message: 'Unknown field' })));
+      if (typeof body.repository !== 'string' || !['mobile-app', 'frontend'].includes(body.repository)) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]);
+      if (task.worktrees.some(worktree => worktree.repository === body.repository)) throw new TaskError(`${body.repository} is already part of this task.`, 409);
+      return { ...taskStore.addWorktree(taskId, { repository: body.repository, repositoryPath: `/tmp/group/${body.repository}`, worktreePath: `/tmp/worktrees/${taskId}-${body.repository}`, branch: 'task/t-1', baseBranch: 'main', baseCommit: 'b'.repeat(40) }), secretColumn: 'never shown' };
+    }),
   };
   const app = express();
   const refused = (message, extra) => Object.assign(new TaskError(message, 409), { extra });
@@ -513,8 +523,67 @@ describe('tasks API — the repositories of a task', () => {
     expectProblem(await request(server).post(`${base}/${id(1)}/worktrees/nope/merge`), 404, `${base}/${id(1)}/worktrees/nope/merge`);
   });
 
+  it('adds a repository to a task and returns the task with it, once', async () => {
+    const { server, service } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Across' });
+    const url = `${base}/${id(1)}/worktrees`;
+    const added = await request(server).post(url).send({ repository: 'mobile-app' });
+    expect(added.status).toBe(201);
+    expect(added.body.worktrees.map(worktree => [worktree.repository, worktree.first])).toEqual([['demo', true], ['mobile-app', false]]);
+    expect(added.body).not.toHaveProperty('secretColumn');
+    expect(JSON.stringify(added.body)).not.toContain('/tmp/group/mobile-app');
+    expect(service.addRepository).toHaveBeenCalledWith(id(1), { repository: 'mobile-app' });
+    // The same request again adds nothing.
+    expectProblem(await request(server).post(url).send({ repository: 'mobile-app' }), 409, url);
+    expect((await request(server).get(`${base}/${id(1)}`)).body.worktrees).toHaveLength(2);
+  });
+
+  it('adds one worktree when the same repository is asked for twice at once', async () => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Across' });
+    const url = `${base}/${id(1)}/worktrees`;
+    const responses = await Promise.all([request(server).post(url).send({ repository: 'frontend' }), request(server).post(url).send({ repository: 'frontend' })]);
+    expect(responses.map(response => response.status).sort()).toEqual([201, 409]);
+    expect((await request(server).get(`${base}/${id(1)}`)).body.worktrees).toHaveLength(2);
+  });
+
+  it.each([
+    ['a missing name', {}, ['repository']],
+    ['null', { repository: null }, ['repository']],
+    ['an empty name', { repository: '' }, ['repository']],
+    ['a number', { repository: 7 }, ['repository']],
+    ['a repository the project does not list', { repository: 'tools' }, ['repository']],
+    ['a path', { repository: '../../etc/passwd' }, ['repository']],
+    ['markup', { repository: '<script>alert(1)</script>' }, ['repository']],
+    ['a name of 5000 characters', { repository: 'r'.repeat(5000) }, null],
+    ['an unknown field', { repository: 'frontend', branch: 'main' }, ['branch']],
+    ['a list', [], ['body']],
+  ])('refuses to add %s', async (_name, body, fields) => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Across' });
+    const url = `${base}/${id(1)}/worktrees`;
+    const response = await request(server).post(url).send(body);
+    if (fields === null) {
+      // Larger than the router's 4 KB body limit.
+      expectProblem(response, 413, url);
+    } else {
+      expectProblem(response, 400, url);
+      expect(response.body.errors.map(error => error.field)).toEqual(fields);
+    }
+    expect(JSON.stringify(response.body)).not.toMatch(/<script>|passwd/);
+    expect((await request(server).get(`${base}/${id(1)}`)).body.worktrees).toHaveLength(1);
+  });
+
+  it('reports an unknown task and malformed JSON when a repository is added', async () => {
+    const { server } = await setup();
+    const url = `${base}/${id(9)}/worktrees`;
+    expectProblem(await request(server).post(url).send({ repository: 'frontend' }), 404, url);
+    expectProblem(await request(server).post(url).set('Content-Type', 'application/json').send('{"repository":'), 400, url);
+  });
+
   it('requires the landing of single repositories', () => {
     const landing = { status() {}, commit() {}, merge() {}, pullRequest() {}, close() {} };
-    expect(() => createTasksRouter({ service: { create() {}, get() {}, rename() {}, openTerminal() {} }, taskStore: { list() {} }, landing })).toThrow('tasks router requires landing.worktrees');
+    expect(() => createTasksRouter({ service: { create() {}, get() {}, rename() {}, openTerminal() {}, addRepository() {} }, taskStore: { list() {} }, landing })).toThrow('tasks router requires landing.worktrees');
+    expect(() => createTasksRouter({ service: { create() {}, get() {}, rename() {}, openTerminal() {} }, taskStore: { list() {} }, landing })).toThrow('tasks router requires service.addRepository');
   });
 });

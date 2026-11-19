@@ -273,6 +273,19 @@ describe('task store', () => {
       });
     });
 
+    it('keeps the worktrees in the order they were added, also when several are added in the same instant', () => {
+      const db = open();
+      // Ids that sort against the order of addition, and a clock that does not move.
+      const ids = [worktreeId(9), worktreeId(5), worktreeId(1), worktreeId(7)];
+      const store = createTaskStore(db, { now: () => '2026-11-18T10:00:00.000Z', newId: () => ids.shift() });
+      store.create(input);
+      for (const repository of ['mobile-app', 'frontend', 'docs']) {
+        store.addWorktree(ID, { ...second, repository, repositoryPath: `/tmp/group/${repository}`, worktreePath: `/tmp/worktrees/whatsapp-replies-7a000000/${repository}` });
+      }
+      expect(store.get(ID).worktrees.map(worktree => worktree.repository)).toEqual(['demo', 'mobile-app', 'frontend', 'docs']);
+      expect(store.list()[0].worktrees.map(worktree => worktree.repository)).toEqual(['demo', 'mobile-app', 'frontend', 'docs']);
+    });
+
     it.each([
       ['repository', ''],
       ['repository', 'a/b'],

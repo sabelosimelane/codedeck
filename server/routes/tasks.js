@@ -90,7 +90,7 @@ function worktreeLandingView(view) {
 }
 
 export function createTasksRouter({ service, taskStore, landing } = {}) {
-  for (const method of ['create', 'get', 'rename', 'openTerminal']) {
+  for (const method of ['create', 'get', 'rename', 'openTerminal', 'addRepository']) {
     if (typeof service?.[method] !== 'function') throw new TypeError(`tasks router requires service.${method}`);
   }
   if (typeof taskStore?.list !== 'function') throw new TypeError('tasks router requires taskStore.list');
@@ -174,6 +174,11 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
   }));
 
   // --- Landing one repository of a task ---
+
+  // One more of the project's repositories for an open task: `{repository}`. The service checks the body, since it knows the project's repositories.
+  router.post(`${BASE}/:id/worktrees`, route(async (req, res) => {
+    res.status(201).json(taskView(await service.addRepository(req.params.id, req.body ?? null)));
+  }));
 
   router.get(`${BASE}/:id/worktrees`, route(async (req, res) => {
     const query = parseCollectionQuery(req.query, { sortFields: WORKTREE_SORT_FIELDS, defaultSort: 'repository,asc', filters: [] }, fieldError);

@@ -34,7 +34,7 @@ async function setup({ exec = execFile, activeRun = false } = {}) {
   const findProject = name => (name === 'Demo' ? { name: 'Demo', path: repo, repositories: [] } : null);
   const pathExists = async target => existsSync(target);
   const ids = [ID, '7b000000-0000-4000-8000-000000000002'];
-  const service = createTaskService({ taskStore, findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists, newId: () => ids.shift() });
+  const service = createTaskService({ isRunWorking: () => false, taskStore, findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists, newId: () => ids.shift() });
   const state = { activeRun, terminals: { closed: [], notClosed: [] } };
   const onTaskFinished = vi.fn();
   const closeTerminals = vi.fn(async () => state.terminals);

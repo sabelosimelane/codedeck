@@ -898,6 +898,8 @@ app.use(createTerminalWorktreesRouter({ service: createTerminalWorktreeService({
 }) }));
 const taskStore = createTaskStore(db, { findProject: name => loadProjects().find(project => project.name === name) ?? null });
 const taskService = createTaskService({
+  // Read when asked: the run store is created below. A run that is starting or running may be writing in the task.
+  isRunWorking: taskId => pipelineRunStore.list().some(run => run.taskId === taskId && (run.status === 'pending' || run.status === 'running')),
   taskStore,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   execFile,

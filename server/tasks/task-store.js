@@ -255,9 +255,10 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
 
   const read = db.prepare('SELECT * FROM tasks WHERE id = ?');
   const readAll = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC, id DESC');
-  // The first worktree first, then in the order they were added.
-  const readWorktrees = db.prepare('SELECT * FROM task_worktrees WHERE task_id = ? ORDER BY is_first DESC, created_at, id');
-  const readAllWorktrees = db.prepare('SELECT * FROM task_worktrees ORDER BY is_first DESC, created_at, id');
+  // The first worktree first, then in the order they were added: the order the rows were written in,
+  // which holds also for worktrees recorded in the same instant.
+  const readWorktrees = db.prepare('SELECT * FROM task_worktrees WHERE task_id = ? ORDER BY is_first DESC, rowid');
+  const readAllWorktrees = db.prepare('SELECT * FROM task_worktrees ORDER BY is_first DESC, rowid');
   const readOpenByPath = db.prepare(`SELECT task_id FROM task_worktrees WHERE worktree_path = ? AND state IN (${OPEN_STATES.map(() => '?').join(', ')})`);
   const insert = db.prepare(`
     INSERT INTO tasks (id, project, title, worktree_path, branch, base_branch, base_commit, state, pr_url, revision, created_at, updated_at, finished_at, title_source, task_folder)

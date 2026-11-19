@@ -33,10 +33,12 @@ const gitReason = (text) => {
 
 export function createTaskService({
   taskStore, findProject, execFile, startSession, pathExists, realpath, newId = randomUUID,
+  // Whether a workflow run is working in a task right now: a repository is not added under it.
+  isRunWorking,
   rmdir = target => fs.promises.rmdir(target),
 } = {}) {
   if (typeof taskStore?.create !== 'function' || typeof taskStore?.addWorktree !== 'function') throw new TypeError('taskStore is required');
-  for (const [name, value] of Object.entries({ findProject, execFile, startSession, pathExists, newId, rmdir })) {
+  for (const [name, value] of Object.entries({ findProject, execFile, startSession, pathExists, newId, isRunWorking, rmdir })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
 
@@ -224,6 +226,60 @@ export function createTaskService({
     return task;
   }
 
+  /**
+   * Gives an open task a copy of one more of the project's repositories: a worktree beside its
+   * others, on the task's branch, from that repository's current commit. Nothing is prepared in it.
+   */
+  async function addRepositoryNow(id, body) {
+    const task = requireTask(id);
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) throw invalid('body', 'Use an object with repository');
+    const unknown = Object.keys(body).filter(field => field !== 'repository');
+    if (unknown.length) throw new TaskError('One or more fields failed validation.', 400, unknown.map(field => ({ field, message: 'Unknown field' })));
+    const name = body.repository;
+    const wrongName = invalid('repository', 'Use the name of one of this project\'s repositories');
+    if (typeof name !== 'string' || name.length === 0 || name.includes('/')) throw wrongName;
+    if (!OPEN_STATES.includes(task.state)) throw new TaskError('This task is finished.', 409);
+    const had = task.worktrees.find(worktree => worktree.repository === name);
+    if (had) {
+      throw new TaskError(OPEN_STATES.includes(had.state)
+        ? `${name} is already part of this task.`
+        : `${name} was already merged or closed in this task and cannot be added again.`, 409);
+    }
+    const project = await resolveProject(task.project);
+    const ownHome = await homeOf(project.path);
+    const listed = readStoredRepositories(project).find(entry => entry.name === name);
+    const checkoutPath = name === path.basename(ownHome) ? project.path : listed?.path;
+    if (checkoutPath === undefined) throw wrongName;
+    // A run that is working may be writing in the task; the repository is added when it pauses or finishes.
+    if (isRunWorking(task.id) === true) throw new TaskError('A workflow run is working in this task. Add the repository when it pauses or finishes.', 409);
+
+    const baseBranch = await checkCheckout(checkoutPath, name);
+    const homePath = checkoutPath === project.path ? ownHome : await homeOf(checkoutPath);
+    // Beside the task's other worktrees when it has a folder of its own; else named as its own worktree is.
+    const branch = task.branch.startsWith('task/') ? task.branch : `task/${task.id.slice(0, 8)}`;
+    const worktreePath = task.folder !== null
+      ? path.join(task.folder, name)
+      : path.join(path.dirname(homePath), 'worktrees', `${path.basename(homePath)}-${branch.slice('task/'.length)}`);
+    const exists = await pathExists(worktreePath);
+    if (typeof exists !== 'boolean') throw new Error('pathExists must return a boolean');
+    if (exists) throw new TaskError(`A folder for ${name} in this task already exists.`, 409);
+
+    const worktree = { repository: name, repositoryPath: checkoutPath === project.path ? null : checkoutPath, homePath, worktreePath, branch, baseBranch };
+    let made;
+    try {
+      made = await createWorktree({ homePath, worktreePath, branch, projectPath: checkoutPath, execFile });
+    } catch (error) {
+      throw new TaskError(`The copy of ${name} could not be created: ${gitReason(error?.message).replace(/\.$/, '')}.`, 409, undefined, { cause: error });
+    }
+    try {
+      return taskStore.addWorktree(task.id, { repository: name, repositoryPath: worktree.repositoryPath, worktreePath, branch, baseBranch, baseCommit: made?.baseCommit });
+    } catch (error) {
+      // The copy exists but the task could not take it: it is new and clean, so it is taken back.
+      await undo(worktree);
+      throw error;
+    }
+  }
+
   // Git refuses concurrent `worktree add` in one repository, so creations run one at a time.
   let queue = Promise.resolve();
   return {
@@ -240,6 +296,11 @@ export function createTaskService({
       return run;
     },
     get: requireTask,
+    addRepository(id, body) {
+      const run = queue.then(() => addRepositoryNow(id, body));
+      queue = run.then(() => undefined, () => undefined);
+      return run;
+    },
     rename(id, { title, revision } = {}) {
       const errors = [];
       if (!isTaskTitle(title)) errors.push({ field: 'title', message: TITLE_RULE });

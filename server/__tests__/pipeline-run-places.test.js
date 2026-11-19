@@ -23,7 +23,7 @@ async function setup({ link = true } = {}) {
   databases.push(db);
   const taskStore = createTaskStore(db);
   const ids = [ID];
-  const tasks = createTaskService({ taskStore, findProject: ctx.findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists: async target => existsSync(target), newId: () => ids.shift() });
+  const tasks = createTaskService({ isRunWorking: () => false, taskStore, findProject: ctx.findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists: async target => existsSync(target), newId: () => ids.shift() });
   const places = createRunPlaces({ taskStore, findProject: ctx.findProject, execFile });
   return { ...ctx, taskStore, tasks, places };
 }
