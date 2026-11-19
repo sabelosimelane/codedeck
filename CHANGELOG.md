@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-11-19] - Close run closes the terminals the run used
+
+### Executive Summary
+* **Close run** took a finished run off the screen and left its step terminals open, where they turned into ordinary tabs of the task and rows in the sidebar. It now closes the terminals the run's steps used, for a run that is complete, stopped, failed or interrupted, and the toast says how many. An agent still working in one of them is stopped with it.
+* Nothing else is closed: a terminal you opened in the task or in Main yourself stays, as does one another run still on screen uses, and the task's files and branch are untouched. Only pressing Close run does this. A run that is closed because another run starts in its place keeps its terminals, since the new run goes on in the tabs its agents already have.
+* A terminal that could not be closed is named in an error toast and keeps its tab; the run is closed all the same.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `server/pipelines/run-terminals.js` (new) — `createRunTerminalCloser` closes each step's `sessionId` and `priorSessionIds` when the terminal is still open, was started in the run's worktree and is not recorded by another open run. The worktree check is there because a session id is given out again after a restart, so an id a step recorded can later name a terminal opened elsewhere. `createTerminalPlaces` reads where a terminal was started: its recorded worktree, or the project's own folder.
+  * `server/routes/pipelines.js` — `POST /api/pipelines/runs/:id/cleanup` closes the run through the engine as before, then closes its terminals and adds `terminalsClosed` and `terminalsNotClosed` to the run it returns. A run left `removal_blocked` is still open and keeps its terminals. The router now requires `closeRunTerminals`.
+  * `server/index.js` — wires the closer to the session map, the terminal worktree store and the session deleter.
+  * `client/src/utils/pipelinesApi.js`, `client/src/hooks/usePipelineRuns.js`, `client/src/components/TerminalArea.jsx`, `client/src/components/tasks/TaskView.jsx` — the response is checked, the toasts report the terminals closed and not closed, the closed terminals' tabs are removed, and the wording on a finished run and the button's tooltip say what Close run does.
+* **📚 Documents:** `README.md`, `docs/steering/product.md`, `docs/steering/structure.md`, `docs/steering/api-standards.md` and the workflow pipelines specification.
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-terminals.test.js` (new, 17 cases) — the run's terminals closed once each; a hand-opened terminal in the same worktree kept; a dead or already closed one skipped; one whose id now names a terminal elsewhere kept; a run in Main; one another open run uses kept; a failed close reported; refused inputs.
+  * `server/__tests__/pipelines-api.test.js` — Close run for a complete, stopped, failed and interrupted run; a second Close run refused; a terminal not closed still closes the run; the other open runs passed along; a `removal_blocked` run keeps its terminals; no terminal closed on a refused Close run, on Stop or Resume, or when another run takes a finished run's place; a malformed answer from the terminal layer is a 500 problem.
+  * `client` — `pipelinesApi.test.js`, `usePipelineRuns.test.jsx`, `TerminalAreaWorktreeFilter.test.jsx` and `TaskView.test.jsx` cover the checked response, the toasts, the tabs removed and kept, and the wording.
+* **Not covered:** a terminal the owner closed by hand whose id, after a backend restart, went to a new terminal opened in the same worktree is taken for the run's and closed with it. Not checked in a browser against a live run; verified by tests only.
+
 ## [2026-11-19] - Resume waits for an agent that is still working, and Codex is read as working while it writes
 
 ### Executive Summary

@@ -359,6 +359,8 @@ function mapEngineActionError(err) {
  * @param {object} deps.runStore
  * @param {(name: string) => object|null|undefined} deps.findProject
  * @param {{ start: (runId: string) => unknown }} [deps.engine]
+ * @param {(run: object, otherOpenRuns: object[]) => Promise<{ closed: string[], notClosed: string[] }>} deps.closeRunTerminals
+ *   closes the terminals a run used (see pipelines/run-terminals.js)
  * @param {typeof defaultPreflight} [deps.preflight]
  * @param {typeof defaultPlanNames} [deps.planNames]
  * @param {typeof defaultResolveHomeRepoPath} [deps.resolveHomeRepoPath]
@@ -383,6 +385,7 @@ export function createPipelinesRouter(deps) {
     taskService,
     findProject,
     engine,
+    closeRunTerminals,
     preflight = defaultPreflight,
     planNames = defaultPlanNames,
     resolveHomeRepoPath = defaultResolveHomeRepoPath,
@@ -415,6 +418,7 @@ export function createPipelinesRouter(deps) {
   if (['get', 'reserve', 'setTaskId', 'release'].some(method => typeof requestStore?.[method] !== 'function')) {
     throw new Error('pipelines router: requestStore is required');
   }
+  if (typeof closeRunTerminals !== 'function') throw new Error('pipelines router: closeRunTerminals must be a function');
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
   const asRunView = async run => {
@@ -1189,7 +1193,8 @@ export function createPipelinesRouter(deps) {
     return run;
   }
 
-  async function runOwnerAction(req, res, action, ...args) {
+  /** Carries out an owner action and answers the run as it then stands. */
+  async function performOwnerAction(req, action, ...args) {
     loadRun(req.params.id);
     if (!engine || typeof engine[action] !== 'function') {
       throw new PipelineError(`Run ${action} is not available`, 500);
@@ -1201,7 +1206,21 @@ export function createPipelinesRouter(deps) {
     }
     const updated = runStore.get(req.params.id);
     if (!updated) throw new PipelineError('Run not found', 404);
-    res.json(await asRunView(updated));
+    return updated;
+  }
+
+  async function runOwnerAction(req, res, action, ...args) {
+    res.json(await asRunView(await performOwnerAction(req, action, ...args)));
+  }
+
+  /** What the terminal layer says it closed and could not close. */
+  function requireClosedTerminals(result) {
+    for (const field of ['closed', 'notClosed']) {
+      if (!Array.isArray(result?.[field]) || result[field].some(id => typeof id !== 'string' || id.trim() === '')) {
+        throw new TypeError(`closeRunTerminals: ${field} must be a list of session ids`);
+      }
+    }
+    return { terminalsClosed: result.closed, terminalsNotClosed: result.notClosed };
   }
 
   router.post(`${BASE}/runs/:id/stop`, route(async (req, res) => {
@@ -1237,8 +1256,14 @@ export function createPipelinesRouter(deps) {
     await runOwnerAction(req, res, 'sendBack', req.body.comment);
   }));
 
+  // Close run. Only this, the owner's own action, closes the terminals the run used: a run closed because
+  // another one started in its place, or because its task was finished, is not closed here.
   router.post(`${BASE}/runs/:id/cleanup`, route(async (req, res) => {
-    await runOwnerAction(req, res, 'cleanup');
+    const closed = await performOwnerAction(req, 'cleanup');
+    // A run whose own worktree could not be removed is still on screen, and keeps its terminals.
+    const terminals = isOpenRun(closed) ? { closed: [], notClosed: [] }
+      : await closeRunTerminals(closed, runStore.list().filter(isOpenRun));
+    res.json({ ...(await asRunView(closed)), ...requireClosedTerminals(terminals) });
   }));
 
   // What the run's agents were asked to settle themselves, in the order it happened.

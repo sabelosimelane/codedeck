@@ -504,8 +504,14 @@ shell), each call with an explicit timeout.
     not change.
   - For a run whose `worktree_state` is `not_created`, cleanup makes no git call and sets `removed`.
 - The branch is never deleted or merged by CodeDeck.
-- Cleanup does not close terminals. Terminals of the run stay open in a directory that no longer
-  exists until the owner closes them.
+- The cleanup the owner asks for (`POST /runs/:id/cleanup`, **Close run**) closes the terminals the
+  run's steps used once the run is closed: each step's `sessionId` and `priorSessionIds`, where the
+  terminal is still open, was started in the run's worktree (a session id is given out again after a
+  restart, so a recorded id can name a later terminal elsewhere) and is not recorded by another open
+  run. The response adds `terminalsClosed` and `terminalsNotClosed`. A run left `removal_blocked`
+  is still open and keeps its terminals. The automatic cleanup on `complete`, the release of a
+  finished run when another starts in its worktree, and a task being finished do not go through
+  this: the first two leave the terminals open, the last closes all of the task's terminals.
 
 ### 8.3 Running one step
 

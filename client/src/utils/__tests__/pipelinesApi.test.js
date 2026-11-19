@@ -173,13 +173,31 @@ describe('pipelinesApi', () => {
     ['stopRun', stopRun, '/api/pipelines/runs/r1/stop'],
     ['resumeRun', resumeRun, '/api/pipelines/runs/r1/resume'],
     ['continueRun', continueRun, '/api/pipelines/runs/r1/continue'],
-    ['cleanupRun', cleanupRun, '/api/pipelines/runs/r1/cleanup'],
   ])('%s posts to the owner-action endpoint', async (_name, action, url) => {
     const run = { id: 'r1', status: 'stopped' };
     global.fetch = vi.fn(async () => jsonResponse(run));
 
     await expect(action('r1')).resolves.toEqual(run);
     expect(global.fetch).toHaveBeenCalledWith(url, expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('cleanupRun posts to the cleanup endpoint and returns the run with the terminals the backend closed', async () => {
+    const closed = { id: 'r1', status: 'complete', terminalsClosed: ['Demo-3', 'Demo-4'], terminalsNotClosed: ['Demo-5'] };
+    global.fetch = vi.fn(async () => jsonResponse(closed));
+
+    await expect(cleanupRun('r1')).resolves.toEqual(closed);
+    expect(global.fetch).toHaveBeenCalledWith('/api/pipelines/runs/r1/cleanup', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it.each([
+    ['terminalsClosed', { id: 'r1', terminalsNotClosed: [] }],
+    ['terminalsClosed', { id: 'r1', terminalsClosed: 'Demo-3', terminalsNotClosed: [] }],
+    ['terminalsClosed', { id: 'r1', terminalsClosed: [''], terminalsNotClosed: [] }],
+    ['terminalsNotClosed', { id: 'r1', terminalsClosed: [] }],
+    ['terminalsNotClosed', { id: 'r1', terminalsClosed: [], terminalsNotClosed: [7] }],
+  ])('cleanupRun refuses a response without a readable %s', async (field, body) => {
+    global.fetch = vi.fn(async () => jsonResponse(body));
+    await expect(cleanupRun('r1')).rejects.toThrow(`Invalid close run response: ${field}`);
   });
 
   it('answerRun posts the answer as the JSON body of the answer endpoint', async () => {

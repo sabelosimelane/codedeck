@@ -37,6 +37,7 @@ import {
   listWorktrees as listPipelineWorktrees,
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
+import { createRunTerminalCloser, createTerminalPlaces } from './pipelines/run-terminals.js';
 import { createRunPlaces } from './pipelines/run-places.js';
 import { setObservedTerminalMuted } from './pipelines/terminal-muting-adapter.js';
 import { createRunProgressReader, readRunProgress } from './pipelines/run-progress.js';
@@ -1090,6 +1091,15 @@ app.use(createPipelinesRouter({
   taskService,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   engine: pipelineRunEngine,
+  // Close run closes the terminals the run's steps used, where they still are that run's.
+  closeRunTerminals: createRunTerminalCloser({
+    isOpen: sessionId => sessions.has(sessionId) || terminalRuntime.isSessionRecoverable(sessionId),
+    placeOf: createTerminalPlaces({
+      readRecord: sessionId => terminalSessionWorktreeStore.get(sessionId),
+      findProject: name => loadProjects().find(project => project.name === name) ?? null,
+    }),
+    deleteSession: deleteTerminalSession,
+  }),
   execFile,
 }));
 

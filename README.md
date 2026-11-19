@@ -208,13 +208,14 @@ agent's conversation is cleared each time, including anything you typed there yo
 A run keeps only the terminal it is working in showing status; its other terminals
 are muted until their step starts. When the run waits for you, that step's terminal
 stays live. When the run is stopped, interrupted, failed or complete, all its
-terminals are muted. Closing the run lifts the muting. A change you make with the
+terminals are muted, until **Close run** closes them; one that stays open after
+that shows its status again. A change you make with the
 eye icon lasts until the run's next state change.
 
 A task that an open run is already using, one with no branch checked out, or one
 whose files are no longer on disk cannot be chosen. A run never removes the place it
 works in. When a run in a task or in Main ends or is stopped, **Close run** closes
-the run and leaves the task as it is.
+the run and the terminals it used, and leaves the task and its files as they are.
 
 When an agent needs something from you it pauses the run. CodeDeck asks every agent
 to list its questions, each with the answer it recommends, before it pauses. The task
@@ -273,9 +274,21 @@ task's run stands in a word (running, needs your input, complete, failed, …).
 
 When a run completes, it stays in view on its task as **Complete**, with its steps and
 notes, and its task stays, with the work on the task's branch: commit, merge, open a
-pull request or close it as described under **Tasks**. **Close run** only takes the
-finished run off the screen. Starting another run in the same task, or finishing the
-task, closes it too. These pipelines use local projects; remote
+pull request or close it as described under **Tasks**.
+
+**Close run** takes the run off the screen and closes the terminals it used: the one
+each step worked in, and any a step had before. It is offered for a run that is
+complete, stopped, failed or interrupted; an agent still working in one of those
+terminals is stopped with it. A terminal you opened in the task yourself stays, and so
+does one that another run still on screen uses. A terminal that is already gone is
+skipped. The toast says how many were closed; one that could not be closed is named
+and keeps its tab, which you can close by hand. The work itself is untouched: it is in
+the task's files and on its branch.
+
+Starting another run in the same task, or finishing the task, closes the run too.
+Starting another run leaves the earlier run's terminals open, because the new run
+goes on in the tabs its agents already have there; finishing the task closes all of
+the task's terminals. These pipelines use local projects; remote
 projects are ineligible.
 
 ## Session naming

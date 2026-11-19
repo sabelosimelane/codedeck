@@ -63,6 +63,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - In a task with several repositories each is landed on its own, against the checkout it is listed with; a working run blocks all of them, and Close task closes every repository or none
 - A run has one working directory, a worktree of one repository; it may change the other worktrees of its task and only read the project's remaining repositories. A task takes one unfinished run at a time
 - Merging or closing a task closes its terminals — the ones opened in it and the ones its runs used — because their folder is removed
+- Close run closes the terminals that run's steps used and no other: a terminal the owner opened in the same task or in Main stays, and so does one another open run uses. Only the owner's Close run does this; a run closed because another run started in its place keeps its terminals for that run to reuse
 - The backend is the source of truth for all state — frontend never holds authoritative state
 - Every user action that modifies state must round-trip through the backend
 

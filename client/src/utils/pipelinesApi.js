@@ -252,6 +252,16 @@ export function listRunNotes(runId, page, { signal, stepIndex } = {}) {
   return request(`/runs/${encodeURIComponent(runId)}/notes?${params}`, { signal });
 }
 
-export function cleanupRun(runId, options) {
-  return postAction(runId, 'cleanup', options);
+/**
+ * Close run (or, for a run with a worktree of its own, clean it up). The answer is the run with
+ * `terminalsClosed` and `terminalsNotClosed`: which of the run's terminals the backend closed, and which it could not.
+ */
+export async function cleanupRun(runId, options) {
+  const closed = await postAction(runId, 'cleanup', options);
+  for (const field of ['terminalsClosed', 'terminalsNotClosed']) {
+    if (!Array.isArray(closed?.[field]) || !closed[field].every(id => typeof id === 'string' && id.trim() !== '')) {
+      throw new PipelineApiError(`Invalid close run response: ${field}`);
+    }
+  }
+  return closed;
 }

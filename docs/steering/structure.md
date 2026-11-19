@@ -200,6 +200,7 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 - `server/pipelines/run-notes.js`: prepares an ignored per-run notes folder and safely reads each step's note inside the worktree.
 - `server/pipelines/request-store.js`: reserves run start IDs with their original parameters before
   provisioning. A replay can resume an unfinished reservation using its recorded task.
+- `server/pipelines/run-terminals.js`: closes the terminals a run's steps used when the owner closes the run (`POST /runs/:id/cleanup`), leaving the ones no longer in the run's worktree and the ones another open run uses.
 - `server/pipelines/run-terminal-muting.js`: pure plan for which of a run's step terminals show live status; `terminal-muting-adapter.js` applies it after the attention tracker observes a session.
 - `server/pipelines/note-store.js`: append-only SQLite copies of step notes and their pass outcomes (`pipeline_run_notes`).
 - `server/pipelines/review-store.js`: append-only owner approval and send-back reviews (`pipeline_run_reviews`); `run-notes.js` writes their comments to the step feedback file.

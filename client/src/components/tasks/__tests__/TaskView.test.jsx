@@ -194,6 +194,8 @@ describe('TaskView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     expect(h.onResume).toHaveBeenCalledWith('run-1');
     expect(confirm.mock.calls[0][0]).toContain('Develop starts again there');
+    // Closing a run that did not finish can stop an agent that is still working in its terminal.
+    expect(screen.getByRole('button', { name: 'Close run' }).getAttribute('title')).toBe('Takes the run off the screen and closes the terminals it used. An agent still working in one of them is stopped.');
     fireEvent.click(screen.getByRole('button', { name: 'Close run' }));
     expect(h.onCleanup).toHaveBeenCalledWith('run-1');
   });
@@ -202,13 +204,13 @@ describe('TaskView', () => {
     view({ inTask: true, run: run({ status: 'complete', currentStepIndex: 2, actions: { ...run().actions, stop: false, cleanup: true },
       steps: run().steps.map(item => ({ ...item, status: 'complete', sessionId: item.sessionId ?? 'Demo-2', attempt: 1, iteration: 1 })) }) });
     expect(screen.getByLabelText('Run status: Complete')).toBeTruthy();
-    expect(screen.getByText('This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run only takes the run off the screen.')).toBeTruthy();
+    expect(screen.getByText('This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run takes the run off the screen and closes the terminals it used.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Close run' }).className).not.toContain('pipeline-run-primary');
     cleanup();
     // In Main there is no task to land.
     view({ inTask: false, run: run({ status: 'complete', currentStepIndex: 2, actions: { ...run().actions, stop: false, cleanup: true },
       steps: run().steps.map(item => ({ ...item, status: 'complete', sessionId: item.sessionId ?? 'Demo-2', attempt: 1, iteration: 1 })) }) });
-    expect(screen.getByText('This run has finished. Close run takes it off the screen.')).toBeTruthy();
+    expect(screen.getByText('This run has finished. Close run takes it off the screen and closes the terminals it used.')).toBeTruthy();
   });
 
   it('shows progress, a failure message, and opens a terminal from the rail', () => {

@@ -223,7 +223,7 @@ A step the owner continued past its limit has status `limit_accepted`. With no c
 | POST `/runs/:id/answer` | Body `{ answer }` (1–4000 characters; new lines allowed, other control characters refused). Types the answer into the terminal of an agent that signalled NEEDS_INPUT and returns the run; 409 when the run is not waiting on such a request, the agent has stopped waiting, or another answer is being sent |
 | POST `/runs/:id/approve` | Empty body or `{}`; append an approval review and advance the waiting run. Unknown fields are 400, unknown run is 404, and a run outside `awaiting_approval` is 409 |
 | POST `/runs/:id/send-back` | Body `{ comment }` (1–4000 characters; new lines allowed, other control characters refused); append a send-back review and rerun the same step with a feedback file. Unknown fields are 400, unknown run is 404, and a run outside `awaiting_approval` is 409 |
-| POST `/runs/:id/cleanup` | Remove a clean worktree without force; retain branch. For a run in an existing worktree it only releases the worktree |
+| POST `/runs/:id/cleanup` | Close run. Remove a clean worktree without force; retain branch. For a run in an existing worktree it releases the worktree and removes nothing. Then closes the terminals the run's steps used, unless the run is still open because its worktree could not be removed. Returns the run with `terminalsClosed` and `terminalsNotClosed` (session ids); a terminal that could not be closed does not fail the request. A second call is 409 |
 
 Agents/workflows filter by exact `name`, and runs by `status`, `project`,
 `workflowId`, `taskId`, or `open=true|false`. A run is open until it is closed: a complete run

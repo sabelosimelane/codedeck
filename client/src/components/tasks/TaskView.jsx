@@ -189,8 +189,9 @@ export default function TaskView({
             {run.actions?.continue && <button type="button" onClick={() => onContinue(run.id)} className={status.primaryAction === 'continue' ? 'pipeline-run-primary' : undefined}>Continue</button>}
             {run.actions?.resume && <button type="button" onClick={() => { if (window.confirm(resumeConfirmation(run, current))) onResume(run.id); }} className={status.primaryAction === 'resume' ? 'pipeline-run-primary' : undefined}>Resume</button>}
             {run.actions?.cleanup && (
-              <button type="button" onClick={() => onCleanup(run.id)} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}>
-                {/* A task keeps its files; ending the run only closes the run. */}
+              <button type="button" onClick={() => onCleanup(run.id)} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}
+                title={run.worktree?.state === 'external' ? 'Takes the run off the screen and closes the terminals it used. An agent still working in one of them is stopped.' : undefined}>
+                {/* A task keeps its files; ending the run closes the run and the terminals it used. */}
                 {run.worktree?.state === 'external' ? 'Close run' : 'Clean up worktree'}
               </button>
             )}
@@ -199,8 +200,8 @@ export default function TaskView({
         {progress && <div title={run.progress.file} className="pipeline-run-progress"><span className={progress.tone === 'plain' ? 'pipeline-run-progress-phase' : `pipeline-run-${progress.tone}`}>{progress.text}</span>{progress.detail && <span className="pipeline-run-muted">{` · ${progress.detail}`}</span>}</div>}
         {run.status === 'stopped' && run.stopReason === 'no_progress' && <div className="pipeline-run-warning">{`No task was ticked in the last ${NO_PROGRESS_ROUNDS} rounds. Check what the steps reported, then Resume to try again.`}</div>}
         {run.status === 'complete' && run.worktree?.state === 'external' && <div className="pipeline-run-muted">{inTask
-          ? 'This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run only takes the run off the screen.'
-          : 'This run has finished. Close run takes it off the screen.'}</div>}
+          ? 'This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run takes the run off the screen and closes the terminals it used.'
+          : 'This run has finished. Close run takes it off the screen and closes the terminals it used.'}</div>}
         {run.error && <span className="pipeline-run-danger">{run.error}</span>}
         {blockedCleanup && (
           <>

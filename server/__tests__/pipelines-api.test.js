@@ -222,6 +222,9 @@ async function setup(overrides = {}) {
       titleSource: planned.titleSource, worktreePath: planned.worktreePath, branch: planned.branch, baseBranch: planned.baseBranch, baseCommit: 'c'.repeat(40) })),
   };
 
+  // Closing a run's terminals is the terminal layer's work; here it reports that none was open.
+  const closeRunTerminals = overrides.closeRunTerminals ?? vi.fn(async () => ({ closed: [], notClosed: [] }));
+
   const openApp = () => {
     const app = express();
     if (overrides.onRequest) app.use(express.json(), overrides.onRequest);
@@ -241,6 +244,7 @@ async function setup(overrides = {}) {
       taskService,
       findProject,
       engine,
+      closeRunTerminals,
       preflight: overrides.repo ? undefined : preflight,
       planNames,
       resolveHomeRepoPath: overrides.repo ? undefined : resolveHomeRepoPath,
@@ -265,6 +269,7 @@ async function setup(overrides = {}) {
     taskStore,
     taskService,
     engine,
+    closeRunTerminals,
     engineStarts,
     scheduled,
     projects,
@@ -939,6 +944,7 @@ describe('pipelines API — preflight and runs', () => {
       taskService: { plan: async () => { throw new Error('unused'); }, createPlanned: async () => { throw new Error('unused'); } },
       findProject: () => PROJECT,
       engine: { start: () => {} },
+      closeRunTerminals: async () => ({ closed: [], notClosed: [] }),
       preflight: async () => ({ eligible: true, reasons: [], branch: 'main', head: 'a'.repeat(40), dirty: false }),
       resolveHomeRepoPath: async () => '/Users/me/git/codedeck',
       scheduleStart: () => {},
@@ -1215,6 +1221,128 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
     expect(cleaned.body.actions.cleanup).toBe(false);
   });
 
+  describe('Close run closes the terminals the run used', () => {
+    const usedSteps = [
+      { status: 'complete', sessionId: 'Demo-3', priorSessionIds: ['Demo-2'], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+      { status: 'complete', sessionId: 'Demo-4', priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+    ];
+    // The engine as it closes a run in a task or in Main: the run lets go of the place it worked in.
+    const releasing = ctx => {
+      ctx.engine.cleanup = vi.fn(async runId => {
+        if (ctx.runStore.get(runId).worktreeState !== 'external') throw Object.assign(new Error('Action cleanup is not allowed'), { code: 'ACTION_REFUSED' });
+        return ctx.runStore.update(runId, { worktreeState: 'released', worktreeDetail: null });
+      });
+    };
+    async function seedClosable(ctx, status = 'complete') {
+      const seeded = await seedRun(ctx, { status, stopReason: status === 'stopped' ? 'user' : null, error: status === 'error' ? 'The launch command exited.' : null,
+        finishedAt: status === 'interrupted' ? null : new Date().toISOString(), worktreeState: 'external', baseCommit: 'a'.repeat(40), steps: usedSteps });
+      return seeded.id;
+    }
+
+    it('closes them after the run is closed, and answers with the ones closed', async () => {
+      const closeRunTerminals = vi.fn(async () => ({ closed: ['Demo-3', 'Demo-4'], notClosed: [] }));
+      const ctx = await setup({ closeRunTerminals });
+      releasing(ctx);
+      const id = await seedClosable(ctx);
+
+      const closed = await request(ctx.app).post(`${base}/runs/${id}/cleanup`);
+      expect(closed.status).toBe(200);
+      expect(closed.body).toMatchObject({ id, worktree: { state: 'released' }, terminalsClosed: ['Demo-3', 'Demo-4'], terminalsNotClosed: [] });
+      expect(closeRunTerminals).toHaveBeenCalledTimes(1);
+      const [run, others] = closeRunTerminals.mock.calls[0];
+      expect(run).toMatchObject({ id, worktreeState: 'released', steps: [{ sessionId: 'Demo-3', priorSessionIds: ['Demo-2'] }, { sessionId: 'Demo-4' }] });
+      expect(others).toEqual([]);
+
+      // A second Close run is refused and closes nothing more.
+      const again = await request(ctx.app).post(`${base}/runs/${id}/cleanup`);
+      expect(again.status).toBe(409);
+      expect(closeRunTerminals).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['stopped', 'error', 'interrupted'])('closes them for a run that is %s when it is closed', async status => {
+      const closeRunTerminals = vi.fn(async () => ({ closed: ['Demo-4'], notClosed: [] }));
+      const ctx = await setup({ closeRunTerminals });
+      releasing(ctx);
+      const id = await seedClosable(ctx, status);
+      const closed = await request(ctx.app).post(`${base}/runs/${id}/cleanup`);
+      expect(closed.status).toBe(200);
+      expect(closed.body).toMatchObject({ status, terminalsClosed: ['Demo-4'], terminalsNotClosed: [] });
+      expect(closeRunTerminals).toHaveBeenCalledTimes(1);
+    });
+
+    it('still closes the run when a terminal could not be closed, and says which', async () => {
+      const ctx = await setup({ closeRunTerminals: vi.fn(async () => ({ closed: ['Demo-3'], notClosed: ['Demo-4'] })) });
+      releasing(ctx);
+      const id = await seedClosable(ctx);
+      const closed = await request(ctx.app).post(`${base}/runs/${id}/cleanup`);
+      expect(closed.status).toBe(200);
+      expect(closed.body).toMatchObject({ worktree: { state: 'released' }, terminalsClosed: ['Demo-3'], terminalsNotClosed: ['Demo-4'] });
+      expect((await request(ctx.app).get(`${base}/runs?open=true`)).body.data).toEqual([]);
+    });
+
+    it('names the other runs still on screen, whose terminals are theirs to keep', async () => {
+      const closeRunTerminals = vi.fn(async () => ({ closed: [], notClosed: [] }));
+      const ctx = await setup({ closeRunTerminals });
+      releasing(ctx);
+      const seeded = await seedRun(ctx, { status: 'complete', finishedAt: new Date().toISOString(), worktreeState: 'external', baseCommit: 'a'.repeat(40), steps: usedSteps });
+      const another = async overrides => {
+        const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: `other-${overrides.worktreeState}`, workflowId: seeded.workflow.id, project: 'Demo', input: 'docs/todos/feature.md' });
+        expect(started.status).toBe(201);
+        ctx.runStore.update(started.body.id, { baseCommit: 'a'.repeat(40), ...overrides });
+        return started.body.id;
+      };
+      const working = await another({ status: 'running', worktreeState: 'present' });
+      // A run that was already closed is not on screen any more.
+      await another({ status: 'complete', finishedAt: new Date().toISOString(), worktreeState: 'released' });
+
+      expect((await request(ctx.app).post(`${base}/runs/${seeded.id}/cleanup`)).status).toBe(200);
+      const [, others] = closeRunTerminals.mock.calls[0];
+      expect(others.map(run => run.id)).toEqual([working]);
+    });
+
+    it('leaves the terminals of a run whose worktree could not be removed: that run is still on screen', async () => {
+      const ctx = await setup();
+      ctx.engine.cleanup = vi.fn(async runId => ctx.runStore.update(runId, { worktreeState: 'removal_blocked', worktreeDetail: 'worktree contains modified or untracked files' }));
+      const { id } = await seedRun(ctx, { status: 'complete', finishedAt: new Date().toISOString(), worktreeState: 'present', baseCommit: 'a'.repeat(40), steps: usedSteps });
+      const blocked = await request(ctx.app).post(`${base}/runs/${id}/cleanup`);
+      expect(blocked.status).toBe(200);
+      expect(blocked.body).toMatchObject({ worktree: { state: 'removal_blocked' }, terminalsClosed: [], terminalsNotClosed: [] });
+      expect(ctx.closeRunTerminals).not.toHaveBeenCalled();
+    });
+
+    it('closes no terminal when Close run is refused', async () => {
+      const ctx = await setup();
+      const { id } = await seedRun(ctx, { status: 'running', worktreeState: 'present', baseCommit: 'a'.repeat(40), steps: usedSteps });
+      expect((await request(ctx.app).post(`${base}/runs/${id}/cleanup`)).status).toBe(409);
+      expect(ctx.closeRunTerminals).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no answer', undefined],
+      ['closed that is not a list', { closed: 'Demo-3', notClosed: [] }],
+      ['an empty session id', { closed: [''], notClosed: [] }],
+      ['notClosed missing', { closed: [] }],
+    ])('fails loudly on %s from the terminal layer', async (_label, answer) => {
+      const ctx = await setup({ closeRunTerminals: vi.fn(async () => answer) });
+      releasing(ctx);
+      const id = await seedClosable(ctx);
+      const failed = await request(ctx.app).post(`${base}/runs/${id}/cleanup`);
+      expect(failed.status).toBe(500);
+      expect(failed.headers['content-type']).toMatch(/application\/problem\+json/);
+      expect(failed.body.traceId).toBe(failed.headers['x-trace-id']);
+    });
+
+    it('leaves the terminals alone on every other owner action', async () => {
+      const ctx = await setup();
+      const { id } = await seedRun(ctx, { status: 'running', worktreeState: 'present', baseCommit: 'a'.repeat(40), steps: usedSteps });
+      const stopped = await request(ctx.app).post(`${base}/runs/${id}/stop`);
+      expect(stopped.status).toBe(200);
+      expect(stopped.body).not.toHaveProperty('terminalsClosed');
+      expect((await request(ctx.app).post(`${base}/runs/${id}/resume`)).status).toBe(200);
+      expect(ctx.closeRunTerminals).not.toHaveBeenCalled();
+    });
+  });
+
   it('store rebuild mid-run marks interrupted then Resume works', async () => {
     const ctx = await setup();
     const { id } = await seedRun(ctx);
@@ -1248,6 +1376,7 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       taskStore: ctx.taskStore,
       taskService: ctx.taskService,
       findProject: name => ctx.projects.get(name) ?? null,
+      closeRunTerminals: ctx.closeRunTerminals,
       engine: {
         ...ctx.engine,
         resume: async (runId) => {
@@ -1549,6 +1678,8 @@ describe('pipelines API — worktrees', () => {
     expect(third.status).toBe(201);
     // The new run takes its place: the finished one is closed.
     expect(ctx.runStore.get(first.body.id).worktreeState).toBe('released');
+    // Its terminals stay: the new run goes on in the ones its agents already have there.
+    expect(ctx.closeRunTerminals).not.toHaveBeenCalled();
     const after = await request(ctx.app).get(`${base}/runs?open=true`);
     expect(after.body.data.map(run => run.id)).toEqual([third.body.id]);
   });
@@ -2171,9 +2302,11 @@ describe('pipelines API — decisions agents made', () => {
     const stores = { ...withAnswers, templateStore: { list() {} }, stepPresetStore: { list() {} } };
     expect(() => createPipelinesRouter(stores)).toThrow('pipelines router: taskStore is required');
     expect(() => createPipelinesRouter({ ...stores, taskStore: { get() {} } })).toThrow('pipelines router: taskService is required');
+    const withTasks = { ...stores, taskStore: { get() {} }, taskService: { plan() {}, createPlanned() {} } };
+    expect(() => createPipelinesRouter(withTasks)).toThrow('pipelines router: requestStore is required');
     expect(() => createPipelinesRouter({
-      ...stores, taskStore: { get() {} }, taskService: { plan() {}, createPlanned() {} },
-    })).toThrow('pipelines router: requestStore is required');
+      ...withTasks, requestStore: { get() {}, reserve() {}, setTaskId() {}, release() {} },
+    })).toThrow('pipelines router: closeRunTerminals must be a function');
   });
 
   it('requires the decision store', () => {

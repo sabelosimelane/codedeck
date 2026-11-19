@@ -416,7 +416,7 @@ describe('usePipelineRuns', () => {
     });
   });
 
-  it('says the run was dismissed, not that a worktree was cleaned up, when an existing worktree is released', async () => {
+  it('says the run was closed and how many terminals went with it, not that a worktree was cleaned up, when an existing worktree is released', async () => {
     const stopped = runView({
       status: 'stopped',
       worktree: { ...runView().worktree, state: 'external' },
@@ -428,19 +428,70 @@ describe('usePipelineRuns', () => {
       actions: { stop: false, resume: false, continue: false, cleanup: false },
     });
     global.fetch = vi.fn(async (url, options) => {
-      if (options?.method === 'POST' && String(url).includes('/cleanup')) return okRun(released);
+      if (options?.method === 'POST' && String(url).includes('/cleanup')) return okRun({ ...released, terminalsClosed: ['Demo-3', 'Demo-4'], terminalsNotClosed: [] });
       if (String(url).includes('/runs?')) return okList([stopped]);
       return okList([]);
     });
     const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
     await waitFor(() => expect(result.current.runs).toHaveLength(1));
 
+    let closed;
     await act(async () => {
-      await result.current.cleanupRun('r1');
+      closed = await result.current.cleanupRun('r1');
     });
 
-    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Feature run dismissed; its worktree was left in place' });
+    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Feature run closed; its work is left in place. 2 terminals closed.' });
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/cleaned up/i) }));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    // The caller takes the closed terminals' tabs away.
+    expect(closed.terminalsClosed).toEqual(['Demo-3', 'Demo-4']);
+  });
+
+  it.each([
+    [[], 'Feature run closed; its work is left in place.'],
+    [['Demo-3'], 'Feature run closed; its work is left in place. 1 terminal closed.'],
+  ])('counts the terminals closed with the run: %j', async (terminalsClosed, message) => {
+    const complete = runView({ status: 'complete', worktree: { ...runView().worktree, state: 'external' }, actions: { stop: false, resume: false, continue: false, cleanup: true } });
+    const released = { ...complete, worktree: { ...complete.worktree, state: 'released' }, actions: { stop: false, resume: false, continue: false, cleanup: false } };
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).includes('/cleanup')) return okRun({ ...released, terminalsClosed, terminalsNotClosed: [] });
+      if (String(url).includes('/runs?')) return okList([complete]);
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    await act(async () => { await result.current.cleanupRun('r1'); });
+    expect(showToast).toHaveBeenCalledWith({ type: 'success', message });
+  });
+
+  it('says which terminals could not be closed with the run, and how to close them', async () => {
+    const complete = runView({ status: 'complete', worktree: { ...runView().worktree, state: 'external' }, actions: { stop: false, resume: false, continue: false, cleanup: true } });
+    const released = { ...complete, worktree: { ...complete.worktree, state: 'released' }, actions: { stop: false, resume: false, continue: false, cleanup: false } };
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).includes('/cleanup')) return okRun({ ...released, terminalsClosed: ['Demo-3'], terminalsNotClosed: ['Demo-4', 'Demo-5'] });
+      if (String(url).includes('/runs?')) return okList([complete]);
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    await act(async () => { await result.current.cleanupRun('r1'); });
+    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Feature run closed; its work is left in place. 1 terminal closed.' });
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: '2 terminals could not be closed: Demo-4, Demo-5. Close them from their tabs.' });
+  });
+
+  it('reports a Close run the backend refused, and returns nothing to act on', async () => {
+    const complete = runView({ status: 'complete', worktree: { ...runView().worktree, state: 'external' }, actions: { stop: false, resume: false, continue: false, cleanup: true } });
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).includes('/cleanup')) return { ok: false, status: 409, json: async () => ({ message: 'Action cleanup is not allowed in status running' }) };
+      if (String(url).includes('/runs?')) return okList([complete]);
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    let closed;
+    await act(async () => { closed = await result.current.cleanupRun('r1'); });
+    expect(closed).toBeNull();
+    expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Action cleanup is not allowed in status running' });
   });
 
   it('toasts cleanup failure when worktree removal is blocked', async () => {
@@ -459,7 +510,7 @@ describe('usePipelineRuns', () => {
       actions: { stop: false, resume: false, continue: false, cleanup: true },
     });
     global.fetch = vi.fn(async (url, options) => {
-      if (options?.method === 'POST' && String(url).includes('/cleanup')) return okRun(blocked);
+      if (options?.method === 'POST' && String(url).includes('/cleanup')) return okRun({ ...blocked, terminalsClosed: [], terminalsNotClosed: [] });
       if (String(url).includes('/runs?')) return okList([complete]);
       return okList([]);
     });

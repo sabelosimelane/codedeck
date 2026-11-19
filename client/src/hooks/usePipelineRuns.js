@@ -54,6 +54,8 @@ function statusToastMessage(run) {
   }
 }
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
 function mergeRun(runs, next) {
   const index = runs.findIndex((run) => run.id === next.id);
   if (index < 0) return [...runs, next];
@@ -283,10 +285,19 @@ export function usePipelineRuns({ projectName, showToast }) {
   const cleanupRun = useCallback(async (runId) => {
     const project = projectNameRef.current;
     try {
-      const next = await apiCleanupRun(runId);
-      if (!mountedRef.current || projectNameRef.current !== project) return next;
+      // The backend closed the run's terminals with it; `closed` is returned so the caller takes their tabs away.
+      const closed = await apiCleanupRun(runId);
+      const { terminalsClosed, terminalsNotClosed, ...next } = closed;
+      if (!mountedRef.current || projectNameRef.current !== project) return closed;
       setRuns((current) => mergeRun(current, next));
       previousStatusRef.current.set(next.id, next.status);
+      const withClosed = message => (terminalsClosed.length === 0 ? `${message}.` : `${message}. ${plural(terminalsClosed.length, 'terminal')} closed.`);
+      if (terminalsNotClosed.length > 0) {
+        showToast({
+          type: 'error',
+          message: `${plural(terminalsNotClosed.length, 'terminal')} could not be closed: ${terminalsNotClosed.join(', ')}. Close ${terminalsNotClosed.length === 1 ? 'it from its tab' : 'them from their tabs'}.`,
+        });
+      }
       if (next.worktree?.state === 'removal_blocked') {
         showToast({
           type: 'error',
@@ -297,16 +308,16 @@ export function usePipelineRuns({ projectName, showToast }) {
       } else if (next.worktree?.state === 'released') {
         showToast({
           type: 'success',
-          message: `${next.workflowName || 'Workflow'} run dismissed; its worktree was left in place`,
+          message: withClosed(`${next.workflowName || 'Workflow'} run closed; its work is left in place`),
         });
       } else {
         showToast({
           type: 'success',
-          message: `${next.workflowName || 'Workflow'} worktree cleaned up`,
+          message: withClosed(`${next.workflowName || 'Workflow'} worktree cleaned up`),
         });
       }
       await refresh({ queueIfBusy: true });
-      return next;
+      return closed;
     } catch (failure) {
       showToast({ type: 'error', message: failureMessage(failure) });
       return null;

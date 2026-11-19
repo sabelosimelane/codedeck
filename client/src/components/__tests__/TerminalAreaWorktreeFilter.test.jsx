@@ -12,7 +12,7 @@ const toast = vi.hoisted(() => vi.fn());
 const tasksApi = vi.hoisted(() => ({ openTaskTerminal: vi.fn(), createTask: vi.fn() }));
 vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
 vi.mock('../../utils/tasksApi.js', () => tasksApi);
-vi.mock('../tasks/TaskView.jsx', () => ({ default: ({ run, onActivateStep, children }) => <div><span data-testid="visible-runs">{run.id}</span>{run.steps?.map(step => <button key={step.sessionId} onClick={() => onActivateStep(step.sessionId)}>Step {step.sessionId}</button>)}{children}</div> }));
+vi.mock('../tasks/TaskView.jsx', () => ({ default: ({ run, onActivateStep, onCleanup, children }) => <div><span data-testid="visible-runs">{run.id}</span>{run.steps?.map(step => <button key={step.sessionId} onClick={() => onActivateStep(step.sessionId)}>Step {step.sessionId}</button>)}<button onClick={() => onCleanup(run.id)}>Close run</button>{children}</div> }));
 
 const project = { name: 'Demo', path: '/tmp/demo', repositories: [] };
 const sessions = [
@@ -158,6 +158,43 @@ describe('TerminalArea worktree view', () => {
     fireEvent.click(view.getAllByTestId('terminal-tab').find(tab => tab.getAttribute('data-session-id') === 'Demo-3'));
     fireEvent.click(view.getByTitle('Close Demo-3'));
     await waitFor(() => expect(view.getAllByTestId('terminal-tab').find(tab => tab.getAttribute('data-active') === 'true')?.getAttribute('data-session-id')).toBe('Demo-4'));
+  });
+  describe('Close run', () => {
+    const run = { id: 'run-1', project: 'Demo', status: 'complete', workflowName: 'Build', worktree: { path: '/tmp/demo-feature', branch: 'feature' }, createdAt: '2026-01-03', progress: null, steps: [{ name: 'Build', status: 'complete', sessionId: 'Demo-2', note: null }] };
+    const renderRun = onCleanupPipelineRun => render(<TerminalArea project={project} sessionStatus={sessions} worktreeGroups={groups} selectedWorktree="/tmp/demo-feature"
+      worktreeBySession={new Map([['Demo-2', '/tmp/demo-feature']])} pipelineRuns={[run]} onCleanupPipelineRun={onCleanupPipelineRun} />);
+
+    it('takes away the tabs of the terminals the backend closed with the run, and no other', async () => {
+      const onCleanupPipelineRun = vi.fn(async () => ({ ...run, terminalsClosed: ['Demo-2'], terminalsNotClosed: [] }));
+      const view = renderRun(onCleanupPipelineRun);
+      await waitFor(() => expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2'));
+      expect(view.getByTestId('mounted-Demo-1')).toBeTruthy();
+
+      fireEvent.click(view.getByRole('button', { name: 'Close run' }));
+      await waitFor(() => expect(view.queryByTestId('mounted-Demo-2')).toBeNull());
+      expect(onCleanupPipelineRun).toHaveBeenCalledWith('run-1');
+      expect(view.queryByTestId('terminal-tab')).toBeNull();
+      // The terminal in Main was not the run's.
+      expect(view.getByTestId('mounted-Demo-1')).toBeTruthy();
+    });
+
+    it('keeps the tab of a terminal the backend could not close', async () => {
+      const view = renderRun(vi.fn(async () => ({ ...run, terminalsClosed: [], terminalsNotClosed: ['Demo-2'] })));
+      await waitFor(() => expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2'));
+      fireEvent.click(view.getByRole('button', { name: 'Close run' }));
+      await waitFor(() => expect(view.getByTestId('mounted-Demo-2')).toBeTruthy());
+      expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2');
+    });
+
+    it('keeps every tab when the run could not be closed', async () => {
+      const onCleanupPipelineRun = vi.fn(async () => null);
+      const view = renderRun(onCleanupPipelineRun);
+      await waitFor(() => expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2'));
+      fireEvent.click(view.getByRole('button', { name: 'Close run' }));
+      await waitFor(() => expect(onCleanupPipelineRun).toHaveBeenCalled());
+      expect(view.getByTestId('mounted-Demo-2')).toBeTruthy();
+      expect(view.getByTestId('terminal-tab').getAttribute('data-session-id')).toBe('Demo-2');
+    });
   });
   it('shows only the selected worktree run in the run header', async () => {
     const runs = [{ id: 'main-run', worktree: { path: project.path } }, { id: 'feature-run', worktree: { path: '/tmp/demo-feature' } }];

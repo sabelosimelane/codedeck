@@ -634,7 +634,7 @@ export default function TerminalArea({
     if (activeTabId !== (preferred?.id ?? null)) updateTerminalState(previous => ({ ...previous, activeTabId: preferred?.id ?? null }));
   }, [visibleGroup, tabs, activeTabId, project.name, worktreeBySession]);
 
-  // The backend closed these terminals (their task was merged or closed); their tabs go with them.
+  // The backend closed these terminals (their task was merged or closed, or their run was closed); their tabs go with them.
   const removeClosedSessions = sessionIds => {
     if (sessionIds.length === 0) return;
     markDeletedSessionIds(project.name, sessionIds);
@@ -1249,7 +1249,9 @@ export default function TerminalArea({
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}
         openSessionIds={new Set(tabs.flatMap(tab => tab.panes.map(pane => pane.sessionId)))}
         onActivateStep={activatePipelineSession} onOpenTerminal={addTab}
-        onStop={onStopPipelineRun} onResume={onResumePipelineRun} onContinue={onContinuePipelineRun} onCleanup={onCleanupPipelineRun}
+        onStop={onStopPipelineRun} onResume={onResumePipelineRun} onContinue={onContinuePipelineRun}
+        // Close run: the backend closes the terminals the run used. A run that could not be closed answers null, and its tabs stay.
+        onCleanup={async runId => { const closed = await onCleanupPipelineRun(runId); if (closed) removeClosedSessions(closed.terminalsClosed); }}
         onAnswer={onAnswerPipelineRun} onLoadNotes={onLoadPipelineRunNotes} onLoadDecisions={onLoadPipelineRunDecisions}
         onLoadReviews={onLoadPipelineRunReviews} onLoadAnswers={onLoadPipelineRunAnswers} onApprove={onApprovePipelineRun} onSendBack={onSendBackPipelineRun}>
       <TerminalTabBar tabs={displayTabs} renderTab={tab => {
