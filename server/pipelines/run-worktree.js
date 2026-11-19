@@ -380,3 +380,33 @@ Worktree (your current directory, the only place you may change): ${worktreePath
 
 If you cannot tell what the project needs, or a step fails, report NEEDS_INPUT and say what is missing.`;
 }
+
+/**
+ * The Setup prompt for a task created with its run: the same rules, for every worktree of the
+ * task. `pairs`: `{ repository, homePath, worktreePath }`, the worktree the run works in first.
+ */
+export function buildSetupPromptForRepositories(pairs) {
+  if (!Array.isArray(pairs) || pairs.length === 0 || pairs.some(pair => typeof pair?.repository !== 'string' || !pair.repository
+    || typeof pair.homePath !== 'string' || !path.isAbsolute(pair.homePath) || typeof pair.worktreePath !== 'string' || !path.isAbsolute(pair.worktreePath))) {
+    throw new TypeError('pairs must name each repository with its home checkout and its worktree');
+  }
+  if (pairs.length === 1) return buildSetupPrompt(pairs[0].homePath, pairs[0].worktreePath);
+  const listed = pairs.map((pair, index) => `- ${pair.repository}: home checkout ${pair.homePath}, worktree ${pair.worktreePath}${index === 0 ? ' (your current directory)' : ''}`).join('\n');
+  return `You are preparing ${pairs.length} fresh git worktrees of one task so that work can be built and tested in them.
+A home checkout is a read-only source of local files; a worktree is the only place you may change.
+${listed}
+
+Do the following for each repository, in its own worktree:
+1. Work out how the repository installs its dependencies (lock files, build files, README, agent
+   instruction files) and install them in its worktree.
+2. Find files in its home checkout that git ignores and that the repository needs locally to build,
+   test or run (for example .env.local, local.properties, service-account files). Copy each one to
+   the same relative path and the same name in its worktree. Do not copy dependency or build output
+   directories; install or build those in the worktree instead. Do not copy .codedeck/ from a home checkout.
+3. Never print, summarise or log the contents of a copied file. Copy with file operations only.
+4. Do not create, modify or delete tracked files, do not commit, and change nothing in any home
+   checkout.
+5. Finish by running \`git status --short\` in every worktree. Each must print nothing.
+
+If you cannot tell what a repository needs, or a step fails, report NEEDS_INPUT and say which repository and what is missing.`;
+}

@@ -6,6 +6,13 @@ const toast = vi.hoisted(() => vi.fn());
 const api = vi.hoisted(() => ({ getTaskLanding: vi.fn(), commitTask: vi.fn(), mergeTask: vi.fn(), openTaskPullRequest: vi.fn(), closeTask: vi.fn(), renameTask: vi.fn() }));
 vi.mock('../../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
 vi.mock('../../../utils/tasksApi.js', () => api);
+vi.mock('../AddRepositoryDialog.jsx', () => ({
+  default: ({ task, onAdded, onClose }) => (
+    <div role="dialog" aria-label="Add a repository to this task">
+      <button type="button" onClick={() => { onAdded({ ...task, revision: task.revision + 1 }); onClose(); }}>Add mobile-app</button>
+    </div>
+  ),
+}));
 import TaskLandingBar from '../TaskLandingBar.jsx';
 
 const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'Replies', revision: 3, worktreePath: '/tmp/worktrees/demo-replies' };
@@ -189,6 +196,21 @@ describe('TaskLandingBar', () => {
     expect(screen.queryByRole('button', { name: /Merge into/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Open a pull request' })).toBeNull();
     expect(screen.getByText('No changes yet')).toBeTruthy();
+  });
+
+  it('adds a repository to a task with one, when the project has more to offer', async () => {
+    api.getTaskLanding.mockResolvedValue(landing());
+    const onChanged = vi.fn();
+    render(<TaskLandingBar task={TASK} canAddRepository onChanged={onChanged} onFinished={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close task' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Add repository' }));
+    fireEvent.click(dialog('Add a repository to this task').getByRole('button', { name: 'Add mobile-app' }));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no repository to add in a project that lists no others', async () => {
+    await mount();
+    expect(screen.queryByRole('button', { name: 'Add repository' })).toBeNull();
   });
 
   it('reports a status that could not be read and keeps Rename available', async () => {

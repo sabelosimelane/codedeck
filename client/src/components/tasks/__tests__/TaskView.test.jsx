@@ -44,6 +44,15 @@ describe('TaskView', () => {
     expect(within(screen.getByTestId('task-view')).getByTestId('terminals')).toBeTruthy();
   });
 
+  it('says which repository the run works in when its task has several, and nothing otherwise', () => {
+    view({ repository: 'mobile-app' });
+    expect(screen.getByText('works in mobile-app')).toBeTruthy();
+    cleanup();
+    view();
+    expect(screen.queryByText(/^works in /)).toBeNull();
+    expect(() => view({ repository: '' })).toThrow('task view: repository must be a name or null');
+  });
+
   it('lists every step in plain words and never a raw state name', () => {
     view({ run: run({ status: 'complete', currentStepIndex: 2, steps: [
       step(0, 'Plan', { status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1 }),

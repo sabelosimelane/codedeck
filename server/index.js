@@ -36,6 +36,7 @@ import {
   listWorktrees as listPipelineWorktrees,
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
+import { createRunPlaces } from './pipelines/run-places.js';
 import { setObservedTerminalMuted } from './pipelines/terminal-muting-adapter.js';
 import { createRunProgressReader, readRunProgress } from './pipelines/run-progress.js';
 import { classify as classifyAgentReadiness } from './pipelines/agent-readiness.js';
@@ -983,6 +984,8 @@ const pipelineRunEngine = createRunEngine({
     execFile,
   }),
   listDirtyPaths: async ({ worktreePath }) => listPipelineDirtyPaths({ worktreePath, execFile }),
+  // Where a run may work and read: the worktrees of its task and the project's other repositories, as they are when a step starts.
+  listRunPlaces: createRunPlaces({ taskStore, findProject: name => loadProjects().find(project => project.name === name) ?? null, execFile }),
   pathExists: async (target) => {
     try {
       await fs.access(target);

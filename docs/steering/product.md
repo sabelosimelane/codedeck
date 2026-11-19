@@ -15,6 +15,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Project management — add, rename, delete projects (directories on disk)
 - Terminal multiplexing — multiple terminal tabs per project, N side-by-side panes with draggable dividers
 - Tasks — a titled piece of work with its own Git worktree and branch, created from a title alone; listed by title under its project beside Main, in the sidebar and the tab switcher. Terminals, splits and workflow runs open in the task being looked at
+- Several repositories in one project — a project lists the repositories that belong with its own; Main reaches all of them, a task has one worktree per repository it includes, kept in one folder, and each repository is landed on its own
 - Landing — each task shows live from Git its uncommitted files and commits not yet in its base branch, and offers Commit changes, Merge (aborted and reported on conflict), Open a pull request (`gh`/`glab`), Close task and Rename; nothing is forced
 - File tree browsing — view project files, click to open in system editor (VS Code, etc.)
 - Per-project file browsing — scoped file tree panel decoupled from active project
@@ -37,8 +38,8 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Run progress and sidebar counts — persisted run progress with automatic terminal-tab adoption; backend restarts require explicit Resume
 
 ## Domain Model
-- **Project**: a named directory on disk. Stored as `{ name, path }` in SQLite config.
-- **Task**: a titled piece of work in a project, stored in SQLite with its worktree path, branch, base branch and commit, state (`active`, `pr_open`, `merged`, `closed`) and pull request URL. Its Git facts are read live, never stored. A workflow run may belong to one task.
+- **Project**: a named directory on disk. Stored as `{ name, path, repositories }` in SQLite config. `path` is its own repository; `repositories` lists the others that belong with it (`{ name, path }`, the path being the checkout tasks start from and merge into). The grouping exists only in CodeDeck.
+- **Task**: a titled piece of work in a project, stored in SQLite with its title and state (`active`, `pr_open`, `merged`, `closed`) and one worktree per repository it includes, each with its path, branch, base branch and commit, its own state and pull request URL. A task is open while any of its worktrees is. Its Git facts are read live, never stored. A workflow run may belong to one task.
 - **Terminal session**: a tmux-backed PTY attachment keyed by `${projectName}-N`. Live browser attachments are tracked in server memory, while the underlying tmux session survives WebSocket reconnects, browser closes, and server restarts.
 - **Config**: generic key-value store in SQLite. Currently holds `projects` list and `defaultPath` setting.
 
@@ -59,6 +60,8 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Terminal durability depends on tmux — when tmux is unavailable, the UI must block terminal creation and ask the user to install it
 - A tab's waiting mark is cleared by the backend when its session is deleted — session ids are reused, and a stale mark would silence a new terminal
 - A task with uncommitted work is never removed, and merging requires Main to be clean and on the task's base branch
+- In a task with several repositories each is landed on its own, against the checkout it is listed with; a working run blocks all of them, and Close task closes every repository or none
+- A run has one working directory, a worktree of one repository; it may change the other worktrees of its task and only read the project's remaining repositories. A task takes one unfinished run at a time
 - Merging or closing a task closes its terminals — the ones opened in it and the ones its runs used — because their folder is removed
 - The backend is the source of truth for all state — frontend never holds authoritative state
 - Every user action that modifies state must round-trip through the backend

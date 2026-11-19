@@ -4,6 +4,7 @@ import {
   closeTask, closeTaskWorktree, commitTaskWorktree, listTaskWorktreeLandings, mergeTaskWorktree, openTaskWorktreePullRequest, renameTask,
 } from '../../utils/tasksApi.js';
 import { Button, ConfirmDialog, PromptDialog } from '../ui/index.jsx';
+import AddRepositoryDialog from './AddRepositoryDialog.jsx';
 import './task-view.css';
 
 const plural = (number, word) => `${number} ${word}${number === 1 ? '' : 's'}`;
@@ -17,7 +18,7 @@ const first = list => list[0]?.message;
  * few seconds; every button round-trips through the backend and nothing here decides whether
  * an action is allowed. The task is finished when its last repository is merged or closed.
  */
-export default function TaskRepositoriesLanding({ task, onChanged, onFinished, onRepositoryFinished }) {
+export default function TaskRepositoriesLanding({ task, canAddRepository = false, onChanged, onFinished, onRepositoryFinished }) {
   const { showToast } = useToast();
   const [landings, setLandings] = useState(null);
   const [failure, setFailure] = useState(null);
@@ -157,6 +158,7 @@ export default function TaskRepositoriesLanding({ task, onChanged, onFinished, o
         {landings && <span className="pipeline-run-muted">{landings.length === 1 ? '1 repository' : `${landings.length} repositories`}</span>}
         {landings && (
           <div className="pipeline-run-actions">
+            {canAddRepository && <Button size="small" onClick={() => setAsking({ kind: 'addRepository', worktreeId: null })} disabled={busy !== null} title="Give this task a copy of another repository of the project">Add repository</Button>}
             <Button size="small" onClick={() => setAsking({ kind: 'closeTask', worktreeId: null })} disabled={busy !== null || open.length === 0 || blocksClosing !== null}
               title={blocksClosing ? first(blocksClosing.blockers.close) : undefined}>Close task</Button>
           </div>
@@ -221,6 +223,7 @@ export default function TaskRepositoriesLanding({ task, onChanged, onFinished, o
           ))}
         </details>
       )}
+      {asking?.kind === 'addRepository' && <AddRepositoryDialog task={task} onAdded={() => { onChanged(); refresh(); }} onClose={() => setAsking(null)} />}
       {asking?.kind === 'rename' && <PromptDialog title="Rename task" label="Task title" initialValue={task.title} maxLength={80} confirmLabel="Rename" requireChange onSubmit={rename} onCancel={() => setAsking(null)} />}
       {asking?.kind === 'commit' && asked && <PromptDialog title={`Commit changes in ${asked.repository}`} subtitle={`Commits ${plural(asked.uncommittedCount, 'changed file')} of ${asked.repository} in this task.`} label="Commit message" initialValue={task.title} maxLength={200} confirmLabel="Commit" onSubmit={commit} onCancel={() => setAsking(null)} />}
       {asking?.kind === 'merge' && asked && (

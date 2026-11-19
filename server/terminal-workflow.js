@@ -9,6 +9,8 @@ const RESET_TIMEOUT_MS = 15000;
 const MAX_OUTPUT = 65536;
 // `resetFirst` clears the agent's context before the first pass, for a terminal whose agent
 // already worked. `guidance` is one more sentence or two of instruction for every pass.
+// A step's guidance names every repository of its task with its path, so it has room for several.
+export const GUIDANCE_MAX = 4000;
 const START_FIELDS = ['requestId', 'command', 'resetCommand', 'maxIterations', 'resetFirst', 'guidance'];
 
 function validateStart(request) {
@@ -18,8 +20,8 @@ function validateStart(request) {
   }
   const { requestId, command, resetCommand, maxIterations, resetFirst, guidance } = request;
   if (resetFirst !== undefined && typeof resetFirst !== 'boolean') throw new Error('Workflow resetFirst must be true or false.');
-  if (guidance !== undefined && (typeof guidance !== 'string' || !guidance.trim() || guidance.length > 2000 || /[\x00-\x1f\x7f]/.test(guidance))) {
-    throw new Error('Workflow guidance must contain 1–2000 characters on one line without terminal control codes.');
+  if (guidance !== undefined && (typeof guidance !== 'string' || !guidance.trim() || guidance.length > GUIDANCE_MAX || /[\x00-\x1f\x7f]/.test(guidance))) {
+    throw new Error(`Workflow guidance must contain 1–${GUIDANCE_MAX} characters on one line without terminal control codes.`);
   }
   if (typeof requestId !== 'string' || !/^[\w-]{1,128}$/.test(requestId)) throw new Error('Workflow requestId must contain 1–128 letters, digits, underscores or hyphens.');
   if (typeof command !== 'string' || !command.trim() || command.length > 16384 || /[\x00-\x08\x0b-\x1f\x7f]/.test(command)) throw new Error('Workflow command must contain 1–16384 characters without terminal control codes.');

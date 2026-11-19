@@ -201,6 +201,13 @@ export async function listTaskWorktreeLandings(taskId, { signal } = {}) {
   return landings.sort((a, b) => Number(b.first) - Number(a.first) || a.repository.localeCompare(b.repository));
 }
 
+/** Gives an open task a copy of one more of the project's repositories and returns the task with it. */
+export async function addTaskRepository(taskId, repository) {
+  requireTaskId(taskId);
+  if (!text(repository)) throw new TypeError('repository must be a nonempty string');
+  return parseTask(await request(`/${taskId}/worktrees`, { method: 'POST', body: { repository } }));
+}
+
 export async function commitTaskWorktree(taskId, worktreeId, message) {
   requireTaskId(taskId);
   requireWorktreeId(worktreeId);

@@ -1230,6 +1230,53 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(finished.stopReason).toBe('terminal');
   });
 
+  describe('a run in a task with several repositories', () => {
+    const places = (worktreePath) => ({
+      current: 'mobile-app',
+      worktrees: [{ repository: 'mobile-app', path: worktreePath }, { repository: 'backend', path: '/group/worktrees/replies/backend' }],
+      readOnly: [{ repository: 'frontend', path: '/group/frontend' }],
+    });
+
+    it('tells a step where it may work and read, as it is when the step starts, and writes it into the run notes', async () => {
+      const prepareNotes = vi.fn(async () => {});
+      const listRunPlaces = vi.fn(async run => places(run.worktreePath));
+      const ctx = setupEngine({ engineExtras: { prepareNotes, readNote: vi.fn(async () => ({ status: 'present', content: '# Done' })), listRunPlaces } });
+      const run = ctx.runStore.create(validRun({ definition: definition({ notesDir: '.codedeck/runs/abcdef12' }) }));
+      const done = ctx.engine.start(run.id);
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(1000);
+      await done;
+      expect(listRunPlaces).toHaveBeenCalledWith(expect.objectContaining({ id: run.id, worktreePath: run.worktreePath }));
+      const guidance = ctx.getWorkflowStartArgs().guidance;
+      expect(guidance).toContain(`Work only inside this task's worktrees: mobile-app at ${run.worktreePath}, backend at /group/worktrees/replies/backend. Your current directory is the mobile-app one.`);
+      expect(guidance).toContain('These repositories of the project are not part of this task: frontend at /group/frontend.');
+      expect(prepareNotes).toHaveBeenCalledWith(expect.objectContaining({ worktreePath: run.worktreePath, places: places(run.worktreePath) }));
+    });
+
+    it('fails the run when Setup left any worktree of the task with uncommitted changes, and names the repository', async () => {
+      const listDirtyPaths = vi.fn(async ({ worktreePath }) => (worktreePath === '/group/worktrees/replies/backend' ? ['tmp.out'] : []));
+      const ctx = setupEngine({ readinessQueue: [executionState()], listDirtyPaths, engineExtras: { listRunPlaces: async run => places(run.worktreePath) } });
+      const run = ctx.runStore.create(validRun({
+        definition: definition({
+          steps: [{ kind: 'setup', role: '', askOwner: false, readOnly: false, approval: false, name: 'Setup', prompt: 'setup', repeat: { mode: 'until_complete', max: 3 },
+            agent: { id: AGENT_ID, name: 'haiku', launchCommand: 'claude', resetCommand: '/clear' } }],
+        }),
+      }));
+      await driveReady(ctx.engine.start(run.id));
+      const finished = ctx.runStore.get(run.id);
+      expect(finished.status).toBe('error');
+      expect(finished.error).toBe('Setup left uncommitted changes in the worktree of backend\ntmp.out');
+      expect(listDirtyPaths.mock.calls.map(([options]) => options.worktreePath)).toEqual([run.worktreePath, '/group/worktrees/replies/backend']);
+    });
+
+    it('fails the run when it cannot be told where it may work', async () => {
+      const ctx = setupEngine({ engineExtras: { listRunPlaces: async () => { throw new Error('Project Demo of this run no longer exists'); } } });
+      const run = ctx.runStore.create(validRun());
+      await driveReady(ctx.engine.start(run.id));
+      expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'Project Demo of this run no longer exists' });
+    });
+  });
+
   it('Setup leaving dirty paths errors the run', async () => {
     const ctx = setupEngine({
       readinessQueue: [executionState()],

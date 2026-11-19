@@ -33,8 +33,12 @@ function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()] } = {}
   });
 }
 
-const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'Replies', worktreePath: '/git/worktrees/demo-feature' };
-const BUSY = { id: '7a000000-0000-4000-8000-000000000002', project: 'Demo', title: 'Busy one', worktreePath: '/git/worktrees/demo-busy' };
+// Tasks as the app holds them: each with the repositories it includes, the one it started in first.
+const part = (id, repository, worktreePath, extra = {}) => ({ id, repository, own: true, first: true, worktreePath, branch: 'task/x', baseBranch: 'main', baseCommit: HEAD, state: 'active', prUrl: null, ...extra });
+const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'Replies', worktreePath: '/git/worktrees/demo-feature',
+  worktrees: [part('7b000000-0000-4000-8000-000000000001', 'demo', '/git/worktrees/demo-feature')] };
+const BUSY = { id: '7a000000-0000-4000-8000-000000000002', project: 'Demo', title: 'Busy one', worktreePath: '/git/worktrees/demo-busy',
+  worktrees: [part('7b000000-0000-4000-8000-000000000002', 'demo', '/git/worktrees/demo-busy')] };
 
 async function renderDialog(props = {}) {
   const onStart = props.onStart ?? vi.fn(async () => ({ id: 'r1' }));
@@ -145,8 +149,8 @@ describe('RunWorkflowDialog', () => {
       worktree({ dirty: true }),
       worktree({ path: '/git/worktrees/demo-busy', name: 'demo-busy', branch: 'busy', selectable: false, reason: { code: 'in_use', message: 'An open workflow run is using this worktree.' } }),
     ] });
-    const gone = { id: '7a000000-0000-4000-8000-000000000003', project: 'Demo', title: 'Vanished', worktreePath: '/git/worktrees/demo-gone' };
-    const foreign = { id: '7a000000-0000-4000-8000-000000000004', project: 'Other', title: 'Elsewhere', worktreePath: '/git/worktrees/other' };
+    const gone = { id: '7a000000-0000-4000-8000-000000000003', project: 'Demo', title: 'Vanished', worktreePath: '/git/worktrees/demo-gone', worktrees: [part('7b000000-0000-4000-8000-000000000008', 'demo', '/git/worktrees/demo-gone')] };
+    const foreign = { id: '7a000000-0000-4000-8000-000000000004', project: 'Other', title: 'Elsewhere', worktreePath: '/git/worktrees/other', worktrees: [part('7b000000-0000-4000-8000-000000000009', 'other', '/git/worktrees/other')] };
     await renderDialog({ tasks: [TASK, BUSY, gone, foreign] });
 
     expect(screen.getAllByRole('radio').map(radio => [radio.textContent, radio.disabled])).toEqual([['A new task', false], ['An open task', false], ['Main', false]]);
@@ -257,5 +261,111 @@ describe('RunWorkflowDialog', () => {
     render(<RunWorkflowDialog projectName="Demo" onClose={() => {}} onStart={vi.fn()} />);
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/Invalid worktree from the pipelines API: selectable/);
+  });
+});
+
+describe('RunWorkflowDialog in a project with several repositories', () => {
+  const OTHERS = [{ name: 'mobile-app', path: '/git/mobile-app' }, { name: 'frontend', path: '/git/worktrees/frontend-main' }];
+  const repo = (name, path, extra = {}) => ({ name, path, own: false, branch: 'main', head: HEAD, dirty: false, usable: true, reason: null, ...extra });
+  const REPOSITORIES = [repo('demo', '/git/demo', { own: true }), repo('mobile-app', '/git/mobile-app', { branch: 'develop' }),
+    repo('frontend', '/git/worktrees/frontend-main', { branch: null, head: null, dirty: null, usable: false, reason: { code: 'not_git_toplevel', message: 'This folder is not the top level of a Git working tree.' } })];
+  const ACROSS = { id: '7a000000-0000-4000-8000-000000000003', project: 'Demo', title: 'Across', worktreePath: '/git/worktrees/across/mobile-app', worktrees: [
+    part('7b000000-0000-4000-8000-000000000003', 'mobile-app', '/git/worktrees/across/mobile-app', { own: false }),
+    part('7b000000-0000-4000-8000-000000000004', 'demo', '/git/worktrees/across/demo', { first: false }),
+    part('7b000000-0000-4000-8000-000000000005', 'frontend', '/git/worktrees/across/frontend', { own: false, first: false, state: 'merged' }),
+  ] };
+
+  function mockRepositories() {
+    mockApi();
+    const base = global.fetch;
+    global.fetch = vi.fn(async (url) => {
+      if (String(url).includes('/repositories')) return { ok: true, status: 200, json: async () => ({ data: REPOSITORIES, page: { hasNextPage: false, totalElements: REPOSITORIES.length } }) };
+      return base(url);
+    });
+  }
+  async function renderAcross(props = {}) {
+    const onStart = vi.fn(async () => ({ id: 'r1' }));
+    render(<RunWorkflowDialog projectName="Demo" repositories={OTHERS} tasks={props.tasks ?? [TASK, ACROSS]} defaultTaskId={props.defaultTaskId ?? null} onClose={vi.fn()} onStart={onStart} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Workflow' })).toBeTruthy());
+    return { onStart };
+  }
+  const startIn = () => screen.getByRole('combobox', { name: 'Start in' });
+  const options = select => [...select.options].map(option => ({ label: option.textContent, disabled: option.disabled }));
+  const type = value => fireEvent.change(screen.getByRole('textbox', { name: 'Input' }), { target: { value } });
+  const sent = onStart => { const { requestId, ...rest } = onStart.mock.calls[0][0]; expect(requestId).toEqual(expect.any(String)); return rest; };
+
+  it('asks which repository a new task starts in and which others it includes', async () => {
+    mockRepositories();
+    const { onStart } = await renderAcross();
+    expect(options(startIn())).toEqual([
+      { label: 'demo — from main', disabled: false },
+      { label: 'mobile-app — from develop', disabled: false },
+      { label: 'frontend — This folder is not the top level of a Git working tree.', disabled: true },
+    ]);
+    expect(startIn().value).toBe('demo');
+    // Nothing but the repository the run starts in is included unless ticked.
+    expect(screen.getByRole('checkbox', { name: 'Also include mobile-app' }).checked).toBe(false);
+    expect(screen.queryByRole('checkbox', { name: 'Also include demo' })).toBeNull();
+    expect(screen.getByRole('checkbox', { name: 'Also include frontend' }).disabled).toBe(true);
+    type('docs/todos/replies.md');
+    fireEvent.change(startIn(), { target: { value: 'mobile-app' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Also include demo' }));
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: 'docs/todos/replies.md', newTask: { repositories: ['mobile-app', 'demo'] }, startIn: 'mobile-app' });
+  });
+
+  it('starts a new task in the project\'s own repository alone when nothing is changed', async () => {
+    mockRepositories();
+    const { onStart } = await renderAcross();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Task title' }), { target: { value: 'Replies' } });
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: '', newTask: { title: 'Replies', repositories: ['demo'] }, startIn: 'demo' });
+  });
+
+  it('asks which repository of an open task the run starts in, among those still open', async () => {
+    mockRepositories();
+    const { onStart } = await renderAcross({ defaultTaskId: ACROSS.id });
+    expect(chosenPlace()).toBe('An open task');
+    expect(options(startIn())).toEqual([{ label: 'mobile-app', disabled: false }, { label: 'demo', disabled: false }]);
+    expect(startIn().value).toBe('mobile-app');
+    fireEvent.change(startIn(), { target: { value: 'demo' } });
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: '', taskId: ACROSS.id, startIn: 'demo' });
+  });
+
+  it('starts in an open task with one repository the way it always did', async () => {
+    mockRepositories();
+    const { onStart } = await renderAcross({ defaultTaskId: TASK.id });
+    expect(screen.queryByRole('combobox', { name: 'Start in' })).toBeNull();
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: '', taskId: TASK.id });
+  });
+
+  it('runs in Main of the repository chosen: the project\'s own, or another one\'s own checkout', async () => {
+    mockRepositories();
+    const { onStart } = await renderAcross();
+    fireEvent.click(where('Main'));
+    expect(options(startIn())).toEqual([{ label: 'demo', disabled: false }, { label: 'mobile-app', disabled: false }, { label: 'frontend — This folder is not the top level of a Git working tree.', disabled: true }]);
+    fireEvent.change(startIn(), { target: { value: 'mobile-app' } });
+    expect(screen.getByText('Runs directly in the checkout of mobile-app, with no copy of its own and no Setup step. It changes that repository only.')).toBeTruthy();
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: '', worktreePath: '/git/mobile-app' });
+  });
+
+  it('says why when the repositories cannot be read, and starts nothing', async () => {
+    mockApi();
+    const base = global.fetch;
+    global.fetch = vi.fn(async (url) => {
+      if (String(url).includes('/repositories')) return { ok: false, status: 409, json: async () => ({ message: 'Repositories are only available for local projects.' }) };
+      return base(url);
+    });
+    render(<RunWorkflowDialog projectName="Demo" repositories={OTHERS} tasks={[]} onClose={vi.fn()} onStart={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Repositories are only available for local projects.'));
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull();
   });
 });

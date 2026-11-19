@@ -137,7 +137,7 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
  * (`children`: the terminals of this task, owned by the terminal area).
  */
 export default function TaskView({
-  title, tooltip, run, openSessionIds, inTask = false, children,
+  title, tooltip, run, openSessionIds, inTask = false, repository = null, children,
   onActivateStep, onOpenTerminal,
   onStop, onResume, onContinue, onCleanup, onAnswer,
   onLoadNotes, onLoadDecisions, onLoadReviews, onLoadAnswers = async () => ({ answers: [] }), onApprove, onSendBack,
@@ -146,6 +146,8 @@ export default function TaskView({
   if (!Array.isArray(run.steps) || run.steps.length === 0) throw new Error('task view: run.steps must be a nonempty array');
   if (!(openSessionIds instanceof Set)) throw new Error('task view: openSessionIds must be a Set');
   if (typeof inTask !== 'boolean') throw new Error('task view: inTask must be a boolean');
+  // The repository the run works in, given when its task or project has more than one to tell apart.
+  if (repository !== null && (typeof repository !== 'string' || repository.trim() === '')) throw new Error('task view: repository must be a name or null');
   const currentIndex = Number.isInteger(run.currentStepIndex) ? run.currentStepIndex : 0;
   // The owner's pick holds until the run moves to another step; then the view follows the run.
   const [picked, setPicked] = useState(null);
@@ -179,6 +181,7 @@ export default function TaskView({
       <header className="task-view-header">
         <div className="pipeline-run-heading">
           <strong className="pipeline-run-name" title={tooltip}>{heading}</strong>
+          {repository !== null && <span className="pipeline-run-muted" title="The run's current directory is this repository's worktree">{`works in ${repository}`}</span>}
           <span className="pipeline-run-status" data-status={run.status} data-tone={status.tone} aria-label={`Run status: ${status.label}`}>{status.label}</span>
           {run.agentsDecide && <span title="Agents in this run go with their own recommendations instead of pausing for you" className="pipeline-run-agents-decide">agents decide{run.decisionCount > 0 ? ` · ${run.decisionCount} so far` : ''}</span>}
           <div className="pipeline-run-actions">

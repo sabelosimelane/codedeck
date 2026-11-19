@@ -607,6 +607,7 @@ function AppContent() {
       {showRunWorkflow && activeProject && (
         <RunWorkflowDialog
           projectName={activeProject.name}
+          repositories={activeProject.repositories}
           tasks={openTasks}
           defaultTaskId={worktreeGroupsByProject.get(activeProject.name)?.find(group => group.key === selectedWorktreeByProject[activeProject.name])?.task?.id ?? null}
           onClose={() => setShowRunWorkflow(false)}

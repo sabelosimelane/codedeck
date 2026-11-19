@@ -9,6 +9,13 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock('../../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
 vi.mock('../../../utils/tasksApi.js', () => api);
+vi.mock('../AddRepositoryDialog.jsx', () => ({
+  default: ({ task, onAdded, onClose }) => (
+    <div role="dialog" aria-label="Add a repository to this task">
+      <button type="button" onClick={() => { onAdded({ ...task, revision: task.revision + 1 }); onClose(); }}>Add mobile-app</button>
+    </div>
+  ),
+}));
 import TaskLandingBar from '../TaskLandingBar.jsx';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
@@ -190,6 +197,22 @@ describe('TaskLandingBar for a task with several repositories', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Server unreachable'));
     expect(screen.getByRole('button', { name: 'Rename' }).disabled).toBe(false);
     expect(screen.queryByRole('list', { name: 'Repositories of this task' })).toBeNull();
+  });
+
+  it('adds a repository to the task when the project has more to offer', async () => {
+    api.listTaskWorktreeLandings.mockResolvedValue([standing(BACKEND, 'backend', clean), standing(MOBILE, 'mobile-app', clean)]);
+    const onChanged = vi.fn();
+    render(<TaskLandingBar task={TASK} canAddRepository onChanged={onChanged} onFinished={vi.fn()} onRepositoryFinished={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('list', { name: 'Repositories of this task' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Add repository' }));
+    fireEvent.click(dialog('Add a repository to this task').getByRole('button', { name: 'Add mobile-app' }));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog', { name: 'Add a repository to this task' })).toBeNull();
+  });
+
+  it('offers no repository to add in a project that lists no others', async () => {
+    await mount();
+    expect(screen.queryByRole('button', { name: 'Add repository' })).toBeNull();
   });
 
   it('shows a task with one repository the way it always was', async () => {

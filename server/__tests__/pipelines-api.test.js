@@ -27,6 +27,7 @@ const PROJECT = {
   name: 'Demo',
   path: '/tmp/demo-git',
   host: 'local',
+  repositories: [],
 };
 
 function agentBody(overrides = {}) {
@@ -205,8 +206,11 @@ async function setup(overrides = {}) {
     plan: vi.fn(async ({ project, title, titleSource }) => {
       plannedTasks += 1;
       const id = `7a00000${plannedTasks}-0000-4000-8000-000000000000`;
-      return { id, project, projectPath: PROJECT.path, title: title.trim(), titleSource, homePath: '/Users/me/git/codedeck',
-        worktreePath: `/Users/me/git/worktrees/codedeck-task-${plannedTasks}`, branch: `task/t-${plannedTasks}`, baseBranch: 'main' };
+      const worktreePath = `/Users/me/git/worktrees/codedeck-task-${plannedTasks}`;
+      const branch = `task/t-${plannedTasks}`;
+      // A plan as the task service makes it: the task's worktrees, the one it starts in first.
+      return { id, project, projectPath: PROJECT.path, title: title.trim(), titleSource, folder: null, homePath: '/Users/me/git/codedeck', worktreePath, branch, baseBranch: 'main',
+        worktrees: [{ repository: 'codedeck', repositoryPath: null, checkoutPath: PROJECT.path, homePath: '/Users/me/git/codedeck', worktreePath, branch, baseBranch: 'main' }] };
     }),
     createPlanned: vi.fn(async planned => taskStore.create({ ...OWN_REPOSITORY, id: planned.id, project: planned.project, title: planned.title,
       titleSource: planned.titleSource, worktreePath: planned.worktreePath, branch: planned.branch, baseBranch: planned.baseBranch, baseCommit: 'c'.repeat(40) })),
@@ -400,7 +404,7 @@ describe('pipelines API — run notes', () => {
     expect((await request(ctx.app).get(`${base}/runs/11111111-1111-4111-8111-111111111111/notes`)).status).toBe(404);
   });
   it('refuses a worktree path that makes guidance too long before writing a run', async () => {
-    const ctx = await setup({ planNames: () => ({ worktreePath: `/${'a'.repeat(1900)}`, branch: 'workflow/long' }) });
+    const ctx = await setup({ planNames: () => ({ worktreePath: `/${'a'.repeat(3950)}`, branch: 'workflow/long' }) });
     const { workflow } = await seedReady(ctx);
     const result = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'long-notes', workflowId: workflow.id, project: 'Demo', input: 'x' });
     expect(result.status).toBe(400);
@@ -2367,7 +2371,8 @@ describe('pipelines API — runs in tasks', () => {
     expect(refused.body.message).toBe('Tasks are only available for local projects.');
 
     const collided = await setupTasks([HOME_WT], { taskService: {
-      plan: vi.fn(async () => ({ worktreePath: '/tmp/worktrees/x', branch: 'task/x' })),
+      plan: vi.fn(async () => ({ worktreePath: '/tmp/worktrees/x', branch: 'task/x', homePath: '/tmp/demo-git',
+        worktrees: [{ repository: 'demo-git', repositoryPath: null, checkoutPath: '/tmp/demo-git', homePath: '/tmp/demo-git', worktreePath: '/tmp/worktrees/x', branch: 'task/x', baseBranch: 'main' }] })),
       createPlanned: vi.fn(async () => { throw Object.assign(new Error('A folder for this task already exists. Try again.'), { status: 409 }); }),
     } });
     const collision = await request(collided.app).post(`${base}/runs`).send(collided.body({ newTask: { title: 'x' } }));
@@ -2652,5 +2657,176 @@ describe('POST /api/pipelines/runs — one worktree, two starts at once', () => 
     ctx.runStore.update(winner.body.id, { status: 'complete', finishedAt: new Date().toISOString() });
     expect((await post(3)).status).toBe(201);
     expect(occupying()).toBe(1);
+  });
+});
+
+describe('pipelines API — runs across the repositories of a project', () => {
+  const HEAD_A = 'a'.repeat(40);
+  const HEAD_M = 'e'.repeat(40);
+  const TASK_ID = '7b000000-0000-4000-8000-000000000001';
+  const MOBILE = '/tmp/group/mobile-app';
+  const FOLDER = '/tmp/worktrees/replies-7b000000';
+  const HOME_WT = { path: PROJECT.path, head: HEAD_A, branch: 'main', missing: false };
+  const OWN_TASK_WT = { path: `${FOLDER}/codedeck`, head: HEAD_A, branch: 'task/replies-7b000000', missing: false };
+  const MOBILE_HOME_WT = { path: MOBILE, head: HEAD_M, branch: 'main', missing: false };
+  const MOBILE_TASK_WT = { path: `${FOLDER}/mobile-app`, head: HEAD_M, branch: 'task/replies-7b000000', missing: false };
+
+  /** A project whose own repository is known as `codedeck` and that lists `mobile-app`. */
+  async function setupRepositories(overrides = {}) {
+    const listWorktrees = vi.fn(async ({ projectPath }) => (projectPath === MOBILE ? [MOBILE_HOME_WT, MOBILE_TASK_WT] : [HOME_WT, OWN_TASK_WT]));
+    const readWorktreeChanges = vi.fn(async () => ({ readable: true, dirty: false }));
+    const ctx = await setup({ ...overrides, routerDeps: { listWorktrees, readWorktreeChanges, realpath: async value => value, execFile: 'exec-file-stub', ...overrides.routerDeps } });
+    ctx.projects.set('Demo', { ...PROJECT, repositories: [{ name: 'mobile-app', path: MOBILE }] });
+    const { workflow } = await seedReady(ctx);
+    const seedTask = () => {
+      ctx.taskStore.create({ id: TASK_ID, project: 'Demo', title: 'Replies', titleSource: 'owner', folder: FOLDER, repository: 'codedeck', repositoryPath: null,
+        worktreePath: OWN_TASK_WT.path, branch: OWN_TASK_WT.branch, baseBranch: 'main', baseCommit: HEAD_A });
+      return ctx.taskStore.addWorktree(TASK_ID, { repository: 'mobile-app', repositoryPath: MOBILE, worktreePath: MOBILE_TASK_WT.path, branch: MOBILE_TASK_WT.branch, baseBranch: 'main', baseCommit: HEAD_M });
+    };
+    const body = (extra = {}) => ({ requestId: 'run-repos', workflowId: workflow.id, project: 'Demo', input: 'docs/todos/feature.md', ...extra });
+    return { ...ctx, workflow, seedTask, body, listWorktrees };
+  }
+
+  /** A task service that plans the worktrees asked for, the first one first, and records them as the real one does. */
+  function planning(ctx) {
+    const checkout = name => (name === 'codedeck' ? PROJECT.path : MOBILE);
+    return {
+      plan: vi.fn(async ({ project, title, titleSource, repositories = ['codedeck'] }) => {
+        if (repositories.includes('nope')) throw Object.assign(new Error('One or more fields failed validation.'), { status: 400, errors: [{ field: 'repositories', message: 'nope is not a repository of this project' }] });
+        const worktrees = repositories.map(repository => ({ repository, repositoryPath: repository === 'codedeck' ? null : MOBILE, checkoutPath: checkout(repository), homePath: checkout(repository),
+          worktreePath: `${FOLDER}/${repository}`, branch: 'task/replies-7b000000', baseBranch: 'main' }));
+        return { id: TASK_ID, project, projectPath: PROJECT.path, title: title.trim(), titleSource, folder: FOLDER, homePath: worktrees[0].homePath, worktreePath: worktrees[0].worktreePath, branch: worktrees[0].branch, baseBranch: 'main', worktrees };
+      }),
+      createPlanned: vi.fn(async (planned) => {
+        const row = entry => ({ repository: entry.repository, repositoryPath: entry.repositoryPath, worktreePath: entry.worktreePath, branch: entry.branch, baseBranch: entry.baseBranch, baseCommit: HEAD_A });
+        const [first, ...rest] = planned.worktrees;
+        let task = ctx().taskStore.create({ id: planned.id, project: planned.project, title: planned.title, titleSource: planned.titleSource, folder: planned.folder, ...row(first) });
+        for (const entry of rest) task = ctx().taskStore.addWorktree(planned.id, row(entry));
+        return task;
+      }),
+    };
+  }
+
+  it('starts a run in the repository of an open task that is named, and in the one the task started in when none is', async () => {
+    const ctx = await setupRepositories();
+    ctx.seedTask();
+    const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: TASK_ID, startIn: 'mobile-app' }));
+    expect(started.status).toBe(201);
+    expect(started.body.worktree).toEqual({ path: MOBILE_TASK_WT.path, branch: MOBILE_TASK_WT.branch, baseCommit: HEAD_M, state: 'external', detail: null });
+    expect(started.body.steps.map(item => item.kind)).toEqual(['node']);
+    // The worktree is looked up in the repository it belongs to, and the run records that repository's home.
+    expect(ctx.listWorktrees).toHaveBeenLastCalledWith({ projectPath: MOBILE, execFile: 'exec-file-stub' });
+    expect(ctx.runStore.get(started.body.id)).toMatchObject({ taskId: TASK_ID, worktreePath: MOBILE_TASK_WT.path });
+
+    const other = await setupRepositories();
+    other.seedTask();
+    const unnamed = await request(other.app).post(`${base}/runs`).send(other.body({ taskId: TASK_ID }));
+    expect(unnamed.body.worktree.path).toBe(OWN_TASK_WT.path);
+    expect(other.listWorktrees).toHaveBeenLastCalledWith({ projectPath: PROJECT.path, execFile: 'exec-file-stub' });
+  });
+
+  it('refuses a repository the task does not have open', async () => {
+    const ctx = await setupRepositories();
+    const task = ctx.seedTask();
+    const unknown = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: TASK_ID, startIn: 'frontend' }));
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.errors).toEqual([{ field: 'startIn', message: 'Use the name of a repository of this task that is still open' }]);
+    ctx.taskStore.setWorktreeState(TASK_ID, task.worktrees[1].id, { state: 'closed' });
+    const closed = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: TASK_ID, startIn: 'mobile-app' }));
+    expect(closed.status).toBe(400);
+    expect(ctx.runStore.list()).toEqual([]);
+  });
+
+  it('lets a task have one unfinished run, whichever repository it starts in', async () => {
+    const ctx = await setupRepositories();
+    ctx.seedTask();
+    expect((await request(ctx.app).post(`${base}/runs`).send(ctx.body({ taskId: TASK_ID, startIn: 'mobile-app' }))).status).toBe(201);
+    const second = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ requestId: 'run-second', taskId: TASK_ID }));
+    expect(second.status).toBe(409);
+    expect(second.body.reasons).toEqual([{ code: 'task_in_use', message: 'An open workflow run is working in another repository of this task. Stop it or let it finish first.' }]);
+    expect(ctx.runStore.list()).toHaveLength(1);
+  });
+
+  it('creates a task for a run in the repositories asked for, starting where the run starts, and prepares each with Setup', async () => {
+    let ctx;
+    const taskService = planning(() => ctx);
+    ctx = await setupRepositories({ taskService });
+    const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'Replies', repositories: ['codedeck', 'mobile-app'] }, startIn: 'mobile-app' }));
+    expect(started.status).toBe(201);
+    expect(taskService.plan).toHaveBeenCalledWith({ project: 'Demo', title: 'Replies', titleSource: 'owner', repositories: ['mobile-app', 'codedeck'] });
+    expect(started.body.worktree.path).toBe(`${FOLDER}/mobile-app`);
+    expect(started.body.steps.map(item => item.kind)).toEqual(['setup', 'node']);
+    const run = ctx.runStore.get(started.body.id);
+    expect(run.homePath).toBe(MOBILE);
+    const setup = run.definition.steps[0].prompt;
+    expect(setup).toContain('You are preparing 2 fresh git worktrees of one task');
+    expect(setup).toContain(`- mobile-app: home checkout ${MOBILE}, worktree ${FOLDER}/mobile-app (your current directory)`);
+    expect(setup).toContain(`- codedeck: home checkout ${PROJECT.path}, worktree ${FOLDER}/codedeck`);
+    expect(ctx.taskStore.get(TASK_ID).worktrees.map(worktree => [worktree.repository, worktree.first])).toEqual([['mobile-app', true], ['codedeck', false]]);
+  });
+
+  it('starts a new task in the one repository named when no list is given, and in the project\'s own when nothing is', async () => {
+    let ctx;
+    const taskService = planning(() => ctx);
+    ctx = await setupRepositories({ taskService });
+    await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: {}, startIn: 'mobile-app' }));
+    expect(taskService.plan).toHaveBeenLastCalledWith(expect.objectContaining({ repositories: ['mobile-app'] }));
+    let other;
+    const plain = planning(() => other);
+    other = await setupRepositories({ taskService: plain });
+    await request(other.app).post(`${base}/runs`).send(other.body({ newTask: { title: 'Alone' } }));
+    expect(plain.plan).toHaveBeenLastCalledWith({ project: 'Demo', title: 'Alone', titleSource: 'owner' });
+  });
+
+  it('names the field to fix when a repository of the new task is not one of the project\'s', async () => {
+    let ctx;
+    ctx = await setupRepositories({ taskService: planning(() => ctx) });
+    const listed = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { repositories: ['nope'] } }));
+    expect(listed.status).toBe(400);
+    expect(listed.body.errors).toEqual([{ field: 'newTask.repositories', message: 'nope is not a repository of this project' }]);
+    const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ requestId: 'run-start-in', newTask: {}, startIn: 'nope' }));
+    expect(started.body.errors).toEqual([{ field: 'startIn', message: 'nope is not a repository of this project' }]);
+    expect(ctx.runStore.list()).toEqual([]);
+  });
+
+  it('starts a run in Main of another repository of the project, in that repository\'s own checkout', async () => {
+    const ctx = await setupRepositories();
+    const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ worktreePath: MOBILE }));
+    expect(started.status).toBe(201);
+    expect(started.body.worktree).toEqual({ path: MOBILE, branch: 'main', baseCommit: HEAD_M, state: 'external', detail: null });
+    expect(started.body.taskId).toBeNull();
+    expect(started.body.steps.map(item => item.kind)).toEqual(['node']);
+    expect(ctx.listWorktrees).toHaveBeenLastCalledWith({ projectPath: MOBILE, execFile: 'exec-file-stub' });
+    // A path that is neither a worktree of the project's own repository nor one of its repositories is not found.
+    const elsewhere = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ requestId: 'run-elsewhere', worktreePath: '/tmp/group/unrelated' }));
+    expect(elsewhere.status).toBe(404);
+  });
+
+  it('looks for the progress file of a new task in the repository the run starts in, and names that repository when it is missing', async () => {
+    let ctx;
+    const execFile = vi.fn((_command, args, _options, callback) => {
+      expect(args).toEqual(['-C', MOBILE, 'ls-tree', '-z', 'HEAD', '--', 'docs/todo.md']);
+      callback(null, '', '');
+    });
+    ctx = await setupRepositories({ taskService: planning(() => ctx), routerDeps: { execFile } });
+    const agent = ctx.agentStore.list()[0];
+    const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
+    const refused = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ workflowId: workflow.id, newTask: {}, startIn: 'mobile-app' }));
+    expect(refused.status).toBe(400);
+    expect(refused.body.errors).toEqual([{ field: 'input', message: 'docs/todo.md is not in mobile-app at its current commit. Commit it there, or start the run in the repository that contains it.' }]);
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(ctx.taskStore.list()).toEqual([]);
+  });
+
+  it('says which repository to start in when the input is the full path of a file in one of the project\'s repositories', async () => {
+    const ctx = await setupRepositories();
+    const agent = ctx.agentStore.list()[0];
+    const workflow = ctx.workflowStore.create({ name: 'Todo', agentsDecide: false, progressFile: '{input}', nodes: [node(agent.id, { prompt: 'Work on {input}' })] });
+    const refused = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ workflowId: workflow.id, input: `${MOBILE}/docs/todos/replies.md`, newTask: {} }));
+    expect(refused.status).toBe(400);
+    expect(refused.body.errors).toEqual([{ field: 'input', message: `"${MOBILE}/docs/todos/replies.md" is a file in mobile-app. Start the run in mobile-app and type its path inside that repository: docs/todos/replies.md` }]);
+    // A full path that is in none of the project's repositories is answered as before.
+    const outside = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ requestId: 'run-outside', workflowId: workflow.id, input: '/tmp/elsewhere/todo.md', newTask: {} }));
+    expect(outside.body.errors[0].message).toContain('which is not the path of a .md file inside the project');
   });
 });

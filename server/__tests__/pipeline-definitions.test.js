@@ -277,6 +277,31 @@ describe('validateRunStartBody', () => {
     expect(fields(validateRunStartBody({ ...valid, extra: 1 }))).toContain('extra');
   });
 
+  it('accepts the repositories of a new task and the one a run starts in', () => {
+    expect(validateRunStartBody({ ...valid, newTask: { repositories: ['mobile-app', 'backend'] }, startIn: 'mobile-app' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: { title: 'x', repositories: ['backend'] } })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: {}, startIn: 'mobile-app' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, taskId: UUID2, startIn: 'mobile-app' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: { repositories: Array.from({ length: 9 }, (_, index) => `r${index}`) } })).toEqual([]);
+  });
+
+  it('rejects a bad list of repositories and a bad or misplaced start repository', () => {
+    for (const repositories of [null, 'backend', [], [''], [7], ['a/b'], ['..'], ['backend', 'backend'], ['x'.repeat(101)], Array.from({ length: 10 }, (_, index) => `r${index}`)]) {
+      expect(fields(validateRunStartBody({ ...valid, newTask: { repositories } }))).toEqual(['newTask.repositories']);
+    }
+    for (const startIn of [null, '', 7, 'a/b', '..', 'x'.repeat(101), 'two\nlines']) {
+      expect(fields(validateRunStartBody({ ...valid, taskId: UUID2, startIn }))).toEqual(['startIn']);
+    }
+    // The repository a run starts in must be one the new task includes.
+    expect(validateRunStartBody({ ...valid, newTask: { repositories: ['backend'] }, startIn: 'mobile-app' }))
+      .toEqual([{ field: 'startIn', message: 'Use one of the repositories the new task includes' }]);
+    // A run in a worktree named by path works there; it has no repository to start in.
+    expect(validateRunStartBody({ ...valid, worktreePath: '/tmp/w', startIn: 'backend' }))
+      .toEqual([{ field: 'startIn', message: 'Use it with a task; a run in a worktree named by path works in that worktree' }]);
+    expect(validateRunStartBody({ ...valid, startIn: 'backend' }))
+      .toEqual([{ field: 'startIn', message: 'Use it with a task; a run in a worktree named by path works in that worktree' }]);
+  });
+
   it('accepts an absolute worktreePath of 1–4096 characters, or none', () => {
     expect(validateRunStartBody({ ...valid, worktreePath: '/Users/me/git/worktrees/codedeck-x' })).toEqual([]);
     expect(validateRunStartBody({ ...valid, worktreePath: '/' })).toEqual([]);

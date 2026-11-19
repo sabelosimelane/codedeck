@@ -112,6 +112,27 @@ describe('run notes', () => {
     expect(readme).toContain('Setup');
     expect(readme).toBe(buildReadme(definition, 'do a thing'));
   });
+  it('lists the repositories of the task and of the project when there is more than one to tell apart', () => {
+    const places = {
+      current: 'mobile-app',
+      worktrees: [{ repository: 'mobile-app', path: '/group/worktrees/replies/mobile-app' }, { repository: 'backend', path: '/group/worktrees/replies/backend' }],
+      readOnly: [{ repository: 'frontend', path: '/group/worktrees/frontend-main' }],
+    };
+    const readme = buildReadme(definition, 'do a thing', places);
+    expect(readme).toContain([
+      '## Repositories',
+      '',
+      '- mobile-app — part of this task, your current directory — /group/worktrees/replies/mobile-app',
+      '- backend — part of this task — /group/worktrees/replies/backend',
+      '- frontend — not part of this task: read only, never change — /group/worktrees/frontend-main',
+      '',
+      'A reference in a document to one of these repositories means the path given here. If a repository that is not part of this task must change, use NEEDS_INPUT.',
+    ].join('\n'));
+    // One repository and nothing else to name: the notes say what they always said.
+    const single = { current: 'demo', worktrees: [{ repository: 'demo', path: '/tmp/run' }], readOnly: [] };
+    expect(buildReadme(definition, 'do a thing', single)).toBe(buildReadme(definition, 'do a thing'));
+    expect(() => buildReadme(definition, 'do a thing', { current: 'x', worktrees: 'no', readOnly: [] })).toThrow(/places/);
+  });
   it('rejects bad arguments', () => {
     expect(() => noteFileName(-1, 'Build')).toThrow(/stepIndex/);
     expect(() => noteFileName(1, null)).toThrow(/stepName/);

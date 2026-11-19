@@ -96,3 +96,62 @@ describe('buildStepGuidance', () => {
     expect(() => buildStepGuidance(definition(false, step('Develop')), 0, options)).toThrow('worktreePath must be a non-empty absolute path');
   });
 });
+
+describe('buildStepGuidance for a task or a project with several repositories', () => {
+  const FOLDER = '/group/worktrees/replies-7a000000';
+  const places = {
+    current: 'mobile-app',
+    worktrees: [{ repository: 'mobile-app', path: `${FOLDER}/mobile-app` }, { repository: 'backend', path: `${FOLDER}/backend` }],
+    readOnly: [{ repository: 'frontend', path: '/group/worktrees/frontend-main' }],
+  };
+  const options = { worktreePath: `${FOLDER}/mobile-app`, places };
+  const def = definition(false, step('Develop'));
+
+  it('names every worktree of the task as a place to work, and the other repositories as places to read', () => {
+    expect(buildStepGuidance(def, 0, options)).toBe(
+      `Work only inside this task's worktrees: mobile-app at ${FOLDER}/mobile-app, backend at ${FOLDER}/backend. Your current directory is the mobile-app one. `
+      + 'Each is a separate Git repository on its own branch: run Git inside the worktree it concerns, commit each separately and switch no branch. '
+      + 'Do not create, change or delete files anywhere else. '
+      + 'These repositories of the project are not part of this task: frontend at /group/worktrees/frontend-main. Read them there when a document refers to them and never change them. '
+      + 'If a repository that is not part of this task must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.',
+    );
+  });
+
+  it('says only what applies: one worktree with other repositories to read, or several worktrees and nothing else', () => {
+    const one = buildStepGuidance(def, 0, { worktreePath: '/group/backend', places: { current: 'backend', worktrees: [{ repository: 'backend', path: '/group/backend' }], readOnly: [{ repository: 'mobile-app', path: '/group/mobile-app' }] } });
+    expect(one).toBe(
+      "Work only inside this run's worktree, /group/backend, which is your current directory and the backend repository. Do not create, change or delete files outside it. "
+      + 'These repositories of the project are not part of this run: mobile-app at /group/mobile-app. Read them there when a document refers to them and never change them. '
+      + 'If a repository that is not part of this run must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.',
+    );
+    const several = buildStepGuidance(def, 0, { ...options, places: { ...places, readOnly: [] } });
+    expect(several).not.toContain('are not part of this task:');
+    expect(several).toContain('If a repository that is not part of this task must change, or the files of the task are in none of these places, use NEEDS_INPUT');
+  });
+
+  it('keeps the sentence a run always had where there is one repository and nothing else to name', () => {
+    const single = { current: 'demo', worktrees: [{ repository: 'demo', path: '/tmp/worktrees/run' }], readOnly: [] };
+    expect(buildStepGuidance(def, 0, { worktreePath: '/tmp/worktrees/run', places: single })).toBe(BOUNDARY);
+    expect(buildStepGuidance(def, 0, { worktreePath: '/tmp/worktrees/run' })).toBe(BOUNDARY);
+  });
+
+  it('tells a read-only step to change nothing in any of the task\'s worktrees', () => {
+    const readOnly = { ...definition(false, { ...step('Review'), readOnly: true }), notesDir: '.codedeck/runs/abcdef12' };
+    expect(buildStepGuidance(readOnly, 0, options)).toContain("This step is read-only: change nothing in any of the task's worktrees except files in the run notes folder, .codedeck/runs/abcdef12.");
+    expect(buildStepGuidance({ ...readOnly, notesDir: null }, 0, options)).toContain("This step is read-only: change nothing in any of the task's worktrees.");
+  });
+
+  it.each([
+    ['places that are not an object', 'x'],
+    ['no current repository', { worktrees: places.worktrees, readOnly: [] }],
+    ['no worktrees', { current: 'mobile-app', worktrees: [], readOnly: [] }],
+    ['a worktree without a path', { current: 'mobile-app', worktrees: [{ repository: 'mobile-app' }], readOnly: [] }],
+    ['a relative path', { current: 'mobile-app', worktrees: [{ repository: 'mobile-app', path: 'x' }], readOnly: [] }],
+    ['a current repository that is not one of the worktrees', { current: 'frontend', worktrees: places.worktrees, readOnly: [] }],
+    ['a current worktree that is not the working directory', { current: 'backend', worktrees: places.worktrees, readOnly: [] }],
+    ['read-only places that are not a list', { current: 'mobile-app', worktrees: places.worktrees, readOnly: 'x' }],
+    ['a read-only place without a name', { current: 'mobile-app', worktrees: places.worktrees, readOnly: [{ path: '/x' }] }],
+  ])('refuses %s', (_name, value) => {
+    expect(() => buildStepGuidance(def, 0, { worktreePath: `${FOLDER}/mobile-app`, places: value })).toThrow(/step guidance: places/);
+  });
+});

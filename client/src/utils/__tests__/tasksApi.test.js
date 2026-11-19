@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, mergeTask, mergeTaskWorktree,
+  addTaskRepository, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, mergeTask, mergeTaskWorktree,
   openTaskPullRequest, openTaskTerminal, openTaskWorktreePullRequest, parseLanding, parseTask, parseTaskSummary, parseWorktreeLanding, renameTask,
 } from '../tasksApi';
 
@@ -284,6 +284,19 @@ describe('landing one repository of a task', () => {
     expect(fetchMock.mock.calls[0]).toEqual([`/api/tasks/${ID}/worktrees/${WT2}/close`, { method: 'POST', signal: undefined }]);
     vi.stubGlobal('fetch', vi.fn(async () => reply(finishedBody({ branchKept: '', unmergedCommits: 2 }))));
     await expect(closeTaskWorktree(ID, WT2)).rejects.toThrow('Invalid close response');
+  });
+
+  it('adds one of the project\'s repositories to a task and returns the task with it', async () => {
+    const second = worktree({ id: WT2, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/replies/mobile-app' });
+    const fetchMock = vi.fn(async () => reply(task({ worktrees: [worktree(), second] }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await addTaskRepository(ID, 'mobile-app')).worktrees.map(entry => entry.repository)).toEqual(['demo', 'mobile-app']);
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/tasks/${ID}/worktrees`);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ repository: 'mobile-app' });
+    await expect(addTaskRepository(ID, '')).rejects.toThrow('repository');
+    await expect(addTaskRepository('nope', 'mobile-app')).rejects.toThrow('taskId');
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ message: 'A workflow run is working in this task. Add the repository when it pauses or finishes.' }, { ok: false, status: 409 })));
+    await expect(addTaskRepository(ID, 'mobile-app')).rejects.toThrow('A workflow run is working in this task. Add the repository when it pauses or finishes.');
   });
 
   it('passes on why a repository could not be landed', async () => {

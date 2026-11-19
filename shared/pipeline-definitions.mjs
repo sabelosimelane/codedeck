@@ -252,9 +252,14 @@ export function validateSettingsBody(body) {
   return errors;
 }
 
+/** A repository is known by its folder name. */
+function isRepositoryName(value) {
+  return typeof value === 'string' && value.length >= 1 && value.length <= 100 && !SINGLE_LINE.test(value) && !value.includes('/') && value !== '.' && value !== '..';
+}
+
 export function validateRunStartBody(body) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask'])) return errors;
+  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn'])) return errors;
   if (typeof body.requestId !== 'string' || !REQUEST_ID_RE.test(body.requestId)) {
     add(errors, 'requestId', 'Use 1–128 letters, digits, underscores or hyphens');
   }
@@ -283,7 +288,12 @@ export function validateRunStartBody(body) {
     if (task === null || typeof task !== 'object' || Array.isArray(task)) {
       add(errors, 'newTask', 'Use an object, with a title when the owner typed one');
     } else {
-      for (const key of Object.keys(task)) if (key !== 'title') add(errors, `newTask.${key}`, 'Unknown field');
+      for (const key of Object.keys(task)) if (key !== 'title' && key !== 'repositories') add(errors, `newTask.${key}`, 'Unknown field');
+      // The project's repositories the new task includes; left out, the project's own only (or the one the run starts in).
+      if (Object.hasOwn(task, 'repositories') && (!Array.isArray(task.repositories) || task.repositories.length < 1 || task.repositories.length > 9
+        || !task.repositories.every(isRepositoryName) || new Set(task.repositories).size !== task.repositories.length)) {
+        add(errors, 'newTask.repositories', 'Use a list of 1–9 different repository names');
+      }
       // No title: the task is called after the run's input and named from the run's work.
       if (Object.hasOwn(task, 'title') && (typeof task.title !== 'string' || task.title.trim().length < 1 || task.title.trim().length > 80 || SINGLE_LINE.test(task.title))) {
         add(errors, 'newTask.title', 'Use 1–80 characters on one line');
@@ -292,6 +302,13 @@ export function validateRunStartBody(body) {
   }
   const places = ['worktreePath', 'taskId', 'newTask'].filter(field => body[field] !== undefined);
   if (places.length > 1) add(errors, places[1], `Use only one of ${places.join(', ')}`);
+  // The repository of the task the run starts in: its current directory, and where its notes and progress file are.
+  if (body.startIn !== undefined) {
+    const listed = Array.isArray(body.newTask?.repositories) ? body.newTask.repositories : null;
+    if (!isRepositoryName(body.startIn)) add(errors, 'startIn', 'Use the name of a repository of the task');
+    else if (body.taskId === undefined && body.newTask === undefined) add(errors, 'startIn', 'Use it with a task; a run in a worktree named by path works in that worktree');
+    else if (listed !== null && errors.every(error => error.field !== 'newTask.repositories') && !listed.includes(body.startIn)) add(errors, 'startIn', 'Use one of the repositories the new task includes');
+  }
   return errors;
 }
 

@@ -317,7 +317,9 @@ function getPaneStatusTitle(sessionId, status, session) {
 function TaskFrame({ run, group, children, ...handlers }) {
   if (!run) return <>{children}</>;
   const described = group ? describeWorktreeGroup(group) : { title: run.workflowName, tooltip: undefined };
-  return <TaskView title={described.title} tooltip={described.tooltip} run={run} inTask={Boolean(group?.task)} {...handlers}>{children}</TaskView>;
+  // Named only where there is more than one repository to tell apart.
+  const repository = group ? repositoryLabelForPath(group, run.worktree.path) : null;
+  return <TaskView title={described.title} tooltip={described.tooltip} run={run} inTask={Boolean(group?.task)} repository={repository} {...handlers}>{children}</TaskView>;
 }
 
 export default function TerminalArea({
@@ -1240,7 +1242,8 @@ export default function TerminalArea({
         })}
         {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked} title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
       </div>}
-      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
+      {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged}
+        canAddRepository={Array.isArray(project.repositories) && project.repositories.length > 0} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
         // One repository of the task was merged or closed: its terminals are gone, the task stays on screen.
         onRepositoryFinished={result => removeClosedSessions(result.terminalsClosed)} />}
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}

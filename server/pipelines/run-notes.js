@@ -100,8 +100,12 @@ export async function writeBrief({ worktreePath, definition, input, entries, fs 
   return relative;
 }
 
-export function buildReadme(definition, input) {
+/** `places`: where the run may work and read, as given to the step guidance; left out for a run that has only its worktree. */
+export function buildReadme(definition, input, places) {
   requireDefinition(definition);
+  if (places !== undefined && (places === null || typeof places !== 'object' || !Array.isArray(places.worktrees) || !Array.isArray(places.readOnly) || typeof places.current !== 'string')) {
+    throw new TypeError('places must hold the worktrees, the read-only repositories and the current repository');
+  }
   if (typeof definition.workflowName !== 'string' || !definition.workflowName.trim()) throw new TypeError('definition.workflowName must be a non-empty string');
   if (typeof input !== 'string' || /[\r\n]/.test(input)) throw new TypeError('input must be a one-line string');
   const lines = ['# Run notes', '', `Workflow: ${definition.workflowName}`, input ? `Input: ${input}` : 'Input: none', '', '## Steps'];
@@ -109,6 +113,12 @@ export function buildReadme(definition, input) {
     const file = notePath(definition, index);
     lines.push(`${String(index).padStart(2, '0')}. ${step.name} — ${step.agent.name} — ${file ?? 'no note'}`);
   });
+  if (places !== undefined && (places.worktrees.length > 1 || places.readOnly.length > 0)) {
+    lines.push('', '## Repositories', '');
+    for (const entry of places.worktrees) lines.push(`- ${entry.repository} — part of this task${entry.repository === places.current ? ', your current directory' : ''} — ${entry.path}`);
+    for (const entry of places.readOnly) lines.push(`- ${entry.repository} — not part of this task: read only, never change — ${entry.path}`);
+    lines.push('', 'A reference in a document to one of these repositories means the path given here. If a repository that is not part of this task must change, use NEEDS_INPUT.');
+  }
   lines.push('', '## How notes work', '', `Before starting, read this file, ${definition.notesDir}/brief.md (the owner's request and every question answered so far) and every earlier step note that exists.`, 'Before your final signal, write or replace your own note.', 'Start your note with one line `# <one-line summary>`. Then record what was done, what was decided and why, what is left, and where things are (paths).', `If the work has phases, keep ${definition.notesDir}/plan.md with ## Phase N: <title> sections and - [ ] or - [x] tasks. CodeDeck shows the current phase from it.`, 'This folder is ignored by git, belongs to this run, and is safe to delete once the run is over.', '');
   return lines.join('\n');
 }
@@ -164,12 +174,12 @@ async function replaceFile(fs, folder, name, content) {
   }
 }
 
-export async function prepare({ worktreePath, definition, input, fs = defaultFs, execFile = defaultExecFile } = {}) {
+export async function prepare({ worktreePath, definition, input, places, fs = defaultFs, execFile = defaultExecFile } = {}) {
   requireWorktree(worktreePath);
   requireDefinition(definition);
   requireFs(fs, ['mkdir', 'writeFile', 'realpath', 'lstat', 'open', 'rename', 'rm']);
   if (typeof execFile !== 'function') throw new TypeError('execFile must be a function');
-  const readme = buildReadme(definition, input);
+  const readme = buildReadme(definition, input, places);
   if (definition.notesDir === null) return;
   const unignored = () => new Error(`Run notes folder ${definition.notesDir} is not ignored by git in this worktree`);
   const tracked = await runGit(execFile, ['-C', worktreePath, 'ls-files', '--', '.codedeck']);

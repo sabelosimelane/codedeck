@@ -28,9 +28,12 @@ import {
   resolveHomeRepoPath as defaultResolveHomeRepoPath,
   listWorktrees as defaultListWorktrees,
   readWorktreeChanges as defaultReadWorktreeChanges,
-  buildSetupPrompt,
   hasCommittedFile,
+  buildSetupPromptForRepositories,
 } from '../pipelines/run-worktree.js';
+import { createRunPlaces } from '../pipelines/run-places.js';
+import { readStoredRepositories } from '../project-repositories.js';
+import { GUIDANCE_MAX } from '../terminal-workflow.js';
 import { parseCollectionQuery as parseQuery, paginate } from './collection-query.js';
 import { provisionalTaskTitle } from '../tasks/task-naming.js';
 
@@ -269,8 +272,8 @@ function buildDefinitionSnapshot({
   agentStore,
   settings,
   input,
-  homePath,
-  worktreePath,
+  setupPairs,
+  checkouts,
   withSetup,
 }) {
   const errors = [];
@@ -318,7 +321,14 @@ function buildDefinitionSnapshot({
   if (progressFile !== null && !isProgressFilePath(progressFile, 512)) {
     // The owner typed something the template cannot take, often a full path from disk: say what came of it.
     const shown = progressFile.length > 120 ? `${progressFile.slice(0, 120)}…` : progressFile;
-    errors.push({ field: 'input', message: `This workflow reads its progress from ${workflow.progressFile}. With this input that is "${shown}", which is not the path of a .md file inside the project. Type only the part that replaces {input}.` });
+    // A full path of a file in one of the project's repositories: say which repository to start in and what to type there.
+    const inside = workflow.progressFile === '{input}' && path.isAbsolute(progressFile)
+      ? checkouts.map(checkout => ({ repository: checkout.repository, relative: path.relative(checkout.path, progressFile) }))
+        .find(candidate => isProgressFilePath(candidate.relative, 512))
+      : undefined;
+    errors.push({ field: 'input', message: inside
+      ? `"${shown}" is a file in ${inside.repository}. Start the run in ${inside.repository} and type its path inside that repository: ${inside.relative}`
+      : `This workflow reads its progress from ${workflow.progressFile}. With this input that is "${shown}", which is not the path of a .md file inside the project. Type only the part that replaces {input}.` });
   }
 
   if (errors.length) throw fieldErrors(errors);
@@ -330,7 +340,7 @@ function buildDefinitionSnapshot({
     askOwner: false,
     readOnly: false,
     approval: false,
-    prompt: buildSetupPrompt(homePath, worktreePath),
+    prompt: buildSetupPromptForRepositories(setupPairs),
     repeat: { mode: 'until_complete', max: 3 },
     agent: agentSnapshot(setupAgent),
   }] : [];
@@ -401,6 +411,12 @@ export function createPipelinesRouter(deps) {
   } = deps ?? {};
 
   if (!agentStore) throw new Error('pipelines router: agentStore is required');
+  // Where a run may work and read, for a run in a place that already exists. Built when first asked for, after the dependencies are checked.
+  let readRunPlaces = null;
+  const runPlaces = (run) => {
+    readRunPlaces ??= createRunPlaces({ taskStore, findProject, execFile, resolveHomeRepoPath });
+    return readRunPlaces(run);
+  };
   if (!workflowStore) throw new Error('pipelines router: workflowStore is required');
   if (!settingsStore) throw new Error('pipelines router: settingsStore is required');
   if (!runStore) throw new Error('pipelines router: runStore is required');
@@ -821,6 +837,7 @@ export function createPipelinesRouter(deps) {
       worktreePath: req.body.worktreePath,
       taskId: req.body.taskId,
       newTask: req.body.newTask,
+      startIn: req.body.startIn,
     };
     // A run works in a new worktree of its own, in a worktree named by path, in an existing
     // task, or in a task created for it. Only a worktree CodeDeck has just created gets Setup.
@@ -846,15 +863,24 @@ export function createPipelinesRouter(deps) {
     // A new worktree is prepared by the Setup step, so only that case needs a setup agent.
     const settings = await requireRunnableProject(project, useExisting ? SETUP_AGENT_MISSING : null);
 
-    const homePath = await resolveHomeRepoPath({
-      projectPath: project.path,
-      execFile,
-    });
+    // The project's repositories: its own, at its path, and the others it lists.
+    const ownHome = await resolveHomeRepoPath({ projectPath: project.path, execFile });
+    const ownName = path.basename(ownHome);
+    const otherRepositories = readStoredRepositories(project);
+    const checkouts = [{ repository: ownName, path: project.path }, ...otherRepositories.map(entry => ({ repository: entry.name, path: entry.path }))];
+    const several = otherRepositories.length > 0;
+
+    // Where the run works: `checkoutPath` is the checkout of the repository it starts in, `homePath` that repository's home.
+    let homePath = ownHome;
+    let checkoutPath = project.path;
+    let startRepository = ownName;
     const runId = randomUUID();
     let names;
     let worktree = null;
     let task = null;
     let taskPlan = null;
+    // What a step is told about where it may work and read, for the instructions' length check.
+    let places;
     if (inTask) {
       task = taskStore.get(body.taskId);
       if (!task) throw new PipelineError('Task not found', 404);
@@ -862,36 +888,77 @@ export function createPipelinesRouter(deps) {
       if (!OPEN_TASK.has(task.state)) throw new PipelineError('This task is finished.', 409);
     }
     if (forNewTask) {
+      // The repository the run starts in is the one the task starts in: its worktree comes first.
+      const asked = body.newTask.repositories;
+      const repositories = body.startIn === undefined ? asked : [body.startIn, ...(asked ?? []).filter(name => name !== body.startIn)];
       try {
         const typed = body.newTask.title !== undefined;
         taskPlan = await taskService.plan({
           project: project.name,
           title: typed ? body.newTask.title : provisionalTaskTitle(body.input, workflow.name),
           titleSource: typed ? 'owner' : 'input',
+          ...(repositories === undefined ? {} : { repositories }),
         });
       } catch (err) {
         if (!Number.isInteger(err?.status)) throw err;
-        if (err.status === 400) throw fieldErrors((err.errors ?? []).map(item => ({ field: item.field === 'title' ? 'newTask.title' : item.field, message: item.message })));
+        if (err.status === 400) {
+          throw fieldErrors((err.errors ?? []).map(item => ({
+            field: item.field === 'title' ? 'newTask.title' : item.field === 'repositories' ? (asked === undefined ? 'startIn' : 'newTask.repositories') : item.field,
+            message: item.message,
+          })));
+        }
         throw new PipelineError(err.message, err.status);
       }
       names = { worktreePath: taskPlan.worktreePath, branch: taskPlan.branch };
+      const first = taskPlan.worktrees[0];
+      homePath = first.homePath;
+      checkoutPath = first.checkoutPath;
+      startRepository = first.repository;
+      const included = new Set(taskPlan.worktrees.map(entry => entry.repository));
+      places = {
+        current: first.repository,
+        worktrees: taskPlan.worktrees.map(entry => ({ repository: entry.repository, path: entry.worktreePath })),
+        readOnly: checkouts.filter(entry => !included.has(entry.repository)),
+      };
     } else if (useExisting) {
-      // The path is only ever one git itself reported for this project.
-      const wantedPath = inTask ? task.worktreePath : body.worktreePath;
-      const worktrees = await listWorktrees({ projectPath: project.path, execFile });
+      let wantedPath;
+      if (inTask) {
+        // The run starts in the repository named, or where a terminal of the task would open.
+        const open = task.worktrees.filter(candidate => OPEN_TASK.has(candidate.state));
+        const target = body.startIn === undefined ? open[0] : open.find(candidate => candidate.repository === body.startIn);
+        if (!target) throw fieldError('startIn', 'Use the name of a repository of this task that is still open');
+        wantedPath = target.worktreePath;
+        checkoutPath = target.own ? project.path : target.repositoryPath;
+        startRepository = target.repository;
+      } else {
+        wantedPath = body.worktreePath;
+        // Main reaches every repository of the project: the path may be the own checkout of one of the others.
+        const other = otherRepositories.find(entry => entry.path === wantedPath);
+        if (other) { checkoutPath = other.path; startRepository = other.name; }
+      }
+      if (checkoutPath !== project.path) homePath = await resolveHomeRepoPath({ projectPath: checkoutPath, execFile });
+      // The path is only ever one git itself reported for a repository of this project.
+      const worktrees = await listWorktrees({ projectPath: checkoutPath, execFile });
       worktree = worktrees.find(candidate => candidate.path === wantedPath) ?? null;
       if (!worktree && inTask) throw new PipelineError("This task's files are no longer on disk.", 409);
       if (!worktree) throw new PipelineError('Worktree not found for this project', 404);
       const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
       const refusal = worktreeRefusal(worktree, changes, runStore.list());
       if (refusal) throw new PipelineError(refusal.message, 409, undefined, { reasons: [refusal] });
+      // A task takes one unfinished run at a time: two could change the same worktrees.
+      if (inTask && runStore.list().some(run => run.taskId === task.id && run.status !== 'complete' && isOpenRun(run))) {
+        const busy = { code: 'task_in_use', message: 'An open workflow run is working in another repository of this task. Stop it or let it finish first.' };
+        throw new PipelineError(busy.message, 409, undefined, { reasons: [busy] });
+      }
       names = { worktreePath: worktree.path, branch: worktree.branch };
+      places = await runPlaces({ project: project.name, taskId: task ? task.id : null, worktreePath: worktree.path });
     } else {
       names = planNames({
         runId,
         workflowName: workflow.name,
         homeRepoPath: homePath,
       });
+      places = { current: ownName, worktrees: [{ repository: ownName, path: names.worktreePath }], readOnly: checkouts.slice(1) };
     }
 
     const definition = buildDefinitionSnapshot({
@@ -899,25 +966,35 @@ export function createPipelinesRouter(deps) {
       agentStore,
       settings,
       input: body.input,
-      homePath,
-      worktreePath: names.worktreePath,
+      // Setup prepares every worktree of a task created for the run, the one it works in first.
+      setupPairs: taskPlan
+        ? taskPlan.worktrees.map(entry => ({ repository: entry.repository, homePath: entry.homePath, worktreePath: entry.worktreePath }))
+        : [{ repository: startRepository, homePath, worktreePath: names.worktreePath }],
+      checkouts,
       withSetup: !useExisting,
     });
     definition.notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
     for (let index = 0; index < definition.steps.length; index++) {
-      const guidance = buildStepGuidance(definition, index, { worktreePath: names.worktreePath,
+      const guidance = buildStepGuidance(definition, index, { worktreePath: names.worktreePath, places,
         ...(definition.steps[index].approval ? { feedbackPath: feedbackPath(definition, index) } : {}) });
-      if (guidance !== undefined && guidance.length > 2000) throw fieldError('project', 'The worktree path is too long for the step instructions');
+      if (guidance !== undefined && guidance.length > GUIDANCE_MAX) {
+        throw fieldError('project', places.worktrees.length + places.readOnly.length > 1
+          ? `The paths of this project's repositories are too long for the step instructions: ${[...places.worktrees, ...places.readOnly].map(entry => entry.repository).join(', ')}`
+          : 'The worktree path is too long for the step instructions');
+      }
     }
 
     if (definition.progressFile !== null) {
+      // The progress file is read in the worktree the run works in: a new one copies the commit of its repository's checkout.
       const present = useExisting
         ? await isProgressFileInWorktree({ worktreePath: names.worktreePath, progressFile: definition.progressFile })
-        : await hasCommittedFile({ repoPath: project.path, progressFile: definition.progressFile, execFile });
+        : await hasCommittedFile({ repoPath: checkoutPath, progressFile: definition.progressFile, execFile });
       if (!present) {
         const message = useExisting
           ? `${definition.progressFile} is not in the chosen worktree. Add it there, or choose the worktree that contains it.`
-          : `${definition.progressFile} is not in this repository at its current commit. Commit it, or start the run from the project that contains it.`;
+          : several
+            ? `${definition.progressFile} is not in ${startRepository} at its current commit. Commit it there, or start the run in the repository that contains it.`
+            : `${definition.progressFile} is not in this repository at its current commit. Commit it, or start the run from the project that contains it.`;
         throw fieldError('input', message);
       }
     }
