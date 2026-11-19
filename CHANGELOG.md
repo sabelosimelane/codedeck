@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-11-19] - Resume waits for an agent that is still working, and Codex is read as working while it writes
+
+### Executive Summary
+* A run step failed with "did not become ready within 120 seconds (last reason: agent_working)" when Resume was pressed while the agent in that terminal was still in a turn. The 120 seconds are a limit on a launch; a step that returns to a terminal now waits for an agent, or a sub-agent it started, for as long as it works. Stop, or the terminal closing, ends the wait.
+* Codex hides its `• Working (…)` line while it writes text, so CodeDeck took a turn that was still running for a finished one, started the step into it, and the run then failed with "Workflow signal identifier does not match the current iteration". Codex is now also read from the run state in its footer (`· Working ·`).
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * `server/pipelines/run-engine.js` — `waitUntilReady` does not count time towards the readiness limit while a returning step's agent reports `agent_working` or `agent_delegated`. A first launch, an agent started again in the terminal, and any other waiting reason still fail after 120 seconds.
+  * `server/agent-profiles/codex.js` — `read` treats a footer segment `Working` below the prompt as a turn in progress. A footer cut short before the run state is read as before, and a folder named Working is not taken for it.
+* **📚 Documents:** `README.md` (keep `run-state` in Codex's status line) and the workflow pipelines specification (§8.4 and Known Limits).
+* **🧪 Tests:**
+  * `server/__tests__/pipeline-run-engine.test.js` — Resume keeps waiting past the limit for both reasons, still fails for an agent that is neither working nor at its prompt, and counts only the time the agent is not at work.
+  * `server/__tests__/pipeline-agent-readiness.test.js` — two Codex screens captured while it wrote text read as working; ready once the footer says Ready; the run state is read only below the prompt.
+  * Checked read-only against four open Codex terminals that were idle: each footer said Ready and each was read as idle, before and with the change. No working Codex was open at that moment to observe.
+
 ## [2026-11-19] - A workflow run takes one entry in the sidebar
 
 ### Executive Summary
