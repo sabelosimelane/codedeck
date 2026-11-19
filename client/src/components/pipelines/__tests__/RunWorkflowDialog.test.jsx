@@ -9,9 +9,16 @@ vi.mock('lucide-react', () => {
 
 import RunWorkflowDialog from '../RunWorkflowDialog';
 
+const stamp = { revision: 1, createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z' };
+const agents = ['Default', 'Team dev', 'Trial'].map((name, index) => ({
+  ...stamp, id: `11111111-1111-4111-8111-11111111111${index}`, name, launchCommand: 'agent', resetCommand: '/clear',
+}));
+const team = { ...stamp, name: 'Daily', id: '11111111-1111-4111-8111-222222222222', members: [{ role: 'Developer', agentId: agents[1].id }] };
+const workflowFields = { ...stamp, kind: 'other', description: '', agentsDecide: false, progressFile: null,
+  nodes: ['Develop', 'Fix'].map(name => ({ name, role: 'Developer', prompt: 'Work', repeat: { mode: 'once' }, agentId: agents[0].id, askOwner: false, approval: false, readOnly: false })) };
 const workflows = [
-  { id: '11111111-1111-1111-1111-111111111111', name: 'Feature' },
-  { id: '22222222-2222-2222-2222-222222222222', name: 'Review' },
+  { ...workflowFields, id: '11111111-1111-4111-8111-111111111111', name: 'Feature' },
+  { ...workflowFields, id: '22222222-2222-4222-8222-222222222222', name: 'Review' },
 ];
 const HEAD = 'a'.repeat(40);
 const eligible = (patch = {}) => ({ project: 'Demo', eligible: true, reasons: [], dirty: false, branch: 'main', head: HEAD, ...patch });
@@ -26,6 +33,7 @@ function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()] } = {}
   global.fetch = vi.fn(async (url) => {
     const target = String(url);
     const json = body => ({ ok: true, status: 200, json: async () => body });
+    if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
     if (target.includes('/workflows')) return json({ data: workflows, page: { hasNextPage: false } });
     if (target.includes('/preflight')) return json(preflight);
     if (target.includes('/worktrees')) return json({ data: worktrees, page: { hasNextPage: false } });
@@ -72,8 +80,8 @@ describe('RunWorkflowDialog', () => {
       expect(screen.queryByText(/so this must be that file/)).toBeNull();
       expect(screen.getByText('A description of the work, or the path of a file its steps should work from.')).toBeTruthy();
     } finally {
-      delete workflows[0].progressFile;
-      delete workflows[1].progressFile;
+      workflows[0].progressFile = null;
+      workflows[1].progressFile = null;
     }
   });
   it('starts a run in a new task without a title, left to be named from the work, unless one is typed', async () => {
@@ -266,6 +274,7 @@ describe('RunWorkflowDialog', () => {
   it('shows the API message when worktrees cannot be listed', async () => {
     global.fetch = vi.fn(async (url) => {
       const target = String(url);
+      if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return { ok: true, json: async () => ({ data: workflows, page: { hasNextPage: false } }) };
       if (target.includes('/preflight')) return { ok: true, json: async () => eligible() };
       return { ok: false, status: 500, json: async () => ({ message: 'Pipelines request failed' }) };
@@ -411,7 +420,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
   const OTHERS = [{ name: 'mobile-app', path: '/git/mobile-app' }, { name: 'frontend', path: '/git/frontend' }];
   const repo = (name, path, own = false) => ({ name, path, own, branch: 'main', head: HEAD, dirty: false, usable: true, reason: null });
   const REPOSITORIES = [repo('backend', '/git/demo', true), repo('mobile-app', '/git/mobile-app'), repo('frontend', '/git/frontend')];
-  const TEMPLATED = [{ id: '33333333-3333-3333-3333-333333333333', name: 'Build', progressFile: 'docs/{input}' }, { id: '44444444-4444-4444-4444-444444444444', name: 'Loose', progressFile: null }];
+  const TEMPLATED = [{ ...workflowFields, id: '33333333-3333-4333-8333-333333333333', name: 'Build', progressFile: 'docs/{input}' }, { ...workflowFields, id: '44444444-4444-4444-8444-444444444444', name: 'Loose', progressFile: null }];
   const entry = (repository, role, patch = {}) => ({ repository, role, todo: null, input: null, listed: true, present: null, ...patch });
   const PHONE = entry('mobile-app', 'todo', { todo: 'docs/todos/tag-phone.md', input: 'todos/tag-phone.md', present: true });
   const plan = (patch = {}) => ({ progressFile: 'docs/todos/tag.md', input: 'todos/tag.md', foundIn: 'backend', problem: null,
@@ -430,6 +439,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
         const answer = typeof plans === 'function' ? plans(body) : plans[body.input] ?? NOTHING;
         return answer instanceof Error ? { ok: false, status: 409, json: async () => ({ message: answer.message }) } : json(answer);
       }
+      if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return json({ data: TEMPLATED, page: { hasNextPage: false } });
       if (target.includes('/preflight')) return json(eligible());
       if (target.includes('/worktrees')) return json({ data: [HOME], page: { hasNextPage: false } });
@@ -567,4 +577,16 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     await waitFor(() => expect(screen.queryByText(/From the Repositories line/)).toBeNull());
     expect(asked.length).toBe(before);
   });
+});
+
+it('uses a team and overrides just one of two steps sharing its role', async () => {
+  mockApi();
+  const { onStart } = await renderDialog();
+  fireEvent.change(screen.getByLabelText('Team'), { target: { value: team.id } });
+  fireEvent.click(screen.getByText('Step assignments'));
+  expect(screen.getByLabelText('Develop agent').selectedOptions[0].textContent).toContain('Team dev');
+  fireEvent.change(screen.getByLabelText('Fix agent'), { target: { value: agents[2].id } });
+  fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'a change' } });
+  fireEvent.click(startButton());
+  await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ teamId: team.id, stepOverrides: { Fix: agents[2].id } })));
 });

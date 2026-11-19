@@ -54,6 +54,19 @@ export function listWorkflows({ signal } = {}) {
   return listAll('/workflows', { signal });
 }
 
+export function listTeams({ signal } = {}) {
+  return listAll('/teams', { signal });
+}
+
+export function saveTeam(id, fields) {
+  return id === null ? request('/teams', { method: 'POST', body: fields })
+    : request(itemPath('teams', id), { method: 'PUT', body: fields });
+}
+
+export function deleteTeam(id) {
+  return request(itemPath('teams', id), { method: 'DELETE' });
+}
+
 export function listAgents({ signal } = {}) {
   return listAll('/agents', { signal });
 }
@@ -167,11 +180,11 @@ export function getRun(runId, { signal } = {}) {
  * task) or `worktreePath` (an existing working tree, such as Main). `startIn` names the repository
  * of the task the run starts in, for a project with several.
  */
-export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn }, { signal } = {}) {
+export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides }, { signal } = {}) {
   return request('/runs', {
     method: 'POST',
     body: {
-      requestId, workflowId, project, input,
+      requestId, workflowId, project, input, teamId, stepOverrides,
       ...(worktreePath === undefined ? {} : { worktreePath }),
       ...(taskId === undefined ? {} : { taskId }),
       ...(newTask === undefined ? {} : { newTask }),

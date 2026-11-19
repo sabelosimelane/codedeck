@@ -127,7 +127,7 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
 
       {editing === null ? (
         <>
-          <Button variant="accent" disabled={busy || agents.length === 0} aria-expanded={choosing} onClick={() => setChoosing(value => !value)}>
+          <Button variant="accent" disabled={busy} aria-expanded={choosing} onClick={() => setChoosing(value => !value)}>
             <Plus size={12} /> Add workflow
           </Button>
           {choosing && <div className="pipeline-template-chooser" aria-label="Workflow starting point">
@@ -160,7 +160,6 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
               </ul>
             </details>
           )}
-          {agents.length === 0 && <p className="pipeline-hint">Add an agent before creating a workflow.</p>}
         </>
       ) : (
         <WorkflowEditor

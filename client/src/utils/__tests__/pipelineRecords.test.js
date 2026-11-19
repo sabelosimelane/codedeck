@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PipelineApiError } from '../pipelinesApi';
-import { loadDefinitions, parseAgent, parsePreflight, parseRunPlan, parseSettings, parseStepPreset, parseTemplate, parseWorkflow, parseWorktree } from '../pipelineRecords';
+import { loadDefinitions, parseTeam, parseAgent, parsePreflight, parseRunPlan, parseSettings, parseStepPreset, parseTemplate, parseWorkflow, parseWorktree } from '../pipelineRecords';
 
 const A1 = '11111111-1111-4111-8111-111111111111';
 const W1 = '33333333-3333-4333-8333-333333333333';
@@ -350,5 +350,15 @@ describe('a step that always asks the owner', () => {
     expect(parseStepPreset(preset).askOwner).toBe(true);
     const { askOwner, ...without } = preset;
     rejects(parseStepPreset, without, 'askOwner');
+  });
+});
+
+describe('parseTeam', () => {
+  it.each([
+    ['id', { id: null }], ['name', { name: '' }], ['members', { members: [] }],
+    ['role', { members: [{ role: null, agentId: A1 }] }], ['agentId', { members: [{ role: 'Developer', agentId: null }] }],
+    ['createdAt', { createdAt: null }], ['updatedAt', { updatedAt: 'invalid' }], ['revision', { revision: null }],
+  ])('refuses an invalid %s from the teams API', (field, patch) => {
+    rejects(parseTeam, { id: W1, name: 'Daily', members: [{ role: 'Developer', agentId: A1 }], revision: 1, ...STAMPS, ...patch }, field);
   });
 });

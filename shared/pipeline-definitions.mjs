@@ -71,6 +71,39 @@ export function isRunRequestId(value) {
   return typeof value === 'string' && REQUEST_ID_RE.test(value);
 }
 
+export function validateTeamBody(body, { revisionRequired = false } = {}) {
+  const errors = [];
+  if (!rejectUnknown(errors, body, ['name', 'members', 'revision'])) return errors;
+  requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'Team name' });
+  requireRevision(errors, body.revision, revisionRequired);
+  if (!Array.isArray(body.members) || body.members.length < 1 || body.members.length > 32) {
+    add(errors, 'members', 'Choose 1–32 team members');
+    return errors;
+  }
+  const roles = new Set();
+  body.members.forEach((member, index) => {
+    const field = `members[${index}]`;
+    if (!isPlainObject(member)) return add(errors, field, 'A member object is required');
+    for (const key of Object.keys(member)) {
+      if (!['role', 'agentId'].includes(key)) add(errors, `${field}.${key}`, 'Unknown field');
+    }
+    requireSingleLine(errors, `${field}.role`, member.role, { min: 1, max: ROLE_MAX, label: 'Role' });
+    if (typeof member.role === 'string') {
+      const role = member.role.trim().toLowerCase();
+      if (roles.has(role)) add(errors, `${field}.role`, 'Each role can appear only once');
+      roles.add(role);
+    }
+    if (!isUuid(member.agentId)) add(errors, `${field}.agentId`, 'Choose an existing agent');
+  });
+  return errors;
+}
+
+export function assignedAgentId(node, team, overrides) {
+  if (overrides && Object.hasOwn(overrides, node.name)) return overrides[node.name];
+  if (team && node.role) return team.members.find(member => member.role.toLowerCase() === node.role.toLowerCase())?.agentId ?? null;
+  return node.agentId;
+}
+
 export function validateAgentBody(body, { revisionRequired = false } = {}) {
   const errors = [];
   if (!rejectUnknown(errors, body, ['name', 'launchCommand', 'resetCommand', 'revision'])) return errors;
@@ -204,7 +237,10 @@ export function validateWorkflowBody(body, { revisionRequired = false, template 
       if (seenNames.has(key)) add(errors, `${prefix}.name`, 'Node names must be unique within the workflow');
       seenNames.add(key);
     }
-    if (!template && !isUuid(node.agentId)) add(errors, `${prefix}.agentId`, 'Use a UUID of an existing agent');
+    if (!template && !isUuid(node.agentId)) {
+      const assignedByTeam = node.agentId === null && typeof node.role === 'string' && node.role.trim();
+      if (!assignedByTeam) add(errors, `${prefix}.agentId`, 'Choose a saved agent or enter a role for team assignment');
+    }
     if (
       typeof node.prompt !== 'string'
       || !node.prompt.trim()
@@ -263,7 +299,18 @@ export function isRepositoryName(value) {
 
 export function validateRunStartBody(body) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn'])) return errors;
+  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides'])) return errors;
+  if (body.teamId !== undefined && !isUuid(body.teamId)) add(errors, 'teamId', 'Choose an existing team');
+  if (body.stepOverrides !== undefined) {
+    if (!isPlainObject(body.stepOverrides) || Object.keys(body.stepOverrides).length > 32) {
+      add(errors, 'stepOverrides', 'Use an object mapping up to 32 step names to agents');
+    } else {
+      for (const [step, agentId] of Object.entries(body.stepOverrides)) {
+        requireSingleLine(errors, 'stepOverrides', step, { min: 1, max: 64, label: 'Step name' });
+        if (!isUuid(agentId)) add(errors, 'stepOverrides', 'Choose an existing agent for each step override');
+      }
+    }
+  }
   if (!isRunRequestId(body.requestId)) {
     add(errors, 'requestId', 'Use 1–128 letters, digits, underscores or hyphens');
   }

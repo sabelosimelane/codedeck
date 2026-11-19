@@ -50,7 +50,7 @@ export default function WorkflowsScreen({ onClose, projects = [] }) {
           <button aria-pressed={view === 'builder'} onClick={() => setView('builder')}>Workflow builder</button>
           <button aria-pressed={view === 'improvements'} onClick={() => setView('improvements')}>Improvements</button>
         </nav>
-        <span className="pipeline-hint">Agents and the setup agent are in Settings → Workflows.</span>
+        <span className="pipeline-hint">Teams, agents and the setup agent are in Settings → Workflows.</span>
         <IconButton aria-label="Close the workflow builder" onClick={close}><X size={16} /></IconButton>
       </header>
       {view === 'improvements' && (

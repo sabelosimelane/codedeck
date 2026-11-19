@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Button } from '../ui/index.jsx';
-import { updatePipelineSettings } from '../../utils/pipelinesApi';
-import { loadDefinitions, parseSettings } from '../../utils/pipelineRecords';
+import { listTeams, updatePipelineSettings } from '../../utils/pipelinesApi';
+import { loadDefinitions, parseTeam, parseSettings } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
+import TeamList from './TeamList';
 import AgentList from './AgentList';
 import WorkflowList from './WorkflowList';
 import { failureMessage } from './definitionForm';
@@ -18,12 +19,14 @@ export default function PipelineSettings({ onDirtyChange }) {
   const [definitions, setDefinitions] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [savingSetupAgent, setSavingSetupAgent] = useState(false);
+  const [teamDirty, setTeamDirty] = useState(false);
   const [agentsDirty, setAgentsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setDefinitions(await loadDefinitions());
+      const [loaded, teams] = await Promise.all([loadDefinitions(), listTeams()]);
+      setDefinitions({ ...loaded, teams: teams.map(parseTeam) });
       setLoadError(null);
     } catch (failure) {
       const message = failureMessage(failure);
@@ -33,7 +36,7 @@ export default function PipelineSettings({ onDirtyChange }) {
   }, [showToast]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { onDirtyChange(agentsDirty || workflowsDirty); }, [agentsDirty, workflowsDirty, onDirtyChange]);
+  useEffect(() => { onDirtyChange(agentsDirty || workflowsDirty || teamDirty); }, [agentsDirty, workflowsDirty, teamDirty, onDirtyChange]);
 
   const changeSetupAgent = async (value) => {
     setSavingSetupAgent(true);
@@ -65,6 +68,7 @@ export default function PipelineSettings({ onDirtyChange }) {
 
       {definitions !== null && (
         <>
+          <TeamList definitions={definitions} onChanged={load} onDirtyChange={setTeamDirty} />
           <AgentList agents={definitions.agents} onChanged={load} onDirtyChange={setAgentsDirty} />
 
           <section className="pipeline-section">

@@ -1,11 +1,10 @@
 /**
- * What the owner saves for reuse: workflow templates (a workflow without agents) and steps
- * (a named prompt with its options). Both are copied when used, so nothing here is ever
- * referenced by a workflow or a run. Each record is re-checked every time it is read.
+ * Reusable definitions for teams, workflow templates and saved steps.
+ * Each record is checked every time it is read.
  */
 
 import { randomUUID } from 'node:crypto';
-import { isUuid, validateWorkflowBody, validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
+import { isUuid, validateTeamBody, validateWorkflowBody, validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const isIso = value => typeof value === 'string' && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value));
@@ -119,6 +118,16 @@ export function createStepPresetStore(db, { now = () => new Date().toISOString()
     normalize: body => ({
       name: body.name.trim(), role: (body.role ?? '').trim(), prompt: body.prompt, repeat: normalizeRepeat(body.repeat),
       readOnly: body.readOnly ?? false, approval: body.approval ?? false, askOwner: body.askOwner ?? false,
+    }),
+  });
+}
+
+export function createTeamStore(db, { now = () => new Date().toISOString() } = {}) {
+  return createLibraryStore(db, {
+    table: 'pipeline_teams', now, validate: validateTeamBody,
+    normalize: body => ({
+      name: body.name.trim(),
+      members: body.members.map(({ role, agentId }) => ({ role: role.trim(), agentId })),
     }),
   });
 }

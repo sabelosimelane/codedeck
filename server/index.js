@@ -31,7 +31,7 @@ import { createDecisionStore } from './pipelines/decision-store.js';
 import { createNoteStore } from './pipelines/note-store.js';
 import { createReviewStore } from './pipelines/review-store.js';
 import { createAnswerStore } from './pipelines/answer-store.js';
-import { createTemplateStore, createStepPresetStore } from './pipelines/library-store.js';
+import { createTeamStore, createTemplateStore, createStepPresetStore } from './pipelines/library-store.js';
 import {
   create as createPipelineWorktree,
   remove as removePipelineWorktree,
@@ -1111,6 +1111,7 @@ app.use(createPipelinesRouter({
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
   answerStore: pipelineAnswerStore,
+  teamStore: createTeamStore(db),
   templateStore: createTemplateStore(db),
   stepPresetStore: createStepPresetStore(db),
   taskStore,

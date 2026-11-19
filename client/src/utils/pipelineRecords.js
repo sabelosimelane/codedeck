@@ -1,4 +1,4 @@
-import { isUuid, loopTargetIndex, WORKFLOW_KINDS } from '../../../shared/pipeline-definitions.mjs';
+import { validateTeamBody, isUuid, loopTargetIndex, WORKFLOW_KINDS } from '../../../shared/pipeline-definitions.mjs';
 import { PipelineApiError, getPipelineSettings, listAgents, listStepPresets, listTemplates, listWorkflows } from './pipelinesApi';
 
 // Responses are an edge: every field of an agent, workflow and settings response is checked before use.
@@ -24,6 +24,17 @@ const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
 function isTimestamp(value) {
   return typeof value === 'string' && ISO_UTC.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+export function parseTeam(record) {
+  if (!isObject(record)) throw invalid('team', 'record');
+  const { id, name, members, revision, createdAt, updatedAt } = record;
+  if (!isUuid(id)) throw invalid('team', 'id');
+  const [error] = validateTeamBody({ name, members, revision }, { revisionRequired: true });
+  if (error) throw invalid('team', error.field, id);
+  if (!isTimestamp(createdAt)) throw invalid('team', 'createdAt', id);
+  if (!isTimestamp(updatedAt)) throw invalid('team', 'updatedAt', id);
+  return { id, name, members, revision, createdAt, updatedAt };
 }
 
 export function parseAgent(record) {
@@ -66,7 +77,7 @@ function parseNode(nodes, index, id, kind = 'workflow', withAgent = true) {
   if (!isObject(node)) throw invalid(kind, path, id);
   if (!isText(node.name)) throw invalid(kind, `${path}.name`, id);
   if (!isLine(node.role, 32)) throw invalid(kind, `${path}.role`, id);
-  if (withAgent ? !isUuid(node.agentId) : node.agentId !== undefined) throw invalid(kind, `${path}.agentId`, id);
+  if (withAgent ? !(isUuid(node.agentId) || (node.agentId === null && isText(node.role))) : node.agentId !== undefined) throw invalid(kind, `${path}.agentId`, id);
   if (!isText(node.prompt)) throw invalid(kind, `${path}.prompt`, id);
   if (typeof node.readOnly !== 'boolean') throw invalid(kind, `${path}.readOnly`, id);
   if (typeof node.approval !== 'boolean' || (node.repeat?.mode === 'loop_back' && node.approval)) throw invalid(kind, `${path}.approval`, id);

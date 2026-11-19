@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   validateAgentBody,
+  validateTeamBody,
+  assignedAgentId,
   validateWorkflowBody,
   validateStepPresetBody,
   validateSettingsBody,
@@ -261,6 +263,8 @@ function buildDefinitionSnapshot({
   settings,
   input,
   setupPairs,
+  team,
+  stepOverrides,
   checkouts,
   withSetup,
 }) {
@@ -287,9 +291,10 @@ function buildDefinitionSnapshot({
 
   const standardCommit = WORKFLOW_TEMPLATES.find(template => ['bug-fix', 'troubleshoot'].includes(template.id) && template.kind === workflow.kind)?.nodes.at(-1);
   const nodeSteps = workflow.nodes.map((node, index) => {
-    const agent = agentStore.get(node.agentId);
+    const id = assignedAgentId(node, team, stepOverrides);
+    const agent = id && agentStore.get(id);
     if (!agent) {
-      errors.push({ field: 'workflowId', message: 'Workflow references a missing agent' });
+      errors.push({ field: 'stepOverrides', message: `Choose an agent for ${node.name} or assign its role in the team` });
       return null;
     }
     const prompt = composePrompt(node.prompt, input, errors, 'input');
@@ -387,6 +392,7 @@ export function createPipelinesRouter(deps) {
     noteStore,
     reviewStore,
     answerStore,
+    teamStore,
     templateStore,
     stepPresetStore,
     taskStore,
@@ -421,6 +427,7 @@ export function createPipelinesRouter(deps) {
   if (typeof answerStore?.list !== 'function') throw new Error('pipelines router: answerStore is required');
   if (typeof templateStore?.list !== 'function') throw new Error('pipelines router: templateStore is required');
   if (typeof stepPresetStore?.list !== 'function') throw new Error('pipelines router: stepPresetStore is required');
+  if (typeof teamStore?.list !== 'function') throw new Error('pipelines router: teamStore is required');
   if (typeof taskStore?.get !== 'function') throw new Error('pipelines router: taskStore is required');
   if (typeof taskService?.plan !== 'function' || typeof taskService?.createPlanned !== 'function') throw new Error('pipelines router: taskService is required');
   if (['get', 'reserve', 'setTaskId', 'release'].some(method => typeof requestStore?.[method] !== 'function')) {
@@ -511,6 +518,9 @@ export function createPipelinesRouter(deps) {
     if (agentUsedByWorkflows(workflowStore, agent.id)) {
       throw new PipelineError('Cannot delete an agent used by a workflow', 409);
     }
+    if (teamStore.list().some(team => team.members.some(member => member.agentId === agent.id))) {
+      throw new PipelineError('Cannot delete an agent used by a team', 409);
+    }
     agentStore.remove(agent.id);
     res.status(204).end();
   }));
@@ -575,14 +585,14 @@ export function createPipelinesRouter(deps) {
     res.status(204).end();
   }));
 
-  // --- What the owner saved for reuse: workflow templates and steps ---
-  // Both are copied when used, so removing one never affects a workflow or a run.
+  // Team, template and step definitions share revision-checked library operations.
 
-  function mountLibrary(segment, store, entity, validate) {
+  function mountLibrary(segment, store, entity, validate, filters = []) {
     const notFound = () => new PipelineError(`${entity} not found`, 404);
     router.get(`${BASE}/${segment}`, route((req, res) => {
-      const query = parseCollectionQuery(req.query, { sortFields: WORKFLOW_SORT, defaultSort: 'name,asc' });
-      res.json(paginate(store.list(), query));
+      const query = parseCollectionQuery(req.query, { sortFields: WORKFLOW_SORT, defaultSort: 'name,asc', filters });
+      const records = store.list().filter(record => Object.entries(query.filters).every(([field, value]) => record[field] === value));
+      res.json(paginate(records, query));
     }));
     router.post(`${BASE}/${segment}`, route((req, res) => {
       const errors = validate(req.body, { revisionRequired: false });
@@ -609,6 +619,18 @@ export function createPipelinesRouter(deps) {
       res.status(204).end();
     }));
   }
+  mountLibrary('teams', teamStore, 'Team', (body, options) => {
+    const errors = validateTeamBody(body, options);
+    if (Array.isArray(body?.members)) body.members.forEach((member, index) => {
+      if (isUuid(member?.agentId) && !agentStore.get(member.agentId)) {
+        errors.push({ field: `members[${index}].agentId`, message: 'Choose an existing agent' });
+      }
+    });
+    return errors;
+  }, [{ name: 'name', parse: value => {
+    if (!isText(value)) throw fieldError('name', 'A name filter is required');
+    return value;
+  } }]);
   mountLibrary('templates', templateStore, 'Template', (body, options) => validateWorkflowBody(body, { ...options, template: true }));
   mountLibrary('step-presets', stepPresetStore, 'Saved step', validateStepPresetBody);
 
@@ -906,6 +928,12 @@ export function createPipelinesRouter(deps) {
     const project = findProject(body.project);
     if (!project) throw new PipelineError('Project not found', 404);
 
+    const team = body.teamId === undefined ? null : teamStore.get(body.teamId);
+    if (body.teamId !== undefined && !team) throw fieldError('teamId', 'Choose an existing team');
+    if (Object.keys(body.stepOverrides ?? {}).some(name => !workflow.nodes.some(node => node.name === name))) {
+      throw fieldError('stepOverrides', 'An overridden step no longer exists in this workflow');
+    }
+
     // A new worktree is prepared by the Setup step, so only that case needs a setup agent.
     const settings = await requireRunnableProject(project, useExisting ? SETUP_AGENT_MISSING : null);
 
@@ -1034,6 +1062,8 @@ export function createPipelinesRouter(deps) {
     const snapshot = (forInput) => {
       const built = buildDefinitionSnapshot({
         workflow,
+        team,
+        stepOverrides: body.stepOverrides,
         agentStore,
         settings,
         input: forInput,

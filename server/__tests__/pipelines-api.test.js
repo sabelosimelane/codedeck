@@ -18,7 +18,7 @@ import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService } from '../tasks/task-service.js';
 import { createReviewStore } from '../pipelines/review-store.js';
 import { createAnswerStore } from '../pipelines/answer-store.js';
-import { createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
+import { createTeamStore, createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
@@ -239,6 +239,7 @@ async function setup(overrides = {}) {
       noteStore,
       reviewStore,
       answerStore,
+      teamStore: createTeamStore(db),
       templateStore,
       stepPresetStore,
       taskStore,
@@ -955,6 +956,7 @@ describe('pipelines API — preflight and runs', () => {
       noteStore: createNoteStore(db),
       reviewStore: createReviewStore(db),
       answerStore: createAnswerStore(db),
+      teamStore: createTeamStore(db),
       templateStore: createTemplateStore(db),
       stepPresetStore: createStepPresetStore(db),
       taskStore: createTaskStore(db),
@@ -1388,6 +1390,7 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       noteStore: ctx.noteStore,
       reviewStore: ctx.reviewStore,
       answerStore: ctx.answerStore,
+      teamStore: createTeamStore(ctx.db),
       templateStore: createTemplateStore(ctx.db),
       stepPresetStore: createStepPresetStore(ctx.db),
       taskStore: ctx.taskStore,
@@ -2316,7 +2319,7 @@ describe('pipelines API — decisions agents made', () => {
     const withAnswers = { ...base, reviewStore: { list() {} }, answerStore: { list() {} } };
     expect(() => createPipelinesRouter(withAnswers)).toThrow('pipelines router: templateStore is required');
     expect(() => createPipelinesRouter({ ...withAnswers, templateStore: { list() {} } })).toThrow('pipelines router: stepPresetStore is required');
-    const stores = { ...withAnswers, templateStore: { list() {} }, stepPresetStore: { list() {} } };
+    const stores = { ...withAnswers, teamStore: { list() {} }, templateStore: { list() {} }, stepPresetStore: { list() {} } };
     expect(() => createPipelinesRouter(stores)).toThrow('pipelines router: taskStore is required');
     expect(() => createPipelinesRouter({ ...stores, taskStore: { get() {} } })).toThrow('pipelines router: taskService is required');
     const withTasks = { ...stores, taskStore: { get() {} }, taskService: { plan() {}, createPlanned() {} } };
@@ -3489,4 +3492,76 @@ it('uses structured errors, validates decision edges and forwards valid owner ac
  expect((await request(app).post(api+'/proposals/'+id+'/evaluation').send({key:'guess'})).status).toBe(400);
  expect((await request(app).put(api+'/model').send({model:'m',provider:'codex',revision:0,effort:null})).status).toBe(200);
  expect((await request(app).put(api+'/model').send({model:'m',provider:'codex',revision:-1,effort:null})).status).toBe(400);
+});
+
+describe('workflow teams', () => {
+  it('saves reusable role assignments and snapshots a run-only step override', async () => {
+    const ctx = await setup();
+    const { agent } = await seedReady(ctx);
+    const reviewer = ctx.agentStore.create(agentBody({ name: 'Reviewer' }));
+    const team = { name: 'Daily', members: [{ role: 'Reviewer', agentId: reviewer.id }] };
+    const created = await request(ctx.app).post(base + '/teams').send(team).expect(201);
+    const path = base + '/teams/' + created.body.id;
+    await request(ctx.app).get(path).expect(200);
+    const listed = await request(ctx.app).get(base + '/teams?name=Daily&sort=name,asc').expect(200);
+    expect(listed.body).toMatchObject({ data: [created.body], page: { totalElements: 1, hasNextPage: false } });
+    await request(ctx.app).post(base + '/teams').send(team).expect(409);
+    await request(ctx.app).delete(base + '/agents/' + reviewer.id).expect(409);
+    const workflow = await request(ctx.app).post(base + '/workflows').send({
+      name: 'Review work', agentsDecide: false,
+      nodes: ['Check', 'Report'].map(name => node(null, { name, role: 'reviewer' })),
+    }).expect(201);
+    const start = { workflowId: workflow.body.id, requestId: 'team-run', project: 'Demo', input: 'Change' };
+    await request(ctx.app).post(base + '/runs').send(start).expect(400);
+    const assigned = { ...start, teamId: created.body.id, stepOverrides: { Report: agent.id } };
+    const run = await request(ctx.app).post(base + '/runs').send(assigned).expect(201);
+    await request(ctx.app).post(base + '/runs').send({ ...assigned, stepOverrides: {} }).expect(409);
+    await request(ctx.app).post(base + '/runs').send({ ...assigned, requestId: 'bad-step', stepOverrides: { Typo: agent.id } }).expect(400);
+    await request(ctx.app).put(path).send({ ...team, revision: 1, members: [{ role: 'Reviewer', agentId: agent.id }] }).expect(200);
+    await request(ctx.app).put(path).send({ ...team, revision: 1 }).expect(409);
+    await request(ctx.app).delete(path).expect(204);
+    expect(ctx.runStore.get(run.body.id).definition.steps.map(step => step.agent.id)).toEqual([agent.id, reviewer.id, agent.id]);
+    expect(ctx.workflowStore.get(start.workflowId).nodes.map(step => step.agentId)).toEqual([null, null]);
+  });
+
+  it.each([{}, { members: [] }, { members: [null] }, { members: [{ role: '', agentId: 'x' }] },
+    { members: [{ role: 'Dev', agentId: randomUUID() }] }, { members: [{ role: 'Dev', agentId: randomUUID() }, { role: 'dev', agentId: randomUUID() }] },
+    { name: 'x'.repeat(65) }])('rejects incomplete or invalid team members and names', async patch => {
+    const ctx = await setup();
+    const result = await request(ctx.app).post(base + '/teams').send({ name: 'Daily', ...patch }).expect(400);
+    expect(result.body.traceId).toBeTruthy();
+    expect(result.body.errors.length).toBeGreaterThan(0);
+  });
+});
+
+it('starts with overrides alone and replays independent of override key order', async () => {
+  const ctx = await setup();
+  const { agent } = await seedReady(ctx);
+  const trial = ctx.agentStore.create(agentBody({ name: 'Trial' }));
+  const workflow = ctx.workflowStore.create({ name: 'Trial work', agentsDecide: false,
+    nodes: [node(agent.id), node(null, { name: 'Report', role: 'Reviewer' })] });
+  const body = { requestId: 'trial', workflowId: workflow.id, project: 'Demo', input: 'change' };
+  const start = stepOverrides => request(ctx.app).post(base + '/runs').send({ ...body, stepOverrides });
+  const first = await start({ Develop: trial.id, Report: agent.id }).expect(201);
+  const replay = await start({ Report: agent.id, Develop: trial.id }).expect(200);
+  expect(replay.body.id).toBe(first.body.id);
+  expect(first.body.steps.map(step => step.agentName)).toEqual([agent.name, trial.name, agent.name]);
+});
+
+it('checks team field boundaries and rejects unsupported run selections before creating a task', async () => {
+  const ctx = await setup();
+  const { agent, workflow } = await seedReady(ctx);
+  const members = Array.from({ length: 32 }, (_, index) => ({ role: String(index).padStart(32, 'x'), agentId: agent.id }));
+  const teams = request(ctx.app);
+  await teams.post(base + '/teams').send({ name: 'x'.repeat(64), members }).expect(201);
+  for (const patch of [{ name: 'x'.repeat(65) }, { members: [...members, members[0]] },
+    { members: [{ role: 'x'.repeat(33), agentId: agent.id }] }, { members: [{ role: 'X' }] },
+    { members: [{ role: 'X', agentId: 'bad' }] }, { members: [members[0], members[0]] }, { name: null }]) {
+    await teams.post(base + '/teams').send({ name: 'Y', members, ...patch }).expect(400);
+  }
+  for (const patch of [{ teamId: null }, { teamId: randomUUID() }, { stepOverrides: null }, { stepOverrides: [] },
+    { stepOverrides: { Develop: 'bad' } }, { stepOverrides: { Develop: randomUUID() } }]) {
+    await teams.post(base + '/runs').send({ requestId: 'refused', input: 'change', project: 'Demo', workflowId: workflow.id, newTask: {}, ...patch }).expect(400);
+  }
+  expect(ctx.taskService.createPlanned).not.toHaveBeenCalled();
 });

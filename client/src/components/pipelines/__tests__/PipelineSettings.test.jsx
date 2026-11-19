@@ -33,6 +33,7 @@ const feature = () => ({
 /** In-memory stand-in for /api/pipelines definitions, including revision checks. */
 function createBackend(seed = {}) {
   const state = {
+    teams: seed.teams ?? [],
     agents: seed.agents ?? [],
     workflows: seed.workflows ?? [],
     settings: seed.settings ?? { setupAgentId: null, revision: 1 },
@@ -636,10 +637,15 @@ describe('PipelineSettings workflows', () => {
     expect(screen.getByLabelText('Node 1 prompt').placeholder).toBe('What this step should do. {input} is replaced with what you type when starting a run.');
   });
 
-  it('asks for an agent before a workflow can be added', async () => {
+  it('saves a role-based workflow before any agent has been created', async () => {
     await renderSettings();
-    expect(screen.getByRole('button', { name: 'Add workflow' }).disabled).toBe(true);
-    expect(workflows().getByText('Add an agent before creating a workflow.')).toBeTruthy();
+    click('Add workflow');
+    type('Workflow name', 'Team review');
+    type('Node 1 name', 'Report');
+    type('Node 1 role', 'Reviewer');
+    type('Node 1 prompt', 'Report findings');
+    click('Save workflow');
+    await waitFor(() => expect(backend.state.workflows[0]?.nodes[0]).toMatchObject({ role: 'Reviewer', agentId: null }));
   });
 
   it('adds a workflow with a repeating node and a single-pass node', async () => {
@@ -683,7 +689,7 @@ describe('PipelineSettings workflows', () => {
     for (const label of ['Workflow name', 'Node 1 name', 'Node 1 agent', 'Node 1 prompt']) {
       expect(screen.getByLabelText(label).getAttribute('aria-invalid')).toBe('true');
     }
-    expect(screen.getByText('Use a UUID of an existing agent')).toBeTruthy();
+    expect(screen.getByText('Choose a saved agent or enter a role for team assignment')).toBeTruthy();
     expect(screen.getByText('Use 1–8192 characters without terminal control codes')).toBeTruthy();
     expect(backend.mutations()).toEqual([]);
   });
@@ -1253,4 +1259,20 @@ describe('PipelineSettings — the way to the builder', () => {
       window.removeEventListener('codedeck:open-workflow-builder', asked);
     }
   });
+});
+
+it('creates, edits and deletes a team from workflow settings', async () => {
+  await renderSettings({ agents: [codex(), cursor()] });
+  click('Add team');
+  type('Team name', 'Daily');
+  type('Member 1 role', 'Developer');
+  type('Member 1 agent', A1);
+  click('Save team');
+  await screen.findByRole('button', { name: 'Edit Daily' });
+  click('Edit Daily');
+  type('Member 1 agent', A2);
+  click('Save team');
+  await waitFor(() => expect(backend.state.teams[0]).toMatchObject({ revision: 2, members: [{ role: 'Developer', agentId: A2 }] }));
+  click('Delete Daily');
+  await waitFor(() => expect(backend.state.teams).toEqual([]));
 });

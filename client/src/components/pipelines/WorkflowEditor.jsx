@@ -35,7 +35,7 @@ function toDraft(workflow, roleHints = null) {
     nodes: workflow.nodes.map((node, index) => ({
       key: keys[index],
       name: node.name,
-      agentId: node.agentId,
+      agentId: node.agentId ?? '',
       prompt: node.prompt,
       role: node.role ?? roleHints?.[index] ?? '',
       readOnly: node.readOnly,
@@ -68,7 +68,7 @@ function toFields(draft) {
     nodes: draft.nodes.map(node => ({
       name: node.name,
       role: node.role,
-      agentId: node.agentId,
+      agentId: node.agentId || null,
       prompt: node.prompt,
       readOnly: node.readOnly,
       approval: node.mode === 'loop_back' ? false : node.approval,
@@ -284,7 +284,7 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
               <div className="pipeline-node-row">
                 <TextField label={`Node ${number} name`} caption="Name" value={node.name} onChange={setNodeField(index, 'name')} error={errors[`${prefix}.name`]} maxLength={64} placeholder="e.g. Analyse" />
                 <SelectField label={`Node ${number} agent`} caption="Agent" value={node.agentId} onChange={setNodeField(index, 'agentId')} error={errors[`${prefix}.agentId`]}>
-                  <option value="">Choose an agent</option>
+                  <option value="">Assign by team role at launch</option>
                   {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                 </SelectField>
                 <TextField label={`Node ${number} role`} caption="Role (optional)" value={node.role} onChange={setNodeField(index, 'role')} error={errors[`${prefix}.role`]} maxLength={32} placeholder="e.g. Reviewer" />
@@ -363,7 +363,7 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
               <span className="workflow-rail-number">{index + 1}</span>
               <span className="workflow-rail-text">
                 <span className="workflow-rail-name">{node.name.trim() || '(no name yet)'}</span>
-                <span className="workflow-rail-meta">{[node.role.trim(), agents.find(agent => agent.id === node.agentId)?.name ?? 'no agent', node.mode === 'loop_back' ? `↺ ${draft.nodes.find(candidate => candidate.key === node.loopTo)?.name.trim() || '?'}` : null, node.approval && node.mode !== 'loop_back' ? 'approval' : null].filter(Boolean).join(' · ')}</span>
+                <span className="workflow-rail-meta">{[node.role.trim(), agents.find(agent => agent.id === node.agentId)?.name ?? 'Team role', node.mode === 'loop_back' ? `↺ ${draft.nodes.find(candidate => candidate.key === node.loopTo)?.name.trim() || '?'}` : null, node.approval && node.mode !== 'loop_back' ? 'approval' : null].filter(Boolean).join(' · ')}</span>
               </span>
               {Object.keys(errors).some(field => field.startsWith(`nodes[${index}].`)) && <span className="pipeline-field-error" aria-label="This step has an invalid field">!</span>}
             </button>

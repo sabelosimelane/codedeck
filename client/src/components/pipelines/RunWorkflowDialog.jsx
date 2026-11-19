@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { listWorkflows, listWorktrees, planRun, preflightProject } from '../../utils/pipelinesApi';
+import { listTeams, listAgents, listWorkflows, listWorktrees, planRun, preflightProject } from '../../utils/pipelinesApi';
 import { listProjectRepositories } from '../../utils/projectRepositoriesApi.js';
-import { parsePreflight, parseRunPlan, parseWorktree } from '../../utils/pipelineRecords';
+import { parseTeam, parseAgent, parseWorkflow, parsePreflight, parseRunPlan, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
-import { WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { assignedAgentId, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { Button, Dialog, Field, Note, SegmentedControl, Select, TextInput } from '../ui/index.jsx';
 import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
 
@@ -43,6 +43,10 @@ const startable = entry => entry.role === 'todo' && entry.listed && entry.input 
  */
 export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, initialInput = '', planDelay = PLAN_DELAY_MS, onClose, onStart }) {
   const [workflows, setWorkflows] = useState([]);
+  const [teams, setTeams] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [teamId, setTeamId] = useState('');
+  const [overrides, setOverrides] = useState({});
   const [workflowId, setWorkflowId] = useState('');
   const [input, setInput] = useState(initialInput);
   const [preflight, setPreflight] = useState(null);
@@ -66,15 +70,24 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const [starting, setStarting] = useState(false);
   const selectedWorkflow = workflows.find(workflow => workflow.id === workflowId);
 
+  const team = teams.find(item => item.id === teamId);
+  const nodes = selectedWorkflow?.nodes ?? [];
+  const agentById = new Map(agents.map(agent => [agent.id, agent]));
+  const missing = nodes.filter(node => !agentById.has(assignedAgentId(node, team, overrides)));
+  const assignment = {
+    ...(teamId && { teamId }),
+    ...(Object.keys(overrides).length > 0 && { stepOverrides: overrides }),
+  };
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       setError(null);
       try {
-        const [nextWorkflows, preflightResponse] = await Promise.all([
+        const [nextWorkflows, preflightResponse, nextTeams, nextAgents] = await Promise.all([
           listWorkflows(),
-          preflightProject(projectName),
+          preflightProject(projectName), listTeams(), listAgents(),
         ]);
         const nextPreflight = parsePreflight(preflightResponse);
         // Worktrees exist only for a local git project; a missing setup agent does not change that.
@@ -82,7 +95,9 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
         const nextWorktrees = listable ? (await listWorktrees(projectName)).map(parseWorktree) : [];
         const nextRepositories = listable && repositories.length > 0 ? await listProjectRepositories(projectName) : [];
         if (cancelled) return;
-        setWorkflows(nextWorkflows);
+        setWorkflows(nextWorkflows.map(parseWorkflow));
+        setTeams(nextTeams.map(parseTeam));
+        setAgents(nextAgents.map(parseAgent));
         setPreflight(nextPreflight);
         setWorktrees(nextWorktrees);
         setProjectRepositories(nextRepositories);
@@ -139,7 +154,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const listable = (preflight?.reasons ?? []).every(reason => reason.code === SETUP_AGENT_MISSING);
   const placeUsable = where === NEW_TASK ? typedTitle.length > 0 || input.trim().length > 0 : Boolean(chosenWorktree?.selectable);
   const eligible = preflight !== null && reasons.length === 0 && placeUsable;
-  const canStart = !loading && !starting && eligible && Boolean(workflowId);
+  const canStart = !loading && !starting && eligible && Boolean(workflowId) && missing.length === 0;
 
   // The todo is looked up for a new task of a workflow that reads a Progress file, in a project with several repositories.
   const wantsPlan = !loading && !error && several && where === NEW_TASK && Boolean(selectedWorkflow?.progressFile) && input.trim().length > 0;
@@ -179,6 +194,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
     setStarting(true);
     try {
       const started = await onStart({
+        ...assignment,
         requestId: newRequestId(),
         workflowId,
         input,
@@ -192,7 +208,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
       if (!started) return;
       // Each of the other todos gets a task and a run of its own; a failure is reported by the caller as the first one's would be.
       for (const entry of extraRuns) {
-        await onStart({ requestId: newRequestId(), workflowId, input: entry.input, newTask: { repositories: [entry.repository] }, startIn: entry.repository }, { follow: false });
+        await onStart({ ...assignment, requestId: newRequestId(), workflowId, input: entry.input, newTask: { repositories: [entry.repository] }, startIn: entry.repository }, { follow: false });
       }
       onClose();
     } finally {
@@ -219,12 +235,38 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
           <Field label="Workflow"
             action={<Button variant="link" onClick={() => { onClose(); openWorkflowBuilder(); }}>Edit workflows…</Button>}
             hint={selectedWorkflow?.description || null}>
-            <Select label="Workflow" value={workflowId} onChange={setWorkflowId}>
+            <Select label="Workflow" value={workflowId} onChange={id => { setWorkflowId(id); setOverrides({}); }}>
               {workflows.map(workflow => (
                 <option key={workflow.id} value={workflow.id}>{workflow.kind && workflow.kind !== 'other' ? `${workflow.name} — ${WORKFLOW_KIND_LABELS[workflow.kind]}` : workflow.name}</option>
               ))}
             </Select>
           </Field>
+
+          {selectedWorkflow && <Field label="Team">
+            <Select label="Team" value={teamId} onChange={id => { setTeamId(id); setOverrides({}); }}>
+              <option value="">Workflow assignments</option>
+              {teams.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </Select>
+            <details key={workflowId + teamId} open={missing.length ? true : undefined}>
+              <summary>Step assignments</summary>
+              {nodes.map(node => {
+                const inherited = agentById.get(assignedAgentId(node, team));
+                return <Field key={node.name} label={node.role ? `${node.name} · ${node.role}` : node.name}>
+                  <Select label={`${node.name} agent`} value={Object.hasOwn(overrides, node.name) ? overrides[node.name] : ''} onChange={value => {
+                    setOverrides(current => {
+                      const next = { ...current, [node.name]: value };
+                      if (!value) delete next[node.name];
+                      return next;
+                    });
+                  }}>
+                    <option value="">{inherited ? `Use ${inherited.name}` : 'Choose an agent for this run'}</option>
+                    {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                  </Select>
+                </Field>;
+              })}
+            </details>
+            {missing.length > 0 && <Note tone="warning">Choose an agent for {missing.map(node => node.name).join(', ')}.</Note>}
+          </Field>}
 
           <Field label="What is this run about?" hint={inputHint}>
             <TextInput label="Input" value={input} onChange={setInput} maxLength={4096} placeholder="e.g. docs/todos/replies.md" />

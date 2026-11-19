@@ -6,12 +6,14 @@ const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  * The canonical form of what a run was started with. `startIn` and a new task's `repositories` are
  * written only when the request names them, so a request recorded before they existed reads the same.
  */
-export function serializeStartParams({ workflowId, project, input, newTask, taskId, worktreePath, startIn }) {
+export function serializeStartParams({ workflowId, project, input, newTask, taskId, worktreePath, startIn, teamId, stepOverrides }) {
   let place = { kind: 'new' };
   if (newTask !== undefined) place = { kind: 'newTask', title: newTask.title === undefined ? null : newTask.title.trim(), repositories: newTask.repositories };
   else if (taskId !== undefined) place = { kind: 'task', taskId };
   else if (worktreePath !== undefined) place = { kind: 'worktree', worktreePath };
-  return JSON.stringify({ workflowId, project, input, place, startIn });
+  return JSON.stringify({ workflowId, project, input, place, startIn, teamId,
+    stepOverrides: stepOverrides && Object.fromEntries(Object.keys(stepOverrides).sort().map(name => [name, stepOverrides[name]])),
+  });
 }
 
 const fail = (id, field, expectation) => {
@@ -36,7 +38,9 @@ function validateParams(requestId, params) {
 
   const body = { requestId, workflowId, project, input };
   const fields = { 'newTask.title': 'place.title', 'newTask.repositories': 'place.repositories', taskId: 'place.taskId', worktreePath: 'place.worktreePath' };
-  if (Object.hasOwn(parsed, 'startIn')) body.startIn = parsed.startIn;
+  for (const key of ['startIn', 'teamId', 'stepOverrides']) {
+    if (Object.hasOwn(parsed, key)) body[key] = parsed[key];
+  }
   switch (place.kind) {
     case 'newTask':
       if (place.title !== null && (typeof place.title !== 'string' || place.title.trim() !== place.title)) {
