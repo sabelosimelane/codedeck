@@ -102,3 +102,15 @@ export async function removeProjectRepository(project, repository, { signal } = 
   if (!text(repository)) throw new TypeError('repository must be a nonempty string');
   await request(`${root}/repositories/${encodeURIComponent(repository)}`, { method: 'DELETE', signal });
 }
+
+/** Opens a terminal in the own checkout of one of the project's repositories and says where it opened. */
+export async function openProjectTerminal(project, repository, { signal } = {}) {
+  const root = base(project);
+  if (!text(repository)) throw new TypeError('repository must be a nonempty string');
+  const body = await request(`${root}/terminals`, { method: 'POST', body: { repository }, signal });
+  if (!text(body?.sessionId)) throw new Error('Invalid project terminal response: sessionId');
+  if (body.project !== project) throw new Error('Invalid project terminal response: project');
+  if (body.repository !== repository) throw new Error('Invalid project terminal response: repository');
+  if (!absolute(body.path)) throw new Error('Invalid project terminal response: path');
+  return { sessionId: body.sessionId, project: body.project, repository: body.repository, path: body.path };
+}

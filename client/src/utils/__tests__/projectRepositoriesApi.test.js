@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  addProjectRepository, getRepositoryCandidates, listProjectRepositories, parseCandidate, parseRepository, removeProjectRepository,
+  addProjectRepository, getRepositoryCandidates, listProjectRepositories, openProjectTerminal, parseCandidate, parseRepository, removeProjectRepository,
 } from '../projectRepositoriesApi';
 
 const HEAD = 'a'.repeat(40);
@@ -85,7 +85,25 @@ describe('project repositories API client', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/Demo/repositories/mobile%20app', { method: 'DELETE', signal: undefined });
   });
 
+  it('opens a terminal in one of the project\'s repositories', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply({ sessionId: 'Demo-4', project: 'Demo', repository: 'mobile-app', path: '/tmp/group/mobile-app', extra: 1 }, { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await openProjectTerminal('Demo', 'mobile-app')).toEqual({ sessionId: 'Demo-4', project: 'Demo', repository: 'mobile-app', path: '/tmp/group/mobile-app' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/Demo/terminals', {
+      method: 'POST', signal: undefined, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository: 'mobile-app' }),
+    });
+  });
+
   it.each([
+    ['sessionId', { sessionId: '' }], ['project', { project: 'Other' }], ['repository', { repository: 'frontend' }], ['path', { path: 'relative' }],
+  ])('refuses a terminal answer with a wrong %s', async (field, wrong) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply({ sessionId: 'Demo-4', project: 'Demo', repository: 'mobile-app', path: '/tmp/group/mobile-app', ...wrong })));
+    await expect(openProjectTerminal('Demo', 'mobile-app')).rejects.toThrow(`Invalid project terminal response: ${field}`);
+  });
+
+  it.each([
+    [() => openProjectTerminal('Demo', ''), 'repository must be a nonempty string'],
+    [() => openProjectTerminal('', 'mobile-app'), 'project must be a nonempty string'],
     [() => listProjectRepositories(''), 'project must be a nonempty string'],
     [() => getRepositoryCandidates(null, 0), 'project must be a nonempty string'],
     [() => addProjectRepository('Demo', 'relative'), 'path must be an absolute path'],

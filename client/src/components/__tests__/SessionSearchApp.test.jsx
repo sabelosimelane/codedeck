@@ -34,7 +34,7 @@ vi.mock('../../hooks/useWaitingSessions', () => ({ useWaitingSessions: () => ({ 
 
 import App from '../../App';
 
-const projects = [{ name: 'Alpha', path: '/tmp/alpha' }, { name: 'Beta', path: '/tmp/beta' }];
+const projects = [{ name: 'Alpha', path: '/tmp/alpha', repositories: [] }, { name: 'Beta', path: '/tmp/beta', repositories: [] }];
 const conversation = { cli: 'codex', conversationId: 'b', title: 'Fix beta', firstPrompt: null, project: 'Beta', cwd: '/tmp/beta', updatedAt: Date.now() };
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); });

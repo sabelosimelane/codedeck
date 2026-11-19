@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildNowView } from '../nowView';
 import { parseRun } from '../../utils/pipelineRunRecords';
-import { parseTask } from '../../utils/tasksApi';
+import { parseTaskSummary } from '../../utils/tasksApi';
 import { run, askingRun, approvalRun, completeRun, step, task, RUN_ID } from './runFixtures';
 
 const NOW = Date.parse('2026-11-10T18:00:00.000Z');
@@ -13,7 +13,8 @@ const only = options => view(options).tasks[0];
 
 it('uses fixtures the app would accept from the backend', () => {
   for (const record of [run(), askingRun(), approvalRun(), completeRun()]) expect(() => parseRun(record)).not.toThrow();
-  expect(() => parseTask(task())).not.toThrow();
+  // The phone reads a task by the fields every backend release sends.
+  expect(() => parseTaskSummary(task())).not.toThrow();
 });
 
 describe('a run shown as its task', () => {

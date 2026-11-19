@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { closeTask, commitTask, createTask, getTaskLanding, listOpenTasks, mergeTask, openTaskPullRequest, openTaskTerminal, parseLanding, parseTask, renameTask } from '../tasksApi';
+import { closeTask, commitTask, createTask, getTaskLanding, listOpenTasks, mergeTask, openTaskPullRequest, openTaskTerminal, parseLanding, parseTask, parseTaskSummary, renameTask } from '../tasksApi';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
+const WT = '7b000000-0000-4000-8000-000000000001';
+const WT2 = '7b000000-0000-4000-8000-000000000002';
+const worktree = (overrides = {}) => ({
+  id: WT, repository: 'demo', own: true, first: true, worktreePath: '/tmp/worktrees/demo-replies',
+  branch: 'task/replies-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null, ...overrides,
+});
 const task = (overrides = {}) => ({
   id: ID, project: 'Demo', title: 'Replies', state: 'active', worktreePath: '/tmp/worktrees/demo-replies',
   branch: 'task/replies-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), prUrl: null, revision: 1,
-  createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z', finishedAt: null, ...overrides,
+  createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z', finishedAt: null,
+  folder: null, worktrees: [worktree()], ...overrides,
 });
 const reply = (body, { ok = true, status = 200 } = {}) => ({ ok, status, json: async () => body });
 const page = (data, hasNextPage = false) => ({ data, page: { currentPage: 0, size: 100, totalElements: data.length, totalPages: 1, hasNextPage } });
@@ -14,9 +21,6 @@ afterEach(() => vi.unstubAllGlobals());
 describe('parseTask', () => {
   it('returns exactly the known fields', () => {
     expect(parseTask({ ...task(), surprise: true })).toEqual(task());
-    // A newer backend also sends the task's folder and one entry per repository; this parser reads the task as before.
-    expect(parseTask({ ...task(), folder: null, worktrees: [{ id: '7b000000-0000-4000-8000-000000000001', repository: 'demo', own: true, first: true,
-      worktreePath: '/tmp/worktrees/demo-replies', branch: 'task/replies-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null }] })).toEqual(task());
     expect(parseTask(task({ baseBranch: null, state: 'pr_open', prUrl: 'https://example.test/pr/1' })).prUrl).toBe('https://example.test/pr/1');
   });
   it.each([
@@ -28,6 +32,40 @@ describe('parseTask', () => {
   });
   it('refuses a non-object', () => {
     expect(() => parseTask(null, 3)).toThrow('Invalid task index 3 field task');
+  });
+
+  it('reads the folder of a task and every repository it includes, with only their known fields', () => {
+    const second = worktree({ id: WT2, repository: 'mobile-app', own: false, first: false, worktreePath: '/tmp/worktrees/replies/mobile-app', baseBranch: null, state: 'pr_open', prUrl: 'https://example.test/pr/2' });
+    const parsed = parseTask(task({ folder: '/tmp/worktrees/replies', worktrees: [{ ...worktree(), surprise: 1 }, second] }));
+    expect(parsed.folder).toBe('/tmp/worktrees/replies');
+    expect(parsed.worktrees).toEqual([worktree(), second]);
+  });
+
+  it.each([
+    ['folder', 'relative'], ['folder', undefined], ['worktrees', undefined], ['worktrees', []], ['worktrees', 'none'],
+    ['worktrees', [worktree({ first: false })]], ['worktrees', [worktree(), worktree({ id: WT2 })]],
+  ])('refuses a task with an invalid %s (%j)', (field, value) => {
+    expect(() => parseTask(task({ [field]: value }))).toThrow(new RegExp(`field ${field}`));
+  });
+
+  it.each([
+    ['id', 'nope'], ['repository', ''], ['repository', 'a/b'], ['own', 'yes'], ['first', 1], ['worktreePath', 'relative'], ['branch', ''],
+    ['baseBranch', ''], ['baseCommit', 'abc'], ['state', 'done'], ['prUrl', 'javascript:x'],
+  ])('refuses a repository of a task with an invalid %s (%j)', (field, value) => {
+    expect(() => parseTask(task({ worktrees: [worktree({ [field]: value })] }))).toThrow(new RegExp(`field worktrees\\.${field}`));
+  });
+});
+
+describe('parseTaskSummary', () => {
+  const { folder, worktrees, ...summary } = task();
+  it('reads a task from a backend of any release: with or without its repositories', () => {
+    expect(parseTaskSummary(summary)).toEqual(summary);
+    expect(parseTaskSummary(task())).toEqual(summary);
+    expect(folder).toBeNull();
+    expect(worktrees).toHaveLength(1);
+  });
+  it.each([['id', 'nope'], ['title', ''], ['state', 'done'], ['worktreePath', 'relative'], ['branch', ''], ['baseCommit', 'abc'], ['revision', 0], ['updatedAt', null]])('refuses an invalid %s (%j)', (field, value) => {
+    expect(() => parseTaskSummary({ ...summary, [field]: value })).toThrow(new RegExp(`field ${field}`));
   });
 });
 
@@ -55,19 +93,42 @@ describe('tasks API client', () => {
     await expect(createTask({ project: '', title: 'x' })).rejects.toThrow('project');
   });
 
-  it('opens a terminal in a task', async () => {
-    const fetchMock = vi.fn(async () => reply({ sessionId: 'Demo-4', taskId: ID, project: 'Demo' }, { status: 201 }));
+  it('creates a task in the repositories asked for, the one it starts in first', async () => {
+    const fetchMock = vi.fn(async () => reply(task(), { status: 201 }));
     vi.stubGlobal('fetch', fetchMock);
-    expect(await openTaskTerminal(ID)).toEqual({ sessionId: 'Demo-4', taskId: ID, project: 'Demo' });
+    await createTask({ project: 'Demo', title: 'Replies', repositories: ['mobile-app', 'backend'] });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ project: 'Demo', title: 'Replies', repositories: ['mobile-app', 'backend'] });
+    for (const repositories of [[], 'backend', ['backend', ''], [7]]) {
+      await expect(createTask({ project: 'Demo', title: 'x', repositories })).rejects.toThrow('repositories');
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens a terminal in a task', async () => {
+    const fetchMock = vi.fn(async () => reply({ sessionId: 'Demo-4', taskId: ID, project: 'Demo', worktreeId: WT }, { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await openTaskTerminal(ID)).toEqual({ sessionId: 'Demo-4', taskId: ID, project: 'Demo', worktreeId: WT });
     expect(fetchMock.mock.calls[0]).toEqual([`/api/tasks/${ID}/terminals`, { method: 'POST', signal: undefined }]);
     await expect(openTaskTerminal('nope')).rejects.toThrow('taskId');
   });
 
+  it('opens a terminal in one repository of a task', async () => {
+    const fetchMock = vi.fn(async () => reply({ sessionId: 'Demo-5', taskId: ID, project: 'Demo', worktreeId: WT2 }, { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await openTaskTerminal(ID, WT2)).toEqual({ sessionId: 'Demo-5', taskId: ID, project: 'Demo', worktreeId: WT2 });
+    expect(fetchMock.mock.calls[0]).toEqual([`/api/tasks/${ID}/terminals`, { method: 'POST', signal: undefined, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worktreeId: WT2 }) }]);
+    await expect(openTaskTerminal(ID, 'nope')).rejects.toThrow('worktreeId');
+    // The backend says where the terminal opened; an answer for another repository is refused.
+    await expect(openTaskTerminal(ID, WT)).rejects.toThrow('Invalid task terminal response: worktreeId');
+  });
+
   it('refuses a terminal response for another task or without a session', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => reply({ sessionId: 'Demo-4', taskId: 'other', project: 'Demo' })));
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ sessionId: 'Demo-4', taskId: 'other', project: 'Demo', worktreeId: WT })));
     await expect(openTaskTerminal(ID)).rejects.toThrow('taskId');
-    vi.stubGlobal('fetch', vi.fn(async () => reply({ taskId: ID, project: 'Demo' })));
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ taskId: ID, project: 'Demo', worktreeId: WT })));
     await expect(openTaskTerminal(ID)).rejects.toThrow('sessionId');
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ sessionId: 'Demo-4', taskId: ID, project: 'Demo' })));
+    await expect(openTaskTerminal(ID)).rejects.toThrow('worktreeId');
   });
 
   it('reports the server message, the field message, an unreachable server and an unreadable error', async () => {
