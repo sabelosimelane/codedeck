@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-11-19] - Workflow evidence, background reviews and an improvements dashboard
+
+### Executive Summary
+* Bug fix and Troubleshoot can skip an unnecessary Commit session and pause when acceptance evidence is missing. The Improvements dashboard links performance statistics to the runs behind them. Owners can approve suggestions and track whether they helped.
+
+### Technical Details
+* **✨ New Feature:**
+  * The workflow builder, Improvements view, proposal panel and run dialog support evidence drill-down, reviewer configuration, approval and implementation handoff.
+  * The reviewer schedules evidence-backed proposals, measures approved changes and tests candidate reviewer instructions against owner-labelled cases.
+* **🛠️ Codebase:**
+  * Workflow templates and the run engine merge the Troubleshoot investigation and verify repository state before skipping Commit. Run notes preserve owner decisions.
+  * Workflow stores, API routes, CLI integration and the background worker record timing boundaries, enforce call limits and check revision conflicts.
+* **🧪 Tests:**
+  * Runner, template, report, API, CLI and dashboard tests cover evidence pauses, clean worktrees, approval conflicts, comparable workloads and reviewer evaluation.
+
 ## [2026-11-19] - A run shows how long each step took, and how long it has been going
 
 ### Executive Summary
