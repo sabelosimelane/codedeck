@@ -159,9 +159,10 @@ export function getRun(runId, { signal } = {}) {
 /**
  * Where the run works is one of: `newTask` (a task created for it; `{ title }` when the owner
  * typed one, `{}` to have it named from the run's work), `taskId` (an open
- * task) or `worktreePath` (an existing working tree, such as Main).
+ * task) or `worktreePath` (an existing working tree, such as Main). `startIn` names the repository
+ * of the task the run starts in, for a project with several.
  */
-export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask }, { signal } = {}) {
+export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn }, { signal } = {}) {
   return request('/runs', {
     method: 'POST',
     body: {
@@ -169,6 +170,7 @@ export function startRun({ requestId, workflowId, project, input, worktreePath, 
       ...(worktreePath === undefined ? {} : { worktreePath }),
       ...(taskId === undefined ? {} : { taskId }),
       ...(newTask === undefined ? {} : { newTask }),
+      ...(startIn === undefined ? {} : { startIn }),
     },
     signal,
   });

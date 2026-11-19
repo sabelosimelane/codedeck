@@ -144,6 +144,18 @@ describe('pipelinesApi', () => {
     expect(bodies).toEqual([{ ...fields, worktreePath: '/git/worktrees/demo-feature' }, fields]);
   });
 
+  it('sends the repository the run starts in, with an open task and with a new one', async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ id: 'r1' }, { status: 201 }));
+    const fields = { requestId: 'req-1', workflowId: '11111111-1111-1111-1111-111111111111', project: 'Demo', input: 'x' };
+    const inTask = { ...fields, taskId: '7a000000-0000-4000-8000-000000000001', startIn: 'mobile-app' };
+    const forNew = { ...fields, newTask: { repositories: ['mobile-app', 'backend'] }, startIn: 'mobile-app' };
+
+    await startRun(inTask);
+    await startRun(forNew);
+    await startRun({ ...fields, startIn: undefined });
+    expect(global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body))).toEqual([inTask, forNew, fields]);
+  });
+
   it.each([
     ['stopRun', stopRun, '/api/pipelines/runs/r1/stop'],
     ['resumeRun', resumeRun, '/api/pipelines/runs/r1/resume'],

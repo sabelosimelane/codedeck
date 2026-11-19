@@ -397,6 +397,25 @@ describe('usePipelineRuns', () => {
     });
   });
 
+  it('passes on the repository the run starts in', async () => {
+    const created = { id: 'r9', workflowName: 'Build', status: 'pending', project: 'Demo' };
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).endsWith('/runs')) return okRun(created, 201);
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+
+    await act(async () => {
+      await result.current.startRun({ requestId: 'req-9', workflowId: 'w1', input: 'x', taskId: '7a000000-0000-4000-8000-000000000001', startIn: 'mobile-app' });
+    });
+
+    const post = global.fetch.mock.calls.find(([, options]) => options?.method === 'POST');
+    expect(JSON.parse(post[1].body)).toEqual({
+      requestId: 'req-9', workflowId: 'w1', project: 'Demo', input: 'x', taskId: '7a000000-0000-4000-8000-000000000001', startIn: 'mobile-app',
+    });
+  });
+
   it('says the run was dismissed, not that a worktree was cleaned up, when an existing worktree is released', async () => {
     const stopped = runView({
       status: 'stopped',
