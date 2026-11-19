@@ -2955,6 +2955,18 @@ describe('standard final Commit', () => {
     }
   });
 
+  it('carries the actual owner response into the final note when verification only summarised the deferral', async () => {
+    const ctx = prepareRun();
+    const answer = 'Release the backend today. I explicitly defer the paired-phone check until Monday.';
+    ctx.answerStore.add({ runId: ctx.run.id, stepIndex: 0, stepName: 'Test', pass: 1, questions: 'Can you check the paired phone?', answer });
+    await ctx.engine.start(ctx.run.id);
+    expect(ctx.noteStore.lastContent(ctx.run.id, 1)).toContain(answer);
+  });
+
+  it('rejects an invalid inspection dependency before starting a run', () => {
+    expect(() => setupEngine({ engineExtras: { inspectCommitWorktree: null } })).toThrow(/inspectCommitWorktree/);
+  });
+
   it.each(['untracked', 'staged', 'unstaged', 'custom'])('runs the normal agent for %s work', async mode => {
     const ctx = prepareRun({ custom: mode === 'custom' });
     if (mode === 'untracked') {

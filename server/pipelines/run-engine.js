@@ -97,9 +97,10 @@ export function createRunEngine({
   if (typeof classifyReadiness !== 'function') throw new Error('createRunEngine: classifyReadiness is required');
   if (typeof readExecutionState !== 'function') throw new Error('createRunEngine: readExecutionState is required');
   if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
+  if (typeof inspectCommitWorktree !== 'function') throw new TypeError('createRunEngine: inspectCommitWorktree must be a function');
   if (typeof readProgressCount !== 'function') throw new Error('createRunEngine: readProgressCount is required');
   if (typeof decisionStore?.add !== 'function') throw new Error('createRunEngine: decisionStore is required');
-  if (typeof noteStore?.add !== 'function' || typeof noteStore?.lastContent !== 'function' || typeof noteStore?.hasPass !== 'function') throw new Error('createRunEngine: noteStore is required');
+  if (typeof noteStore?.add !== 'function' || typeof noteStore?.lastContent !== 'function' || typeof noteStore?.hasPass !== 'function' || typeof noteStore?.latestByStep !== 'function') throw new Error('createRunEngine: noteStore is required');
   if (typeof reviewStore?.add !== 'function' || typeof reviewStore?.listSentBack !== 'function') throw new Error('createRunEngine: reviewStore is required');
   if (typeof prepareNotes !== 'function') throw new Error('createRunEngine: prepareNotes is required');
   if (typeof readNote !== 'function') throw new Error('createRunEngine: readNote is required');
@@ -639,7 +640,10 @@ export function createRunEngine({
     const index = run.currentStepIndex;
     if (run.steps[index - 1].status !== 'complete') throw new Error('Commit requires a completed verification step');
     const outcome = verificationOutcome(run, index - 1);
-    const content = [outcome.trimEnd(), '', '## Verified clean worktrees', '',
+    const replies = answerStore.list(run.id).filter(reply => reply.stepIndex === index - 1 && !outcome.includes(reply.answer));
+    const ownerNotes = replies.length ? ['', '## Owner responses during verification', '',
+      ...replies.flatMap(reply => [reply.questions ?? 'Verification question', '', reply.answer, ''])] : [];
+    const content = [outcome.trimEnd(), ...ownerNotes, '', '## Verified clean worktrees', '',
       ...inspected.map(tree => `- ${tree.repository} — ${tree.branch} — ${tree.head}`), ''].join('\n');
     await writeCommitNote(run, content);
     if (handle.stopped) return;
