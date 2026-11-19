@@ -37,6 +37,15 @@ export const AGENT_PRESETS = Object.freeze([
     skipPermissionsFlag: '--force',
     modelExample: 'gpt-5.6-sol-high',
   }),
+  Object.freeze({
+    id: 'agy',
+    label: 'Antigravity',
+    executable: 'agy',
+    efforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
+    effortArgs: effort => `--effort ${effort}`,
+    skipPermissionsFlag: '--dangerously-skip-permissions',
+    modelExample: 'gemini-4-neon-high',
+  }),
 ]);
 
 function requireType(field, value, type) {

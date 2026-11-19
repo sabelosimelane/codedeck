@@ -395,7 +395,7 @@ describe('PipelineSettings agent presets', () => {
     click('Add agent');
 
     expect(providerOptions()).toEqual([
-      ['claude', 'Claude Code'], ['codex', 'Codex'], ['cursor', 'Cursor'], ['custom', 'Custom command'],
+      ['claude', 'Claude Code'], ['codex', 'Codex'], ['cursor', 'Cursor'], ['agy', 'Antigravity'], ['custom', 'Custom command'],
     ]);
     expect(screen.getByLabelText('Provider').value).toBe('claude');
     expect(screen.getByLabelText('Model').value).toBe('');
@@ -404,6 +404,23 @@ describe('PipelineSettings agent presets', () => {
     expect(command().value).toBe('command claude');
     expect(command().readOnly).toBe(true);
     expect(lastDirty()).toBe(false);
+  });
+
+  it('saves and reopens an Antigravity workflow agent', async () => {
+    await renderSettings();
+    click('Add agent');
+    type('Agent name', 'Antigravity reviewer');
+    type('Provider', 'agy');
+    type('Model', 'gemini-4-neon-high');
+    type('Effort', 'high');
+    click('Save agent');
+
+    expect(await agents().findByText('command agy --model gemini-4-neon-high --effort high')).toBeTruthy();
+    click('Edit agent Antigravity reviewer');
+    expect(screen.getByLabelText('Provider').value).toBe('agy');
+    expect(screen.getByLabelText('Model').value).toBe('gemini-4-neon-high');
+    expect(screen.getByLabelText('Effort').value).toBe('high');
+    expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
   });
 
   it('adds an agent from a provider, model and effort', async () => {

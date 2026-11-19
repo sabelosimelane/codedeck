@@ -4,11 +4,12 @@ import { AGENT_PRESETS, buildLaunchCommand, parseLaunchCommand } from '../../sha
 const build = (provider, fields = {}) => buildLaunchCommand({ provider, model: '', effort: '', skipPermissions: false, ...fields });
 
 describe('agent presets', () => {
-  it('offers Claude Code, Codex and Cursor in that order', () => {
+  it('lists the supported workflow providers in picker order', () => {
     expect(AGENT_PRESETS.map(preset => [preset.id, preset.label])).toEqual([
       ['claude', 'Claude Code'],
       ['codex', 'Codex'],
       ['cursor', 'Cursor'],
+      ['agy', 'Antigravity'],
     ]);
   });
 
@@ -18,6 +19,7 @@ describe('agent presets', () => {
       claude: ['low', 'medium', 'high', 'xhigh', 'max'],
       codex: ['low', 'medium', 'high', 'xhigh'],
       cursor: [],
+      agy: ['low', 'medium', 'high', 'xhigh', 'max'],
     });
   });
 });
@@ -31,6 +33,8 @@ describe('buildLaunchCommand', () => {
     ['codex', {}, 'command codex'],
     ['codex', { model: 'gpt-6-sol', effort: 'high' }, 'command codex --model gpt-6-sol -c model_reasoning_effort="high"'],
     ['codex', { skipPermissions: true }, 'command codex --dangerously-bypass-approvals-and-sandbox'],
+    ['agy', {}, 'command agy'],
+    ['agy', { model: 'gemini-4-neon-high', effort: 'high', skipPermissions: true }, 'command agy --model gemini-4-neon-high --effort high --dangerously-skip-permissions'],
     ['cursor', {}, 'command agent'],
     ['cursor', { model: 'gpt-5.6-sol-high', skipPermissions: true }, 'command agent --model gpt-5.6-sol-high --force'],
   ])('%s %j builds %s', (provider, fields, command) => {
