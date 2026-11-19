@@ -53,6 +53,7 @@ codedeck/
 │   │   ├── task-store.js     # SQLite store for tasks: title, worktree, branch, base, state, PR URL
 │   │   ├── task-service.js   # Plans and creates a task's worktree; opens terminals in it; renames
 │   │   ├── task-landing.js   # Live Git status and commit, merge, pull request and close; nothing forced
+│   │   ├── task-changes.js   # What was merged: a merged task with the note its run's last step wrote; nothing stored
 │   │   ├── task-terminals.js # Closes a finished task's terminals: those opened in it and those its runs used
 │   │   ├── task-naming.js    # Names a task started without a title from its run's first step note, with the session-naming CLI
 │   │   └── task-adoption.js  # At startup, worktrees already in use become tasks
@@ -82,6 +83,7 @@ codedeck/
 │       │   ├── SidebarSessionRows.jsx # Per-project session details
 │       │   └── WorktreeGroupHeader.jsx # Sidebar row for Main or a task: title, run status and progress
 │       │   ├── tasks/
+│       │   │   ├── ChangesDialog.jsx  # A project's merged tasks, newest first, with their summaries
 │       │   │   ├── NewTaskDialog.jsx  # Title input for a new task
 │       │   │   ├── NewTaskFields.jsx  # The title input and repository list of a new task, shared with the Run workflow dialog
 │       │   │   ├── TaskLandingBar.jsx # How a task stands in Git, and Commit / Merge / PR / Close / Rename
@@ -244,6 +246,10 @@ never creates or removes it; a run in a task created for it still gets the Setup
 - `server/tasks/task-landing.js` reads everything from Git when asked. Merge runs in the
   project's own checkout and aborts on conflict. Finishing a task releases its runs
   (`onTaskFinished` in `server/index.js`).
+- `server/tasks/task-changes.js` lists changes for `GET /api/tasks/changes`: one per task with a merged
+  worktree, with the last written note of the summary step (`summaryStepIndex` in
+  `server/pipelines/step-guidance.js`: the run's last agent step) of the task's most recent run. A merge
+  records the commit its checkout stood at in `task_worktrees.merged_commit`.
 - `server/tasks/task-adoption.js` runs once at startup; a failure is logged and does not stop
   the server.
 - The client groups a project into Main and its open tasks by worktree path

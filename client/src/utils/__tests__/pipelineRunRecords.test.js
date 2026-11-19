@@ -68,7 +68,8 @@ it('validates every progress field and status combination', () => {
 });
 const paths = [
  ...Object.keys(validRun()),
- ...Object.keys(validRun().steps[0]).map(k => `steps.0.${k}`),
+ // elapsedMs may be absent: an older backend does not send it (see the test of it below).
+ ...Object.keys(validRun().steps[0]).filter(k => k !== 'elapsedMs').map(k => `steps.0.${k}`),
  'steps.0.repeat.mode', 'steps.0.repeat.max',
  ...Object.keys(validRun().worktree).map(k => `worktree.${k}`),
  ...Object.keys(validRun().actions).map(k => `actions.${k}`),
@@ -281,5 +282,20 @@ describe('parseAnswerPage', () => {
     expect(() => parseAnswers({ page: { totalElements: 0 } })).toThrow('data');
     expect(() => parseAnswers({ data: [] })).toThrow('page');
     expect(() => parseAnswers(null)).toThrow('body');
+  });
+
+  it('checks a step\'s working time when the backend sends it, and accepts a backend that does not', () => {
+    // The phone reads runs with this parser and also talks to a backend older than itself, which sends no elapsedMs.
+    const without = validRun();
+    delete without.steps[0].elapsedMs;
+    expect(() => parseRun(without)).not.toThrow();
+    const withTime = validRun();
+    withTime.steps[0].elapsedMs = 252000;
+    expect(parseRun(withTime).steps[0].elapsedMs).toBe(252000);
+    for (const bad of [null, -1, 1.5, '5']) {
+      const row = validRun();
+      row.steps[0].elapsedMs = bad;
+      expect(() => parseRun(row)).toThrow('elapsedMs');
+    }
   });
 });

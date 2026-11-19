@@ -14,7 +14,7 @@ const databases = [];
 afterEach(() => { vi.restoreAllMocks(); databases.splice(0).forEach(db => db.close()); });
 
 /** Real store and service; only Git and the terminal are replaced. */
-async function setup({ openTerminal, landing } = {}) {
+async function setup({ openTerminal, landing, changes = [] } = {}) {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   const db = new Database(':memory:');
@@ -83,8 +83,10 @@ async function setup({ openTerminal, landing } = {}) {
     }),
     ...landing,
   };
-  app.use(createTasksRouter({ service, taskStore, landing: land }));
-  return { server: await loopbackTestServer(app), service, taskStore, landing: land };
+  // Stands in for the changes read from tasks, runs and notes: the rows a test gives, or what its function returns.
+  const changeList = { list: vi.fn(() => (typeof changes === 'function' ? changes() : changes)) };
+  app.use(createTasksRouter({ service, taskStore, landing: land, changes: changeList }));
+  return { server: await loopbackTestServer(app), service, taskStore, landing: land, changes: changeList };
 }
 
 function expectProblem(response, status, path = base) {
@@ -360,6 +362,8 @@ describe('tasks API', () => {
 
   it('requires its dependencies', () => {
     expect(() => createTasksRouter({})).toThrow('service.create');
+    const { service, taskStore, landing } = { service: Object.fromEntries(['create', 'get', 'rename', 'openTerminal', 'addRepository'].map(name => [name, () => {}])), taskStore: { list: () => [] }, landing: Object.fromEntries(['status', 'commit', 'merge', 'pullRequest', 'close', 'worktrees', 'closeWorktree'].map(name => [name, () => {}])) };
+    expect(() => createTasksRouter({ service, taskStore, landing })).toThrow('changes.list');
   });
 });
 
@@ -606,5 +610,113 @@ describe('tasks API — the repositories of a task', () => {
     const landing = { status() {}, commit() {}, merge() {}, pullRequest() {}, close() {} };
     expect(() => createTasksRouter({ service: { create() {}, get() {}, rename() {}, openTerminal() {}, addRepository() {} }, taskStore: { list() {} }, landing })).toThrow('tasks router requires landing.worktrees');
     expect(() => createTasksRouter({ service: { create() {}, get() {}, rename() {}, openTerminal() {} }, taskStore: { list() {} }, landing })).toThrow('tasks router requires service.addRepository');
+  });
+});
+
+describe('tasks API — changes', () => {
+  const change = (n, extra = {}) => ({
+    id: id(n), project: 'Demo', title: `Change ${n}`, mergedAt: new Date(Date.UTC(2026, 10, 19, 10, 0, n)).toISOString(), workflow: 'Bug fix',
+    summary: `Summary ${n}`, detail: `# Summary ${n}\nBody`,
+    repositories: [{ repository: 'demo', branch: `task/t-${n}`, baseBranch: 'main', commit: 'c'.repeat(40), mergedAt: new Date(Date.UTC(2026, 10, 19, 10, 0, n)).toISOString(), secret: 'never shown' }],
+    secretColumn: 'never shown', ...extra,
+  });
+  const url = `${base}/changes`;
+
+  it('lists changes in a paginated envelope, newest merge first, with exactly their public fields', async () => {
+    const { server } = await setup({ changes: [change(1), change(3), change(2)] });
+    const first = await request(server).get(`${url}?size=2`);
+    expect(first.status).toBe(200);
+    expect(first.headers['x-trace-id']).toEqual(expect.any(String));
+    expect(first.body.data.map(item => item.title)).toEqual(['Change 3', 'Change 2']);
+    expect(first.body.page).toEqual({ currentPage: 0, size: 2, totalElements: 3, totalPages: 2, hasNextPage: true });
+    expect(first.body.data[0]).toEqual({
+      id: id(3), project: 'Demo', title: 'Change 3', mergedAt: '2026-11-19T10:00:03.000Z', workflow: 'Bug fix', summary: 'Summary 3', detail: '# Summary 3\nBody',
+      repositories: [{ repository: 'demo', branch: 'task/t-3', baseBranch: 'main', commit: 'c'.repeat(40), mergedAt: '2026-11-19T10:00:03.000Z' }],
+    });
+    const second = await request(server).get(`${url}?size=2&page=1`);
+    expect(second.body.data.map(item => item.title)).toEqual(['Change 1']);
+    expect(second.body.page).toEqual({ currentPage: 1, size: 2, totalElements: 3, totalPages: 2, hasNextPage: false });
+    expect((await request(server).get(url)).body.page.size).toBe(20);
+    expect((await request(server).get(`${url}?sort=mergedAt,asc`)).body.data.map(item => item.title)).toEqual(['Change 1', 'Change 2', 'Change 3']);
+  });
+
+  it('returns an empty page when nothing was merged, and past the last page', async () => {
+    const { server } = await setup();
+    const empty = await request(server).get(url);
+    expect(empty.status).toBe(200);
+    expect(empty.body).toEqual({ data: [], page: { currentPage: 0, size: 20, totalElements: 0, totalPages: 0, hasNextPage: false } });
+    const { server: one } = await setup({ changes: [change(1)] });
+    expect((await request(one).get(`${url}?page=5`)).body).toMatchObject({ data: [], page: { currentPage: 5, totalElements: 1, hasNextPage: false } });
+  });
+
+  it('sorts deterministically across a page boundary when merge times tie', async () => {
+    const at = '2026-11-19T10:00:00.000Z';
+    const { server } = await setup({ changes: [change(2, { mergedAt: at }), change(3, { mergedAt: at }), change(1, { mergedAt: at })] });
+    const pages = await Promise.all([0, 1, 2].map(page => request(server).get(`${url}?size=1&page=${page}`)));
+    expect(pages.map(page => page.body.data[0].id)).toEqual([id(1), id(2), id(3)]);
+  });
+
+  it('filters by project, and treats a hostile project name as a name', async () => {
+    const { server } = await setup({ changes: [change(1), change(2, { project: 'Other' }), change(3)] });
+    const titles = async query => (await request(server).get(`${url}?${query}`)).body.data.map(item => item.title);
+    expect(await titles('project=Demo')).toEqual(['Change 3', 'Change 1']);
+    expect(await titles('project=Other')).toEqual(['Change 2']);
+    expect(await titles('project=Nobody')).toEqual([]);
+    expect(await titles(`project=${encodeURIComponent("Demo' OR '1'='1")}`)).toEqual([]);
+  });
+
+  it('returns a change without a summary, a workflow or a commit, and hostile text as text', async () => {
+    const hostile = '<script>alert(1)</script>';
+    const { server } = await setup({ changes: [
+      change(1, { workflow: null, summary: null, detail: null, repositories: [{ repository: 'demo', branch: 'task/t-1', baseBranch: null, commit: null, mergedAt: '2026-11-19T10:00:01.000Z' }] }),
+      change(2, { summary: hostile, detail: hostile }),
+    ] });
+    const response = await request(server).get(url);
+    expect(response.type).toBe('application/json');
+    expect(response.body.data[0]).toMatchObject({ summary: hostile, detail: hostile });
+    expect(response.body.data[1]).toMatchObject({ workflow: null, summary: null, detail: null, repositories: [{ baseBranch: null, commit: null }] });
+  });
+
+  it.each([
+    ['page=-1', 'page'], ['page=x', 'page'], ['page=100001', 'page'], ['size=0', 'size'], ['size=101', 'size'], ['size=', 'size'], ['size=1.5', 'size'],
+    ['sort=title,asc', 'sort'], ['sort=mergedAt', 'sort'], ['sort=mergedAt,desc,x', 'sort'], ['sort=', 'sort'],
+    ['project=', 'project'], ['state=merged', 'state'], ['repository=demo', 'repository'],
+  ])('refuses changes query %s', async (query, field) => {
+    const { server, changes } = await setup({ changes: [change(1)] });
+    const response = await request(server).get(`${url}?${query}`);
+    expectProblem(response, 400, url);
+    expect(response.body.errors.map(error => error.field)).toEqual([field]);
+    expect(changes.list).not.toHaveBeenCalled();
+  });
+
+  it('accepts the page and size limits', async () => {
+    const { server } = await setup({ changes: [change(1)] });
+    expect((await request(server).get(`${url}?size=1`)).status).toBe(200);
+    expect((await request(server).get(`${url}?size=100`)).status).toBe(200);
+    expect((await request(server).get(`${url}?page=0`)).status).toBe(200);
+    expect((await request(server).get(`${url}?page=100000`)).status).toBe(200);
+  });
+
+  it('gives the same answer to the same request sent twice at once', async () => {
+    const { server } = await setup({ changes: [change(1), change(2)] });
+    const [a, b] = await Promise.all([request(server).get(url), request(server).get(url)]);
+    expect(a.status).toBe(200);
+    expect(a.body).toEqual(b.body);
+  });
+
+  it('is not read as a task id, and serves only GET', async () => {
+    const { server, service } = await setup({ changes: [change(1)] });
+    await request(server).get(url);
+    expect(service.create).not.toHaveBeenCalled();
+    expectProblem(await request(server).post(url).send({}), 404, url);
+    expectProblem(await request(server).get(`${url}/${id(1)}`), 404, `${url}/${id(1)}`);
+  });
+
+  it('hides the cause when the changes cannot be read', async () => {
+    const { server } = await setup({ changes: () => { throw new Error('task changes: run nope field id'); } });
+    const response = await request(server).get(url);
+    expectProblem(response, 500, url);
+    expect(response.body.message).toBe('Task request failed');
+    expect(JSON.stringify(response.body)).not.toContain('nope');
   });
 });

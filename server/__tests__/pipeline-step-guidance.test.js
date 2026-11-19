@@ -26,6 +26,14 @@ describe('buildStepGuidance', () => {
     expect(buildStepGuidance(def, 1, OPTIONS)).toContain(`${BOUNDARY} Run notes: read .codedeck/runs/abcdef12/README.md before you start, and before your final signal write your note to .codedeck/runs/abcdef12/01-build.md.`);
     expect(() => buildStepGuidance({ ...def, notesDir: undefined }, 1, OPTIONS)).toThrow(/notesDir/);
   });
+  it('tells the last step of a run with notes that its note is the summary of the change', () => {
+    const SUMMARY = "This is the run's last step, and the owner reads your note in their list of changes. Start the note with one line that says what this run changed, in plain words, then summarize what changed and why before anything else you record.";
+    const def = { ...definition(false, step('Setup', { mode: 'once' }, 'setup'), step('Build'), step('Commit')), notesDir: '.codedeck/runs/abcdef12' };
+    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} Run notes: read .codedeck/runs/abcdef12/README.md before you start, and before your final signal write your note to .codedeck/runs/abcdef12/02-commit.md. ${SUMMARY}`);
+    expect(buildStepGuidance(def, 1, OPTIONS)).not.toContain('list of changes');
+    // Without run notes there is no note to read the summary from.
+    expect(buildStepGuidance({ ...def, notesDir: null }, 2, OPTIONS)).toBe(BOUNDARY);
+  });
   it('does not tell a step that always asks the owner to decide for them', () => {
     const def = definition(true, { ...step('Clarify'), askOwner: true }, step('Fix'));
     expect(buildStepGuidance(def, 0, OPTIONS)).toBe(BOUNDARY);
@@ -76,8 +84,8 @@ describe('buildStepGuidance', () => {
     expect(worst.length).toBeGreaterThan(plain.length);
     expect(worst.length).toBeLessThanOrEqual(2000);
     const fixedLength = worst.length - OPTIONS.worktreePath.length;
-    expect(fixedLength).toBe(1019);
-    expect(2000 - fixedLength).toBe(981); // room left for the worktree path
+    expect(fixedLength).toBe(1251);
+    expect(2000 - fixedLength).toBe(749); // room left for the worktree path
     expect(worst).not.toMatch(/[\x00-\x1f\x7f]/);
   });
 

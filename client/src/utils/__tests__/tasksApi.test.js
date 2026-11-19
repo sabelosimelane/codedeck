@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  parseTaskForPhone, addTaskRepository, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, mergeTask, mergeTaskWorktree,
+  parseTaskForPhone, addTaskRepository, listTaskChanges, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, mergeTask, mergeTaskWorktree,
   openTaskPullRequest, openTaskTerminal, openTaskWorktreePullRequest, parseLanding, parseTask, parseTaskSummary, parseWorktreeLanding, renameTask,
 } from '../tasksApi';
 
@@ -341,5 +341,63 @@ describe('landing one repository of a task', () => {
   it('passes on why a repository could not be landed', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => reply({ message: 'mobile-app conflicts with main in 1 file. Nothing was merged.', conflicts: ['README.md'] }, { ok: false, status: 409 })));
     await expect(mergeTaskWorktree(ID, WT2)).rejects.toMatchObject({ message: 'mobile-app conflicts with main in 1 file. Nothing was merged.', status: 409, conflicts: ['README.md'] });
+  });
+});
+
+describe('changes API client', () => {
+  const change = (overrides = {}) => ({
+    id: ID, project: 'Demo', title: 'Replies', mergedAt: '2026-11-19T10:00:00.000Z', workflow: 'Bug fix',
+    summary: 'Replies are threaded', detail: '# Replies are threaded\nBody',
+    repositories: [{ repository: 'demo', branch: 'task/replies-7a000000', baseBranch: 'main', commit: 'c'.repeat(40), mergedAt: '2026-11-19T10:00:00.000Z' }],
+    ...overrides,
+  });
+  const envelope = (data, hasNextPage = false, totalElements = data.length) => ({ data, page: { currentPage: 0, size: 20, totalElements, totalPages: 1, hasNextPage } });
+
+  it('reads one page of a project\'s changes, newest first, with exactly the known fields', async () => {
+    const fetchMock = vi.fn(async () => reply(envelope([{ ...change(), extra: 'dropped', repositories: [{ ...change().repositories[0], extra: 'dropped' }] }], true, 41)));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await listTaskChanges({ project: 'My Demo', page: 2 })).toEqual({ changes: [change()], hasNextPage: true, total: 41 });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/tasks/changes?project=My%20Demo&page=2&size=20&sort=mergedAt,desc');
+  });
+
+  it('accepts a change without a workflow, a summary, a base branch or a commit', async () => {
+    const bare = change({ workflow: null, summary: null, detail: null, repositories: [{ repository: 'demo', branch: 'task/x', baseBranch: null, commit: null, mergedAt: '2026-11-19T10:00:00.000Z' }] });
+    vi.stubGlobal('fetch', vi.fn(async () => reply(envelope([bare]))));
+    expect((await listTaskChanges({ project: 'Demo', page: 0 })).changes).toEqual([bare]);
+  });
+
+  it.each([
+    ['id', 'nope'], ['project', ''], ['title', ''], ['mergedAt', 'yesterday'], ['workflow', ''], ['workflow', 7],
+    ['summary', 7], ['detail', 7], ['repositories', []], ['repositories', null],
+  ])('refuses a change whose %s is %j', async (field, value) => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply(envelope([change({ [field]: value })]))));
+    await expect(listTaskChanges({ project: 'Demo', page: 0 })).rejects.toThrow(`field ${field}`);
+  });
+
+  it.each([
+    ['repository', ''], ['repository', 'a/b'], ['branch', ''], ['baseBranch', ''], ['commit', 'zz'], ['mergedAt', null],
+  ])('refuses a change whose repository %s is %j', async (field, value) => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply(envelope([change({ repositories: [{ ...change().repositories[0], [field]: value }] })]))));
+    await expect(listTaskChanges({ project: 'Demo', page: 0 })).rejects.toThrow(`Invalid change ${ID} field repositories.${field}`);
+  });
+
+  it('refuses a response without the page envelope, and bad arguments before asking', async () => {
+    const fetchMock = vi.fn(async () => reply([change()]));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(listTaskChanges({ project: 'Demo', page: 0 })).rejects.toThrow('Invalid changes response');
+    fetchMock.mockResolvedValueOnce(reply({ data: [change()], page: { hasNextPage: false } }));
+    await expect(listTaskChanges({ project: 'Demo', page: 0 })).rejects.toThrow('Invalid changes response');
+    fetchMock.mockClear();
+    await expect(listTaskChanges({ project: '', page: 0 })).rejects.toThrow('project');
+    await expect(listTaskChanges({ project: 'Demo', page: -1 })).rejects.toThrow('page');
+    await expect(listTaskChanges({ project: 'Demo', page: 1.5 })).rejects.toThrow('page');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports the backend\'s reason and an unreachable server', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ message: 'Task request failed' }, { ok: false, status: 500 })));
+    await expect(listTaskChanges({ project: 'Demo', page: 0 })).rejects.toThrow('Task request failed');
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network'); }));
+    await expect(listTaskChanges({ project: 'Demo', page: 0 })).rejects.toThrow('Server unreachable');
   });
 });

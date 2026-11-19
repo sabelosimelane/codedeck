@@ -132,6 +132,7 @@ describe('task store', () => {
         createdAt: at,
         updatedAt: at,
         finishedAt: null,
+        mergedCommit: null,
       }],
     });
     expect(store.get(ID)).toEqual(task);
@@ -294,6 +295,30 @@ describe('task store', () => {
       expect(store.setWorktreeState(ID, WT2, { state: 'merged' }).state).toBe('active');
     });
 
+    it('records the commit a worktree was merged as, and only for a merge', () => {
+      const { db, store } = setup();
+      store.create(input);
+      expect(store.get(ID).worktrees[0].mergedCommit).toBeNull();
+      const task = store.setWorktreeState(ID, WT, { state: 'merged', mergedCommit: 'c'.repeat(40) });
+      expect(task.worktrees[0]).toMatchObject({ state: 'merged', mergedCommit: 'c'.repeat(40) });
+      expect(db.prepare('SELECT merged_commit FROM task_worktrees WHERE id = ?').get(WT)).toEqual({ merged_commit: 'c'.repeat(40) });
+      store.create(other);
+      const otherWt = store.get(OTHER_ID).worktrees[0].id;
+      expect(() => store.setWorktreeState(OTHER_ID, otherWt, { state: 'closed', mergedCommit: 'c'.repeat(40) })).toThrow('tasks: mergedCommit');
+      expect(() => store.setWorktreeState(OTHER_ID, otherWt, { state: 'merged', mergedCommit: 'HEAD' })).toThrow('tasks: mergedCommit');
+      expect(() => store.setWorktreeState(OTHER_ID, otherWt, { state: 'merged', mergedCommit: 12 })).toThrow('tasks: mergedCommit');
+      // A merge recorded without its commit stays valid: tasks merged before the commit was kept have none.
+      expect(store.setWorktreeState(OTHER_ID, otherWt, { state: 'merged' }).worktrees[0].mergedCommit).toBeNull();
+    });
+
+    it('adds the merged commit column to a database created before it', () => {
+      const { db } = setup();
+      createTaskStore(db).create(input);
+      db.exec('ALTER TABLE task_worktrees DROP COLUMN merged_commit');
+      const store = createTaskStore(db);
+      expect(store.get(ID).worktrees[0].mergedCommit).toBeNull();
+    });
+
     it('refuses invalid state changes', () => {
       const { store } = setup();
       store.create(input);
@@ -318,7 +343,7 @@ describe('task store', () => {
       expect(task.worktrees[1]).toEqual({
         id: WT2, repository: 'mobile-app', own: false, first: false, repositoryPath: '/tmp/group/mobile-app',
         worktreePath: second.worktreePath, branch: second.branch, baseBranch: 'develop', baseCommit: second.baseCommit,
-        state: 'active', prUrl: null, createdAt: '2026-11-18T10:00:01.000Z', updatedAt: '2026-11-18T10:00:01.000Z', finishedAt: null,
+        state: 'active', prUrl: null, createdAt: '2026-11-18T10:00:01.000Z', updatedAt: '2026-11-18T10:00:01.000Z', finishedAt: null, mergedCommit: null,
       });
     });
 
@@ -395,6 +420,8 @@ describe('task store', () => {
     ['base_commit', 'zz'],
     ['state', 'bogus'],
     ['pr_url', 'ftp://x'],
+    ['merged_commit', 'zz'],
+    ['merged_commit', 'c'.repeat(40)],
     ['created_at', 'yesterday'],
     ['updated_at', 'yesterday'],
     ['finished_at', 'yesterday'],
@@ -525,7 +552,7 @@ describe('task store', () => {
         expect(task.worktrees).toEqual([{
           id: worktreeId(index + 1), repository: before.project === 'Demo' ? 'backend' : 'Gone', own: true, first: true, repositoryPath: null,
           worktreePath: `/tmp/worktrees/old-${index}`, branch: `task/old-${index}`, baseBranch: 'main', baseCommit: 'c'.repeat(40),
-          state: before.state, prUrl: before.prUrl, createdAt: '2026-11-18T09:00:00.000Z', updatedAt: '2026-11-18T09:10:00.000Z', finishedAt: before.finishedAt,
+          state: before.state, prUrl: before.prUrl, createdAt: '2026-11-18T09:00:00.000Z', updatedAt: '2026-11-18T09:10:00.000Z', finishedAt: before.finishedAt, mergedCommit: null,
         }]);
       });
     });

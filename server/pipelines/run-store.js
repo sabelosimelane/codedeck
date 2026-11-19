@@ -198,7 +198,7 @@ function validateStepProgress(id, index, step, project) {
   const prefix = `steps[${index}]`;
   if (!isPlainObject(step)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(step)) {
-    if (!['status', 'sessionId', 'priorSessionIds', 'attempt', 'iteration', 'roundsCompleted', 'detail', 'startedAt', 'finishedAt'].includes(key)) {
+    if (!['status', 'sessionId', 'priorSessionIds', 'attempt', 'iteration', 'roundsCompleted', 'detail', 'startedAt', 'finishedAt', 'elapsedMs'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
@@ -220,6 +220,10 @@ function validateStepProgress(id, index, step, project) {
   if (!Number.isInteger(step.roundsCompleted) || step.roundsCompleted < 0) {
     fieldError(id, `${prefix}.roundsCompleted`, 'must be an integer ≥ 0');
   }
+  // The time the step has worked over all its starts, in milliseconds; see addWorkedTime in run-machine.js.
+  if (!Number.isInteger(step.elapsedMs) || step.elapsedMs < 0) {
+    fieldError(id, `${prefix}.elapsedMs`, 'must be an integer ≥ 0');
+  }
   let detail = step.detail;
   if (detail !== null) {
     detail = requireString(id, `${prefix}.detail`, detail, { max: 2000, singleLine: false, min: 0, allowEmpty: false });
@@ -234,6 +238,7 @@ function validateStepProgress(id, index, step, project) {
     detail,
     startedAt: requireIso(id, `${prefix}.startedAt`, step.startedAt, { allowNull: true }),
     finishedAt: requireIso(id, `${prefix}.finishedAt`, step.finishedAt, { allowNull: true }),
+    elapsedMs: step.elapsedMs,
   };
 }
 
@@ -514,6 +519,25 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
     }
   });
   upgradeAcceptedLimits();
+
+  // Steps stored before their working time was kept: only the last start and its end are known,
+  // so a step that finished it gets that stretch and any other step gets none.
+  const upgradeWorkedTime = db.transaction(() => {
+    const save = db.prepare('UPDATE pipeline_runs SET steps = ? WHERE id = ?');
+    for (const row of db.prepare('SELECT id, steps FROM pipeline_runs').all()) {
+      let steps;
+      try { steps = JSON.parse(row.steps); } catch { fieldError(row.id, 'steps', 'must be valid JSON'); }
+      if (!Array.isArray(steps)) fieldError(row.id, 'steps', 'must be an array');
+      const lacks = step => isPlainObject(step) && !Object.hasOwn(step, 'elapsedMs');
+      if (!steps.some(lacks)) continue;
+      const lastStretch = (step) => {
+        const worked = Date.parse(step.finishedAt) - Date.parse(step.startedAt);
+        return Number.isInteger(worked) && worked >= 0 ? worked : 0;
+      };
+      save.run(JSON.stringify(steps.map(step => (lacks(step) ? { ...step, elapsedMs: lastStretch(step) } : step))), row.id);
+    }
+  });
+  upgradeWorkedTime();
 
   const read = db.prepare('SELECT * FROM pipeline_runs WHERE id = ?');
   const readByRequest = db.prepare('SELECT * FROM pipeline_runs WHERE request_id = ?');

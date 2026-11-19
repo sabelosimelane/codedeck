@@ -1,5 +1,51 @@
 # Changelog
 
+## [2026-11-19] - A run shows how long each step took, and how long it has been going
+
+### Executive Summary
+* In the task view, a finished step now says how long it worked in the step rail on the left ("Done · 4m 12s"), and the header counts the whole run: once a second while it is going ("12m 5s"), and "took 1h 5m" once it is over.
+* A step's time is its total: every round of a loop and every attempt after Resume or Send back is added up by the backend. Waiting for your answer counts as work; waiting for your approval, waiting for the next round and lying interrupted do not.
+* The run's time runs from its start to its end and includes all the time it waited for you; an interrupted run stops counting at its last change.
+* Steps that finished before today have only their last start on record. They show that stretch, or nothing when it is not known.
+
+### Technical Details
+* **🗄️ Database:** each step in `pipeline_runs.steps` gains `elapsedMs` (integer ≥ 0). At startup, steps stored without it get the time from their last start to its end when both are stored, and 0 otherwise.
+* **🛠️ Codebase:**
+  * `server/pipelines/run-machine.js` — `addWorkedTime(step, at)` adds the stretch a working step (launching, running or waiting for input) has just ended, on complete, approval requested, limit reached, loop back, error and stop. Approve adds nothing, since the work ended when approval was asked for. It refuses a working step without a start time, an event without a time and an end before the start.
+  * `server/pipelines/run-store.js` — validates and keeps `elapsedMs`; the upgrade above.
+  * `server/routes/pipelines.js` — a run's steps carry `elapsedMs`.
+  * `client/src/utils/pipelineRunStatus.js` — `describeStepDuration(step)` (null unless the step is done and has a time) and `describeRunDuration(run, now)` (`{words, live}`); a device clock behind the backend's shows "under 1s", never a negative time.
+  * `client/src/utils/pipelineRunRecords.js` — `elapsedMs` is checked when sent and may be absent, because the phone reads runs with this parser from a backend older than itself.
+  * `client/src/components/tasks/TaskView.jsx` — the step rail adds the time to a step's words and to its accessible name; the header shows the run's time and ticks once a second only while the run is not over.
+* **📚 Documents:** `README.md`, `docs/steering/api-standards.md`.
+* **🧪 Tests:** `server/__tests__/pipeline-run-machine.test.js` (8 cases: each way a stretch ends, attempts and rounds added up, approval and interruption left out, the refused inputs), `pipeline-run-store.test.js` (validation, keeping, the upgrade), `client/src/utils/__tests__/pipelineRunStatus.test.js`, `pipelineRunRecords.test.js` and `components/tasks/__tests__/TaskView.test.jsx`. Stored-step fixtures in four server test files carry the new field.
+* **Not covered:** not seen in a browser, which needs a live run. A stretch cut short by a backend restart is not counted, because its end is not known. The phone's run view is unchanged.
+
+## [2026-11-19] - Changes: what was merged in a project, with a summary of each
+
+### Executive Summary
+* After a task was merged, nothing said what the change had been: the app shows open tasks only, the merge left no trace in Git when it fast-forwarded, and the branch was deleted. A project's menu in the sidebar now has **Changes…**: the tasks merged in that project, newest first, each with its title, when it was merged, its workflow, the repositories it landed in and a summary.
+* The summary is written by the run. The last step of a run, the Commit step in the built-in workflows, is now told that the owner reads its note in the list of changes, and to start the note with one line saying what the run changed, followed by what changed and why. The list shows that line; **Details** opens the rest of the note. This applies to workflows already saved, without editing them.
+* A merge now keeps the commit its checkout stood at afterwards, shown beside each repository of a change, so the change can be found in Git once its branch is gone.
+* Tasks merged before today are listed too, with the note their last step wrote then and no commit. A task merged without a run, or whose last step wrote no note, says so in place of a summary.
+
+### Technical Details
+* **🗄️ Database:** `task_worktrees.merged_commit` (TEXT, null unless the worktree is merged; added to existing databases at startup). Nothing else is stored: a change is read from the task, its merged worktrees and `pipeline_run_notes`.
+* **🛠️ Codebase:**
+  * `server/pipelines/step-guidance.js` — `summaryStepIndex(definition)`: the run's last agent step, or null for a run without notes; that step gets one more sentence of guidance. The prompt preview shows it, since it is built by the same function.
+  * `server/tasks/task-changes.js` (new) — `createTaskChanges({taskStore, noteStore, listRuns}).list()`: one change per task with a merged worktree, with the last written note of the summary step of the task's most recent run, newest merge first. Every field it reads of a run is checked.
+  * `server/pipelines/note-store.js` — `lastWritten(runId, stepIndex)`: the note a step last wrote, in full.
+  * `server/tasks/task-store.js` — `setWorktreeState` takes `mergedCommit` with a merge only; a stored one on a worktree that is not merged, or that is not a commit id, fails loudly.
+  * `server/tasks/task-landing.js` — after a merge, reads `HEAD` of the checkout merged into and records it.
+  * `server/routes/tasks.js` — `GET /api/tasks/changes` (page, size, `sort=mergedAt,asc|desc`, filter `project`), registered before `/:id`; the router now requires `changes.list`.
+  * `client/src/utils/tasksApi.js` — `parseChange`, `listTaskChanges`.
+  * `client/src/components/tasks/ChangesDialog.jsx` (new) and the **Changes…** entry in `Sidebar.jsx`, for local projects.
+* **📚 Documents:** `README.md`, `docs/steering/product.md`, `structure.md` and `api-standards.md`.
+* **🧪 Tests:**
+  * `server/__tests__/task-changes.test.js` (new, 8 cases), `tasks-api.test.js` (the changes list: envelope and exact fields, empty and past-the-end pages, ties across a page boundary, the project filter with a hostile name, null fields and hostile text, 14 refused queries, the limits, two requests at once, GET only, a hidden failure), `task-store.test.js`, `task-landing.test.js`, `pipeline-note-store.test.js`, `pipeline-step-guidance.test.js`.
+  * `client/src/components/tasks/__tests__/ChangesDialog.test.jsx` (new, 10 cases), `utils/__tests__/tasksApi.test.js`, `components/__tests__/Sidebar.test.jsx`.
+* **Not covered:** a task merged outside CodeDeck or through a pull request is not listed, and neither is a run in Main, which has no task. When a task had several runs the summary is the most recent run's. The summary is as good as the note the agent writes; no run has yet been made with the new guidance.
+
 ## [2026-11-19] - Run workflow sits beside New task, and both ask for a new task the same way
 
 ### Executive Summary

@@ -267,8 +267,8 @@ describeLive('pipeline run live (Phase 3)', () => {
         ],
       },
       steps: [
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
       ],
       homePath: homeRepoPath,
       worktreePath: names.worktreePath,
@@ -408,7 +408,7 @@ describeLive('pipeline run live notes', () => {
       id: runId, requestId: 'live-notes-1', workflowId, project: 'codedeck', input: '',
       status: 'pending', stopReason: null, currentStepIndex: 0, error: null,
       definition: { workflowId, workflowName: 'Live notes', workflowRevision: 1, agentsDecide: false, progressFile: null, notesDir, steps },
-      steps: steps.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null })),
+      steps: steps.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 })),
       homePath: home, worktreePath: home, worktreeBranch: 'master', baseCommit: git(home, ['rev-parse', 'HEAD']),
       worktreeState: 'external', worktreeDetail: null, inputRequest: null, taskId: null, finishedAt: null,
     });
@@ -524,7 +524,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         }],
       },
       steps: [
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
       ],
       homePath: homeRepoPath,
       worktreePath: homeRepoPath,
@@ -730,7 +730,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
     const workflowId = '0d9e4b1a-7777-4777-8777-777777777777';
     const homeRepoPath = await resolveHomeRepoPath({ projectPath: home, execFile });
     const stubAgent = (id, name, launchCommand) => ({ id, name, launchCommand, resetCommand: '/clear' });
-    const pending = () => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null });
+    const pending = () => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 });
 
     runs.create({
       id: runId,
@@ -931,7 +931,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
           { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: { id: '0d9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'dialog-stub', launchCommand: stub, resetCommand: '/clear' } },
         ],
       },
-      steps: [{ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null }],
+      steps: [{ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 }],
       homePath: homeRepoPath,
       worktreePath: homeRepoPath,
       worktreeBranch: git(home, ['rev-parse', '--abbrev-ref', 'HEAD']),
@@ -1087,7 +1087,7 @@ describeLive('pipeline run live — Resume', () => {
           { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name, prompt: `do the ${name} step`, repeat: { mode: 'once' }, agent: { id: '0e9e4b1a-cccc-4ccc-8ccc-cccccccccccc', name: 'resume-stub', launchCommand: stub, resetCommand: '/clear' } }
         )),
       },
-      steps: stepNames.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null })),
+      steps: stepNames.map(() => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 })),
       homePath: homeRepoPath,
       worktreePath: homeRepoPath,
       worktreeBranch: git(home, ['rev-parse', '--abbrev-ref', 'HEAD']),

@@ -167,6 +167,9 @@ export function parseRun(run, index = 0) {
     guard(nullable(step.detail, value => text(value) && value.length <= 2000), field('detail'));
     guard(nullable(step.startedAt, stamp), field('startedAt'));
     guard(nullable(step.finishedAt, stamp), field('finishedAt'));
+    // The time the step has worked over all its starts. A backend older than this client does not send it, and the
+    // phone reads runs with this parser from such a backend too; the task view, which shows it, requires it.
+    guard(step.elapsedMs === undefined || (integer(step.elapsedMs) && step.elapsedMs >= 0), field('elapsedMs'));
   });
   guard(run.approvalRequest === null || object(run.approvalRequest), 'approvalRequest');
   if (run.status === 'awaiting_approval') {

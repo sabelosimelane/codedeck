@@ -116,6 +116,50 @@ export async function listOpenTasks({ signal } = {}) {
   }
 }
 
+/**
+ * A change: a task with at least one repository merged. `summary` and `detail` are the first line
+ * and the whole of the note the last step of its run wrote, or null when there is none; `commit`
+ * is null for a repository merged before commits were kept.
+ */
+export function parseChange(change, index = 0) {
+  const identity = typeof change?.id === 'string' ? change.id : `index ${index}`;
+  const guard = (condition, field) => { if (!condition) throw new Error(`Invalid change ${identity} field ${field}`); };
+  guard(change !== null && typeof change === 'object' && !Array.isArray(change), 'change');
+  guard(typeof change.id === 'string' && UUID.test(change.id), 'id');
+  guard(text(change.project), 'project');
+  guard(text(change.title), 'title');
+  guard(stamp(change.mergedAt), 'mergedAt');
+  guard(change.workflow === null || text(change.workflow), 'workflow');
+  guard(change.summary === null || typeof change.summary === 'string', 'summary');
+  guard(change.detail === null || typeof change.detail === 'string', 'detail');
+  guard(Array.isArray(change.repositories) && change.repositories.length >= 1, 'repositories');
+  const repositories = change.repositories.map((entry) => {
+    const part = (condition, field) => guard(condition, `repositories.${field}`);
+    part(entry !== null && typeof entry === 'object' && !Array.isArray(entry), 'repository');
+    part(text(entry.repository) && !entry.repository.includes('/'), 'repository');
+    part(text(entry.branch), 'branch');
+    part(entry.baseBranch === null || text(entry.baseBranch), 'baseBranch');
+    part(entry.commit === null || (typeof entry.commit === 'string' && /^[0-9a-f]{40}$/.test(entry.commit)), 'commit');
+    part(stamp(entry.mergedAt), 'mergedAt');
+    return { repository: entry.repository, branch: entry.branch, baseBranch: entry.baseBranch, commit: entry.commit, mergedAt: entry.mergedAt };
+  });
+  return {
+    id: change.id, project: change.project, title: change.title, mergedAt: change.mergedAt, workflow: change.workflow,
+    summary: change.summary, detail: change.detail, repositories,
+  };
+}
+
+export const CHANGES_PAGE_SIZE = 20;
+
+/** One page of what was merged in a project, the most recent first. */
+export async function listTaskChanges({ project, page, signal } = {}) {
+  if (!text(project)) throw new TypeError('project must be a nonempty string');
+  if (!Number.isSafeInteger(page) || page < 0) throw new TypeError('page must be a page number from 0');
+  const body = await request(`/changes?project=${encodeURIComponent(project)}&page=${page}&size=${CHANGES_PAGE_SIZE}&sort=mergedAt,desc`, { signal });
+  if (!Array.isArray(body?.data) || typeof body?.page?.hasNextPage !== 'boolean' || !Number.isSafeInteger(body.page.totalElements) || body.page.totalElements < 0) throw new Error('Invalid changes response');
+  return { changes: body.data.map(parseChange), hasNextPage: body.page.hasNextPage, total: body.page.totalElements };
+}
+
 /** `repositories`: the project's repositories the task includes, the one it starts in first; left out, its own only. */
 export async function createTask({ project, title, repositories }) {
   if (!text(project)) throw new TypeError('project must be a nonempty string');

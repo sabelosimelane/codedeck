@@ -53,6 +53,7 @@ function step(overrides = {}) {
     detail: null,
     startedAt: null,
     finishedAt: null,
+    elapsedMs: 0,
     ...overrides,
   };
 }
@@ -593,6 +594,39 @@ describe('pipeline run store — loops and who decides', () => {
     const run = looping();
     run.steps[2] = { ...step(), roundsCompleted };
     expect(() => store.create(run)).toThrow('field steps[2].roundsCompleted: must be an integer ≥ 0');
+  });
+
+  it.each([undefined, null, -1, 1.5, '0'])('rejects a step whose elapsedMs is %s', (elapsedMs) => {
+    const { store } = setup();
+    const run = validRun();
+    run.steps[0] = { ...step(), elapsedMs };
+    expect(() => store.create(run)).toThrow('field steps[0].elapsedMs: must be an integer ≥ 0');
+  });
+
+  it('keeps the time a step has worked', () => {
+    const { store } = setup();
+    const created = store.create(validRun());
+    expect(created.steps[0].elapsedMs).toBe(0);
+    expect(store.update(created.id, { steps: created.steps.map(s => ({ ...s, elapsedMs: 252000 })) }).steps[0].elapsedMs).toBe(252000);
+  });
+
+  it('gives steps stored before their working time was kept the time of their last start, or none', () => {
+    const { db, store } = setup();
+    const created = store.create(validRun());
+    const strip = ({ elapsedMs: _elapsed, ...rest }) => rest;
+    const set = steps => db.prepare('UPDATE pipeline_runs SET steps = ? WHERE id = ?').run(JSON.stringify(steps), created.id);
+    set(created.steps.map(s => strip({ ...s, startedAt: '2026-11-14T08:00:00.000Z', finishedAt: '2026-11-14T08:04:12.000Z' })));
+    expect(() => store.get(created.id)).toThrow('steps[0].elapsedMs');
+    expect(createRunStore(db).get(created.id).steps[0].elapsedMs).toBe(252000);
+    expect(JSON.parse(db.prepare('SELECT steps FROM pipeline_runs WHERE id = ?').get(created.id).steps)[0].elapsedMs).toBe(252000);
+    // A step that never finished its last start, or never started, has no time that is known.
+    set(created.steps.map(s => strip({ ...s, startedAt: '2026-11-14T08:00:00.000Z', finishedAt: null })));
+    expect(createRunStore(db).get(created.id).steps[0].elapsedMs).toBe(0);
+    set(created.steps.map(strip));
+    expect(createRunStore(db).get(created.id).steps[0].elapsedMs).toBe(0);
+    // A count that is already stored is left alone.
+    set(created.steps.map(s => ({ ...s, elapsedMs: 7, startedAt: '2026-11-14T08:00:00.000Z', finishedAt: '2026-11-14T08:04:12.000Z' })));
+    expect(createRunStore(db).get(created.id).steps[0].elapsedMs).toBe(7);
   });
 
   it('accepts completed rounds only on a step that loops back, and fewer than its maximum', () => {

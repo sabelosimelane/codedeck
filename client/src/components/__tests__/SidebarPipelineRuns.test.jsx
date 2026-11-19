@@ -11,6 +11,7 @@ vi.mock('lucide-react', () => {
     Plus: Icon,
     Trash2: Icon,
     FolderTree: Icon,
+    History: Icon,
     Pencil: Icon,
     Settings: Icon,
     FolderSearch: Icon,

@@ -206,6 +206,8 @@ describe('task landing — merge', () => {
     expect(existsSync(wt)).toBe(false);
     expect(git(repo, ['branch', '--list', task.branch])).toBe('');
     expect(taskStore.get(ID).finishedAt).not.toBeNull();
+    // The commit Main stood at after the merge is kept, so the change can be found in Git once the branch is gone.
+    expect(taskStore.get(ID).worktrees[0].mergedCommit).toBe(git(repo, ['rev-parse', 'HEAD']));
     expect(await rejection(landing.merge(ID))).toMatchObject({ status: 409, message: 'This task is finished.' });
   });
 

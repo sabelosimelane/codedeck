@@ -13,6 +13,7 @@ function step(overrides = {}) {
     detail: null,
     startedAt: null,
     finishedAt: null,
+    elapsedMs: 0,
     ...overrides,
   };
 }
@@ -33,7 +34,7 @@ function run(overrides = {}) {
 
 describe('applyEvent — single-step run (Spec §5)', () => {
   it('keeps no_progress on Stop and clears it on Resume', () => {
-    const running = run({ status: 'running', worktreeState: 'present', steps: [step({ status: 'running', sessionId: 'terminal-1' })] });
+    const running = run({ status: 'running', worktreeState: 'present', steps: [step({ status: 'running', sessionId: 'terminal-1', startedAt: AT })] });
     const stopped = applyEvent(running, { type: 'stop', reason: 'no_progress', at: AT });
     expect(stopped).toMatchObject({ status: 'stopped', stopReason: 'no_progress' });
     expect(computeActions(stopped)).toMatchObject({ resume: true, cleanup: true });
@@ -42,7 +43,7 @@ describe('applyEvent — single-step run (Spec §5)', () => {
   });
   it.each(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval', 'interrupted', 'stopped', 'error', 'complete'])
     ('accepts approval events only from their legal status: %s', status => {
-      const state = run({ status, steps: [step({ status: status === 'awaiting_approval' ? 'awaiting_approval' : 'running', attempt: 1, sessionId: 'terminal-1' })] });
+      const state = run({ status, steps: [step({ status: status === 'awaiting_approval' ? 'awaiting_approval' : 'running', attempt: 1, sessionId: 'terminal-1', startedAt: AT })] });
       for (const [type, legal] of [['approval_requested', status === 'running'], ['approve', status === 'awaiting_approval'], ['send_back', status === 'awaiting_approval']]) {
         const event = { type, at: AT, newTerminal: false };
         if (legal) expect(() => applyEvent(state, event)).not.toThrow();
@@ -313,7 +314,7 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
         status,
         worktreeState: 'present',
         stopReason: null,
-        steps: [step({ status: stepStatus })],
+        steps: [step({ status: stepStatus, startedAt: AT })],
       }), { type: 'stop', reason: 'user', at: AT });
       expect(next.status).toBe('stopped');
       expect(next.stopReason).toBe('user');
@@ -502,7 +503,7 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
 });
 
 describe('input request (what the agent is waiting for)', () => {
-  const running = () => run({ status: 'running', steps: [step({ status: 'running', attempt: 1 })] });
+  const running = () => run({ status: 'running', steps: [step({ status: 'running', attempt: 1, startedAt: AT })] });
   const asked = { questions: '1. Which schema?\nRecommended: the existing one.', truncated: false };
 
   it('keeps the request of a needs_input event on the run', () => {
@@ -620,5 +621,81 @@ describe('loop back (a step sends the run back to an earlier step)', () => {
     state.steps[2] = { ...state.steps[2], status: 'interrupted', roundsCompleted: 4 };
     const resumed = applyEvent(state, { type: 'resume', newTerminal: true, at: LATER });
     expect(resumed.steps[2]).toMatchObject({ status: 'launching', roundsCompleted: 4, iteration: 0, sessionId: null });
+  });
+});
+
+describe('applyEvent — the time a step has worked', () => {
+  const at = seconds => new Date(Date.UTC(2026, 10, 19, 10, 0, 0) + seconds * 1000).toISOString();
+  const working = (overrides = {}) => step({ status: 'running', sessionId: 'Demo-1', attempt: 1, iteration: 1, startedAt: at(0), roundsCompleted: 0, ...overrides });
+  const one = (stepOverrides, runOverrides = {}) => run({ status: 'running', worktreeState: 'present', steps: [working(stepOverrides)], ...runOverrides });
+
+  it('adds the time from a step\'s start to its end when it completes', () => {
+    const next = applyEvent(one(), { type: 'step_complete', at: at(252) });
+    expect(next.steps[0]).toMatchObject({ status: 'complete', elapsedMs: 252000, finishedAt: at(252) });
+  });
+
+  it('keeps what earlier starts took and adds the new one', () => {
+    const next = applyEvent(one({ elapsedMs: 60000, startedAt: at(100) }), { type: 'step_complete', at: at(130) });
+    expect(next.steps[0].elapsedMs).toBe(90000);
+  });
+
+  it('counts the wait for an answer, and not the wait for an approval', () => {
+    const asked = applyEvent(one(), { type: 'needs_input', inputRequest: null, at: at(10) });
+    const answered = applyEvent(asked, { type: 'input_received', at: at(70) });
+    const requested = applyEvent(answered, { type: 'approval_requested', at: at(100) });
+    expect(requested.steps[0].elapsedMs).toBe(100000);
+    const approved = applyEvent(requested, { type: 'approve', at: at(5000) });
+    expect(approved.steps[0]).toMatchObject({ status: 'complete', elapsedMs: 100000 });
+  });
+
+  it('adds the new attempt after the owner sends a step back', () => {
+    const requested = applyEvent(one(), { type: 'approval_requested', at: at(100) });
+    const sentBack = applyEvent(requested, { type: 'send_back', newTerminal: false, at: at(900) });
+    expect(sentBack.steps[0]).toMatchObject({ status: 'launching', elapsedMs: 100000, startedAt: at(900), finishedAt: null });
+    const running = applyEvent(sentBack, { type: 'step_running', at: at(905) });
+    expect(applyEvent(running, { type: 'approval_requested', at: at(950) }).steps[0].elapsedMs).toBe(150000);
+  });
+
+  it('adds every round of a loop, for the step that closes it and the steps inside it', () => {
+    const loop = run({ status: 'running', worktreeState: 'present', currentStepIndex: 1, steps: [
+      step({ status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1, startedAt: at(0), finishedAt: at(40), elapsedMs: 40000, roundsCompleted: 0 }),
+      working({ sessionId: 'Demo-2', startedAt: at(40) }),
+    ] });
+    const back = applyEvent(loop, { type: 'loop_back', toStepIndex: 0, at: at(100) });
+    expect(back.steps.map(s => [s.status, s.elapsedMs, s.finishedAt])).toEqual([['pending', 40000, null], ['pending', 60000, null]]);
+    // Stopping a run whose step waits for its next round adds nothing: nothing was working in it.
+    expect(applyEvent(back, { type: 'stop', at: at(9000) }).steps[0].elapsedMs).toBe(40000);
+    const second = applyEvent(applyEvent(back, { type: 'start', at: at(100) }), { type: 'step_running', at: at(101) });
+    const done = applyEvent(second, { type: 'step_complete', at: at(130) });
+    expect(done.steps[0].elapsedMs).toBe(70000);
+  });
+
+  it('adds the time up to a limit, a failure and a stop, once', () => {
+    const limited = applyEvent(one(), { type: 'limit_reached', at: at(30) });
+    expect(limited.steps[0].elapsedMs).toBe(30000);
+    expect(applyEvent(limited, { type: 'continue', at: at(999) }).steps[0]).toMatchObject({ status: 'limit_accepted', elapsedMs: 30000 });
+    expect(applyEvent(limited, { type: 'stop', at: at(999) }).steps[0].elapsedMs).toBe(30000);
+    expect(applyEvent(limited, { type: 'error', error: 'x', at: at(999) }).steps[0]).toMatchObject({ status: 'failed', elapsedMs: 30000 });
+    expect(applyEvent(one(), { type: 'error', error: 'x', at: at(20) }).steps[0]).toMatchObject({ status: 'failed', elapsedMs: 20000 });
+    const stopped = applyEvent(one(), { type: 'stop', at: at(45) });
+    expect(stopped.steps[0]).toMatchObject({ status: 'stopped', elapsedMs: 45000 });
+    const resumed = applyEvent(stopped, { type: 'resume', newTerminal: false, at: at(500) });
+    expect(resumed.steps[0]).toMatchObject({ status: 'launching', elapsedMs: 45000, startedAt: at(500) });
+  });
+
+  it('does not count the time a step lay interrupted', () => {
+    const interrupted = one({ status: 'interrupted' }, { status: 'interrupted' });
+    expect(applyEvent(interrupted, { type: 'stop', at: at(9000) }).steps[0].elapsedMs).toBe(0);
+    const resumed = applyEvent(interrupted, { type: 'resume', newTerminal: false, at: at(9000) });
+    const done = applyEvent(applyEvent(resumed, { type: 'step_running', at: at(9001) }), { type: 'step_complete', at: at(9030) });
+    expect(done.steps[0].elapsedMs).toBe(30000);
+  });
+
+  it('fails loudly on a step without a usable count, a start or an end time', () => {
+    expect(() => applyEvent(one({ elapsedMs: undefined }), { type: 'step_complete', at: at(5) })).toThrow('step time: elapsedMs must be an integer ≥ 0');
+    expect(() => applyEvent(one({ elapsedMs: -1 }), { type: 'step_complete', at: at(5) })).toThrow('step time: elapsedMs must be an integer ≥ 0');
+    expect(() => applyEvent(one({ startedAt: null }), { type: 'step_complete', at: at(5) })).toThrow('step time: a working step must have a start time');
+    expect(() => applyEvent(one(), { type: 'step_complete' })).toThrow('step time: the event must say when it happened');
+    expect(() => applyEvent(one(), { type: 'step_complete', at: at(-5) })).toThrow('step time: the step ends before it started');
   });
 });

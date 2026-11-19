@@ -13,6 +13,7 @@ vi.mock('lucide-react', () => {
     Plus: Icon,
     Trash2: Icon,
     FolderTree: Icon,
+    History: Icon,
     Pencil: Icon,
     Settings: Icon,
     FolderSearch: Icon,
@@ -111,6 +112,22 @@ describe('Sidebar', () => {
     fireEvent.click(view.getByLabelText('Project actions for Beta'));
     fireEvent.click(view.getByText('Repositories…'));
     expect(view.getByRole('dialog', { name: 'Repositories of Beta' })).toBeTruthy();
+  });
+
+  it('opens a local project\'s changes from its menu, and offers none for a project on another host', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [], page: { currentPage: 0, size: 20, totalElements: 0, totalPages: 0, hasNextPage: false } }) })));
+    const view = renderSidebar({ activeProjects: [{ name: 'Alpha', path: '/tmp/group/alpha' }, { name: 'Remote', path: '/srv/app', host: 'devbox' }] });
+    fireEvent.click(view.getByLabelText('Project actions for Remote'));
+    expect(view.queryByText('Changes…')).toBeNull();
+    fireEvent.click(view.getByLabelText('Project actions for Alpha'));
+    fireEvent.click(view.getByText('Changes…'));
+    expect(view.getByRole('dialog', { name: 'Changes in Alpha' })).toBeTruthy();
+    expect(view.queryByText('Rename project')).toBeNull();
+    await waitFor(() => expect(view.getByText('Nothing has been merged in Alpha yet.')).toBeTruthy());
+    expect(fetch.mock.calls.map(call => call[0])).toContain('/api/tasks/changes?project=Alpha&page=0&size=20&sort=mergedAt,desc');
+    fireEvent.click(view.getByText('Done'));
+    expect(view.queryByRole('dialog', { name: 'Changes in Alpha' })).toBeNull();
+    vi.unstubAllGlobals();
   });
 
   it('offers no repositories for a project on another host', () => {

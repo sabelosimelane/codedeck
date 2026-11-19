@@ -913,7 +913,7 @@ describe('pipelines API — preflight and runs', () => {
         },
         steps: [{
           status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0,
-          detail: null, startedAt: null, finishedAt: null,
+          detail: null, startedAt: null, finishedAt: null, elapsedMs: 0,
         }],
         homePath: '/Users/me/git/codedeck',
         worktreePath: `/Users/me/git/worktrees/r-${index}`,
@@ -1131,8 +1131,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       finishedAt: new Date().toISOString(),
       worktreeState: 'present',
       steps: [
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
       ],
     });
     const refused = await request(ctx.app).post(`${base}/runs/${id}/stop`);
@@ -1143,8 +1143,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       error: 'boom',
       finishedAt: new Date().toISOString(),
       steps: [
-        { status: 'failed', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'failed', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
       ],
     });
     const refusedError = await request(ctx.app).post(`${base}/runs/${id}/stop`);
@@ -1158,8 +1158,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       worktreeState: 'present',
       currentStepIndex: 1,
       steps: [
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'limit_reached', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 2, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        { status: 'limit_reached', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 2, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
       ],
     });
     const ok = await request(ctx.app).post(`${base}/runs/${id}/continue`);
@@ -1177,8 +1177,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       worktreeState: 'present',
       baseCommit: 'a'.repeat(40),
       steps: [
-        { status: 'interrupted', sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'interrupted', sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
       ],
     });
     const resumed = await request(ctx.app).post(`${base}/runs/${id}/resume`);
@@ -1208,8 +1208,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       worktreeState: 'present',
       baseCommit: 'a'.repeat(40),
       steps: [
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
       ],
     });
     const before = await request(ctx.app).get(`${base}/runs/${id}`);
@@ -1223,8 +1223,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
 
   describe('Close run closes the terminals the run used', () => {
     const usedSteps = [
-      { status: 'complete', sessionId: 'Demo-3', priorSessionIds: ['Demo-2'], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
-      { status: 'complete', sessionId: 'Demo-4', priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+      { status: 'complete', sessionId: 'Demo-3', priorSessionIds: ['Demo-2'], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+      { status: 'complete', sessionId: 'Demo-4', priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
     ];
     // The engine as it closes a run in a task or in Main: the run lets go of the place it worked in.
     const releasing = ctx => {
@@ -1351,8 +1351,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       worktreeState: 'present',
       baseCommit: 'a'.repeat(40),
       steps: [
-        { status: 'running', sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
-        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null },
+        { status: 'running', sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
       ],
     });
 
@@ -1740,9 +1740,9 @@ describe('pipelines API — worktrees', () => {
 describe('pipelines API — what the agent needs, and answering it', () => {
   const ASKED = { questions: '1. Which schema?\nRecommended: the existing one.', truncated: false };
   const stepIn = status => ({
-    status, sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null,
+    status, sessionId: 'Demo-1', priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0,
   });
-  const pendingStep = { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null };
+  const pendingStep = { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 };
 
   async function setupWaiting(inputRequest = ASKED) {
     const ctx = await setup();

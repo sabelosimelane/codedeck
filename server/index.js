@@ -86,6 +86,7 @@ import { createTaskNaming } from './tasks/task-naming.js';
 import { createTasksRouter } from './routes/tasks.js';
 import { adoptWorktrees } from './tasks/task-adoption.js';
 import { createTaskLanding } from './tasks/task-landing.js';
+import { createTaskChanges } from './tasks/task-changes.js';
 import { createTaskTerminalCloser } from './tasks/task-terminals.js';
 import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
 import { createSessionAttention } from './session-attention.js';
@@ -936,7 +937,13 @@ const taskLanding = createTaskLanding({
     deleteSession: deleteTerminalSession,
   }),
 });
-app.use(createTasksRouter({ service: taskService, taskStore, landing: taskLanding }));
+// What has been merged, read from the tasks, their runs and the notes of those runs. Read when asked: both stores are created below.
+const taskChanges = createTaskChanges({
+  taskStore,
+  listRuns: () => pipelineRunStore.list(),
+  noteStore: { lastWritten: (runId, stepIndex) => pipelineNoteStore.lastWritten(runId, stepIndex) },
+});
+app.use(createTasksRouter({ service: taskService, taskStore, landing: taskLanding, changes: taskChanges }));
 
 const PIPELINE_QUESTION_SCREEN_LINES = 400;
 const pipelineAgentStore = createAgentStore(db);

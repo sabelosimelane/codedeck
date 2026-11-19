@@ -33,6 +33,24 @@ function finishStep(step, at) {
   step.finishedAt = at ?? step.finishedAt ?? null;
 }
 
+// A step is working from the moment it is started until it completes, asks for approval, reaches
+// its limit, loops back, fails or is stopped. Waiting for an answer is part of working.
+const WORKING_STEP = new Set(['launching', 'running', 'needs_input']);
+
+/**
+ * Adds the stretch a working step has just ended to the time it has worked in all. Called
+ * before the step's status changes, and only for a step that was working: the time a step
+ * lay interrupted, waited for approval or waited for its next round is not work.
+ */
+function addWorkedTime(step, at) {
+  if (!Number.isInteger(step.elapsedMs) || step.elapsedMs < 0) throw new Error('step time: elapsedMs must be an integer ≥ 0');
+  if (typeof step.startedAt !== 'string' || Number.isNaN(Date.parse(step.startedAt))) throw new Error('step time: a working step must have a start time');
+  if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) throw new Error('step time: the event must say when it happened');
+  const worked = Date.parse(at) - Date.parse(step.startedAt);
+  if (worked < 0) throw new Error('step time: the step ends before it started');
+  step.elapsedMs += worked;
+}
+
 function applyStart(run, event) {
   const step = currentStep(run);
   if (run.status === 'pending') {
@@ -81,10 +99,12 @@ function applyInputReceived(run, event) {
   return run;
 }
 
-function applyStepComplete(run, event) {
+function applyStepComplete(run, event, approved = false) {
   if (run.status !== 'running') illegal(run.status, event.type);
   const step = currentStep(run);
   if (step.status !== 'running') illegal(`step:${step.status}`, event.type);
+  // An approved step ended its work when it asked for approval.
+  if (!approved) addWorkedTime(step, event.at);
   step.status = 'complete';
   finishStep(step, event.at);
   const last = run.currentStepIndex >= run.steps.length - 1;
@@ -102,6 +122,7 @@ function applyApprovalRequested(run, event) {
   if (run.status !== 'running') illegal(run.status, event.type);
   const step = currentStep(run);
   if (step.status !== 'running') illegal(`step:${step.status}`, event.type);
+  addWorkedTime(step, event.at);
   step.status = 'awaiting_approval';
   finishStep(step, event.at);
   run.status = 'awaiting_approval';
@@ -114,7 +135,7 @@ function applyApprove(run, event) {
   if (step.status !== 'awaiting_approval') illegal(`step:${step.status}`, event.type);
   run.status = 'running';
   step.status = 'running';
-  return applyStepComplete(run, event);
+  return applyStepComplete(run, event, true);
 }
 
 function applySendBack(run, event) {
@@ -149,6 +170,7 @@ function applyLoopBack(run, event) {
     throw new Error('loop_back event: toStepIndex must be the index of an earlier step');
   }
   step.roundsCompleted += 1;
+  addWorkedTime(step, event.at);
   for (let index = toStepIndex; index <= run.currentStepIndex; index += 1) {
     const looped = run.steps[index];
     looped.status = 'pending';
@@ -163,6 +185,7 @@ function applyLimitReached(run, event) {
   if (run.status !== 'running') illegal(run.status, event.type);
   const step = currentStep(run);
   if (step.status !== 'running') illegal(`step:${step.status}`, event.type);
+  addWorkedTime(step, event.at);
   step.status = 'limit_reached';
   finishStep(step, event.at);
   run.status = 'limit_paused';
@@ -176,6 +199,7 @@ function applyError(run, event) {
   const message = typeof event.error === 'string' ? event.error : '';
   const step = currentStep(run);
   if (['launching', 'running', 'needs_input', 'limit_reached'].includes(step.status)) {
+    if (WORKING_STEP.has(step.status)) addWorkedTime(step, event.at);
     step.status = 'failed';
     finishStep(step, event.at);
   }
@@ -193,6 +217,7 @@ function applyStop(run, event) {
   const step = currentStep(run);
   // Spec §8.6: paused step stays limit_reached either way.
   if (step.status !== 'limit_reached' && (ACTIVE_STEP.has(step.status) || step.status === 'awaiting_approval')) {
+    if (WORKING_STEP.has(step.status)) addWorkedTime(step, event.at);
     step.status = 'stopped';
     finishStep(step, event.at);
   }

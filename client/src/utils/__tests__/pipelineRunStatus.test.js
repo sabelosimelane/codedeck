@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeRunStatus, describeStepState, describeStepProgress } from '../pipelineRunStatus';
+import { describeRunStatus, describeStepState, describeStepProgress, describeStepDuration, describeRunDuration } from '../pipelineRunStatus';
 
 describe('describeRunStatus', () => {
   it('shows a no-progress stop as waiting for the owner', () => {
@@ -83,5 +83,77 @@ describe('describeStepProgress', () => {
     expect(() => describeStepProgress({ status: 'running', iteration: 0, roundsCompleted: 0 })).toThrow(/repeat/);
     expect(() => describeStepProgress({ status: 'running', repeat: passes, iteration: -1, roundsCompleted: 0 })).toThrow(/iteration/);
     expect(() => describeStepProgress({ status: 'running', repeat: loop, iteration: 1, roundsCompleted: 'x' })).toThrow(/roundsCompleted/);
+  });
+});
+
+describe('describeStepDuration', () => {
+  const step = (overrides = {}) => ({ status: 'complete', elapsedMs: 252000, ...overrides });
+
+  it.each([
+    [400, 'under 1s'], [1000, '1s'], [59900, '59s'], [60000, '1m 0s'], [252000, '4m 12s'], [3599000, '59m 59s'], [3600000, '1h 0m'], [3900000, '1h 5m'], [90000000, '25h 0m'],
+  ])('says a finished step that worked %s milliseconds took %s', (elapsedMs, words) => {
+    expect(describeStepDuration(step({ elapsedMs }))).toBe(words);
+  });
+
+  it('says nothing for a finished step with no time: it finished before working time was kept', () => {
+    expect(describeStepDuration(step({ elapsedMs: 0 }))).toBeNull();
+  });
+
+  it('counts a step the owner continued past its limit as finished', () => {
+    expect(describeStepDuration(step({ status: 'limit_accepted' }))).toBe('4m 12s');
+  });
+
+  it.each(['pending', 'launching', 'running', 'needs_input', 'awaiting_approval', 'limit_reached', 'failed', 'stopped', 'interrupted'])('says nothing for a step that is %s', (status) => {
+    expect(describeStepDuration(step({ status }))).toBeNull();
+  });
+
+  it.each([
+    ['a step that is not an object', null, 'step duration: step must be an object'],
+    ['an unknown status', step({ status: 'weird' }), 'step duration: status weird is unknown'],
+    ['a missing time', step({ elapsedMs: undefined }), 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a time that is null', step({ elapsedMs: null }), 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a negative time', step({ elapsedMs: -1 }), 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a time that is not whole', step({ elapsedMs: 1.5 }), 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a time as text', step({ elapsedMs: '252000' }), 'step duration: elapsedMs must be an integer ≥ 0'],
+  ])('throws on %s', (_label, value, message) => {
+    expect(() => describeStepDuration(value)).toThrow(message);
+  });
+});
+
+describe('describeRunDuration', () => {
+  const at = seconds => new Date(Date.UTC(2026, 10, 19, 10, 0, 0) + seconds * 1000).toISOString();
+  const now = seconds => Date.UTC(2026, 10, 19, 10, 0, 0) + seconds * 1000;
+  const run = (overrides = {}) => ({ status: 'running', createdAt: at(0), updatedAt: at(30), finishedAt: null, ...overrides });
+
+  it('counts a run that is not over from its start to now, and says it is still counting', () => {
+    expect(describeRunDuration(run(), now(725))).toEqual({ words: '12m 5s', live: true });
+    expect(describeRunDuration(run({ status: 'needs_input' }), now(3900))).toEqual({ words: '1h 5m', live: true });
+  });
+
+  it('gives a finished run the time from its start to its end, whatever the time is now', () => {
+    for (const status of ['complete', 'stopped', 'error']) {
+      expect(describeRunDuration(run({ status, finishedAt: at(252) }), now(99999))).toEqual({ words: '4m 12s', live: false });
+    }
+  });
+
+  it('stops counting an interrupted run at its last change: nothing is working in it', () => {
+    expect(describeRunDuration(run({ status: 'interrupted', updatedAt: at(90) }), now(99999))).toEqual({ words: '1m 30s', live: false });
+  });
+
+  it('shows nothing negative when this device\'s clock is behind the backend\'s', () => {
+    expect(describeRunDuration(run(), now(-3))).toEqual({ words: 'under 1s', live: true });
+  });
+
+  it.each([
+    ['a run that is not an object', null, 0, 'run duration: run must be an object'],
+    ['a status that is not a name', run({ status: '' }), 0, 'run duration: status must be a nonempty string'],
+    ['a missing start', run({ createdAt: null }), 0, 'run duration: createdAt must be a timestamp'],
+    ['a last change that is not a time', run({ updatedAt: 'yesterday' }), 0, 'run duration: updatedAt must be a timestamp'],
+    ['a missing end field', run({ finishedAt: undefined }), 0, 'run duration: finishedAt must be a timestamp or null'],
+    ['an end before the start', run({ status: 'complete', finishedAt: at(-1) }), 0, 'run duration: the run ends before it starts'],
+    ['a last change before the start', run({ status: 'interrupted', updatedAt: at(-1) }), 0, 'run duration: the run ends before it starts'],
+    ['a time now that is not a number', run(), 'now', 'run duration: now must be a time in milliseconds'],
+  ])('throws on %s', (_label, value, time, message) => {
+    expect(() => describeRunDuration(value, time)).toThrow(message);
   });
 });

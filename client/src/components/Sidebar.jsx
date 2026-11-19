@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { FolderOpen, Plus, Trash2, FolderTree, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard, Hourglass, Play, Copy, MoreVertical, Sun, Moon, Monitor } from 'lucide-react';
+import { FolderOpen, Plus, Trash2, FolderTree, History, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard, Hourglass, Play, Copy, MoreVertical, Sun, Moon, Monitor } from 'lucide-react';
 import { getThemeMode, cycleThemeMode } from '../theme';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import ProjectRepositoriesDialog from './ProjectRepositoriesDialog.jsx';
+import ChangesDialog from './tasks/ChangesDialog.jsx';
 import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
 import SidebarSessionRows from './SidebarSessionRows';
@@ -173,6 +174,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [repositoriesProject, setRepositoriesProject] = useState(null);
+  const [changesProject, setChangesProject] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [shelfExpanded, setShelfExpanded] = useState(() => {
     return localStorage.getItem('codedeck-shelf-expanded') === 'true';
@@ -497,6 +499,11 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
     label: 'Repositories…',
     icon: <FolderTree size={13} />,
     onClick: () => { setRepositoriesProject(project); setOpenProjectMenu(null); },
+  }, {
+    // What was merged in the project: tasks are local, so their changes are too.
+    label: 'Changes…',
+    icon: <History size={13} />,
+    onClick: () => { setChangesProject(project.name); setOpenProjectMenu(null); },
   }] : []);
 
   const removeMenuItem = (project) => (
@@ -1228,6 +1235,8 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
           onChanged={onRepositoriesChanged}
         />
       )}
+
+      {changesProject && <ChangesDialog project={changesProject} onClose={() => setChangesProject(null)} />}
 
       {showSettings && (
         <SettingsPanel

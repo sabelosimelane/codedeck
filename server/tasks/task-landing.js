@@ -453,7 +453,9 @@ export function createTaskLanding({
             console.warn(`[tasks] merged branch kept task=${task.id} repository=${worktree.repository}: ${firstLine(error.stderr || error.message)}`);
           }
         }
-        const after = taskStore.setWorktreeState(task.id, worktree.id, { state: 'merged' });
+        // Where the checkout stands now: the merge commit, or the task's last commit when Git fast-forwarded.
+        const mergedCommit = (await git(execFile, checkout, ['rev-parse', 'HEAD'])).stdout.trim();
+        const after = taskStore.setWorktreeState(task.id, worktree.id, { state: 'merged', mergedCommit });
         // Runs and terminals that worked in what is now gone have nothing left to work in; they are closed with it.
         const finish = await afterFinished(after, worktree);
         return { task: after, repository: worktree.repository, mergedInto: worktree.baseBranch, filesRemoved: removed.ok, filesDetail: removed.ok ? null : removed.detail, branchDeleted, ...finish };

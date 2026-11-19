@@ -100,6 +100,13 @@ export function createNoteStore(db, { now = () => new Date().toISOString() } = {
       if (!Number.isInteger(pass) || pass < 1 || pass > 100) throw new TypeError('pass must be an integer from 1 to 100');
       return Boolean(passExists.get(runId, stepIndex, attempt, pass));
     },
+    /** The note a step last wrote, in full: passes that left it unchanged are passed over. Null when it wrote none. */
+    lastWritten(runId, stepIndex) {
+      runIdGuard(runId);
+      stepGuard(stepIndex);
+      const row = lastWritten.get(runId, stepIndex);
+      return row ? hydrate(row) : null;
+    },
     lastContent(runId, stepIndex) {
       runIdGuard(runId);
       stepGuard(stepIndex);

@@ -30,6 +30,17 @@ describe('pipeline note store', () => {
     expect(store.lastContent(RUN, 1)).toBe('# Done\nWork');
     expect(store.list(RUN, { offset: 0, limit: 1, direction: 'desc' })[0].id).toBe(first.id + 1);
   });
+  it('reads the last written note of a step in full, past passes that changed nothing', () => {
+    const { store } = setup();
+    expect(store.lastWritten(RUN, 1)).toBeNull();
+    store.add(note);
+    store.add({ ...note, pass: 2, summary: 'Again', content: '# Again\nMore' });
+    store.add({ ...note, pass: 3, status: 'unchanged', summary: null, content: null });
+    store.add({ ...note, stepIndex: 2, summary: 'Other step', content: '# Other step' });
+    expect(store.lastWritten(RUN, 1)).toMatchObject({ runId: RUN, stepIndex: 1, pass: 2, status: 'written', summary: 'Again', content: '# Again\nMore' });
+    expect(() => store.lastWritten('nope', 1)).toThrow('runId');
+    expect(() => store.lastWritten(RUN, 33)).toThrow('stepIndex');
+  });
   it('rejects bad write fields and corrupt stored rows', () => {
     const { db, store } = setup();
     expect(() => store.add({ ...note, attempt: null })).toThrow(/attempt/);

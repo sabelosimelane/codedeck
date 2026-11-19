@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'lucide-react';
 import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
-import { describeRunStatus, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
+import { describeRunDuration, describeRunStatus, describeStepDuration, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
 import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
 import ApprovalReview from './ApprovalReview.jsx';
 import QuestionsPanel from './QuestionsPanel.jsx';
@@ -167,6 +167,15 @@ export default function TaskView({
     if (followSessionId) activateRef.current(followSessionId);
   }, [run.id, currentIndex, followSessionId]);
   const status = describeRunStatus(run);
+  // The run's time is counted on this device once a second, and only while the run is not over.
+  const [now, setNow] = useState(() => Date.now());
+  const duration = describeRunDuration(run, now);
+  useEffect(() => {
+    if (!duration.live) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [duration.live, run.id]);
   const progress = progressLine(run.progress);
   const blockedCleanup = run.worktree?.state === 'removal_blocked' && run.worktree.detail ? describeBlockedCleanup(run.worktree.detail) : null;
   const heading = title === run.workflowName ? title : `${title} · ${run.workflowName}`;
@@ -183,6 +192,8 @@ export default function TaskView({
           <strong className="pipeline-run-name" title={tooltip}>{heading}</strong>
           {repository !== null && <span className="pipeline-run-muted" title="The run's current directory is this repository's worktree">{`works in ${repository}`}</span>}
           <span className="pipeline-run-status" data-status={run.status} data-tone={status.tone} aria-label={`Run status: ${status.label}`}>{status.label}</span>
+          <span className="pipeline-run-muted" title={duration.live ? 'Time since this run was started, waiting for you included' : 'Time from the start of this run to its end, waiting for you included'}
+            aria-label={`${duration.live ? 'Run time so far' : 'Run time'}: ${duration.words}`}>{duration.live ? duration.words : `took ${duration.words}`}</span>
           {run.agentsDecide && <span title="Agents in this run go with their own recommendations instead of pausing for you" className="pipeline-run-agents-decide">agents decide{run.decisionCount > 0 ? ` · ${run.decisionCount} so far` : ''}</span>}
           <div className="pipeline-run-actions">
             {run.actions?.stop && !['interrupted', 'stopped', 'error', 'complete'].includes(run.status) && <button type="button" onClick={() => onStop(run.id)}>Stop</button>}
@@ -215,15 +226,16 @@ export default function TaskView({
           {run.steps.map(step => {
             const state = describeStepState(step, { isCurrent: step.index === currentIndex }).state;
             const words = describeStepProgress(step);
+            const took = describeStepDuration(step);
             const Icon = STATE_ICON[state];
             return (
               <button key={step.index} type="button" onClick={() => selectStep(step)} className="task-step" data-step-state={state}
                 aria-current={step.index === selectedIndex ? 'step' : undefined}
-                aria-label={`${step.name}: ${words.detail ? `${words.label}, ${words.detail}` : words.label}`}>
+                aria-label={`${step.name}: ${[words.label, words.detail, took && `took ${took}`].filter(Boolean).join(', ')}`}>
                 <Icon size={13} aria-hidden="true" className="task-step-icon" />
                 <span className="task-step-text">
                   <span className="task-step-name">{step.name}{step.repeat.mode === 'loop_back' && <Repeat size={11} aria-hidden="true" />}</span>
-                  <span className="task-step-words">{words.detail ? `${words.label} · ${words.detail}` : words.label}</span>
+                  <span className="task-step-words">{[words.label, words.detail, took].filter(Boolean).join(' · ')}</span>
                 </span>
               </button>
             );

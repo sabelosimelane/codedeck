@@ -151,6 +151,7 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
         detail: progress.detail,
         startedAt: progress.startedAt,
         finishedAt: progress.finishedAt,
+        elapsedMs: progress.elapsedMs,
       };
     }),
     worktree: {
@@ -183,6 +184,7 @@ function pendingStep() {
     detail: null,
     startedAt: null,
     finishedAt: null,
+    elapsedMs: 0,
   };
 }
 

@@ -7,6 +7,19 @@ import { notePath, feedbackPath, NOTES_DIR } from './run-notes.js';
 
 const DECIDE = 'The owner is not available during this run. Do not stop for a decision you can make yourself: choose the option you would recommend, write down the decision and your reason where this project keeps such notes, and continue. Use NEEDS_INPUT only when you cannot continue at all.';
 
+const SUMMARY = "This is the run's last step, and the owner reads your note in their list of changes. Start the note with one line that says what this run changed, in plain words, then summarize what changed and why before anything else you record.";
+
+/**
+ * The step whose note is the summary of what a run changed: its last agent step, the one that
+ * commits in the built-in workflows. Null for a run that keeps no notes.
+ */
+export function summaryStepIndex(definition) {
+  if (definition === null || typeof definition !== 'object' || !Array.isArray(definition.steps)) throw new TypeError('summary step: definition.steps must be an array');
+  if (definition.notesDir === null) return null;
+  const index = definition.steps.findLastIndex(step => step?.kind === 'node');
+  return index === -1 ? null : index;
+}
+
 /**
  * Where a run may work and read: `worktrees` are the worktrees of its task (or the one checkout
  * it runs in), `current` names the repository of its working directory, and `readOnly` are the
@@ -68,6 +81,7 @@ export function buildStepGuidance(definition, stepIndex, options) {
     parts.push(`If a repository that is not part of this ${scope} must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.`);
   }
   if (step.kind === 'node' && definition.notesDir !== null) parts.push(`Run notes: read ${definition.notesDir}/README.md before you start, and before your final signal write your note to ${notePath(definition, stepIndex)}.`);
+  if (step.kind === 'node' && summaryStepIndex(definition) === stepIndex) parts.push(SUMMARY);
   if (step.kind === 'node' && options.feedbackPath !== undefined) parts.push(`The owner sent this step back: read ${options.feedbackPath} before you start.`);
   const untouched = several ? "any of the task's worktrees" : 'the worktree';
   if (step.kind === 'node' && step.readOnly === true) parts.push(definition.notesDir === null

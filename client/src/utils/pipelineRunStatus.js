@@ -75,3 +75,49 @@ export function describeStepProgress(step) {
   }
   return { label, detail: null };
 }
+
+/** A length of time in words: seconds under a minute, minutes and seconds under an hour, hours and minutes beyond. */
+function durationWords(milliseconds) {
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 1) return 'under 1s';
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+const isStamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
+
+/**
+ * How long a finished step worked, in words, or null for a step that is not finished or has no time kept. The
+ * backend adds up every start of the step: each round of a loop, and each attempt after Resume
+ * or Send back. Waiting for an answer counts; waiting for approval or lying interrupted does not.
+ */
+export function describeStepDuration(step) {
+  if (!step || typeof step !== 'object' || Array.isArray(step)) throw new Error('step duration: step must be an object');
+  if (typeof step.status !== 'string' || !Object.hasOwn(STEP_LABEL, step.status)) throw new Error(`step duration: status ${String(step.status)} is unknown`);
+  if (!Number.isSafeInteger(step.elapsedMs) || step.elapsedMs < 0) throw new Error('step duration: elapsedMs must be an integer ≥ 0');
+  // No step works for no time at all: zero means the step finished before its working time was kept.
+  return STEP_OVER.has(step.status) && step.elapsedMs > 0 ? durationWords(step.elapsedMs) : null;
+}
+
+/**
+ * How long a whole run has taken, from when it was started: to its end when it is over, to its
+ * last change when it is interrupted (nothing is working in it), and otherwise to `now`, in which
+ * case `live` says the count is still going. Time spent waiting for the owner is part of it.
+ */
+export function describeRunDuration(run, now) {
+  if (!run || typeof run !== 'object' || Array.isArray(run)) throw new Error('run duration: run must be an object');
+  if (typeof run.status !== 'string' || run.status.trim() === '') throw new Error('run duration: status must be a nonempty string');
+  if (!isStamp(run.createdAt)) throw new Error('run duration: createdAt must be a timestamp');
+  if (!isStamp(run.updatedAt)) throw new Error('run duration: updatedAt must be a timestamp');
+  if (run.finishedAt !== null && !isStamp(run.finishedAt)) throw new Error('run duration: finishedAt must be a timestamp or null');
+  if (typeof now !== 'number' || !Number.isFinite(now)) throw new Error('run duration: now must be a time in milliseconds');
+  const start = Date.parse(run.createdAt);
+  const end = run.finishedAt !== null ? run.finishedAt : run.status === 'interrupted' ? run.updatedAt : null;
+  if (end !== null) {
+    if (Date.parse(end) < start) throw new Error('run duration: the run ends before it starts');
+    return { words: durationWords(Date.parse(end) - start), live: false };
+  }
+  // The start is the backend's time and `now` this device's: a clock that is behind must not show a negative time.
+  return { words: durationWords(Math.max(0, now - start)), live: true };
+}

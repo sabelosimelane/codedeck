@@ -51,6 +51,7 @@ function step(overrides = {}) {
     detail: null,
     startedAt: null,
     finishedAt: null,
+    elapsedMs: 0,
     ...overrides,
   };
 }

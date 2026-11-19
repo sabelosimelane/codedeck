@@ -42,7 +42,7 @@ function run(runStore, overrides = {}) {
     project: 'Demo', input: 'docs/todos/replies.md', status,
     stopReason: status === 'stopped' ? 'user' : null, currentStepIndex: 0, error: null,
     definition: { workflowId: 'a2d0b1c2-3456-4789-8abc-def012345678', workflowName: 'Feature build', workflowRevision: 1, agentsDecide: false, progressFile: null, notesDir: null, steps },
-    steps: [{ status: status === 'complete' ? 'complete' : 'stopped', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null }],
+    steps: [{ status: status === 'complete' ? 'complete' : 'stopped', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 }],
     homePath: HOME, worktreePath: RUN_WT, worktreeBranch: 'workflow/feature-1111', baseCommit: BASE,
     worktreeState: 'present', worktreeDetail: null, inputRequest: null, taskId: null,
     finishedAt: ['stopped', 'complete', 'error'].includes(status) ? '2026-11-18T10:00:00.000Z' : null,

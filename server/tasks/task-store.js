@@ -89,6 +89,7 @@ function hydrateWorktree(row) {
   if (!isIso(row.updated_at)) worktreeRowError(id, 'updated_at', 'must be an ISO-8601 timestamp');
   if (row.finished_at !== null && !isIso(row.finished_at)) worktreeRowError(id, 'finished_at', 'must be an ISO-8601 timestamp or null');
   if (FINISHED_STATES.includes(row.state) !== (row.finished_at !== null)) worktreeRowError(id, 'finished_at', 'must be set exactly when the worktree is finished');
+  if (row.merged_commit !== null && (typeof row.merged_commit !== 'string' || !COMMIT_ID.test(row.merged_commit) || row.state !== 'merged')) worktreeRowError(id, 'merged_commit', 'must be a commit id on a merged worktree, or null');
   return {
     id,
     repository: row.repository,
@@ -105,6 +106,8 @@ function hydrateWorktree(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at,
+    // The commit the checkout stood at once this worktree was merged into it; null when not merged, or merged before this was kept.
+    mergedCommit: row.merged_commit,
   };
 }
 
@@ -198,7 +201,8 @@ const WORKTREE_SCHEMA = `
     pr_url TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT,
+    merged_commit TEXT
   );
   CREATE UNIQUE INDEX IF NOT EXISTS task_worktrees_open_path
     ON task_worktrees (worktree_path) WHERE state IN ('active', 'pr_open');
@@ -219,6 +223,8 @@ function prepareSchema(db, { findProject, newId }) {
     if (!columns.includes('title_source')) db.exec("ALTER TABLE tasks ADD COLUMN title_source TEXT NOT NULL DEFAULT 'owner'");
     if (!columns.includes('task_folder')) db.exec('ALTER TABLE tasks ADD COLUMN task_folder TEXT');
     db.exec(WORKTREE_SCHEMA);
+    // Worktrees merged before their commit was kept have none.
+    if (!db.prepare('PRAGMA table_info(task_worktrees)').all().some(column => column.name === 'merged_commit')) db.exec('ALTER TABLE task_worktrees ADD COLUMN merged_commit TEXT');
     // Which worktree is open is now answered by task_worktrees alone.
     db.exec('DROP INDEX IF EXISTS tasks_open_worktree');
 
@@ -273,7 +279,7 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
     WHERE id = ? AND title_source = 'input' AND state IN (${OPEN_STATES.map(() => '?').join(', ')})`);
   const taskStateStmt = db.prepare('UPDATE tasks SET state = ?, finished_at = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?');
   const touchStmt = db.prepare('UPDATE tasks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?');
-  const worktreeStateStmt = db.prepare('UPDATE task_worktrees SET state = ?, pr_url = ?, finished_at = ?, updated_at = ? WHERE id = ? AND task_id = ?');
+  const worktreeStateStmt = db.prepare('UPDATE task_worktrees SET state = ?, pr_url = ?, finished_at = ?, updated_at = ?, merged_commit = ? WHERE id = ? AND task_id = ?');
   const removeInitial = db.prepare("DELETE FROM tasks WHERE id = ? AND state = 'active' AND revision = 1");
   const removeWorktreesOf = db.prepare('DELETE FROM task_worktrees WHERE task_id = ?');
   const removeAddedWorktree = db.prepare("DELETE FROM task_worktrees WHERE id = ? AND task_id = ? AND is_first = 0 AND state = 'active'");
@@ -327,9 +333,9 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
     if (touchStmt.run(stamp, task.id, task.revision).changes !== 1) throw new Error(`tasks row ${task.id}: revision conflict`);
   });
 
-  const setWorktreeStateNow = db.transaction((task, worktree, state, prUrl, stamp) => {
+  const setWorktreeStateNow = db.transaction((task, worktree, state, prUrl, mergedCommit, stamp) => {
     const finishedAt = FINISHED_STATES.includes(state) ? stamp : null;
-    if (worktreeStateStmt.run(state, prUrl, finishedAt, stamp, worktree.id, task.id).changes !== 1) throw new Error(`task_worktrees row ${worktree.id}: not found in task ${task.id}`);
+    if (worktreeStateStmt.run(state, prUrl, finishedAt, stamp, mergedCommit, worktree.id, task.id).changes !== 1) throw new Error(`task_worktrees row ${worktree.id}: not found in task ${task.id}`);
     const taskState = deriveTaskState(task.worktrees.map(other => (other.id === worktree.id ? state : other.state)));
     if (taskStateStmt.run(taskState, FINISHED_STATES.includes(taskState) ? stamp : null, stamp, task.id, task.revision).changes !== 1) {
       throw new Error(`tasks row ${task.id}: revision conflict`);
@@ -428,16 +434,17 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
      * How one repository of a task stands. The task's own state follows from its worktrees: open
      * while any of them is, then merged if any was merged, otherwise closed.
      */
-    setWorktreeState(id, worktreeId, { state, prUrl } = {}) {
+    setWorktreeState(id, worktreeId, { state, prUrl, mergedCommit } = {}) {
       if (!TASK_STATES.includes(state)) inputError('state', `must be one of ${TASK_STATES.join(', ')}`);
       if (prUrl !== undefined && prUrl !== null && !isPrUrl(prUrl)) inputError('prUrl', 'must be an http(s) URL');
       if (state === 'pr_open' && !isPrUrl(prUrl)) inputError('prUrl', 'is required when a pull request is open');
+      if (mergedCommit !== undefined && (state !== 'merged' || typeof mergedCommit !== 'string' || !COMMIT_ID.test(mergedCommit))) inputError('mergedCommit', 'must be a commit id, given only with a merge');
       if (!isUuid(worktreeId)) inputError('worktreeId', 'must be a UUID');
       const task = requireTask(id);
       const worktree = task.worktrees.find(candidate => candidate.id === worktreeId);
       if (!worktree) throw new Error(`task_worktrees row ${worktreeId}: not found in task ${id}`);
       if (FINISHED_STATES.includes(worktree.state)) throw new Error(`task_worktrees row ${worktreeId}: already finished`);
-      setWorktreeStateNow(task, worktree, state, prUrl ?? worktree.prUrl, now());
+      setWorktreeStateNow(task, worktree, state, prUrl ?? worktree.prUrl, mergedCommit ?? null, now());
       return get(id);
     },
   };

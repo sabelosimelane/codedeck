@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 
 vi.mock('../../ToastContext', () => ({ useToast: () => ({ showToast: vi.fn() }) }));
@@ -7,11 +7,11 @@ import TaskView from '../TaskView.jsx';
 
 const step = (index, name, overrides = {}) => ({
   index, kind: 'node', name, readOnly: false, approval: false, agentName: 'codex', notePath: null, note: null,
-  repeat: { mode: 'once' }, status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, ...overrides,
+  repeat: { mode: 'once' }, status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, startedAt: null, finishedAt: null, elapsedMs: 0, ...overrides,
 });
 const run = (overrides = {}) => ({
   id: 'run-1', workflowName: 'Feature build', status: 'running', stopReason: null, error: null, agentsDecide: false, decisionCount: 0,
-  notesDir: '.codedeck/runs/abcd1234', progress: null, currentStepIndex: 1, inputRequest: null, approvalRequest: null,
+  notesDir: '.codedeck/runs/abcd1234', progress: null, createdAt: '2026-11-19T10:00:00.000Z', updatedAt: '2026-11-19T10:00:30.000Z', finishedAt: null, currentStepIndex: 1, inputRequest: null, approvalRequest: null,
   worktree: { path: '/tmp/wt', branch: 'task/x', state: 'external', detail: null },
   actions: { stop: true, resume: false, continue: false, cleanup: false, answer: false, approve: false, sendBack: false },
   steps: [
@@ -63,6 +63,41 @@ describe('TaskView', () => {
     expect(within(rail).getByRole('button', { name: 'Test: Stopped at its limit; you continued, 12 rounds' })).toBeTruthy();
     expect(within(rail).getByRole('button', { name: 'Plan: Done' })).toBeTruthy();
     expect(screen.getByTestId('task-view').textContent).not.toMatch(/limit_|needs_input|awaiting_/);
+  });
+
+  it('says how long each finished step worked in all in the step rail, every round of a loop included', () => {
+    const steps = [
+      step(0, 'Plan', { status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1, elapsedMs: 252000 }),
+      step(1, 'Develop', { status: 'complete', sessionId: 'Demo-2', attempt: 3, iteration: 1, elapsedMs: 3900000 }),
+      step(2, 'Test', { status: 'complete', sessionId: 'Demo-2', attempt: 3, iteration: 1, roundsCompleted: 2, repeat: { mode: 'loop_back', toStepIndex: 1, max: 12 }, elapsedMs: 45000 }),
+      step(3, 'Commit', { status: 'running', sessionId: 'Demo-3', attempt: 1, iteration: 1, elapsedMs: 9000 }),
+      step(4, 'Report'),
+    ];
+    view({ run: run({ currentStepIndex: 3, steps }) });
+    const rail = within(screen.getByRole('navigation', { name: 'Steps' }));
+    expect(rail.getByRole('button', { name: 'Plan: Done, took 4m 12s' }).textContent).toContain('Done · 4m 12s');
+    expect(rail.getByRole('button', { name: 'Develop: Done, took 1h 5m' }).textContent).toContain('Done · 1h 5m');
+    expect(rail.getByRole('button', { name: 'Test: Done, 3 rounds, took 45s' }).textContent).toContain('Done · 3 rounds · 45s');
+    expect(rail.getByRole('button', { name: 'Commit: Running' }).textContent).not.toMatch(/\d+s/);
+    expect(rail.getByRole('button', { name: 'Report: Not started' })).toBeTruthy();
+  });
+
+  it('counts the whole run in the header while it is going, and says what it took once it is over', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-11-19T10:12:05.000Z'));
+      const first = view();
+      expect(screen.getByLabelText('Run time so far: 12m 5s').textContent).toBe('12m 5s');
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(screen.getByLabelText('Run time so far: 12m 8s')).toBeTruthy();
+      first.unmount();
+      view({ run: run({ status: 'complete', finishedAt: '2026-11-19T11:05:00.000Z', actions: { cleanup: true } }) });
+      expect(screen.getByLabelText('Run time: 1h 5m').textContent).toBe('took 1h 5m');
+      act(() => { vi.advanceTimersByTime(5000); });
+      expect(screen.getByLabelText('Run time: 1h 5m')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows the current step first, and a picked step until the run moves on', () => {

@@ -8,6 +8,7 @@ const BASE = '/api/tasks';
 const SORT_FIELDS = ['createdAt', 'updatedAt', 'title'];
 const WORKTREE_SORT_FIELDS = ['repository'];
 const OPEN_STATES = ['active', 'pr_open'];
+const CHANGE_SORT_FIELDS = ['mergedAt'];
 
 const fieldError = (field, message) => new TaskError('One or more fields failed validation.', 400, [{ field, message }]);
 
@@ -16,6 +17,25 @@ const FILTERS = [
   { name: 'state', parse: raw => { if (!TASK_STATES.includes(raw)) throw fieldError('state', `Use one of ${TASK_STATES.join(', ')}`); return raw; } },
   { name: 'open', parse: raw => { if (raw !== 'true' && raw !== 'false') throw fieldError('open', 'Use true or false'); return raw === 'true'; } },
 ];
+
+const CHANGE_FILTERS = [FILTERS[0]];
+
+/** A merged task as the list of changes shows it; spelled out for the same reason as a task. */
+function changeView(change) {
+  return {
+    id: change.id,
+    project: change.project,
+    title: change.title,
+    mergedAt: change.mergedAt,
+    workflow: change.workflow,
+    // The first line and the whole of the note the run's last step wrote; null when there is none.
+    summary: change.summary,
+    detail: change.detail,
+    repositories: change.repositories.map(entry => ({
+      repository: entry.repository, branch: entry.branch, baseBranch: entry.baseBranch, commit: entry.commit, mergedAt: entry.mergedAt,
+    })),
+  };
+}
 
 function requireBody(body, allowed) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) throw fieldError('body', `Use an object with ${allowed.join(' and ')}`);
@@ -92,7 +112,7 @@ function worktreeLandingView(view) {
   };
 }
 
-export function createTasksRouter({ service, taskStore, landing } = {}) {
+export function createTasksRouter({ service, taskStore, landing, changes } = {}) {
   for (const method of ['create', 'get', 'rename', 'openTerminal', 'addRepository']) {
     if (typeof service?.[method] !== 'function') throw new TypeError(`tasks router requires service.${method}`);
   }
@@ -100,6 +120,7 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
   for (const method of ['status', 'commit', 'merge', 'pullRequest', 'close', 'worktrees', 'closeWorktree']) {
     if (typeof landing?.[method] !== 'function') throw new TypeError(`tasks router requires landing.${method}`);
   }
+  if (typeof changes?.list !== 'function') throw new TypeError('tasks router requires changes.list');
   const noBody = req => {
     if (req.body !== undefined && Object.keys(requireBody(req.body, [])).length) throw fieldError('body', 'This request takes no body');
   };
@@ -136,6 +157,14 @@ export function createTasksRouter({ service, taskStore, landing } = {}) {
     const body = requireBody(req.body, ['project', 'title', 'repositories']);
     if (Object.prototype.hasOwnProperty.call(body, 'repositories') && !Array.isArray(body.repositories)) throw fieldError('repositories', 'Use a list of repository names');
     res.status(201).json(taskView(await service.create({ project: body.project, title: body.title, repositories: body.repositories })));
+  }));
+
+  // What has been merged, newest first. Registered before `/:id`: a task id is a UUID, never this word.
+  router.get(`${BASE}/changes`, route((req, res) => {
+    const query = parseCollectionQuery(req.query, { sortFields: CHANGE_SORT_FIELDS, defaultSort: 'mergedAt,desc', filters: CHANGE_FILTERS }, fieldError);
+    const { project } = query.filters;
+    const page = paginate(changes.list().filter(change => project === undefined || change.project === project), query);
+    res.json({ data: page.data.map(changeView), page: page.page });
   }));
 
   router.get(`${BASE}/:id`, route((req, res) => {

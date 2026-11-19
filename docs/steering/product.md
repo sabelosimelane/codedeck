@@ -17,6 +17,7 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Tasks — a titled piece of work with its own Git worktree and branch, created from a title alone; listed by title under its project beside Main, in the sidebar and the tab switcher. Terminals, splits and workflow runs open in the task being looked at
 - Several repositories in one project — a project lists the repositories that belong with its own; Main reaches all of them, a task has one worktree per repository it includes, kept in one folder, and each repository is landed on its own
 - Landing — each task shows live from Git its uncommitted files and commits not yet in its base branch, and offers Commit changes, Merge (aborted and reported on conflict), Open a pull request (`gh`/`glab`), Close task and Rename; nothing is forced
+- Changes — per project, the tasks that were merged, newest first, each with the summary the last step of its run wrote and the commit each repository stood at after the merge
 - File tree browsing — view project files, click to open in system editor (VS Code, etc.)
 - Per-project file browsing — scoped file tree panel decoupled from active project
 - Directory browser — filesystem navigator for adding projects
