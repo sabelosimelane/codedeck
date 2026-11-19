@@ -422,9 +422,10 @@ describe('task landing — work that ordinary status does not show', () => {
 
   it('Close lets disposable ignored folders and byte-identical copies of Main go with the folder', async () => {
     const { wt, repo, landing } = await setup();
-    write(wt, '.gitignore', 'node_modules/\ndist/\nbuild/\n.codedeck/\nsame.local\n');
+    write(wt, '.gitignore', 'node_modules/\ndist/\nbuild/\ntarget/\n.codedeck/\nsame.local\n');
     commitAll(wt, 'ignore');
-    for (const dir of ['node_modules', 'dist', 'build', '.codedeck']) { mkdirSync(path.join(wt, dir)); write(path.join(wt, dir), 'x.txt', 'x\n'); }
+    // `target` is where Maven and Cargo put what they build.
+    for (const dir of ['node_modules', 'dist', 'build', 'target', '.codedeck']) { mkdirSync(path.join(wt, dir)); write(path.join(wt, dir), 'x.txt', 'x\n'); }
     write(wt, 'same.local', 'identical\n');
     write(repo, 'same.local', 'identical\n');
 

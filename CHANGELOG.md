@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-11-19] - Build output in `target` goes with a closed task
+
+### Executive Summary
+* Closing a task was refused when its folder held a `target` folder, the build output of Maven and Cargo projects, because the folder is ignored by Git and exists nowhere else. It is rebuilt by the next build, so it now goes with the task, as `node_modules`, `dist`, `build` and `.codedeck` already did.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `server/tasks/task-landing.js` — `target` added to the ignored folders that may go with a task's folder, at the top level and inside an ignored folder.
+  * `README.md` — The Tasks section now says which ignored files keep a task's folder and which go with it.
+* **🧪 Tests:**
+  * `server/__tests__/task-landing.test.js` — The disposable-folders case includes `target`; it failed with "exist nowhere else: target/" before the change. All 49 landing tests pass.
+
 ## [2026-11-19] - Closing a task no longer trips over a copied settings folder
 
 ### Executive Summary

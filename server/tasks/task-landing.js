@@ -37,7 +37,7 @@ const BLOCKERS = {
 };
 
 // Ignored files the owner agreed may go with a task's folder; any other ignored file is kept.
-const DISPOSABLE = new Set(['node_modules', 'dist', 'build', '.codedeck']);
+const DISPOSABLE = new Set(['node_modules', 'dist', 'build', 'target', '.codedeck']);
 
 function run(execFile, file, args, { cwd, timeout = GIT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
