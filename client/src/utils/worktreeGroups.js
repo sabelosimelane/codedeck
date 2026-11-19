@@ -63,6 +63,27 @@ export function repositoryLabelForPath(group, path) {
   return group.worktrees.find(worktree => worktree.worktreePath === path)?.repository ?? null;
 }
 
+/**
+ * Where a new terminal can open in a group: any repository of the project in Main, any
+ * worktree of a task that is still open in a task. A worktree without a task offers none.
+ */
+export function groupPlaces(group) {
+  if (!group || typeof group !== 'object' || Array.isArray(group)) throw new Error('worktree groups: group must be an object');
+  if (group.isMain) return (group.repositories ?? []).map(repository => ({ id: repository.name, label: repository.name, path: repository.path, own: repository.own }));
+  if (!Array.isArray(group.worktrees)) return [];
+  return group.worktrees.filter(worktree => worktree.state === 'active' || worktree.state === 'pr_open')
+    .map(worktree => ({ id: worktree.id, label: worktree.repository, path: worktree.worktreePath, own: false }));
+}
+
+/**
+ * The place a new terminal opens in when the active one is at `path`: the same place, else the
+ * project's own repository in Main, or the first open worktree of a task. Null when the group offers none.
+ */
+export function placeForPath(group, path) {
+  const places = groupPlaces(group);
+  return places.find(place => place.path === path) ?? places.find(place => place.own) ?? places[0] ?? null;
+}
+
 export function describeWorktreeGroup(group) {
   if (!group || typeof group !== 'object' || Array.isArray(group)) throw new Error('worktree groups: group must be an object');
   absolute(group.path, 'group.path');

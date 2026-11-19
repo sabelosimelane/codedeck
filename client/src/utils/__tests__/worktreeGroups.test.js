@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildWorktreeGroups, describeWorktreeGroup, parseSessionWorktree, repositoryLabelForPath, resolveSessionWorktrees, selectStoredWorktrees, selectTabAfterClose } from '../worktreeGroups';
+import { buildWorktreeGroups, describeWorktreeGroup, groupPlaces, parseSessionWorktree, placeForPath, repositoryLabelForPath, resolveSessionWorktrees, selectStoredWorktrees, selectTabAfterClose } from '../worktreeGroups';
 
 const project = { name: 'Demo', path: '/repo/demo', repositories: [] };
 const session = (sessionId, worktreePath, startedAt) => ({ sessionId, worktreePath, startedAt });
@@ -210,6 +210,33 @@ describe('a project and a task with several repositories', () => {
     expect(taskGroup.worktrees.map(entry => [entry.repository, entry.state])).toEqual([['mobile-app', 'merged'], ['backend', 'active']]);
     // The group keeps its key: the task is still the same task.
     expect(taskGroup.key).toBe(KEY);
+  });
+
+  it('offers the places a new terminal can open in: the project\'s repositories in Main, a task\'s open worktrees in a task', () => {
+    const half = { ...task, worktrees: [worktree('mobile-app', true), worktree('backend', false), worktree('frontend', false, 'closed')] };
+    const [main, taskGroup] = buildWorktreeGroups({ project: group, sessions: [], runs: [], tasks: [half] });
+    expect(groupPlaces(main)).toEqual([
+      { id: 'backend', label: 'backend', path: '/group/backend', own: true },
+      { id: 'mobile-app', label: 'mobile-app', path: '/group/mobile-app', own: false },
+      { id: 'frontend', label: 'frontend', path: '/group/worktrees/frontend-main', own: false },
+    ]);
+    expect(groupPlaces(taskGroup)).toEqual([
+      { id: 'wt-mobile-app', label: 'mobile-app', path: `${FOLDER}/mobile-app`, own: false },
+      { id: 'wt-backend', label: 'backend', path: `${FOLDER}/backend`, own: false },
+    ]);
+    // A worktree without a task offers nothing: a terminal cannot be opened there from here.
+    expect(groupPlaces({ key: '/x', path: '/x', isMain: false, worktrees: null })).toEqual([]);
+    expect(() => groupPlaces(null)).toThrow(/group/);
+  });
+
+  it('opens a new terminal where the active one is, else in the project\'s own repository or the worktree a task started in', () => {
+    const [main, taskGroup] = buildWorktreeGroups({ project: group, sessions: [], runs: [], tasks: [task] });
+    expect(placeForPath(main, '/group/mobile-app')).toMatchObject({ id: 'mobile-app' });
+    expect(placeForPath(main, null)).toMatchObject({ id: 'backend', own: true });
+    expect(placeForPath(main, '/somewhere/else')).toMatchObject({ id: 'backend' });
+    expect(placeForPath(taskGroup, `${FOLDER}/backend`)).toMatchObject({ id: 'wt-backend' });
+    expect(placeForPath(taskGroup, null)).toMatchObject({ id: 'wt-mobile-app' });
+    expect(placeForPath({ key: '/x', path: '/x', isMain: false, worktrees: null }, '/x')).toBeNull();
   });
 
   it('rejects a project without a list of repositories and a malformed entry or task worktree', () => {

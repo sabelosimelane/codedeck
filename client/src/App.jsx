@@ -120,7 +120,8 @@ function AppContent() {
       startedAt: session.startedAt ?? null,
     })),
     runs: openRunCounts.runsByProject?.get(activeProject.name) ?? [],
-  }) : new Map(), [activeProject, sessionStatus, openRunCounts]);
+    tasks: openTasks,
+  }) : new Map(), [activeProject, sessionStatus, openRunCounts, openTasks]);
   const selectWorktree = (projectName, key) => {
     setWorktreeSelection(current => ({ ...current, [projectName]: key }));
     try { localStorage.setItem(`codedeck-worktree-${projectName}`, key); }

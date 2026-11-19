@@ -4,7 +4,9 @@ import React from 'react';
 import TerminalArea from '../TerminalArea.jsx';
 
 const mocks = vi.hoisted(() => ({ showToast: vi.fn(), create: vi.fn(), open: vi.fn() }));
-const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'new', state: 'active', worktreePath: '/tmp/worktrees/demo-new', branch: 'task/new-7a000000', createdAt: '2026-11-18T10:00:00.000Z' };
+const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'new', state: 'active', worktreePath: '/tmp/worktrees/demo-new', branch: 'task/new-7a000000', createdAt: '2026-11-18T10:00:00.000Z',
+  // A task as the backend sends it: with the folder of its worktrees and one entry per repository.
+  folder: null, worktrees: [{ id: '7b000000-0000-4000-8000-000000000001', repository: 'demo', own: true, first: true, worktreePath: '/tmp/worktrees/demo-new', branch: 'task/new-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null }] };
 vi.mock('../Terminal', () => ({ default: () => null }));
 vi.mock('../PaneDivider', () => ({ default: () => null }));
 vi.mock('../tasks/TaskLandingBar.jsx', () => ({ default: ({ task }) => <span data-testid="landing-bar">{task.title}</span> }));
