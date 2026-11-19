@@ -85,6 +85,14 @@ function validRun(overrides = {}) {
 }
 
 describe('pipeline run store', () => {
+  it('includes workspace trust for Cursor presets captured in earlier run snapshots', () => {
+    const { store, db } = setup();
+    const run = store.create(validRun());
+    db.prepare("UPDATE pipeline_runs SET definition = json_set(definition, '$.steps[0].agent.launchCommand', ?) WHERE id = ?")
+      .run('command agent --model auto --force', run.id);
+    expect(store.get(run.id).definition.steps[0].agent.launchCommand).toBe('command agent --model auto --force --trust');
+  });
+
   it.each([false, null, 'yes', true])('rejects misplaced or malformed clean Commit marker %j on hydration', marker => {
     const { store, db } = setup();
     const run = store.create(validRun());

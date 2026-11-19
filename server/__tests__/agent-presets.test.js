@@ -40,7 +40,7 @@ describe('buildLaunchCommand', () => {
     ['muse', {}, 'command muse'],
     ['muse', { model: 'muse-spark-1.3-contributor', effort: 'high', skipPermissions: true }, 'command muse --model muse-spark-1.3-contributor --effort high --yolo'],
     ['cursor', {}, 'command agent'],
-    ['cursor', { model: 'gpt-5.6-sol-high', skipPermissions: true }, 'command agent --model gpt-5.6-sol-high --force'],
+    ['cursor', { model: 'gpt-5.6-sol-high', skipPermissions: true }, 'command agent --model gpt-5.6-sol-high --force --trust'],
   ])('%s %j builds %s', (provider, fields, command) => {
     expect(build(provider, fields)).toEqual({ command, errors: [] });
   });

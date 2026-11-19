@@ -34,7 +34,7 @@ export const AGENT_PRESETS = Object.freeze([
     // Cursor model names carry the effort (for example gpt-5.6-sol-high), so there is no effort argument.
     efforts: Object.freeze([]),
     effortArgs: null,
-    skipPermissionsFlag: '--force',
+    skipPermissionsFlag: '--force --trust',
     modelExample: 'gpt-5.6-sol-high',
   }),
   Object.freeze({
@@ -138,4 +138,13 @@ export function launchCommandAtEffort(command, effort) {
     return { command: null, errors: [{ field: 'effort', message: 'Effort overrides require a preset launch command' }] };
   }
   return buildLaunchCommand({ ...selection, effort });
+}
+
+// Older CodeDeck Cursor presets opted out of prompts with --force alone. Match only
+// commands the preset builder could have produced, preserving custom shell commands.
+export function upgradeCursorPresetCommand(command) {
+  requireType('command', command, 'string');
+  if (!command.endsWith(' --force')) return command;
+  const withTrust = command + ' --trust';
+  return parseLaunchCommand(withTrust)?.provider === 'cursor' ? withTrust : command;
 }

@@ -1,5 +1,6 @@
 import { createRunAudit } from './run-audit.js';
 import { checkedAssignment, createTeamAttribution } from './team-attribution.js';
+import { upgradeCursorPresetCommand } from '../../shared/agent-presets.mjs';
 import { randomUUID } from 'node:crypto';
 import { isUuid, isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
 import { validateAttachmentManifest } from './attachments.js';
@@ -145,7 +146,7 @@ function validateDefinitionAgent(id, prefix, agent, { role, kind }, isFallback =
   return {
     id: agent.id,
     name: agent.name.trim(),
-    launchCommand: agent.launchCommand,
+    launchCommand: upgradeCursorPresetCommand(agent.launchCommand),
     resetCommand: agent.resetCommand,
     ...(assignment && { assignment }),
     ...(fallbackAgent && { fallbackAgent }),

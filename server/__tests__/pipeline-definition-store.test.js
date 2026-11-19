@@ -102,6 +102,19 @@ describe('pipeline agent store', () => {
       .run('command codex --model gpt-6-sol -c model_reasoning_effort="high"', created.id);
     expect(() => agents.get(created.id)).toThrow(new RegExp(`pipeline_agents row ${created.id} field launch_command`));
   });
+  it.each([
+    ['command agent --force', 'command agent --force --trust'],
+    ['command agent --model auto --force', 'command agent --model auto --force --trust'],
+    ['command agent --model auto', 'command agent --model auto'],
+    ['command agent --mode ask --force', 'command agent --mode ask --force'],
+    ['command agent --model auto --force --trust', 'command agent --model auto --force --trust'],
+  ])('reads stored Cursor command %s as %s', (stored, expected) => {
+    const { agents, db } = setup();
+    const { id } = agents.create(validAgent);
+    db.prepare('UPDATE pipeline_agents SET launch_command = ? WHERE id = ?').run(stored, id);
+    expect(agents.get(id).launchCommand).toBe(expected);
+  });
+
   it('creates an agent with a UUID, revision 1 and timestamps', () => {
     const { agents } = setup();
     const created = agents.create(validAgent);

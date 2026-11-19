@@ -1,3 +1,4 @@
+import { upgradeCursorPresetCommand } from '../../shared/agent-presets.mjs';
 import { randomUUID } from 'node:crypto';
 import { validateAgentBody, isUuid } from '../../shared/pipeline-definitions.mjs';
 import { parseLaunchCommand } from '../../shared/agent-presets.mjs';
@@ -56,7 +57,7 @@ function hydrate(row) {
   return {
     id,
     name: requireName(id, row.name),
-    launchCommand: requireCommand(id, 'launch_command', row.launch_command, 2048),
+    launchCommand: upgradeCursorPresetCommand(requireCommand(id, 'launch_command', row.launch_command, 2048)),
     resetCommand: requireCommand(id, 'reset_command', row.reset_command, 256),
     revision: requireRevision(id, row.revision),
     createdAt: requireIso(id, 'created_at', row.created_at),
