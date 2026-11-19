@@ -17,6 +17,8 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
 const DEFAULT_DIALOG_POLL_MS = 2000;
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
+// Execution reasons that say the agent, or a sub-agent it started, is in the middle of a turn.
+const AGENT_AT_WORK = new Set(['agent_working', 'agent_delegated']);
 
 // A step that loops back does one pass per round; its `max` counts rounds, not passes.
 function maxIterationsFor(repeat) {
@@ -292,7 +294,9 @@ export function createRunEngine({
    * `returningStep` names the step when it returns to a terminal it already used (a later
    * round of a loop, or a Resume): nothing was launched. If its agent has exited to the shell
    * there, `launchAgent` starts it again in that terminal, once; `launched` reports that, since
-   * a newly started agent has no context to clear.
+   * a newly started agent has no context to clear. The readiness limit counts only the time such
+   * a terminal's agent is neither at its prompt nor working: work it was already doing is
+   * finished first, however long it takes.
    */
   async function waitUntilReady(runId, sessionId, agentName, returningStep = null, launchAgent = null) {
     let waitedMs = 0;
@@ -348,6 +352,10 @@ export function createRunEngine({
       if (current?.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received' });
       }
+
+      // The limit is on a launch. An agent that is still working where the step returns is
+      // waited for (Stop does not interrupt it); Stop, or the terminal closing, ends that wait.
+      if (returningStep !== null && !launched && AGENT_AT_WORK.has(lastState?.executionReason)) continue;
 
       waitedMs += readinessPollMs;
       if (waitedMs >= readinessTimeoutMs) {

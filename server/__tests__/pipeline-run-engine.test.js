@@ -1427,6 +1427,63 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(ctx.runStore.get(created.id).steps[0].sessionId).toBe('Demo-9');
   });
 
+  // Spec §9: Stop does not interrupt the agent, and Resume waits for one that is still working.
+  // The 120 s of §8.4 limit a launch; they are not a limit on work the agent was already doing.
+  it.each(['agent_working', 'agent_delegated'])('Resume keeps waiting past the launch limit while the agent is still at work (%s)', async (executionReason) => {
+    const busy = () => executionState({ executionReason, foregroundCommand: 'codex', profile: { promptVisible: () => false } });
+    const ctx = setupEngine({ readinessQueue: Array.from({ length: 150 }, busy) });
+    const created = interruptedRun(ctx);
+
+    await ctx.engine.resume(created.id);
+    await vi.advanceTimersByTimeAsync(140_000);
+
+    expect(ctx.runStore.get(created.id)).toMatchObject({ status: 'running', error: null });
+    expect(ctx.runStore.get(created.id).steps[0].status).toBe('launching');
+    expect(ctx.getWorkflowStartArgs()).toBeNull();
+
+    // The agent reaches its prompt after 150 s: it is cleared and the prompt is sent again.
+    await vi.advanceTimersByTimeAsync(11_000);
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    expect(ctx.getWorkflowStartArgs()).toMatchObject({ resetFirst: true });
+    expect(ctx.runStore.get(created.id)).toMatchObject({ status: 'complete', error: null });
+    expect(ctx.writes).not.toContain('codex');
+  });
+
+  it('Resume still fails after the limit when the agent in the terminal is neither working nor at its prompt', async () => {
+    const stuck = () => executionState({ executionReason: 'agent_marker_stale', foregroundCommand: 'codex', profile: { promptVisible: () => false } });
+    const ctx = setupEngine({ readinessQueue: Array.from({ length: 130 }, stuck) });
+    const created = interruptedRun(ctx);
+
+    await ctx.engine.resume(created.id);
+    await vi.advanceTimersByTimeAsync(121_000);
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    const finished = ctx.runStore.get(created.id);
+    expect(finished.status).toBe('error');
+    expect(finished.error).toBe('Agent codex did not become ready within 120 seconds (last reason: agent_marker_stale, foreground: codex).');
+  });
+
+  it('Resume counts only the time the agent is not at work towards the limit', async () => {
+    const state = executionReason => executionState({ executionReason, foregroundCommand: 'codex', profile: { promptVisible: () => false } });
+    const ctx = setupEngine({
+      readinessQueue: [
+        ...Array.from({ length: 200 }, () => state('agent_working')),
+        ...Array.from({ length: 130 }, () => state('agent_marker_stale')),
+      ],
+    });
+    const created = interruptedRun(ctx);
+
+    await ctx.engine.resume(created.id);
+    await vi.advanceTimersByTimeAsync(319_000);
+    expect(ctx.runStore.get(created.id).status).toBe('running');
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(ctx.runStore.get(created.id).status).toBe('error');
+    expect(ctx.runStore.get(created.id).error).toMatch(/last reason: agent_marker_stale/);
+  });
+
   it('Resume fails the run when the availability of the terminal cannot be answered', async () => {
     const ctx = setupEngine({
       terminalAvailable: vi.fn(() => 'yes'),

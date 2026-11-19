@@ -554,6 +554,13 @@ After 120 s of accumulated `waiting` the run becomes `error`, naming the agent, 
 reason and the foreground command. There is no quiet-timer or other fallback: an agent CLI without a
 screen profile, or a dialog the profile does not recognise, always ends in this error.
 
+The limit is on a launch. When a step returns to a terminal where its agent already runs (§8.13,
+§8.8 Resume and send back) and that agent is still in a turn (execution reason `agent_working` or
+`agent_delegated`), the clock does not run: the engine waits until the agent is at its prompt,
+however long that takes, and only Stop or the terminal closing ends the wait. Any other `waiting`
+reason there still counts towards the 120 s, and so does everything after the agent had to be
+launched again in that terminal.
+
 `promptVisible(lines)` is a new export on each profile in `server/agent-profiles/` because a profile
 matched by its foreground command reports idle before its prompt is drawn.
 
