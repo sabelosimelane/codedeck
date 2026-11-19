@@ -2,7 +2,7 @@
 
 **Spec**: `docs/specifications/multi-repository-tasks.md`
 **Status**: In Progress
-**Last completed**: Phase 2: A Project's Repositories (Phase 1 has one task left for the owner's go-ahead)
+**Last completed**: Phase 4: Landing per Repository (Phase 1 has one task left for the owner's go-ahead)
 **Created**: 2026-11-19
 
 > Working rules for every phase: strict TDD (red test first), Vitest with `--maxWorkers=1`, per-field
@@ -56,18 +56,18 @@
 > **Outputs:** planning and creation per repository with undo; the task folder layout; terminals per worktree; grouping by task; Close task over every worktree
 > **Closed when:** from the New task dialog the owner creates a task in two repositories, sees one task with terminals in each, and Close task removes both worktrees or neither
 
-- [ ] `server/pipelines/run-worktree.js`: `planTaskFolder({ taskId, title, ownHomePath, repositories })` returns the task folder and one path and branch per repository; `planNames` is unchanged for a project without other repositories (Spec §3.3)
-- [ ] `server/tasks/task-service.js`: `plan` takes `repositories` (first is where the task starts; absent means the own repository) and runs the Git check for each; it changes nothing (Spec §3.2)
-- [ ] `server/tasks/task-service.js`: `createPlanned` creates the worktrees one after another; when one fails, the ones made for this task are removed without force and their branches deleted with `git branch -d`; the error names the repository; when the undo is refused the task is kept with what exists (Spec §3.2)
-- [ ] `server/routes/tasks.js`: `POST /api/tasks` accepts `repositories`; `POST /api/tasks/:id/terminals` accepts `{ worktreeId }`; both stay valid without the new fields (Spec §7)
-- [ ] `server/tasks/task-landing.js`: Close task checks every open worktree first, closes all or none, reports a removal refused midway, and removes the empty task folder with a plain `rmdir` (Spec §3.5, §3.3)
-- [ ] `server/tasks/task-terminals.js`: closes terminals by any of the task's worktree paths
-- [ ] `client/src/utils/tasksApi.js`: `parseTask` reads `worktrees` and `folder` with a guard per field; `createTask` and `openTaskTerminal` take the new fields
-- [ ] `client/src/components/tasks/NewTaskDialog.jsx`: the project's repositories as checkboxes when it has others; unchanged otherwise
-- [ ] `client/src/utils/worktreeGroups.js`: a path that is any worktree of a task belongs to that task's group; the group key is the task id; groups carry their worktrees (Spec §3.6)
-- [ ] `client/src/components/TerminalArea.jsx`, `TerminalTabBar.jsx`: new terminal, split and Cmd/Ctrl+Shift+T open in the active pane's repository; "+" offers the task's open repositories; the repository's name on tabs and pane headers of a task with several worktrees
-- [ ] `client/src/components/WorktreeGroupHeader.jsx`: tooltip lists each repository's folder, branch and path
-- [ ] Main reaches every repository (Spec §3.6, §10 answer 5). Read first how a Main terminal gets its directory today (`server/ws-handler.js`, `client/src/components/Terminal.jsx`, `client/src/utils/terminalPaneCwd.js`). Then: the backend accepts a Main terminal only in the checkout of one of the project's repositories; "+" in Main offers them; such a terminal belongs to the Main group in `worktreeGroups.js` and shows the repository's name on its tab
+- [x] `server/pipelines/run-worktree.js`: `planTaskFolder({ taskId, title, ownHomePath, repositories })` returns the task folder and one path and branch per repository; `planNames` is unchanged for a project without other repositories (Spec §3.3)
+- [x] `server/tasks/task-service.js`: `plan` takes `repositories` (first is where the task starts; absent means the own repository) and runs the Git check for each; it changes nothing (Spec §3.2)
+- [x] `server/tasks/task-service.js`: `createPlanned` creates the worktrees one after another; when one fails, the ones made for this task are removed without force and their branches deleted with `git branch -d`; the error names the repository; when the undo is refused the task is kept with what exists (Spec §3.2)
+- [x] `server/routes/tasks.js`: `POST /api/tasks` accepts `repositories`; `POST /api/tasks/:id/terminals` accepts `{ worktreeId }`; both stay valid without the new fields (Spec §7)
+- [x] `server/tasks/task-landing.js`: Close task checks every open worktree first, closes all or none, reports a removal refused midway, and removes the empty task folder with a plain `rmdir` (Spec §3.5, §3.3)
+- [x] `server/tasks/task-terminals.js`: closes terminals by any of the task's worktree paths
+- [x] `client/src/utils/tasksApi.js`: `parseTask` reads `worktrees` and `folder` with a guard per field; `createTask` and `openTaskTerminal` take the new fields
+- [x] `client/src/components/tasks/NewTaskDialog.jsx`: the project's repositories as checkboxes when it has others; unchanged otherwise
+- [x] `client/src/utils/worktreeGroups.js`: a path that is any worktree of a task belongs to that task's group; the group key is the task id; groups carry their worktrees (Spec §3.6)
+- [x] `client/src/components/TerminalArea.jsx`, `TerminalTabBar.jsx`: new terminal, split and Cmd/Ctrl+Shift+T open in the active pane's repository; "+" offers the task's open repositories; the repository's name on tabs and pane headers of a task with several worktrees
+- [x] `client/src/components/WorktreeGroupHeader.jsx`: tooltip lists each repository's folder, branch and path
+- [x] Main reaches every repository (Spec §3.6, §10 answer 5). Done for terminals through `POST /api/projects/:name/terminals`; a run in Main starting in another repository is in Phase 5. Read first how a Main terminal gets its directory today (`server/ws-handler.js`, `client/src/components/Terminal.jsx`, `client/src/utils/terminalPaneCwd.js`). Then: the backend accepts a Main terminal only in the checkout of one of the project's repositories; "+" in Main offers them; such a terminal belongs to the Main group in `worktreeGroups.js` and shows the repository's name on its tab
 
 ## Phase 4: Landing per Repository
 > Status, commit, merge and close for one repository of a task, and a task that finishes with its last repository.
@@ -75,12 +75,12 @@
 > **Outputs:** landing functions that take a task worktree; the worktree endpoints; one bar row per repository
 > **Closed when:** in a task with two repositories one can be committed and merged while the other is dirty, the task stays open until the second is merged or closed, and a task with one worktree lands exactly as before
 
-- [ ] `server/tasks/task-landing.js`: `inspect(taskId, worktreeId)` reads the worktree's path, branch and base, and its repository's checkout and remotes; messages name the repository when the task has several; red tests for each blocker per repository (Spec §3.5)
-- [ ] `server/tasks/task-landing.js`: `commit`, `merge`, `close` per worktree; a working run blocks every worktree of its task; finishing one worktree closes its terminals and releases a finished run that worked in it; the task finishes with its last worktree (`merged` if any was merged, else `closed`)
-- [ ] `server/index.js`: `onTaskFinished` and a per-worktree release of runs; `closeTerminals` per worktree
-- [ ] `server/routes/tasks.js`: `GET /api/tasks/:id/worktrees` (paged, with landing status) and `POST /api/tasks/:id/worktrees/:worktreeId/commit`, `/merge`, `/close`; the task-level endpoints keep acting on the first worktree; six test dimensions each (Spec §7)
-- [ ] `client/src/utils/tasksApi.js`: the worktree landing calls with validated responses
-- [ ] `client/src/components/tasks/TaskLandingBar.jsx`: one row per repository with its facts and buttons; refusals and conflicts shown on the row they belong to; a task with one worktree in a project without other repositories renders as today (existing tests unchanged)
+- [x] `server/tasks/task-landing.js`: `inspect(taskId, worktreeId)` reads the worktree's path, branch and base, and its repository's checkout and remotes; messages name the repository when the task has several; red tests for each blocker per repository (Spec §3.5)
+- [x] `server/tasks/task-landing.js`: `commit`, `merge`, `close` per worktree; a working run blocks every worktree of its task; finishing one worktree closes its terminals and releases a finished run that worked in it; the task finishes with its last worktree (`merged` if any was merged, else `closed`)
+- [x] `server/index.js`: `onTaskFinished` and a per-worktree release of runs; `closeTerminals` per worktree
+- [x] `server/routes/tasks.js`: `GET /api/tasks/:id/worktrees` (paged, with landing status) and `POST /api/tasks/:id/worktrees/:worktreeId/commit`, `/merge`, `/close`; the task-level endpoints keep acting on the first worktree; six test dimensions each (Spec §7)
+- [x] `client/src/utils/tasksApi.js`: the worktree landing calls with validated responses
+- [x] `client/src/components/tasks/TaskLandingBar.jsx`: one row per repository with its facts and buttons; refusals and conflicts shown on the row they belong to; a task with one worktree in a project without other repositories renders as today (existing tests unchanged)
 
 ## Phase 5: Runs Across Repositories
 > A run starts in one of the task's repositories and is told about the others.
@@ -108,8 +108,8 @@
 
 - [ ] `server/tasks/task-service.js`: `addRepository(taskId, repository)`; refused while a run of the task is `pending` or `running`, for a finished task, for a repository already in the task, and for one that was merged or closed in it (Spec §3.2)
 - [ ] `server/routes/tasks.js`: `POST /api/tasks/:id/worktrees` with the six test dimensions; a repeated request does not make a second worktree
-- [ ] `server/tasks/task-landing.js`: `pullRequest` per worktree with that repository's remotes; the worktree's own `pr_url`; the task shows `pr_open` while any open worktree has one
-- [ ] `server/routes/tasks.js`: `POST /api/tasks/:id/worktrees/:worktreeId/pull-request`
+- [x] `server/tasks/task-landing.js`: `pullRequest` per worktree with that repository's remotes; the worktree's own `pr_url`; the task shows `pr_open` while any open worktree has one
+- [x] `server/routes/tasks.js`: `POST /api/tasks/:id/worktrees/:worktreeId/pull-request`
 - [ ] `client/src/components/tasks/TaskLandingBar.jsx`: Add repository (lists the project's repositories not in the task, says that no Setup runs for it); Open a pull request and its link on each row
 
 ## Phase 7: Phone, Documentation and Final Verification
@@ -162,3 +162,36 @@
 **Evidence**: `cd server && npx vitest run --maxWorkers=1` → Tests 9 failed | 2873 passed (2882): the 8 live-tmux failures of Phase 1, and `mobile-session-start.test.js` "restores a shelved project", whose expected stored project lacked the new `repositories: []`; that test was corrected and its file passes, the full server suite was not run again after that one-line change. `cd client && npx vitest run --maxWorkers=1` → Test Files 82 passed, Tests 1468 passed. `cd client && npx vite build` → built. Commit `9019024`.
 **Quirks**: three sidebar test files mock `lucide-react` with a fixed icon list, so a new icon import in `Sidebar.jsx` breaks them; the menu entry reuses `FolderTree`. The global JSON parser in `server/index.js` skips these paths so the router's own 4 KB limit applies.
 **Next**: Phase 3. Read `server/ws-handler.js`, `client/src/components/Terminal.jsx`, `TerminalArea.jsx`, `TerminalTabBar.jsx` and `client/src/utils/terminalPaneCwd.js` first.
+
+### Session — 2026-11-19 (Phases 3 and 4)
+**Completed**: Phases 3 and 4, commits `e20af13`, `80880fb`, `7dbe3bb`, `c81b640`, `8843527`. The server halves of the two phases were built together, because Close task over several worktrees needs each worktree inspected on its own.
+**Server**: `planTaskFolder`; `task-service.js` plans and creates one worktree per repository with undo; `task-landing.js` acts on one worktree (`status`, `worktrees`, `commit`, `merge`, `pullRequest`, `closeWorktree`, `close`); `task-terminals.js` closes one worktree's terminals or the task's; `routes/tasks.js` adds `GET /:id/worktrees` and `POST /:id/worktrees/:worktreeId/commit|merge|pull-request|close`; `POST /api/projects/:name/terminals`.
+**Client**: `parseTask` with `folder` and `worktrees`; `parseTaskSummary` for the phone; grouping by task and by project repositories; the repository chooser and tab label in `TerminalArea.jsx`; `NewTaskDialog.jsx` with checkboxes; `TaskRepositoriesLanding.jsx`.
+**Evidence**: `cd client && npx vitest run --maxWorkers=1` → Test Files 85 passed, Tests 1559 passed; `npx vite build` → built. Server: the task and project files pass (`task-*.test.js`, `tasks-api.test.js`, `project-repositories*.test.js`, `pipelines-api.test.js`); the full server suite result is recorded in the next session note.
+**Key decisions**: a merged branch is deleted from the checkout it was merged into (Git deletes a branch only when it is merged into the branch checked out where it is asked; with a checkout that is a worktree, asking in the home repository kept the branch); a worktree-creation failure of a task with one worktree is reported as before, with several it is a 409 that names the repository.
+**Quirks**:
+- In component tests, `mockRejectedValue` on a hoisted mock that `beforeEach` resets failed the test with the rejection itself; `mockRejectedValueOnce` does not. Seen in `NewTaskDialog.test.jsx`.
+- A fixture with three repositories and a worktree takes a few seconds; `task-service-repositories.test.js` and `task-landing-repositories.test.js` set a 30 s timeout.
+- `findProject` given to the task service must return a stored project with `repositories` (as `loadProjects` does); test projects need `repositories: []`.
+
+### Deviations
+- **[Phase 3 / group key] — a task's group keeps a path as its key**
+  - **Planned**: the group key becomes the task id (Spec §3.6).
+  - **Found**: `TerminalArea.jsx` uses the key as a path in many places and stores it in `localStorage`.
+  - **Did**: the key of a task's group is the path of the worktree it started in, which a task always reports; every other worktree path of the task resolves to it (`groupKeyForPath` in `worktreeGroups.js`). Stored selections stay valid.
+  - **Follow-up**: none.
+- **[Phase 3 / Main terminals] — an endpoint instead of a check on the terminal socket**
+  - **Planned**: the backend accepts a Main terminal only in a checkout of one of the project's repositories.
+  - **Found**: the terminal socket accepts any absolute directory today (`server/ws-handler.js:914-921`) and other features rely on it.
+  - **Did**: a terminal in another repository is opened by `POST /api/projects/:name/terminals`, which accepts only the project's repositories; the socket is unchanged.
+  - **Follow-up**: none.
+- **[Phase 3 / pane header] — the repository name is on the tab only**
+  - **Planned**: tab and pane header both name the repository.
+  - **Found**: the pane header already shows the terminal's directory.
+  - **Did**: the label is on the tab.
+  - **Follow-up**: add it to the pane header if the owner misses it.
+- **[Phase 4 / phone] — the phone reads tasks with `parseTaskSummary`**
+  - **Planned**: `parseTask` reads `worktrees` everywhere.
+  - **Found**: a phone build is installed separately and also talks to an instance older than itself.
+  - **Did**: the phone keeps reading the fields every backend release sends; the desktop requires `folder` and `worktrees`.
+  - **Follow-up**: Phase 7 shows a task's repositories on the phone when the instance sends them.
