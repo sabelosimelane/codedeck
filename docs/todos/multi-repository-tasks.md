@@ -1,7 +1,7 @@
 # Multi-repository Tasks
 
 **Spec**: `docs/specifications/multi-repository-tasks.md`
-**Status**: Built and up to date with `main` (`dbcdd5c` merged in as `ba8867b`). Not merged into `main`, not pushed, not checked live: each waits for the owner's go-ahead
+**Status**: Built, merged into `main` (`793fee5`) and running on the live instance. Not pushed
 **Last completed**: Phase 7: Phone, Documentation and Final Verification (the live check and the migration check on a copy of the live database wait for the owner's go-ahead)
 **Created**: 2026-11-19
 
@@ -261,3 +261,13 @@
 - On the merge `ba8867b`: server `npx vitest run --maxWorkers=1` → 3076 passed, 5 failed, all in `pipeline-run-live.test.js` (live tmux; the same file failed 8 tests with `server/` at `603362f`, before any of this; the 5 were not rerun on `main`'s tip). Client → 86 files, 1581 passed; `npx vite build` built.
 - With the whole-path input: `pipeline-definitions.test.js` and `pipelines-api.test.js` → 434 passed; client → 86 files, 1581 passed; `npx vite build` built. Full server suite → 3096 passed, 5 failed, the same 5 live-tmux tests as on the merge.
 **Not done**: the live check, the merge into `main` and a push, all waiting for the owner. The changelog has no entry for multi-repository tasks themselves yet; it belongs with shipping.
+
+### Session — 2026-11-19 (merged into `main`; first look at the live instance)
+**Completed**: the merge into `main`, with the owner's go-ahead ("Yes, merge it"), as `793fee5`.
+**Before**: the main checkout was clean and on `main` at `dbcdd5c`; the live instance had no open run and no open task; the live database was copied to `~/.codedeck.db.before-multi-repository-2026-11-19` (integrity `ok`, 12 tasks, old index present).
+**Evidence after the reload**:
+- The backend log shows one `Restarting 'index.js'`, then `[companion] phone access is on through …; push notifications are configured` and `CodeDeck server running on http://localhost:43001`; `./server.sh status` reports backend and frontend listening.
+- The live database has `task_worktrees` with 12 rows (6 `closed`, 6 `merged`) and no `tasks_open_worktree` index; `GET /api/tasks?size=50` returns 12 tasks, each with one worktree that is first, own, and carries the task's path and state.
+- `GET /api/projects/mlondolozi/repositories` → 200 with `backend` (own); `GET …/repository-candidates` → 200 with `frontend` and `mobile-app`. The Repositories dialog opened in the running app and showed the same; nothing was added.
+**Not checked live**: adding a repository, a task across repositories, landing per repository, a run with `startIn`, and the phone. They are covered by the suites only. Nothing was pushed.
+**Worth knowing**: the dialog offers a repository's home folder. Where the home is on a feature branch and `main` lives in a `<repo>-main` worktree (mlondolozi's `frontend` is on `feat/whatsapp-setup`, `main` is in `worktrees/frontend-main`), add that worktree with **Add another folder…** instead, because tasks start from and merge into the folder listed.
