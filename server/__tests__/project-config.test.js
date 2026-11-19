@@ -10,7 +10,13 @@ describe('project config normalization', () => {
       shelvedAt: null,
       waiting: false,
       waitingAt: null,
+      repositories: [],
     });
+  });
+
+  it('keeps the other repositories a project lists', () => {
+    const repositories = [{ name: 'mobile-app', path: '/tmp/group/mobile-app' }];
+    expect(normalizeProject({ name: 'Alpha', path: '/tmp/group/backend', repositories }).repositories).toEqual(repositories);
   });
 
   it('preserves existing waiting metadata', () => {
@@ -26,6 +32,7 @@ describe('project config normalization', () => {
       shelvedAt: null,
       waiting: true,
       waitingAt: '2026-05-11T10:00:00.000Z',
+      repositories: [],
     }]);
   });
 });

@@ -460,6 +460,7 @@ function AppContent() {
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
       <Sidebar
         activeProjects={activeProjects}
+        onRepositoriesChanged={fetchProjects}
         openRunCounts={openRunCounts}
         worktreeGroupsByProject={worktreeGroupsByProject}
         selectedWorktreeByProject={selectedWorktreeByProject}

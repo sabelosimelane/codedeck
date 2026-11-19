@@ -2,7 +2,7 @@
 
 **Spec**: `docs/specifications/multi-repository-tasks.md`
 **Status**: In Progress
-**Last completed**: none
+**Last completed**: Phase 1: Task Worktrees in the Database (one task left for the owner's go-ahead)
 **Created**: 2026-11-19
 
 > Working rules for every phase: strict TDD (red test first), Vitest with `--maxWorkers=1`, per-field
@@ -32,7 +32,7 @@
 - [x] `server/tasks/task-store.js`: `findOpenByWorktreePath` reads `task_worktrees`; the "worktree already belongs to an open task" refusal comes from the new index
 - [x] Switch the readers with no change in behaviour: `server/tasks/task-service.js`, `server/tasks/task-landing.js` (state changes go through `setWorktreeState`), `server/tasks/task-terminals.js`, `server/tasks/task-adoption.js`, `server/routes/tasks.js` (`taskView` adds `worktrees` and `folder`), `server/routes/pipelines.js` (`POST /runs` in a task)
 - [x] `server/__tests__/tasks-api.test.js`: a fixture of what the released phone and desktop send and read (`GET /api/tasks?open=true&page=0&size=100`) replays unchanged; `parseTask` in `client/src/utils/tasksApi.js` accepts the new response
-- [ ] Run the full server suite and the client suite; record the counts in the session notes
+- [x] Run the full server suite and the client suite; record the counts in the session notes
 - [ ] With the owner's go-ahead only: run the migration against a copy of `~/.codedeck.db` and record the row counts before and after
 
 ## Phase 2: A Project's Repositories
@@ -41,14 +41,14 @@
 > **Outputs:** `repositories` on a project; four endpoints; a dialog that lists, adds and removes them and offers the neighbours
 > **Closed when:** the owner can open a project's Repositories dialog, add the repositories beside it with one click, and see each one's branch and state; a project without the field behaves as before
 
-- [ ] `server/project-repositories.js` (new, pure where possible): validate an entry (absolute path, exists, top level of a working tree, a repository different from the own and from the others, derived unique `name`, at most 8, local project only); red tests first for each rule (Spec §3.1)
-- [ ] `server/project-repositories.js`: `listCandidates` scans the direct children of the own repository's parent folder for Git repositories, skips `worktrees` and the ones already listed, and never recurses
-- [ ] `server/project-config.js`: `normalizeProject` supplies `repositories: []`; a guard for every field of a stored entry when the list is read
-- [ ] `server/routes/project-repositories.js` (new): `GET /api/projects/:name/repositories` and `GET …/repository-candidates` (paged, sort `name`, stable tiebreaker), `POST …/repositories`, `DELETE …/repositories/:repository`; RFC 9457 errors with `traceId`; all six test dimensions (Spec §7)
-- [ ] `server/index.js`: mount the router; `docs/steering/api-standards.md`: a section for these endpoints
-- [ ] `client/src/utils/projectRepositoriesApi.js` (new): validated client, one guard per field read
-- [ ] `client/src/components/ProjectRepositoriesDialog.jsx` (new): the project's repositories with branch and state, Remove, "Add the repositories beside it" from the candidates, Add by folder with `DirectoryBrowser`; toasts for success and failure
-- [ ] `client/src/components/Sidebar.jsx`: an entry on the project row that opens the dialog; `client/src/App.jsx` carries the list; nothing is linked automatically (Spec §10, answer 2)
+- [x] `server/project-repositories.js` (new, pure where possible): validate an entry (absolute path, exists, top level of a working tree, a repository different from the own and from the others, derived unique `name`, at most 8, local project only); red tests first for each rule (Spec §3.1)
+- [x] `server/project-repositories.js`: `listCandidates` scans the direct children of the own repository's parent folder for Git repositories, skips `worktrees` and the ones already listed, and never recurses
+- [x] `server/project-config.js`: `normalizeProject` supplies `repositories: []`; a guard for every field of a stored entry when the list is read
+- [x] `server/routes/project-repositories.js` (new): `GET /api/projects/:name/repositories` and `GET …/repository-candidates` (paged, sort `name`, stable tiebreaker), `POST …/repositories`, `DELETE …/repositories/:repository`; RFC 9457 errors with `traceId`; all six test dimensions (Spec §7)
+- [x] `server/index.js`: mount the router; `docs/steering/api-standards.md`: a section for these endpoints
+- [x] `client/src/utils/projectRepositoriesApi.js` (new): validated client, one guard per field read
+- [x] `client/src/components/ProjectRepositoriesDialog.jsx` (new): the project's repositories with branch and state, Remove, "Add the repositories beside it" from the candidates, Add by folder with `DirectoryBrowser`; toasts for success and failure
+- [x] `client/src/components/Sidebar.jsx`: an entry on the project row that opens the dialog; `client/src/App.jsx` carries the list; nothing is linked automatically (Spec §10, answer 2)
 
 ## Phase 3: A Task Across Repositories
 > A task is created with worktrees in several repositories, in one folder, and its terminals open in any of them.
@@ -137,3 +137,27 @@
 - At `26380fc` the worktree is created before the task row (`server/tasks/task-service.js:86-87`). An audit fix that writes the row first (item R01) may land on `main` from another branch; rebase and follow its order in Phase 1.
 - `planNames` uses only the id and the title for a folder's suffix (`server/pipelines/run-worktree.js:46-59`).
 **Next**: Phase 1.
+
+### Session — 2026-11-19 (Phase 1)
+**Completed**: Phase 1, commit `95fa6d8`. `task_worktrees` and `tasks.task_folder`; the migration runs in the same transaction as the schema change and stops, leaving the database untouched, when it has tasks to carry over and no way to look up their projects; `create`, `addWorktree`, `setWorktreeState`; readers switched; the tasks API adds `folder` and `worktrees`.
+**Evidence**: Node v22.22.0. `cd server && npx vitest run --maxWorkers=1` → Tests 8 failed | 2789 passed (2797), Test Files 1 failed | 91 passed. All 8 failures are in `__tests__/pipeline-run-live.test.js` (live tmux, timeouts waiting for a run to leave `launching`); the same 8 fail with `server/` checked out at `603362f`, before this phase (`Tests 8 failed | 6 passed (14)`), and that file does not use the task store. `cd client && npx vitest run --maxWorkers=1` → Test Files 80 passed, Tests 1415 passed.
+**Not done**: the migration has not been run against a copy of `~/.codedeck.db`; it needs the owner's go-ahead.
+**Key decisions**: a worktree of the project's own repository is the one with no stored checkout (`repository_path` NULL), so no separate flag column; a stored task state that is not what its worktrees give fails loudly on read; the store takes `findProject` only to name the repository of carried-over tasks.
+
+### Deviations
+- **[Phase 1 / `is_own` column] — not created**
+  - **Planned**: an `is_own` column beside `repository_path`.
+  - **Found**: the two always say the same thing.
+  - **Did**: `own` is `repository_path IS NULL`; spec §6 updated.
+  - **Follow-up**: none.
+- **[Phase 1 / `setState`] — replaced, not kept beside the new method**
+  - **Planned**: state changes go through `setWorktreeState`.
+  - **Found**: tests in five files called `taskStore.setState` to finish a task.
+  - **Did**: removed `setState`; tests use `__tests__/helpers/task-state.js`, which sets the first worktree's state.
+  - **Follow-up**: none.
+
+### Session — 2026-11-19 (Phase 2)
+**Completed**: Phase 2. `server/project-repositories.js` (rules, Git check, neighbour scan), `server/routes/project-repositories.js` (four endpoints), `client/src/utils/projectRepositoriesApi.js`, `client/src/components/ProjectRepositoriesDialog.jsx`, the "Repositories…" entry in the project menu of local active and waiting projects, `docs/steering/api-standards.md`.
+**Key decisions**: a stored entry's path is the real path of the checkout; an added repository is refused when its repository (not only its folder) is already listed, so `frontend/` and `worktrees/frontend-main` cannot both be listed; additions run one at a time, so the same request twice stores one entry; a neighbour is a direct child folder with a `.git` directory (no Git process per folder, since `~/git` has hundreds); "Add all" is offered only when every neighbour fits in the limit of 8.
+**Quirks**: three sidebar test files mock `lucide-react` with a fixed icon list, so a new icon import in `Sidebar.jsx` breaks them; the menu entry reuses `FolderTree`. The global JSON parser in `server/index.js` skips these paths so the router's own 4 KB limit applies.
+**Next**: Phase 3. Read `server/ws-handler.js`, `client/src/components/Terminal.jsx`, `TerminalArea.jsx`, `TerminalTabBar.jsx` and `client/src/utils/terminalPaneCwd.js` first.

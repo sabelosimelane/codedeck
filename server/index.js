@@ -62,6 +62,8 @@ import { resolveEditorCommand } from './editor-command.js';
 import { normalizeProjects } from './project-config.js';
 import { createHostsRouter } from './routes/hosts.js';
 import { createProjectsRouter } from './routes/projects.js';
+import { createProjectRepositoriesRouter, REPOSITORIES_PATH } from './routes/project-repositories.js';
+import { createProjectRepositories } from './project-repositories.js';
 import { createProjectDeletionService } from './project-deletion-service.js';
 import { collectSystemResources } from './system-resources.js';
 import { stripNodeWatchEnvironment } from './shell-env.js';
@@ -116,7 +118,7 @@ const privateAccess = createPrivateAccess({
 });
 app.use(privateAccess.middleware);
 // Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
-app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/terminal-worktrees') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') ? next() : express.json()(req, res, next));
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/terminal-worktrees') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') || REPOSITORIES_PATH.test(req.path) ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -217,6 +219,8 @@ app.use(createProjectsRouter({
   getReachability: hostReachability.getReachability,
   deleteProject: name => deleteProject(name),
 }));
+// A project's other repositories: a list in CodeDeck's configuration, nothing changed on disk.
+app.use(createProjectRepositoriesRouter({ service: createProjectRepositories({ loadProjects, saveProjects, execFile }) }));
 
 // -------------------------------------------------------------------
 // REST API: Config (generic key-value)

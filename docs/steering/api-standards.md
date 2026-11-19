@@ -127,8 +127,13 @@ problem documents with `message`, field `errors` on 400, `traceId` and a matchin
 `conflicts` (file paths). Unknown body and query fields are 400.
 
 A task is `{id, project, title, state, worktreePath, branch, baseBranch, baseCommit, prUrl,
-revision, createdAt, updatedAt, finishedAt}`. `state` is `active`, `pr_open`, `merged` or
-`closed`; `baseBranch` is null for a task started from a detached checkout.
+revision, createdAt, updatedAt, finishedAt, folder, worktrees}`. `state` is `active`, `pr_open`,
+`merged` or `closed`; `baseBranch` is null for a task started from a detached checkout.
+`worktrees` has one entry per repository of the task, the one it started in first:
+`{id, repository, own, first, worktreePath, branch, baseBranch, baseCommit, state, prUrl}`.
+The task's own `worktreePath`, `branch`, `baseBranch`, `baseCommit` and `prUrl` are those of that
+first entry and stay for clients that read only them. `folder` is the folder that holds the
+task's worktrees, or null when each is named on its own.
 
 | Method and path | Contract |
 | --- | --- |
@@ -150,6 +155,26 @@ owner-initiated action, not a path other requests depend on.
 Coverage: `server/__tests__/task-store.test.js`, `task-service.test.js`, `task-landing.test.js`
 (real throwaway repositories), `task-adoption.test.js`, `tasks-api.test.js`, and
 `client/src/utils/__tests__/tasksApi.test.js`.
+
+## Project repositories
+
+A project's own repository is its `path`; the others are a list in CodeDeck's configuration,
+returned on each project of `GET /api/projects` as `repositories: [{name, path}]`. Paths are
+under `/api/projects/:name`; the router owns a 4 KB JSON parser. Errors are RFC 9457 problem
+documents with `message`, field `errors` on 400, `traceId` and a matching `X-Trace-Id`; a
+refused request is logged once with its route and field names. Unknown body and query fields
+are 400. All four answer 404 for an unknown project and 409 for a project on another host.
+
+| Method and path | Contract |
+| --- | --- |
+| GET `/repositories` | Paginated. The own repository (`own: true`) and the others, each `{name, path, own, branch, head, dirty, usable, reason}` read from Git now; `usable` is false with `reason {code, message}` (and null `branch`, `head`, `dirty`) when the folder is not the top level of a Git working tree. Sort `name` with `asc\|desc` (default `name,asc`, path tiebreaker); `size` 1–100, default 20 |
+| GET `/repository-candidates` | Paginated `{name, path}`: Git repositories that are direct children of the own repository's parent folder and not listed yet; the folder `worktrees` and hidden folders are skipped. Same sort and sizes. 409 when the project's own folder is not a repository |
+| POST `/repositories` | `{path}`: an absolute path, at most 1024 characters, of a folder that is the top level of a Git working tree (it may be a worktree that holds the repository's main branch). The entry is named after the repository's own folder. Returns 201 with the entry. 409 for a repository already listed, a name already used, or more than 8 others. The same request twice stores one entry and answers 409 to the second |
+| DELETE `/repositories/:repository` | Removes the entry by name and returns 204; the folder is not touched. 404 when the project does not list it |
+
+Coverage: `server/__tests__/project-repositories.test.js` and `project-repositories-api.test.js`
+(real throwaway repositories), `client/src/utils/__tests__/projectRepositoriesApi.test.js`,
+`client/src/components/__tests__/ProjectRepositoriesDialog.test.jsx`.
 
 ## Workflow pipelines
 
