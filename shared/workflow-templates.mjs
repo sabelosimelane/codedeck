@@ -9,8 +9,15 @@ const node = (name, role, prompt, repeat = once(), readOnly = false, approval = 
 const CLARIFY_PROMPT = 'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown.';
 const clarify = () => node('Clarify', 'Investigator', CLARIFY_PROMPT, once(), true, false, true);
 
+// Clarify's counterpart for a feature: settles what is being asked for before anything is specified.
+const REQUIREMENTS_PROMPT = 'Read {input} and restate what is being asked for in your own words. Change nothing. Check that you know who it is for and what they need to do with it, what it must do in each case including errors and empty states, what is out of scope, what existing behaviour must stay the same, and how it will be shown to work. First look for each of these yourself in the code, the documents and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the requirements as you now understand them, what you found yourself, what the owner told you, and what is still open.';
+const requirements = () => node('Requirements', 'Analyst', REQUIREMENTS_PROMPT, once(), true, false, true);
+
 /** Steps that ship with CodeDeck and can be inserted into any workflow, beside the owner's saved steps. */
-export const BUILT_IN_STEPS = Object.freeze([Object.freeze({ id: 'clarify', ...clarify() })]);
+export const BUILT_IN_STEPS = Object.freeze([
+  Object.freeze({ id: 'clarify', ...clarify() }),
+  Object.freeze({ id: 'requirements', ...requirements() }),
+]);
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
   Object.freeze({
@@ -33,6 +40,19 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Review', 'Reviewer', 'Review the uncommitted feature changes against plan.md and the task. Fix every defect and record findings and fixes.'),
       node('Test', 'Tester', 'Test the phase just built. Untick any task that does not hold. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and tests pass.', loop(12)),
       node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree.'),
+    ]),
+  }),
+  Object.freeze({
+    id: 'feature-from-requirements', name: 'Feature from requirements', kind: 'build', description: 'Settle the requirements, agree a specification, plan phases, build each one, review, test and commit.', agentsDecide: false, progressFile: null,
+    nodes: Object.freeze([
+      requirements(),
+      // Not read-only: the specification is a file in the repository, committed with the feature.
+      node('Specify', 'Planner', 'Read the Requirements note. Write the specification for {input} as a Markdown file beside the specifications this project already keeps, following their conventions; if it keeps none, put the file in its docs folder. Cover the behaviour in each case, the rules and their edge cases, changes to data and interfaces, what must stay the same, what is out of scope, and acceptance checks that can be tested. Change no code. In your run note give the path of the file, summarise the specification, and list every decision you made that the requirements did not settle.', once(), false, true),
+      node('Plan', 'Planner', 'Read the specification named in the Specify note and the code it touches. Change no code. Write plan.md in the run notes folder named by its README. Use ## Phase N: <title> sections with - [ ] tasks small enough to build and test in one round, and make the phases together cover every acceptance check. Summarise the plan in your run note.', once(), true, true),
+      node('Develop', 'Developer', 'Build the first phase in plan.md with unticked tasks, following the specification named in the Specify note. Write failing tests first, make them pass, tick each task when done, and record what changed.'),
+      node('Review', 'Reviewer', 'Review the uncommitted feature changes against plan.md and the specification named in the Specify note. Fix every defect and record findings and fixes.'),
+      node('Test', 'Tester', 'Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and tests pass.', loop(12)),
+      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include the specification and untracked files. Do not push. Finish only when git status shows a clean tree.'),
     ]),
   }),
   Object.freeze({
