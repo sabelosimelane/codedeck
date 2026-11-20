@@ -5,6 +5,8 @@ import {
 } from '../../utils/tasksApi.js';
 import { Button, ConfirmDialog, PromptDialog } from '../ui/index.jsx';
 import AddRepositoryDialog from './AddRepositoryDialog.jsx';
+import LandingMenu from './LandingMenu.jsx';
+import { landingStatus, nextLandingStep, waitingReasons } from './landingSteps.js';
 import { closeArguments, closeRefusals, namedIgnored } from './ignoredFiles.js';
 import './task-view.css';
 
@@ -151,21 +153,41 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
   const unmergedTotal = open.reduce((sum, entry) => sum + (entry.commitsAhead ?? 0), 0);
   const taskRefusal = refusal && refusal.worktreeId === null ? refusal : null;
 
+  const taskMenu = [
+    { key: 'rename', label: 'Rename task', onSelect: () => setAsking({ kind: 'rename', worktreeId: null }) },
+    ...(canAddRepository ? [{ key: 'add', label: 'Add repository', onSelect: () => setAsking({ kind: 'addRepository', worktreeId: null }) }] : []),
+    ...(landings ? [{ key: 'closeTask', label: 'Close task', tone: 'danger', disabledReason: open.length === 0 ? 'Every repository is already merged or closed.' : first(blocksClosing ? closeRefusals(blocksClosing) : []),
+      onSelect: () => setAsking({ kind: 'closeTask', worktreeId: null }) }] : []),
+  ];
+
+  /** Everything but the row's next step, for its menu. */
+  const rowMenu = (entry, step) => {
+    const tools = toolsOf(entry);
+    const ask = kind => () => setAsking({ kind, worktreeId: entry.worktreeId });
+    return [
+      ...(entry.uncommittedCount > 0 && step !== 'commit' ? [{ key: 'commit', label: 'Commit changes', name: `Commit changes in ${entry.repository}`, disabledReason: first(entry.blockers.commit), onSelect: ask('commit') }] : []),
+      ...(entry.baseBranch !== null && entry.commitsAhead > 0 && step !== 'merge' ? [{ key: 'merge', label: `Merge into ${entry.baseBranch}`, name: `Merge ${entry.repository} into ${entry.baseBranch}`, disabledReason: first(entry.blockers.merge), onSelect: ask('merge') }] : []),
+      ...(tools.length > 0 && entry.baseBranch !== null && entry.commitsAhead > 0 && entry.prUrl === null ? [{ key: 'pullRequest', label: 'Open a pull request', name: `Open a pull request for ${entry.repository}`, disabledReason: first(entry.blockers.pullRequest), onSelect: ask('pullRequest') }] : []),
+      ...(step !== 'close' ? [{ key: 'close', label: `Close ${entry.repository}`, tone: 'danger', disabledReason: first(closeRefusals(entry)), onSelect: ask('close') }] : []),
+    ];
+  };
+
+  const primary = (entry, step) => {
+    if (step === 'commit') return <Button size="small" variant="primary" aria-label={`Commit changes in ${entry.repository}`} onClick={() => setAsking({ kind: 'commit', worktreeId: entry.worktreeId })} disabled={busy !== null}>Commit changes</Button>;
+    if (step === 'merge') return <Button size="small" variant="primary" aria-label={`Merge ${entry.repository} into ${entry.baseBranch}`} onClick={() => setAsking({ kind: 'merge', worktreeId: entry.worktreeId })} disabled={busy !== null}>{`Merge into ${entry.baseBranch}`}</Button>;
+    if (step === 'close') return <Button size="small" variant="primary" aria-label={`Close ${entry.repository}`} onClick={() => setAsking({ kind: 'close', worktreeId: entry.worktreeId })} disabled={busy !== null}>Close</Button>;
+    return null;
+  };
+
   return (
     <div role="group" aria-label={`Task ${task.title}`} className="task-landing">
       <div className="task-landing-row">
         <strong className="pipeline-run-name" title={task.title}>{task.title}</strong>
-        <Button variant="ghost" size="small" onClick={() => setAsking({ kind: 'rename', worktreeId: null })} disabled={busy !== null}>Rename</Button>
         {landings === null && failure === null && <span className="pipeline-run-muted">Reading the task…</span>}
         {failure && <span role="alert" className="pipeline-run-danger">{failure}</span>}
-        {landings && <span className="pipeline-run-muted">{landings.length === 1 ? '1 repository' : `${landings.length} repositories`}</span>}
-        {landings && (
-          <div className="pipeline-run-actions">
-            {canAddRepository && <Button size="small" onClick={() => setAsking({ kind: 'addRepository', worktreeId: null })} disabled={busy !== null} title="Give this task a copy of another repository of the project">Add repository</Button>}
-            <Button size="small" onClick={() => setAsking({ kind: 'closeTask', worktreeId: null })} disabled={busy !== null || open.length === 0 || blocksClosing !== null}
-              title={blocksClosing ? first(closeRefusals(blocksClosing)) : undefined}>Close task</Button>
-          </div>
-        )}
+        <div className="pipeline-run-actions">
+          <LandingMenu label="Task actions" items={taskMenu} disabled={busy !== null} />
+        </div>
       </div>
       {taskRefusal && (
         <div role="alert" className="task-landing-refusal">
@@ -174,36 +196,29 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
         </div>
       )}
       {landings && (
-        <ul aria-label="Repositories of this task" style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: 0, padding: 0, listStyle: 'none' }}>
+        <ul aria-label="Repositories of this task" className="task-landing-repos">
           {landings.map((entry) => {
             const isOpen = OPEN.includes(entry.state);
-            const tools = toolsOf(entry);
-            const chosen = remoteOf(entry);
-            const canMerge = entry.blockers.merge.length === 0;
+            const step = isOpen ? nextLandingStep(entry) : null;
+            const status = isOpen ? landingStatus(entry) : { tone: 'muted', text: entry.state };
             const rowRefusal = refusal && refusal.worktreeId === entry.worktreeId ? refusal : null;
             return (
-              <li key={entry.worktreeId} data-repository={entry.repository} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <li key={entry.worktreeId} data-repository={entry.repository} className="task-landing-repo">
                 <div className="task-landing-row">
-                  <strong>{entry.repository}</strong>
-                  {!isOpen && <span className="pipeline-run-muted">{entry.state}</span>}
-                  {isOpen && !entry.filesPresent && <span className="pipeline-run-warning">Its files in this task are no longer on disk.</span>}
-                  {isOpen && entry.uncommittedCount > 0 && <span className="pipeline-run-warning">{plural(entry.uncommittedCount, 'uncommitted file')}</span>}
-                  {isOpen && entry.commitsAhead > 0 && <span>{`${plural(entry.commitsAhead, 'commit')} not yet in ${entry.baseBranch ?? 'its repository'}`}</span>}
-                  {isOpen && entry.alreadyInBase && <span>{`Commits already in ${entry.baseBranch}`}</span>}
-                  {isOpen && !entry.alreadyInBase && entry.filesPresent && entry.uncommittedCount === 0 && entry.commitsAhead === 0 && <span className="pipeline-run-muted">No changes yet</span>}
+                  <span className="task-landing-dot" data-tone={status.tone} aria-hidden="true" />
+                  <strong className="task-landing-repo-name">{entry.repository}</strong>
+                  <span className="task-landing-status" data-tone={status.tone}>{status.text}</span>
                   {isOpen && entry.commitsBehind > 0 && <span className="pipeline-run-muted">{`${entry.baseBranch} has moved on by ${plural(entry.commitsBehind, 'commit')}`}</span>}
                   {isOpen && entry.ignoredAtRiskCount > 0 && <span className="pipeline-run-muted">{`${plural(entry.ignoredAtRiskCount, 'ignored file')} only here`}</span>}
                   {entry.prUrl && <a href={entry.prUrl} target="_blank" rel="noreferrer noopener" className="task-landing-link">Pull request</a>}
                   {isOpen && (
                     <div className="pipeline-run-actions">
-                      {entry.uncommittedCount > 0 && <Button size="small" aria-label={`Commit changes in ${entry.repository}`} onClick={() => setAsking({ kind: 'commit', worktreeId: entry.worktreeId })} disabled={busy !== null || entry.blockers.commit.length > 0} title={first(entry.blockers.commit)}>Commit changes</Button>}
-                      {entry.baseBranch !== null && <Button size="small" variant={canMerge ? 'primary' : 'secondary'} aria-label={`Merge ${entry.repository} into ${entry.baseBranch}`} onClick={() => setAsking({ kind: 'merge', worktreeId: entry.worktreeId })} disabled={busy !== null || !canMerge} title={first(entry.blockers.merge)}>{`Merge into ${entry.baseBranch}`}</Button>}
-                      {tools.length > 1 && <select aria-label={`Remote for the pull request of ${entry.repository}`} value={chosen.name} onChange={event => setRemotes(current => ({ ...current, [entry.worktreeId]: event.target.value }))} disabled={busy !== null}>{tools.map(candidate => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}</select>}
-                      {tools.length > 0 && entry.baseBranch !== null && entry.prUrl === null && <Button size="small" aria-label={`Open a pull request for ${entry.repository}`} onClick={() => setAsking({ kind: 'pullRequest', worktreeId: entry.worktreeId })} disabled={busy !== null || entry.blockers.pullRequest.length > 0} title={first(entry.blockers.pullRequest)}>Open a pull request</Button>}
-                      <Button size="small" aria-label={`Close ${entry.repository}`} onClick={() => setAsking({ kind: 'close', worktreeId: entry.worktreeId })} disabled={busy !== null || closeRefusals(entry).length > 0} title={first(closeRefusals(entry))}>Close</Button>
+                      {primary(entry, step)}
+                      <LandingMenu label={`More actions for ${entry.repository}`} items={rowMenu(entry, step)} disabled={busy !== null} />
                     </div>
                   )}
                 </div>
+                {isOpen && waitingReasons(entry).map(message => <span key={message} className="task-landing-hint">{message}</span>)}
                 {rowRefusal && (
                   <div role="alert" className="task-landing-refusal">
                     <span className="pipeline-run-danger">{rowRefusal.message}</span>
@@ -239,6 +254,13 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
       {asking?.kind === 'pullRequest' && asked && (
         <ConfirmDialog title={`Open a pull request for ${asked.repository}`} confirmLabel="Push and open" onConfirm={pullRequest} onCancel={() => setAsking(null)}>
           {`${asked.branch} of ${asked.repository} is pushed to ${remoteOf(asked).name} (${remoteOf(asked).host}) and a pull request into ${asked.baseBranch} is opened. Pushing publishes the branch.`}
+          {toolsOf(asked).length > 1 && (
+            <label className="task-landing-remote">Remote
+              <select aria-label={`Remote for the pull request of ${asked.repository}`} value={remoteOf(asked).name} onChange={event => setRemotes(current => ({ ...current, [asked.worktreeId]: event.target.value }))}>
+                {toolsOf(asked).map(candidate => <option key={candidate.name} value={candidate.name}>{`${candidate.name} (${candidate.host})`}</option>)}
+              </select>
+            </label>
+          )}
         </ConfirmDialog>
       )}
       {asking?.kind === 'close' && asked && (

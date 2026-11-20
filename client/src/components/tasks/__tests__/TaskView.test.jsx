@@ -179,6 +179,19 @@ describe('TaskView', () => {
     expect(screen.queryByText('always asks you')).toBeNull();
   });
 
+  it('names the team the run is using in its header', () => {
+    view({ run: run({ team: { name: 'Gemini team', changed: false } }) });
+    expect(screen.getByLabelText('Team: Gemini team').textContent).toBe('Team: Gemini team');
+  });
+
+  it('says when the lineup was changed after the run started, and when the run has no team', () => {
+    const first = view({ run: run({ team: { name: 'Gemini team', changed: true } }) });
+    expect(screen.getByLabelText('Team: Gemini team, changed during the run').textContent).toBe('Team: Gemini team · changed');
+    first.unmount();
+    view({ run: run({ team: null }) });
+    expect(screen.getByLabelText('Team: none').textContent).toBe('No team');
+  });
+
   it('offers decisions only when agents decide, and reviews only on a step that waits for approval', async () => {
     const { h } = view({ run: run({ agentsDecide: true, decisionCount: 2 }) });
     expect(screen.getByText('agents decide · 2 so far')).toBeTruthy();

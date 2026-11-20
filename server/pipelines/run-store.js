@@ -161,10 +161,26 @@ function validateDefinitionStep(id, index, step) {
   };
 }
 
+/**
+ * The team a run is labelled with for the owner: the one it started with, or the one chosen for it
+ * later. `changed` says the lineup was changed after the run started. Null when the run has no team.
+ * This is a label only; what counts toward a team's score is kept in team_run_attribution.
+ */
+function validateTeamLabel(id, team) {
+  if (team === null) return null;
+  if (!isPlainObject(team)) fieldError(id, 'definition.team', 'must be null or an object');
+  for (const key of Object.keys(team)) {
+    if (!['name', 'changed'].includes(key)) fieldError(id, `definition.team.${key}`, 'unknown field');
+  }
+  if (typeof team.name !== 'string' || !team.name.trim()) fieldError(id, 'definition.team.name', 'must not be blank');
+  if (typeof team.changed !== 'boolean') fieldError(id, 'definition.team.changed', 'must be true or false');
+  return { name: requireString(id, 'definition.team.name', team.name, { max: 64 }).trim(), changed: team.changed };
+}
+
 function validateDefinition(id, definition) {
   if (!isPlainObject(definition)) fieldError(id, 'definition', 'must be an object');
   for (const key of Object.keys(definition)) {
-    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'progressFile', 'notesDir', 'inputMode', 'steps'].includes(key)) {
+    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'progressFile', 'notesDir', 'inputMode', 'team', 'steps'].includes(key)) {
       fieldError(id, `definition.${key}`, 'unknown field');
     }
   }
@@ -197,6 +213,8 @@ function validateDefinition(id, definition) {
     progressFile: definition.progressFile,
     notesDir: definition.notesDir,
     inputMode,
+    // A run stored before runs were labelled has no `team`; it reads as a run with no team.
+    ...(Object.hasOwn(definition, 'team') && { team: validateTeamLabel(id, definition.team) }),
     steps,
   };
 }

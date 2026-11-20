@@ -137,6 +137,19 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
  * steps as the way to move around, and the selected step's detail above its terminal
  * (`children`: the terminals of this task, owned by the terminal area).
  */
+/** The team a run is labelled with; the agents themselves are named on each step. */
+function RunTeam({ team }) {
+  if (team === null) {
+    return <span className="pipeline-run-muted" aria-label="Team: none" title="This run was started without a team; each step names its own agent">No team</span>;
+  }
+  return (
+    <span className="pipeline-run-team" aria-label={team.changed ? `Team: ${team.name}, changed during the run` : `Team: ${team.name}`}
+      title={team.changed ? 'The team or a step\'s agent was changed after this run started; earlier steps kept the agents they ran with' : 'The team whose members run this run\'s steps'}>
+      {`Team: ${team.name}`}{team.changed && <span className="pipeline-run-muted"> · changed</span>}
+    </span>
+  );
+}
+
 export default function TaskView({
   title, tooltip, run, openSessionIds, inTask = false, repository = null, children,
   onActivateStep, onOpenTerminal,
@@ -191,6 +204,7 @@ export default function TaskView({
       <header className="task-view-header">
         <div className="pipeline-run-heading">
           <strong className="pipeline-run-name" title={tooltip}>{heading}</strong>
+          {run.team !== undefined && <RunTeam team={run.team} />}
           {repository !== null && <span className="pipeline-run-muted" title="The run's current directory is this repository's worktree">{`works in ${repository}`}</span>}
           <span className="pipeline-run-status" data-status={run.status} data-tone={status.tone} aria-label={`Run status: ${status.label}`}>{status.label}</span>
           <span className="pipeline-run-muted" title={duration.live ? 'Time since this run was started, waiting for you included' : 'Time from the start of this run to its end, waiting for you included'}

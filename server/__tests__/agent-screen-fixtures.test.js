@@ -33,6 +33,23 @@ describe('captured agent screens', () => {
     expect(classify('codex', 'working.txt')).toMatchObject({ executionStatus: 'running', executionReason: 'agent_working' });
   });
 
+  it('reads Cursor running as node at its prompt when its input holds text', () => {
+    expect(classify('agent', 'idle-typed-input.txt', { paneCurrentCommand: 'node' }))
+      .toMatchObject({ agentCli: 'cursor', executionStatus: 'idle', executionReason: 'agent_prompt_idle' });
+  });
+
+  it('reads Cursor running as node as working when its input holds text mid-turn', () => {
+    const snapshotText = screen('agent', 'working.txt').replace('Add a follow-up', 'typed ahead   ');
+    expect(snapshotText).toContain('→ typed ahead');
+    expect(classify('agent', 'working.txt', { paneCurrentCommand: 'node', snapshotText }))
+      .toMatchObject({ agentCli: 'cursor', executionStatus: 'running', executionReason: 'agent_working' });
+  });
+
+  it('does not take a Codex screen that quotes an arrow line for Cursor', () => {
+    const snapshotText = screen('codex', 'working.txt').replace(/\n/, '\n→ quoted line\n');
+    expect(classify('codex', 'working.txt', { snapshotText }).agentCli).toBe('codex');
+  });
+
   it('counts a working Claude sub-agent independently of an idle main pane', () => {
     expect(classify('claude', 'main-pane-with-subagent-pane.txt', { subagentPanes: [
       { paneCurrentCommand: '2.1.321', paneDead: '0', snapshotText: screen('claude', 'working.txt') },

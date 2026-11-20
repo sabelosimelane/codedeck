@@ -3892,6 +3892,9 @@ describe('workflow teams', () => {
     await request(ctx.app).put(path).send({ ...team, revision: 1 }).expect(409);
     await request(ctx.app).delete(path).expect(204);
     expect(ctx.runStore.get(run.body.id).definition.steps.map(step => step.agent.id)).toEqual([agent.id, reviewer.id, agent.id]);
+    // The run names the team it started with, also after that team is edited or deleted.
+    expect(run.body.team).toEqual({ name: 'Daily', changed: false });
+    expect(ctx.runStore.get(run.body.id).definition.team).toEqual({ name: 'Daily', changed: false });
     expect(ctx.runStore.attribution(run.body.id)).toMatchObject({
       teamId: created.body.id, teamRevision: 1, teamName: 'Daily', mixed: true, trialId: null,
       configuration: [
@@ -3955,6 +3958,7 @@ describe('changing a running workflow’s team', () => {
     const workflow = ctx.workflowStore.create({ name: 'Verification', agentsDecide: false, nodes:
       ['Investigate', 'Verify', 'Report'].map(name => node(agent.id, { name, role: 'Tester' })) });
     const started = (await request(ctx.app).post(base + '/runs').send({ project: 'Demo', input: 'fix', workflowId: workflow.id, requestId: 'reteam' }).expect(201)).body;
+    expect(started.team).toBeNull();
     const url = base + '/runs/' + started.id + '/team';
     const payload = { expectedUpdatedAt: started.updatedAt, teamId: team.id, stepOverrides: { Report: agent.id } };
     await request(ctx.app).put(url).send(payload).expect(409);
@@ -3970,6 +3974,9 @@ describe('changing a running workflow’s team', () => {
     expect(updated.steps.map(step => step.agentName)).toEqual([agent.name, agent.name, trial.name, agent.name]);
     expect(updated.steps[2]).toMatchObject({ priorSessionIds: ['Demo-3'], sessionId: null, attempt: 1 });
     expect(updated.status).toBe('error');
+    // A run started without a team is labelled with the team chosen for it later.
+    expect(updated.team).toEqual({ name: 'Trial team', changed: true });
+    expect(ctx.runStore.get(run.id).definition.team).toEqual({ name: 'Trial team', changed: true });
     expect(ctx.runStore.get(run.id).definition.steps[2].agent.id).toBe(trial.id);
     expect(ctx.runStore.attribution(run.id)).toMatchObject({ teamId: team.id, mixed: true,
       configuration: [{source:'setup'}, {source:'workflow'}, {source:'workflow'}, {source:'workflow'}],
@@ -3981,6 +3988,9 @@ describe('changing a running workflow’s team', () => {
       index === 2 ? { ...item, repeat: { mode: 'loop_back', toStepIndex: 1, max: 3 } } : item) } });
     const queued = await request(ctx.app).put(url).send({ ...change, expectedUpdatedAt: loop.updatedAt }).expect(200);
     expect(queued.body.steps[1]).toMatchObject({ agentName: agent.name, nextAgentName: trial.name, sessionId: 'Demo-2' });
+    // Overriding one step keeps the team's name and marks the lineup as changed.
+    const overridden = await request(ctx.app).put(url).send({ expectedUpdatedAt: queued.body.updatedAt, stepOverrides: { Report: trial.id } }).expect(200);
+    expect(overridden.body.team).toEqual({ name: 'Trial team', changed: true });
   });
 });
 

@@ -1,0 +1,14 @@
+
+    ▎+ | Check | Result |
+    ▎+ | --- | --- |
+    ▎ … truncated (38 more lines) · ctrl+r to review
+
+  Phase 1 auth matches the plan and spec. Phases 2–7 remain for later steps.
+
+  [[CDW:431f8de3-1:COMPLETE]]
+
+
+  → [?2026;0$y[?2026;0$y
+
+  Auto · 35.7% · 5 files edited                                                                         Run Everything
+  ~/work/demo/backend · task/demo

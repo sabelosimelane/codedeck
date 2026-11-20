@@ -7,6 +7,7 @@
 .pipeline-run-status[data-tone="waiting"] { color: var(--warning); }
 .pipeline-run-status[data-tone="danger"] { color: var(--danger); }
 .pipeline-run-agents-decide { flex: none; color: var(--warning); }
+.pipeline-run-team { flex: none; color: var(--accent); }
 .pipeline-run-branch { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); color: var(--text-muted); }
 .pipeline-run-actions { display: flex; flex: none; justify-content: flex-end; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .pipeline-run-bar button { padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-hover); color: var(--text-secondary); cursor: pointer; font: inherit; }

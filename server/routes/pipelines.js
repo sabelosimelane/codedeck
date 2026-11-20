@@ -142,6 +142,8 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
     agentsDecide: run.definition.agentsDecide,
     decisionCount,
     notesDir: run.definition.notesDir,
+    // The team this run is labelled with, or null; `changed` when its lineup was changed after it started.
+    team: run.definition.team ?? null,
     progress,
     project: run.project,
     input: run.input,
@@ -361,6 +363,8 @@ function buildDefinitionSnapshot({
     agentsDecide: workflow.agentsDecide,
     progressFile,
     inputMode: runInputMode(workflow.progressFile),
+    // Labelled with the team only when the team supplied the agent of at least one step.
+    team: team && nodeSteps.some(step => step.agent.assignment?.source === 'team') ? { name: team.name, changed: false } : null,
     steps: [...setupSteps, ...nodeSteps],
   };
 }
@@ -1524,7 +1528,10 @@ export function createPipelinesRouter(deps) {
     });
     const selected = team && steps.some((step, index) => step !== run.definition.steps[index]
       && (step.nextAgent ?? step.agent).assignment?.teamId === team.id);
-    const updated = runStore.update(run.id, { definition: { ...run.definition, steps }, steps: progress },
+    // The label follows the team chosen here; overriding steps alone keeps the name the run had.
+    const label = team ? { name: team.name, changed: true }
+      : run.definition.team ? { name: run.definition.team.name, changed: true } : null;
+    const updated = runStore.update(run.id, { definition: { ...run.definition, team: label, steps }, steps: progress },
       { mixed: true, team: selected ? team : null });
     res.json(await asRunView(updated));
   }));
