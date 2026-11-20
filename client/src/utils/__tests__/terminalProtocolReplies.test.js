@@ -11,10 +11,18 @@ describe('isTerminalProtocolReply', () => {
     expect(isTerminalProtocolReply('\x1b[O')).toBe(true);
   });
 
+  it('returns true for a mode report, which tmux asks every attaching client for', () => {
+    expect(isTerminalProtocolReply('\x1b[?2026;0$y')).toBe(true);
+    expect(isTerminalProtocolReply('\x1b[?2026;2$y')).toBe(true);
+    expect(isTerminalProtocolReply('\x1b[4;1$y')).toBe(true);
+  });
+
   it('returns false for legitimate user input that the shell must receive', () => {
     expect(isTerminalProtocolReply('hello world')).toBe(false);
     expect(isTerminalProtocolReply('\x7f')).toBe(false);
     expect(isTerminalProtocolReply('\x1b[200~pasted text\x1b[201~')).toBe(false);
     expect(isTerminalProtocolReply('git status\n')).toBe(false);
+    expect(isTerminalProtocolReply('echo $y')).toBe(false);
+    expect(isTerminalProtocolReply('[?2026;0$y')).toBe(false);
   });
 });

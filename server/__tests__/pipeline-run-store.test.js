@@ -686,3 +686,14 @@ describe('pipeline run store — loops and who decides', () => {
     expect(store.get(created.id).definition.progressFile).toBe('docs/room.md');
   });
 });
+  it('keeps the team a run is labelled with and rejects a malformed one', () => {
+    const { store } = setup();
+    const labelled = store.create(validRun({ requestId: 'labelled', definition: definition({ team: { name: 'Gemini team', changed: true } }) }));
+    expect(store.get(labelled.id).definition.team).toEqual({ name: 'Gemini team', changed: true });
+    expect(store.create(validRun({ requestId: 'none', definition: definition({ team: null }) })).definition.team).toBeNull();
+    for (const [index, team] of [{ name: '', changed: false }, { name: 'x'.repeat(65), changed: false }, { name: 'Team' },
+      { name: 'Team', changed: 1 }, { name: 'Team', changed: false, extra: 1 }, 'Team', []].entries()) {
+      expect(() => store.create(validRun({ requestId: 'bad-' + index, definition: definition({ team }) }))).toThrow('definition.team');
+    }
+  });
+

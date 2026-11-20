@@ -44,6 +44,14 @@ async function mount(landings = [standing(BACKEND, 'backend', clean), standing(M
 }
 const row = repository => within(screen.getByRole('list', { name: 'Repositories of this task' }).querySelector(`[data-repository="${repository}"]`));
 const dialog = name => within(screen.getByRole('dialog', { name }));
+// Everything but a repository's next step is in its row's menu; the task's own actions are in the task's menu.
+const openMenu = (label, scope = screen) => {
+  if (!screen.queryByRole('menu', { name: label })) fireEvent.click(scope.getByRole('button', { name: label }));
+  return within(screen.getByRole('menu', { name: label }));
+};
+const rowMenu = repository => openMenu(`More actions for ${repository}`, row(repository));
+const taskMenu = () => openMenu('Task actions');
+const reasonOf = item => item.querySelector('.landing-menu-reason')?.textContent ?? null;
 
 beforeEach(() => { toast.mockReset(); Object.values(api).forEach(fn => fn.mockReset()); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -53,15 +61,21 @@ describe('TaskLandingBar for a task with several repositories', () => {
     await mount([standing(BACKEND, 'backend', clean), standing(MOBILE, 'mobile-app', { ...dirty, commitsBehind: 3 })]);
     expect(api.listTaskWorktreeLandings).toHaveBeenCalledWith(ID);
     expect(api.getTaskLanding).not.toHaveBeenCalled();
-    expect(row('backend').getByText('2 commits not yet in main')).toBeTruthy();
-    expect(row('backend').getByRole('button', { name: 'Merge backend into main' }).disabled).toBe(false);
+    expect(row('backend').getByText('2 commits ready for main')).toBeTruthy();
+    const merge = row('backend').getByRole('button', { name: 'Merge backend into main' });
+    expect(merge.disabled).toBe(false);
+    expect(merge.dataset.variant).toBe('primary');
     expect(row('backend').queryByRole('button', { name: 'Commit changes in backend' })).toBeNull();
+    expect(row('backend').queryByRole('button', { name: 'Close backend' })).toBeNull();
     expect(row('mobile-app').getByText('1 uncommitted file')).toBeTruthy();
     expect(row('mobile-app').getByText('main has moved on by 3 commits')).toBeTruthy();
-    const merge = row('mobile-app').getByRole('button', { name: 'Merge mobile-app into main' });
-    expect(merge.disabled).toBe(true);
-    expect(merge.getAttribute('title')).toBe('mobile-app has uncommitted changes in this task. Commit them first.');
+    // One button per row: the next step. Nothing to merge yet means no merge is offered at all.
     expect(row('mobile-app').getByRole('button', { name: 'Commit changes in mobile-app' }).disabled).toBe(false);
+    expect(row('mobile-app').queryByRole('button', { name: 'Merge mobile-app into main' })).toBeNull();
+    expect(rowMenu('mobile-app').queryByRole('menuitem', { name: 'Merge mobile-app into main' })).toBeNull();
+    const close = rowMenu('mobile-app').getByRole('menuitem', { name: 'Close mobile-app' });
+    expect(close.disabled).toBe(true);
+    expect(reasonOf(close)).toBe('mobile-app has uncommitted changes in this task. Commit them first.');
   });
 
   it('tells a repository whose commits are already in its base branch from one that is untouched', async () => {
@@ -72,21 +86,23 @@ describe('TaskLandingBar for a task with several repositories', () => {
       standing(MOBILE, 'mobile-app', { alreadyInBase: true, commitsBehind: 1, blockers: { ...none, merge: [{ code: 'already_in_base', message: reason }], pullRequest: [{ code: 'already_in_base', message: reason }] } }),
     ]);
     expect(row('backend').getByText('No changes yet')).toBeTruthy();
-    expect(row('backend').queryByText('Commits already in main')).toBeNull();
-    expect(row('mobile-app').getByText('Commits already in main')).toBeTruthy();
+    expect(row('backend').queryByText('Already in main')).toBeNull();
+    expect(row('backend').queryAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual(['More actions for backend']);
+    expect(row('mobile-app').getByText('Already in main')).toBeTruthy();
     expect(row('mobile-app').queryByText('No changes yet')).toBeNull();
-    const merge = row('mobile-app').getByRole('button', { name: 'Merge mobile-app into main' });
-    expect(merge.disabled).toBe(true);
-    expect(merge.getAttribute('title')).toBe(reason);
-    expect(row('mobile-app').getByRole('button', { name: 'Open a pull request for mobile-app' }).getAttribute('title')).toBe(reason);
-    expect(row('mobile-app').getByRole('button', { name: 'Close mobile-app' }).disabled).toBe(false);
+    // Work already in the base branch is finished by closing it; neither merge nor a pull request is offered.
+    const close = row('mobile-app').getByRole('button', { name: 'Close mobile-app' });
+    expect(close.dataset.variant).toBe('primary');
+    // With nothing else to do there, the row has no menu at all.
+    expect(row('mobile-app').queryAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual(['Close mobile-app']);
+    expect(screen.queryByText(reason)).toBeNull();
   });
 
   it('shows a repository that is already merged or closed without anything to do', async () => {
     await mount([standing(BACKEND, 'backend', { state: 'merged', filesPresent: false, commitsAhead: null, commitsBehind: null, blockers: { commit: blocked('f'), merge: blocked('f'), pullRequest: blocked('f'), close: blocked('f') } }), standing(MOBILE, 'mobile-app', clean)]);
     expect(row('backend').getByText('merged')).toBeTruthy();
     expect(row('backend').queryAllByRole('button')).toEqual([]);
-    expect(row('mobile-app').getByRole('button', { name: 'Close mobile-app' })).toBeTruthy();
+    expect(rowMenu('mobile-app').getByRole('menuitem', { name: 'Close mobile-app' })).toBeTruthy();
   });
 
   it('commits one repository and shows how it stands afterwards', async () => {
@@ -97,7 +113,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
     fireEvent.click(dialog('Commit changes in mobile-app').getByRole('button', { name: 'Commit' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Changes committed in mobile-app' }));
     expect(api.commitTaskWorktree).toHaveBeenCalledWith(ID, MOBILE, 'Mobile part');
-    await waitFor(() => expect(row('mobile-app').getByText('2 commits not yet in main')).toBeTruthy());
+    await waitFor(() => expect(row('mobile-app').getByText('2 commits ready for main')).toBeTruthy());
     expect(row('mobile-app').queryByText('1 uncommitted file')).toBeNull();
   });
 
@@ -143,9 +159,10 @@ describe('TaskLandingBar for a task with several repositories', () => {
   it('opens a pull request for one repository on the remote chosen', async () => {
     await mount([standing(BACKEND, 'backend', { ...clean, remotes: [{ name: 'origin', host: 'gitlab.com', tool: 'glab' }, { name: 'github', host: 'github.com', tool: 'gh' }, { name: 'mirror', host: 'git.example.test', tool: null }] }), standing(MOBILE, 'mobile-app', { ...dirty, remotes: [] })]);
     api.openTaskWorktreePullRequest.mockResolvedValue({ task: TASK, repository: 'backend', prUrl: 'https://github.com/team/backend/pull/7', remote: 'github' });
-    expect(row('mobile-app').queryByRole('button', { name: 'Open a pull request for mobile-app' })).toBeNull();
-    fireEvent.change(row('backend').getByLabelText('Remote for the pull request of backend'), { target: { value: 'github' } });
-    fireEvent.click(row('backend').getByRole('button', { name: 'Open a pull request for backend' }));
+    expect(rowMenu('mobile-app').queryByRole('menuitem', { name: 'Open a pull request for mobile-app' })).toBeNull();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(rowMenu('backend').getByRole('menuitem', { name: 'Open a pull request for backend' }));
+    fireEvent.change(dialog('Open a pull request for backend').getByLabelText('Remote for the pull request of backend'), { target: { value: 'github' } });
     expect(dialog('Open a pull request for backend').getByText(/is pushed to github \(github\.com\)/)).toBeTruthy();
     fireEvent.click(dialog('Open a pull request for backend').getByRole('button', { name: 'Push and open' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Pull request opened for backend: https://github.com/team/backend/pull/7' }));
@@ -155,14 +172,14 @@ describe('TaskLandingBar for a task with several repositories', () => {
   it('links the pull request a repository already has', async () => {
     await mount([standing(BACKEND, 'backend', { ...clean, state: 'pr_open', prUrl: 'https://github.com/team/backend/pull/7' }), standing(MOBILE, 'mobile-app', clean)]);
     expect(row('backend').getByRole('link', { name: 'Pull request' }).getAttribute('href')).toBe('https://github.com/team/backend/pull/7');
-    expect(row('backend').queryByRole('button', { name: 'Open a pull request for backend' })).toBeNull();
+    expect(rowMenu('backend').queryByRole('menuitem', { name: 'Open a pull request for backend' })).toBeNull();
   });
 
   it('closes one repository, keeps its branch and stays on the task', async () => {
     const handlers = await mount([standing(BACKEND, 'backend', clean), standing(MOBILE, 'mobile-app', clean)]);
     const result = { task: TASK, repository: 'mobile-app', branchKept: 'task/replies-7a000000', unmergedCommits: 2, taskFinished: false, terminalsClosed: [], terminalsNotClosed: [] };
     api.closeTaskWorktree.mockResolvedValue(result);
-    fireEvent.click(row('mobile-app').getByRole('button', { name: 'Close mobile-app' }));
+    fireEvent.click(rowMenu('mobile-app').getByRole('menuitem', { name: 'Close mobile-app' }));
     expect(dialog('Close mobile-app').getByText(/Its 2 commits stay on the branch task\/replies-7a000000, not merged\./)).toBeTruthy();
     fireEvent.click(dialog('Close mobile-app').getByRole('button', { name: 'Close repository' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Closed mobile-app in this task. Branch task/replies-7a000000 was kept.' }));
@@ -176,7 +193,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
     await mount([standing(BACKEND, 'backend', ignored), standing(MOBILE, 'mobile-app')]);
     expect(row('backend').getByText('2 ignored files only here')).toBeTruthy();
     api.closeTaskWorktree.mockResolvedValue({ task: TASK, repository: 'backend', branchKept: 'task/replies-7a000000', unmergedCommits: 0, taskFinished: false, terminalsClosed: [], terminalsNotClosed: [] });
-    const close = row('backend').getByRole('button', { name: 'Close backend' });
+    const close = rowMenu('backend').getByRole('menuitem', { name: 'Close backend' });
     expect(close.disabled).toBe(false);
     fireEvent.click(close);
     expect(dialog('Close backend').getByText(/Files Git ignores that exist only in this copy are deleted with it: \.project, logs\/\./)).toBeTruthy();
@@ -189,7 +206,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
     const handlers = await mount([standing(BACKEND, 'backend', ignored(['.project', 'logs/'])), standing(MOBILE, 'mobile-app', ignored(['.gradle/']))]);
     const result = { task: { ...TASK, state: 'closed' }, branchKept: 'task/replies-7a000000', unmergedCommits: 0, terminalsClosed: [], terminalsNotClosed: [] };
     api.closeTask.mockResolvedValue(result);
-    const close = screen.getByRole('button', { name: 'Close task' });
+    const close = taskMenu().getByRole('menuitem', { name: 'Close task' });
     expect(close.disabled).toBe(false);
     fireEvent.click(close);
     expect(dialog('Close task').getByText(/Files Git ignores that exist only in this task are deleted with it: backend: \.project, logs\/; mobile-app: \.gradle\/\./)).toBeTruthy();
@@ -204,7 +221,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
     const handlers = await mount([standing(BACKEND, 'backend', clean), standing(MOBILE, 'mobile-app', clean)]);
     const result = { task: { ...TASK, state: 'closed' }, branchKept: 'task/replies-7a000000', unmergedCommits: 4, terminalsClosed: ['Demo-4'], terminalsNotClosed: [] };
     api.closeTask.mockResolvedValue(result);
-    fireEvent.click(screen.getByRole('button', { name: 'Close task' }));
+    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Close task' }));
     expect(dialog('Close task').getByText(/Every repository of "Replies" is closed/)).toBeTruthy();
     fireEvent.click(dialog('Close task').getByRole('button', { name: 'Close task' }));
     await waitFor(() => expect(handlers.onFinished).toHaveBeenCalledWith(result));
@@ -214,15 +231,15 @@ describe('TaskLandingBar for a task with several repositories', () => {
 
   it('does not offer to close the whole task while a repository cannot be closed, and says which', async () => {
     await mount();
-    const close = screen.getByRole('button', { name: 'Close task' });
+    const close = taskMenu().getByRole('menuitem', { name: 'Close task' });
     expect(close.disabled).toBe(true);
-    expect(close.getAttribute('title')).toBe('mobile-app has uncommitted changes in this task. Commit them first.');
+    expect(reasonOf(close)).toBe('mobile-app has uncommitted changes in this task. Commit them first.');
   });
 
   it('keeps the reason on screen when closing the whole task is refused', async () => {
     await mount([standing(BACKEND, 'backend', clean), standing(MOBILE, 'mobile-app', clean)]);
     api.closeTask.mockRejectedValue(Object.assign(new Error('Nothing was closed. A workflow run is still working in this task. Stop it or let it finish first.'), { reasons: [{ code: 'run_active', message: 'A workflow run is still working in this task. Stop it or let it finish first.' }], conflicts: [] }));
-    fireEvent.click(screen.getByRole('button', { name: 'Close task' }));
+    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Close task' }));
     fireEvent.click(dialog('Close task').getByRole('button', { name: 'Close task' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Nothing was closed.'));
   });
@@ -230,7 +247,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
   it('renames the task with its revision', async () => {
     const handlers = await mount();
     api.renameTask.mockResolvedValue({ ...TASK, title: 'Replies v2' });
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Rename task' }));
     fireEvent.change(dialog('Rename task').getByLabelText('Task title'), { target: { value: 'Replies v2' } });
     fireEvent.click(dialog('Rename task').getByRole('button', { name: 'Rename' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Renamed to Replies v2' }));
@@ -242,7 +259,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
     api.listTaskWorktreeLandings.mockRejectedValueOnce(new Error('Server unreachable'));
     render(<TaskLandingBar task={TASK} onChanged={vi.fn()} onFinished={vi.fn()} onRepositoryFinished={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Server unreachable'));
-    expect(screen.getByRole('button', { name: 'Rename' }).disabled).toBe(false);
+    expect(taskMenu().getByRole('menuitem', { name: 'Rename task' }).disabled).toBe(false);
     expect(screen.queryByRole('list', { name: 'Repositories of this task' })).toBeNull();
   });
 
@@ -251,7 +268,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
     const onChanged = vi.fn();
     render(<TaskLandingBar task={TASK} canAddRepository onChanged={onChanged} onFinished={vi.fn()} onRepositoryFinished={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole('list', { name: 'Repositories of this task' })).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Add repository' }));
+    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Add repository' }));
     fireEvent.click(dialog('Add a repository to this task').getByRole('button', { name: 'Add mobile-app' }));
     expect(onChanged).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('dialog', { name: 'Add a repository to this task' })).toBeNull();
@@ -259,7 +276,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
 
   it('offers no repository to add in a project that lists no others', async () => {
     await mount();
-    expect(screen.queryByRole('button', { name: 'Add repository' })).toBeNull();
+    expect(taskMenu().queryByRole('menuitem', { name: 'Add repository' })).toBeNull();
   });
 
   it('shows a task with one repository the way it always was', async () => {

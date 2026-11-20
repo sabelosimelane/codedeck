@@ -4,6 +4,8 @@ import { closeTask, commitTask, getTaskLanding, mergeTask, openTaskPullRequest, 
 import { Button, ConfirmDialog, PromptDialog } from '../ui/index.jsx';
 import TaskRepositoriesLanding from './TaskRepositoriesLanding.jsx';
 import AddRepositoryDialog from './AddRepositoryDialog.jsx';
+import LandingMenu from './LandingMenu.jsx';
+import { landingStatus, nextLandingStep, waitingReasons } from './landingSteps.js';
 import { closeArguments, closeRefusals, namedIgnored } from './ignoredFiles.js';
 import './task-view.css';
 
@@ -125,49 +127,36 @@ function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
   const closeRefused = landing ? closeRefusals(landing) : [];
 
   const first = list => list[0]?.message;
-  const facts = [];
-  if (landing) {
-    if (!landing.filesPresent) facts.push({ tone: 'warning', text: "This task's files are no longer on disk." });
-    if (landing.uncommittedCount > 0) facts.push({ tone: 'warning', text: `${plural(landing.uncommittedCount, 'uncommitted file')}` });
-    if (landing.commitsAhead > 0) facts.push({ tone: 'plain', text: `${plural(landing.commitsAhead, 'commit')} not yet in ${landing.baseBranch ?? 'the project'}` });
-    // No commit the base lacks is one of two things: work that is already there, or none at all.
-    if (landing.alreadyInBase) facts.push({ tone: 'plain', text: `Commits already in ${landing.baseBranch}` });
-    else if (landing.filesPresent && landing.uncommittedCount === 0 && landing.commitsAhead === 0) facts.push({ tone: 'muted', text: 'No changes yet' });
-    if (landing.commitsBehind > 0) facts.push({ tone: 'muted', text: `${landing.baseBranch} has moved on by ${plural(landing.commitsBehind, 'commit')}` });
-    if (deletesIgnored) facts.push({ tone: 'muted', text: `${plural(landing.ignoredAtRiskCount, 'ignored file')} only here` });
-  }
-  const hasWork = landing && (landing.uncommittedCount > 0 || landing.commitsAhead > 0);
-  const canMerge = landing && landing.blockers.merge.length === 0;
-  // What stands between the work and a merge is said outright, but only once merging is the
-  // next thing to do. While a run is working the task is simply in progress, and "no commits
-  // yet", "already in the base branch" and "commit first" are already told by the facts above
-  // and the Commit button.
-  const SAID_ELSEWHERE = new Set(['uncommitted', 'nothing_to_land', 'already_in_base', 'run_active']);
-  const mergeHint = landing && !landing.runActive && hasWork && !canMerge
-    ? landing.blockers.merge.filter(item => !SAID_ELSEWHERE.has(item.code)).map(item => item.message)
-    : [];
+  const step = landing ? nextLandingStep(landing) : null;
+  const status = landing ? landingStatus(landing) : null;
+  const ask = kind => () => setAsking(kind);
+  const menu = landing ? [
+    ...(landing.uncommittedCount > 0 && step !== 'commit' ? [{ key: 'commit', label: 'Commit changes', disabledReason: first(landing.blockers.commit), onSelect: ask('commit') }] : []),
+    ...(landing.baseBranch !== null && landing.commitsAhead > 0 && step !== 'merge' ? [{ key: 'merge', label: `Merge into ${landing.baseBranch}`, disabledReason: first(landing.blockers.merge), onSelect: ask('merge') }] : []),
+    ...(tools.length > 0 && landing.baseBranch !== null && landing.commitsAhead > 0 && landing.prUrl === null ? [{ key: 'pullRequest', label: 'Open a pull request', disabledReason: first(landing.blockers.pullRequest), onSelect: ask('pullRequest') }] : []),
+    { key: 'rename', label: 'Rename task', onSelect: ask('rename') },
+    ...(canAddRepository ? [{ key: 'add', label: 'Add repository', onSelect: ask('addRepository') }] : []),
+    ...(step !== 'close' ? [{ key: 'close', label: 'Close task', tone: 'danger', disabledReason: first(closeRefused), onSelect: ask('close') }] : []),
+  ] : [{ key: 'rename', label: 'Rename task', onSelect: ask('rename') }];
+  const primaryLabel = { commit: 'Commit changes', merge: landing?.baseBranch ? `Merge into ${landing.baseBranch}` : null, close: 'Close task' }[step];
 
   return (
     <div role="group" aria-label={`Task ${task.title}`} className="task-landing">
       <div className="task-landing-row">
+        {status && <span className="task-landing-dot" data-tone={status.tone} aria-hidden="true" />}
         <strong className="pipeline-run-name" title={task.title}>{task.title}</strong>
-        <Button variant="ghost" size="small" onClick={() => setAsking('rename')} disabled={busy !== null}>Rename</Button>
         {landing === null && failure === null && <span className="pipeline-run-muted">Reading the task…</span>}
         {failure && <span role="alert" className="pipeline-run-danger">{failure}</span>}
-        {facts.map(fact => <span key={fact.text} className={fact.tone === 'plain' ? undefined : `pipeline-run-${fact.tone}`}>{fact.text}</span>)}
+        {status && <span className="task-landing-status" data-tone={status.tone}>{status.text}</span>}
+        {landing && landing.commitsBehind > 0 && <span className="pipeline-run-muted">{`${landing.baseBranch} has moved on by ${plural(landing.commitsBehind, 'commit')}`}</span>}
+        {deletesIgnored && <span className="pipeline-run-muted">{`${plural(landing.ignoredAtRiskCount, 'ignored file')} only here`}</span>}
         {landing?.prUrl && <a href={landing.prUrl} target="_blank" rel="noreferrer noopener" className="task-landing-link">Pull request</a>}
-        {landing && (
-          <div className="pipeline-run-actions">
-            {landing.uncommittedCount > 0 && <Button size="small" onClick={() => setAsking('commit')} disabled={busy !== null || landing.blockers.commit.length > 0} title={first(landing.blockers.commit)}>Commit changes</Button>}
-            {landing.baseBranch !== null && <Button size="small" variant={canMerge ? 'primary' : 'secondary'} onClick={() => setAsking('merge')} disabled={busy !== null || !canMerge} title={first(landing.blockers.merge)}>{`Merge into ${landing.baseBranch}`}</Button>}
-            {tools.length > 1 && <select aria-label="Remote for the pull request" value={chosenRemote.name} onChange={event => setRemote(event.target.value)} disabled={busy !== null}>{tools.map(candidate => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}</select>}
-            {tools.length > 0 && landing.baseBranch !== null && landing.prUrl === null && <Button size="small" onClick={() => setAsking('pullRequest')} disabled={busy !== null || landing.blockers.pullRequest.length > 0} title={first(landing.blockers.pullRequest)}>Open a pull request</Button>}
-            {canAddRepository && <Button size="small" onClick={() => setAsking('addRepository')} disabled={busy !== null} title="Give this task a copy of another repository of the project">Add repository</Button>}
-            <Button size="small" onClick={() => setAsking('close')} disabled={busy !== null || closeRefused.length > 0} title={first(closeRefused)}>Close task</Button>
-          </div>
-        )}
+        <div className="pipeline-run-actions">
+          {primaryLabel && <Button size="small" variant="primary" onClick={ask(step)} disabled={busy !== null}>{primaryLabel}</Button>}
+          <LandingMenu label="Task actions" items={menu} disabled={busy !== null} />
+        </div>
       </div>
-      {mergeHint.map(message => <span key={message} className="pipeline-run-warning">{message}</span>)}
+      {landing && waitingReasons(landing).map(message => <span key={message} className="task-landing-hint">{message}</span>)}
       {refusal && (
         <div role="alert" className="task-landing-refusal">
           <span className="pipeline-run-danger">{refusal.message}</span>
@@ -194,6 +183,13 @@ function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
       {asking === 'pullRequest' && (
         <ConfirmDialog title="Open a pull request" confirmLabel="Push and open" onConfirm={pullRequest} onCancel={() => setAsking(null)}>
           {`${landing.branch} is pushed to ${chosenRemote.name} (${chosenRemote.host}) and a pull request into ${landing.baseBranch} is opened. Pushing publishes the branch.`}
+          {tools.length > 1 && (
+            <label className="task-landing-remote">Remote
+              <select aria-label="Remote for the pull request" value={chosenRemote.name} onChange={event => setRemote(event.target.value)}>
+                {tools.map(candidate => <option key={candidate.name} value={candidate.name}>{`${candidate.name} (${candidate.host})`}</option>)}
+              </select>
+            </label>
+          )}
         </ConfirmDialog>
       )}
       {asking === 'close' && (

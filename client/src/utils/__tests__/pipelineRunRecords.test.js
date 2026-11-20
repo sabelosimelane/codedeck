@@ -299,3 +299,14 @@ describe('parseAnswerPage', () => {
     }
   });
 });
+
+it('reads the team a run is labelled with, and accepts a backend that sends none', () => {
+  const team = { name: 'Gemini team', changed: true };
+  expect(parseRun({ ...validRun(), team }).team).toEqual(team);
+  expect(parseRun({ ...validRun(), team: null }).team).toBeNull();
+  const { team: _absent, ...older } = { ...validRun(), team: null };
+  expect(() => parseRun(older)).not.toThrow();
+  for (const bad of [{ name: '', changed: false }, { name: 'x'.repeat(65), changed: false }, { name: 'Team' }, { name: 'Team', changed: 'yes' }, 'Team', []]) {
+    expect(() => parseRun({ ...validRun(), team: bad })).toThrow('team');
+  }
+});

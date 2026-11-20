@@ -136,6 +136,10 @@ export function parseRun(run, index = 0) {
   guard(RUN_STATUSES.includes(run.status), 'status');
   guard(run.status === 'stopped' ? ['user', 'terminal', 'no_progress'].includes(run.stopReason) : run.stopReason === null, 'stopReason');
   guard(run.status === 'error' ? text(run.error) && run.error.length <= 2000 : run.error === null, 'error');
+  // The team the run is labelled with. A backend older than this client does not send it, and the phone reads
+  // runs with this parser from such a backend too.
+  guard(run.team === undefined || run.team === null || (object(run.team) && text(run.team.name) && run.team.name.length <= 64
+    && typeof run.team.changed === 'boolean'), 'team');
   guard(Array.isArray(run.steps) && run.steps.length >= 1 && run.steps.length <= 33, 'steps');
   guard(integer(run.currentStepIndex) && run.currentStepIndex < run.steps.length, 'currentStepIndex');
   const session = value => typeof value === 'string' && value.startsWith(`${run.project}-`) && /^\d+$/.test(value.slice(run.project.length + 1));

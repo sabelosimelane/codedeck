@@ -27,6 +27,31 @@
 .task-landing-link { color: var(--accent); }
 .task-landing-refusal { display: flex; flex-direction: column; gap: 2px; }
 .task-landing-details summary { cursor: pointer; color: var(--text-muted); }
+.task-landing-repos { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.task-landing-repo { display: flex; flex-direction: column; gap: 2px; padding: 3px 0 3px 2px; }
+.task-landing-repo + .task-landing-repo { border-top: 1px solid var(--glass-border-faint); }
+.task-landing-repo-name { min-width: 12ch; color: var(--text-primary); font-weight: 500; }
+.task-landing-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
+.task-landing-dot[data-tone="warning"] { background: var(--warning); }
+.task-landing-dot[data-tone="ready"] { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.task-landing-dot[data-tone="danger"] { background: var(--danger); }
+.task-landing-status[data-tone="warning"] { color: var(--warning); }
+.task-landing-status[data-tone="ready"] { color: var(--text-primary); }
+.task-landing-status[data-tone="muted"] { color: var(--text-muted); }
+.task-landing-status[data-tone="danger"] { color: var(--danger); }
+.task-landing-hint { padding-left: 15px; color: var(--warning); font-size: 11px; }
+.task-landing-remote { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.landing-menu { position: relative; display: inline-flex; }
+.landing-menu-trigger { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.landing-menu-trigger:hover:not(:disabled), .landing-menu-trigger[aria-expanded="true"] { border-color: var(--border); background: var(--bg-hover); color: var(--text-primary); }
+.landing-menu-trigger:focus-visible, .landing-menu-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.landing-menu-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.landing-menu-list { position: absolute; top: calc(100% + 4px); right: 0; z-index: 30; display: flex; flex-direction: column; min-width: 200px; max-width: 320px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); box-shadow: var(--shadow-soft); }
+.landing-menu-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.landing-menu-item:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.landing-menu-item[data-tone="danger"]:not(:disabled) { color: var(--danger); }
+.landing-menu-item:disabled { cursor: not-allowed; color: var(--text-muted); }
+.landing-menu-reason { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
 
 /* Questions: while a step waits for answers they get the room; its terminal keeps a strip below. */
 .task-step-detail[data-asking] { max-height: 78%; }
