@@ -11,6 +11,7 @@ import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
+import { isAbsolute } from 'node:path';
 import { buildShellEnv } from './shell-env.js';
 import { isTransportFailure, STATUS_POLL_TIMEOUT_MS } from './command-runner.js';
 import { collectSessionProcessIds, parsePaneProcesses, parseProcessSnapshot } from './session-processes.js';
@@ -899,6 +900,31 @@ function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess
           // PTY wrapper may already be gone
         }
       }
+    },
+
+    /**
+     * Starts the main pane of a session again with a fresh shell in `cwd`, for an agent that
+     * takes no input: whatever runs there is ended and the pane's terminal modes are reset.
+     * The main pane is the lowest pane of window 0, the one the status reader reads as the agent.
+     */
+    async respawnMainPaneAsync(sessionId, cwd) {
+      if (typeof sessionId !== 'string' || !sessionId.trim()) {
+        throw new Error(`respawnMainPaneAsync: sessionId must be a non-empty string, got ${sessionId}`);
+      }
+      if (typeof cwd !== 'string' || !isAbsolute(cwd) || cwd.includes('\0')) {
+        throw new Error(`respawnMainPaneAsync: cwd must be an absolute path, got ${cwd}`);
+      }
+      const tmuxName = sanitizeTmuxName(sessionId);
+      const { stdout } = await execFileAsync('tmux', ['list-panes', '-t', `${tmuxName}:0`, '-F', '#{pane_index}'], { encoding: 'utf8' });
+      const indexes = stdout.split('\n').filter(Boolean).map(Number);
+      if (!indexes.length || indexes.some(index => !Number.isSafeInteger(index) || index < 0)) {
+        throw new Error(`respawnMainPaneAsync: no main pane found in ${sessionId}`);
+      }
+      const target = `${tmuxName}:0.${Math.min(...indexes)}`;
+      // respawn-pane keeps the modes the agent switched on (mouse reporting, …): reset them first,
+      // so the reset cannot clear the prompt of the new shell.
+      await execFileAsync('tmux', ['send-keys', '-R', '-t', target], { encoding: 'utf8' });
+      await execFileAsync('tmux', ['respawn-pane', '-k', '-c', cwd, '-t', target], { encoding: 'utf8' });
     },
 
     async killAsync(entry, sessionId) {

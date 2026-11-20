@@ -214,12 +214,16 @@ left there. Nodes that use different agents get different tabs, because a termin
 holds one agent CLI. Earlier output of a shared tab stays in its scrollback; the
 agent's conversation is cleared each time, including anything you typed there yourself.
 
-A CLI that is still clearing or starting can drop a prompt pasted into it. So while a
-pass runs, CodeDeck watches its terminal: when the agent sits idle at a prompt that has
-not changed for 30 seconds, and has not asked for anything in that pass, the prompt is
-taken to be lost and is sent once more. If the agent still does not start, the run fails
-and says so, instead of showing a step as running that nothing works on; **Resume**
-starts the step again.
+A CLI that is still clearing or starting can drop a prompt pasted into it, and a CLI can
+stop reading input altogether while its screen still shows an idle prompt (Codex has done
+so right after the reset command). So while a pass runs, CodeDeck watches its terminal:
+when the agent sits idle at a prompt that has not changed for 30 seconds, and has not
+asked for anything in that pass, the prompt is taken to be lost and is sent once more.
+If that is not taken either, CodeDeck starts the terminal again with a fresh shell in the
+same folder (ending the agent and resetting the terminal's modes), starts the agent there
+and sends the prompt, with nothing to clear. If the agent started again still takes
+nothing, the run fails and says so, instead of showing a step as running that nothing
+works on.
 
 A run keeps only the terminal it is working in showing status; its other terminals
 are muted until their step starts. When the run waits for you, that step's terminal

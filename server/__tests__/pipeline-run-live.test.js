@@ -283,6 +283,7 @@ describeLive('pipeline run live (Phase 3)', () => {
 
     const engine = createRunEngine({
       runStore: runs,
+      restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       setTerminalMuted: (sessionId, muted) => {
         const state = runs.get(runId);
         muting.push({ sessionId, muted, status: state.status, step: state.currentStepIndex, worktreeState: state.worktreeState });
@@ -415,6 +416,7 @@ describeLive('pipeline run live notes', () => {
     let sessionSeq = 0;
     const engine = createRunEngine({
       runStore: runs,
+      restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       setTerminalMuted: () => true,
       readProgressCount: async () => null, decisionStore: createDecisionStore(db), answerStore: createAnswerStore(db), noteStore: notes, reviewStore: createReviewStore(db),
       createWorktree: async () => { throw new Error('existing worktree must be reused'); },
@@ -546,6 +548,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
 
     const engine = createRunEngine({
       runStore: runs,
+      restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
       decisionStore: createDecisionStore(db), answerStore: createAnswerStore(db),
@@ -775,6 +778,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
 
     const engine = createRunEngine({
       runStore: runs,
+      restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       setTerminalMuted: () => true,
       readProgressCount: async run => {
         const progress = await readRunProgress({ run, workflowProgressFile: null, progressReader: createRunProgressReader() });
@@ -965,6 +969,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
 
     const engine = createRunEngine({
       runStore: runs,
+      restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
       decisionStore: decisions, answerStore: createAnswerStore(db),
@@ -1123,6 +1128,7 @@ describeLive('pipeline run live — Resume', () => {
     const started = [];
     const engine = createRunEngine({
       runStore: runs,
+      restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
       decisionStore: createDecisionStore(db), answerStore: createAnswerStore(db),

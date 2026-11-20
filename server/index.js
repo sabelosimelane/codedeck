@@ -1004,6 +1004,8 @@ const pipelineRunEngine = createRunEngine({
     taskNaming.noteWritten(note).catch(error => console.warn(`[task-naming] run=${note.runId} error=${error?.message || error}`));
   },
   setTerminalMuted: (sessionId, muted) => setObservedTerminalMuted(sessionAttention, sessionId, muted),
+  // Pipeline runs use local projects only, so their terminals are on the local tmux server.
+  restartAgentTerminal: (sessionId, cwd) => terminalRuntime.respawnMainPaneAsync(sessionId, cwd),
   readProgressCount: async run => {
     const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: pipelineProgressReader });
     return progress?.phaseCount > 0 && ['in_progress', 'all_done'].includes(progress.status)

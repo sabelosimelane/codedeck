@@ -711,3 +711,26 @@ it('switches a completed step to its queued agent only when another loop round b
   expect(next.steps[0]).toMatchObject({ sessionId: null, priorSessionIds: ['Demo-1'] });
   expect(state.definition.steps[0].agent).toBe(agent);
 });
+
+describe('agent_restarted (the agent of a running step is started again in its terminal)', () => {
+  const working = () => run({ status: 'running', worktreeState: 'present', steps: [step({ status: 'running', sessionId: 'terminal-1', attempt: 3, iteration: 1, startedAt: AT, elapsedMs: 5000 })] });
+
+  it('relaunches the step in its terminal as a new attempt, its clock still running', () => {
+    const next = applyEvent(working(), { type: 'agent_restarted' });
+    expect(next.status).toBe('running');
+    expect(next.steps[0]).toMatchObject({ status: 'launching', sessionId: 'terminal-1', attempt: 4, iteration: 0, startedAt: AT, elapsedMs: 5000, finishedAt: null });
+  });
+
+  it.each(['pending', 'needs_input', 'limit_paused', 'awaiting_approval', 'interrupted', 'stopped', 'error', 'complete'])
+    ('is illegal while the run is %s', status => {
+      expect(() => applyEvent(run({ status, steps: [step({ status: 'running', sessionId: 'terminal-1', startedAt: AT })] }), { type: 'agent_restarted' }))
+        .toThrow(/illegal transition/);
+    });
+
+  it('is illegal for a step that is not running in a terminal', () => {
+    expect(() => applyEvent(run({ status: 'running', steps: [step({ status: 'launching', sessionId: 'terminal-1', startedAt: AT })] }), { type: 'agent_restarted' }))
+      .toThrow(/illegal transition/);
+    expect(() => applyEvent(run({ status: 'running', steps: [step({ status: 'running', sessionId: null, startedAt: AT })] }), { type: 'agent_restarted' }))
+      .toThrow('agent_restarted event: the step has no terminal to restart its agent in');
+  });
+});

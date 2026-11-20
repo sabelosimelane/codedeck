@@ -76,6 +76,8 @@ export function createRunEngine({
   answerStore,
   terminalAvailable,
   setTerminalMuted,
+  // Starts the terminal of an agent that takes no input again with a fresh shell, ending the agent.
+  restartAgentTerminal,
   // Told what a step wrote once its note is stored; nothing it does can affect the run.
   onNoteWritten = () => {},
   removeWorktree = async () => ({ ok: true }),
@@ -113,6 +115,7 @@ export function createRunEngine({
   if (typeof answerStore?.add !== 'function' || typeof answerStore?.list !== 'function') throw new Error('createRunEngine: answerStore is required');
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
   if (typeof setTerminalMuted !== 'function') throw new Error('createRunEngine: setTerminalMuted is required');
+  if (typeof restartAgentTerminal !== 'function') throw new Error('createRunEngine: restartAgentTerminal must be a function');
   if (!Number.isInteger(promptPickupMs) || promptPickupMs <= 0) throw new Error(`createRunEngine: promptPickupMs must be a positive integer, got ${promptPickupMs}`);
 
   const handles = new Map();
@@ -184,6 +187,10 @@ export function createRunEngine({
         dialogPause: false,
         lastTasksDone: null,
         roundsWithoutProgress: 0,
+        // Set when an agent that takes no input is to be started again: its terminal and folder.
+        agentRestart: null,
+        // `${stepIndex}:${attempt}` of the attempt that relaunched an agent after a restart.
+        restartedAttempt: null,
       };
       handles.set(runId, handle);
     }
@@ -440,13 +447,15 @@ export function createRunEngine({
    * signal. While one is on screen the run waits for the owner, as it does for a launch dialog;
    * it is answered in the terminal. `isOver` says the step's loop has ended.
    */
-  async function watchForDialog(runId, sessionId, workflow, isOver, { agentName, stepName, settle }) {
+  async function watchForDialog(runId, sessionId, workflow, isOver, { agentName, stepName, settle, cwd, restartedAttempt }) {
     const handle = getHandle(runId);
     const over = () => isOver() || handle.stopped || handle.workflow !== workflow;
     // A pass whose agent sits idle at an unchanged prompt never took its prompt (the CLI was
-    // still clearing or starting when it was pasted). It is sent once more; after that the run
-    // fails rather than show a pass as running that nothing works on. A pass in which the agent
-    // asked for input is left alone: it was working, and the owner's answer came after.
+    // still clearing or starting when it was pasted, or stopped reading input). It is sent once
+    // more; then the agent's terminal is started again and the step relaunches its agent there.
+    // An agent started again that still takes nothing fails the run, rather than show a pass as
+    // running that nothing works on. A pass in which the agent asked for input is left alone: it
+    // was working, and the owner's answer came after.
     let pickup = { pass: null, idleMs: 0, resent: false, asked: false, screen: null };
     const watchPickup = (readiness, screen) => {
       const pass = workflow.snapshot();
@@ -468,7 +477,14 @@ export function createRunEngine({
         workflow.resubmit();
         return;
       }
-      failRun(runId, `The agent ${agentName} did not start step ${stepName}: its prompt was sent twice and its terminal still shows it idle at an unchanged prompt. Check the terminal, then Resume.`);
+      if (restartedAttempt) {
+        failRun(runId, `The agent ${agentName} did not start step ${stepName}, also after it was started again in its terminal: it stays idle at an unchanged prompt and takes no input. Check the terminal, then Resume.`);
+        workflow.stop();
+        settle();
+        return;
+      }
+      console.warn(`[pipeline-run] ${runId}: step ${stepName} still has not taken its prompt in ${sessionId}; starting its agent again`);
+      handle.agentRestart = { sessionId, cwd };
       workflow.stop();
       settle();
     };
@@ -636,7 +652,7 @@ export function createRunEngine({
     }
 
     if (snapshot.status === 'stopped') {
-      if (getHandle(runId).stopRequested) {
+      if (getHandle(runId).stopRequested || getHandle(runId).agentRestart) {
         return { terminal: true };
       }
       if (['pending', 'running', 'needs_input', 'limit_paused', 'interrupted'].includes(current.status)) {
@@ -882,7 +898,8 @@ export function createRunEngine({
 
       if (agent.assignment) runStore.recordAttempt(current);
 
-      watchForDialog(runId, sessionId, workflow, () => settled, { agentName: agent.name, stepName: defStep.name, settle: settleWorkflow }).catch((err) => {
+      const restartedAttempt = handle.restartedAttempt === `${stepIndex}:${attempt}`;
+      watchForDialog(runId, sessionId, workflow, () => settled, { agentName: agent.name, stepName: defStep.name, settle: settleWorkflow, cwd: current.worktreePath, restartedAttempt }).catch((err) => {
         try {
           failRun(runId, String(err?.message || err || 'Run failed').slice(0, 2000));
         } catch (failErr) {
@@ -908,7 +925,25 @@ export function createRunEngine({
       handle.dialogPause = false;
     }
 
+    const restart = handle.agentRestart;
+    handle.agentRestart = null;
     if (handle.stopped) return;
+
+    if (restart) {
+      const stepIndex = runStore.get(runId)?.currentStepIndex;
+      const { name: stepName, agent: { name: agentName } } = runStore.get(runId).definition.steps[stepIndex];
+      try {
+        await restartAgentTerminal(restart.sessionId, restart.cwd);
+      } catch (err) {
+        failRun(runId, `The agent ${agentName} did not take the prompt of step ${stepName}, and its terminal could not be started again: ${String(err?.message || err)}`.slice(0, 2000));
+        return;
+      }
+      if (handle.stopped || runStore.get(runId)?.status !== 'running') return;
+      const relaunched = persistTransition(runId, { type: 'agent_restarted' });
+      handle.restartedAttempt = `${stepIndex}:${relaunched.steps[stepIndex].attempt}`;
+      await runStep(runId);
+      return;
+    }
 
     const after = runStore.get(runId);
     if (!after) return;
