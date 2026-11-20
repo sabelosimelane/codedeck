@@ -230,6 +230,10 @@ afterEach(() => {
 });
 
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
+  it('requires a positive whole number of milliseconds for a prompt to be taken', () => {
+    expect(() => setupEngine({ engineExtras: { promptPickupMs: 0 } })).toThrow('createRunEngine: promptPickupMs must be a positive integer, got 0');
+    expect(() => setupEngine({ engineExtras: { promptPickupMs: 1.5 } })).toThrow('createRunEngine: promptPickupMs must be a positive integer, got 1.5');
+  });
   it('requires a terminal muting function at construction', () => {
     expect(() => setupEngine({ engineExtras: { setTerminalMuted: undefined } })).toThrow('createRunEngine: setTerminalMuted is required');
   });
@@ -2719,6 +2723,139 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await done;
     expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'disk full' });
+  });
+});
+
+describe('createRunEngine — a prompt the agent never took', () => {
+  const IDLE = () => executionState();
+  const WORKING = () => executionState({ executionReason: 'agent_working', profile: { promptVisible: () => false } });
+  const GAVE_UP = 'The agent codex did not start step Develop: its prompt was sent twice and its terminal still shows it idle at an unchanged prompt. Check the terminal, then Resume.';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  // A loop whose pass stays running until the test moves it on.
+  function passLoop() {
+    const state = { status: 'stopped', iteration: 0, notify: null };
+    const snap = () => ({ status: state.status, active: !['complete', 'stopped'].includes(state.status), error: null, requestId: 'r', iteration: state.iteration, limitReached: false });
+    const publish = (status) => { state.status = status; state.notify(snap()); };
+    const resubmit = vi.fn();
+    const stop = vi.fn(() => publish('stopped'));
+    const createWorkflow = vi.fn(({ notify }) => {
+      state.notify = notify;
+      return {
+        start() { state.iteration = 1; queueMicrotask(() => publish('running')); },
+        stop,
+        resubmit,
+        snapshot: snap,
+        signalIdentifier: () => 'abc-1',
+        answerText: text => text,
+        input() { publish('running'); },
+      };
+    });
+    return {
+      createWorkflow, resubmit, stop,
+      ask: () => publish('needs_input'),
+      answered: () => publish('running'),
+      nextPass: () => { state.iteration += 1; publish('running'); },
+      complete: () => publish('complete'),
+    };
+  }
+
+  async function startPass(screens = []) {
+    const loop = passLoop();
+    const ctx = setupEngine({
+      readinessQueue: [executionState(), ...screens],
+      createWorkflow: loop.createWorkflow,
+      engineExtras: { dialogPollMs: 2000, promptPickupMs: 10_000 },
+    });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100); // launch Enter
+    await vi.advanceTimersByTimeAsync(1000); // ready → prompt sent
+    await vi.advanceTimersByTimeAsync(0);
+    return { ctx, loop, run, done };
+  }
+
+  it('sends the prompt again when the agent stays idle at an unchanged prompt after it was sent', async () => {
+    const { ctx, loop, run, done } = await startPass();
+    // The first look sets what the screen shows; ten seconds unchanged after it count.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+
+    ctx.setReadinessQueue(Array.from({ length: 40 }, WORKING));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+
+  it('fails the run, and stops its loop, when the agent is still idle after the prompt was sent again', async () => {
+    const { ctx, loop, run, done } = await startPass();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+    await vi.advanceTimersByTimeAsync(2000);
+    await done;
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    expect(loop.stop).toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: GAVE_UP });
+  });
+
+  it('never sends the prompt again while the agent shows it is working between idle moments', async () => {
+    const screens = [];
+    for (let round = 0; round < 6; round += 1) screens.push(IDLE(), IDLE(), IDLE(), IDLE(), WORKING());
+    const { ctx, loop, run } = await startPass(screens);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+  });
+
+  it('never sends the prompt again while the screen keeps changing at an idle prompt', async () => {
+    const screens = Array.from({ length: 30 }, (_, index) => executionState({ lines: [`line ${index}`, '› '] }));
+    const { ctx, loop, run } = await startPass(screens);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+  });
+
+  it('leaves a pass alone once its agent has asked for input, also after the answer', async () => {
+    const screen = ['[[CDW:abc-1:QUESTIONS]]', '1. Which schema?', 'Recommended: guardian.', '[[CDW:abc-1:NEEDS_INPUT]]'];
+    const loop = passLoop();
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      createWorkflow: loop.createWorkflow,
+      readScreen: vi.fn(async () => screen),
+      engineExtras: { dialogPollMs: 2000, promptPickupMs: 10_000 },
+    });
+    const run = ctx.runStore.create(validRun());
+    ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.advanceTimersByTimeAsync(0);
+    loop.ask();
+    await vi.advanceTimersByTimeAsync(30_000);
+    loop.answered();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id).status).not.toBe('error');
+  });
+
+  it('gives each new pass its own resend', async () => {
+    const { ctx, loop, run } = await startPass();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    loop.nextPass();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(2);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
   });
 });
 

@@ -171,6 +171,18 @@ export function createTerminalWorkflow({ write, notify }) {
     },
     stop() { finish('stopped'); },
     /**
+     * Pastes and submits the prompt of the pass in progress again, under the same identifier.
+     * For a prompt the agent's CLI did not take (it was cleared, or was still starting): the
+     * caller decides from the screen that the agent never began the pass.
+     */
+    resubmit() {
+      if (status !== 'running' || identifier === null) {
+        throw new Error('The prompt can be sent again only while a pass is running.');
+      }
+      clearTimeout(enterTimer);
+      pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance));
+    },
+    /**
      * What to type for the agent as the answer to its request: the answer, and a new identifier
      * for the rest of the pass. The terminal can send the answered request again at any time (a
      * browser pane attaching or resizing redraws the screen); under the old identifier it is

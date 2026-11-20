@@ -214,6 +214,13 @@ left there. Nodes that use different agents get different tabs, because a termin
 holds one agent CLI. Earlier output of a shared tab stays in its scrollback; the
 agent's conversation is cleared each time, including anything you typed there yourself.
 
+A CLI that is still clearing or starting can drop a prompt pasted into it. So while a
+pass runs, CodeDeck watches its terminal: when the agent sits idle at a prompt that has
+not changed for 30 seconds, and has not asked for anything in that pass, the prompt is
+taken to be lost and is sent once more. If the agent still does not start, the run fails
+and says so, instead of showing a step as running that nothing works on; **Resume**
+starts the step again.
+
 A run keeps only the terminal it is working in showing status; its other terminals
 are muted until their step starts. When the run waits for you, that step's terminal
 stays live. When the run is stopped, interrupted, failed or complete, all its

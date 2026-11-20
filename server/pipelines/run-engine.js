@@ -20,6 +20,9 @@ const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
 const DEFAULT_DIALOG_POLL_MS = 2000;
+// How long an agent may sit idle at an unchanged prompt while its pass runs before the prompt
+// is taken to be lost: it is sent once more, and then the run fails.
+const DEFAULT_PROMPT_PICKUP_MS = 30_000;
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
 // Execution reasons that say the agent, or a sub-agent it started, is in the middle of a turn.
 const AGENT_AT_WORK = new Set(['agent_working', 'agent_delegated']);
@@ -88,6 +91,7 @@ export function createRunEngine({
   readinessTimeoutMs = DEFAULT_TIMEOUT_MS,
   launchEnterDelayMs = DEFAULT_ENTER_DELAY_MS,
   dialogPollMs = DEFAULT_DIALOG_POLL_MS,
+  promptPickupMs = DEFAULT_PROMPT_PICKUP_MS,
 } = {}) {
   if (!runStore) throw new Error('createRunEngine: runStore is required');
   if (typeof createWorktree !== 'function') throw new Error('createRunEngine: createWorktree is required');
@@ -109,6 +113,7 @@ export function createRunEngine({
   if (typeof answerStore?.add !== 'function' || typeof answerStore?.list !== 'function') throw new Error('createRunEngine: answerStore is required');
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
   if (typeof setTerminalMuted !== 'function') throw new Error('createRunEngine: setTerminalMuted is required');
+  if (!Number.isInteger(promptPickupMs) || promptPickupMs <= 0) throw new Error(`createRunEngine: promptPickupMs must be a positive integer, got ${promptPickupMs}`);
 
   const handles = new Map();
   const noteWarnings = new Set();
@@ -435,14 +440,48 @@ export function createRunEngine({
    * signal. While one is on screen the run waits for the owner, as it does for a launch dialog;
    * it is answered in the terminal. `isOver` says the step's loop has ended.
    */
-  async function watchForDialog(runId, sessionId, workflow, isOver) {
+  async function watchForDialog(runId, sessionId, workflow, isOver, { agentName, stepName, settle }) {
     const handle = getHandle(runId);
     const over = () => isOver() || handle.stopped || handle.workflow !== workflow;
+    // A pass whose agent sits idle at an unchanged prompt never took its prompt (the CLI was
+    // still clearing or starting when it was pasted). It is sent once more; after that the run
+    // fails rather than show a pass as running that nothing works on. A pass in which the agent
+    // asked for input is left alone: it was working, and the owner's answer came after.
+    let pickup = { pass: null, idleMs: 0, resent: false, asked: false, screen: null };
+    const watchPickup = (readiness, screen) => {
+      const pass = workflow.snapshot();
+      if (pass.iteration !== pickup.pass) pickup = { pass: pass.iteration, idleMs: 0, resent: false, asked: false, screen: null };
+      if (pass.status === 'needs_input') pickup.asked = true;
+      const unchanged = pickup.screen !== null && pickup.screen === screen;
+      pickup.screen = screen;
+      if (pass.status !== 'running' || pickup.asked || handle.dialogPause
+        || runStore.get(runId)?.status !== 'running' || readiness !== 'ready' || !unchanged) {
+        pickup.idleMs = 0;
+        return;
+      }
+      pickup.idleMs += dialogPollMs;
+      if (pickup.idleMs < promptPickupMs) return;
+      pickup.idleMs = 0;
+      if (!pickup.resent) {
+        pickup.resent = true;
+        console.warn(`[pipeline-run] ${runId}: step ${stepName} left its prompt untaken in ${sessionId}; sending it again`);
+        workflow.resubmit();
+        return;
+      }
+      failRun(runId, `The agent ${agentName} did not start step ${stepName}: its prompt was sent twice and its terminal still shows it idle at an unchanged prompt. Check the terminal, then Resume.`);
+      workflow.stop();
+      settle();
+    };
     while (true) {
       await delay(dialogPollMs, setTimeoutFn);
       if (over()) return;
-      const showsDialog = classifyReadiness(await readExecutionState(sessionId)) === 'needs_input';
+      const state = await readExecutionState(sessionId);
+      const readiness = classifyReadiness(state);
+      const showsDialog = readiness === 'needs_input';
+      const screen = Array.isArray(state?.lines) ? state.lines.join('\n') : null;
       await enqueueTransition(runId, async () => {
+        if (over()) return;
+        watchPickup(readiness, screen);
         if (over()) return;
         if (!showsDialog) {
           endDialogPause(runId);
@@ -843,7 +882,7 @@ export function createRunEngine({
 
       if (agent.assignment) runStore.recordAttempt(current);
 
-      watchForDialog(runId, sessionId, workflow, () => settled).catch((err) => {
+      watchForDialog(runId, sessionId, workflow, () => settled, { agentName: agent.name, stepName: defStep.name, settle: settleWorkflow }).catch((err) => {
         try {
           failRun(runId, String(err?.message || err || 'Run failed').slice(0, 2000));
         } catch (failErr) {

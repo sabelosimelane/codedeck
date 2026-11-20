@@ -559,4 +559,28 @@ describe('terminal workflow — guidance for the pass', () => {
     expect(() => workflow.start({ ...request, guidance: 'Something else.' })).toThrow(/requestId/);
     expect(() => workflow.start(request)).toThrow(/requestId/);
   });
+
+  it('pastes the prompt of the pass in progress again, with its identifier, and submits it', () => {
+    const { workflow, write } = setup();
+    workflow.start(request);
+    vi.advanceTimersByTime(100);
+    const first = write.mock.calls[0][0];
+    write.mockClear();
+    workflow.resubmit();
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0]).toBe(first);
+    vi.advanceTimersByTime(100);
+    expect(write).toHaveBeenLastCalledWith('\r');
+    expect(workflow.snapshot()).toMatchObject({ status: 'running', iteration: 1 });
+  });
+
+  it('refuses to send the prompt again when no pass is running', () => {
+    const { workflow, write } = setup();
+    expect(() => workflow.resubmit()).toThrow('The prompt can be sent again only while a pass is running.');
+    workflow.start({ ...request, resetFirst: true });
+    expect(() => workflow.resubmit()).toThrow('The prompt can be sent again only while a pass is running.');
+    workflow.stop();
+    expect(() => workflow.resubmit()).toThrow('The prompt can be sent again only while a pass is running.');
+    expect(write.mock.calls.every(([text]) => !text.includes('Iteration identifier'))).toBe(true);
+  });
 });
