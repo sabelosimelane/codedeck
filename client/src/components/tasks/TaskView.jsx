@@ -213,7 +213,8 @@ export default function TaskView({
           <div className="pipeline-run-actions">
             {run.actions?.stop && !['interrupted', 'stopped', 'error', 'complete'].includes(run.status) && <button type="button" onClick={() => onStop(run.id)}>Stop</button>}
             {run.actions?.continue && <button type="button" onClick={() => onContinue(run.id)} className={status.primaryAction === 'continue' ? 'pipeline-run-primary' : undefined}>Continue</button>}
-            {run.actions?.resume && <ChangeRunTeam run={run} />}
+            {/* Always in view until the run is complete, so it can be found; the backend only takes it from a run that is not working. */}
+            {run.status !== 'complete' && <ChangeRunTeam run={run} disabledReason={run.actions?.resume ? null : 'Stop the run to change its team. Steps already done keep their agents.'} />}
             {run.actions?.resume && <button type="button" onClick={() => { if (window.confirm(resumeConfirmation(run, current))) onResume(run.id); }} className={status.primaryAction === 'resume' ? 'pipeline-run-primary' : undefined}>Resume</button>}
             {run.actions?.cleanup && (
               <button type="button" onClick={() => onCleanup(run.id)} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}

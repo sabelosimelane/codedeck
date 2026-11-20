@@ -70,10 +70,11 @@ function AssignmentDialog({ run, onClose }) {
   </Dialog>;
 }
 
-export default function ChangeRunTeam({ run }) {
+/** `disabledReason`: why the team cannot be changed now (the run is working); the button stays in view with it as its title. */
+export default function ChangeRunTeam({ run, disabledReason = null }) {
   const [editing, setEditing] = useState(null);
   return <>
-    <button type="button" onClick={() => setEditing(run)}>Change team</button>
+    <button type="button" onClick={() => setEditing(run)} disabled={disabledReason !== null} title={disabledReason ?? undefined}>Change team</button>
     {editing && <AssignmentDialog run={editing} onClose={() => setEditing(null)} />}
   </>;
 }

@@ -281,6 +281,16 @@ describe('TaskView', () => {
   });
 });
 
+it('keeps Change team in view while the run works, disabled with the reason, and drops it once the run is complete', () => {
+  view({ run: run({ actions: { ...run().actions, resume: false } }) });
+  const change = screen.getByRole('button', { name: 'Change team' });
+  expect(change.disabled).toBe(true);
+  expect(change.title).toBe('Stop the run to change its team. Steps already done keep their agents.');
+  cleanup();
+  view({ run: run({ status: 'complete', finishedAt: '2026-11-19T10:05:00.000Z', actions: { ...run().actions, stop: false, resume: false } }) });
+  expect(screen.queryByRole('button', { name: 'Change team' })).toBeNull();
+});
+
 it('lets the owner change teams on a failed run without resuming it', async () => {
   const id = '44444444-4444-4444-8444-444444444444';
   const agent = { id, name: 'Other agent', launchCommand: 'agent', resetCommand: '/new', revision: 1, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
