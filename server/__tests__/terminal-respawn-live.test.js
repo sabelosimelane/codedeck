@@ -65,3 +65,42 @@ describe('respawnMainPaneAsync', () => {
     }
   }, 20000);
 });
+
+describe('typeLineAsync and inspectPaneAsync', () => {
+  it('require a session and a single line of text', async () => {
+    const runtime = createTerminalRuntime('tmux');
+    await expect(runtime.typeLineAsync('', 'echo hi')).rejects.toThrow('typeLineAsync: sessionId must be a non-empty string, got ');
+    await expect(runtime.typeLineAsync('demo-1', '')).rejects.toThrow('typeLineAsync: text must be one non-empty line');
+    await expect(runtime.typeLineAsync('demo-1', 'echo a\necho b')).rejects.toThrow('typeLineAsync: text must be one non-empty line');
+    await expect(runtime.inspectPaneAsync('')).rejects.toThrow('inspectPaneAsync: sessionId must be a non-empty string, got ');
+  });
+
+  // A private TMUX_TMPDIR isolates this test from every user tmux session; no locale, like a bare shell.
+  it('types a line into the main pane and runs it, and reports what the pane is doing', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'cd-type-'));
+    const saved = Object.fromEntries(['TMUX_TMPDIR', 'TMUX', 'LANG', 'LC_ALL', 'LC_CTYPE'].map(name => [name, process.env[name]]));
+    for (const name of ['TMUX', 'LANG', 'LC_ALL', 'LC_CTYPE']) delete process.env[name];
+    process.env.TMUX_TMPDIR = dir;
+    try {
+      tmux(['new-session', '-d', '-s', 'respawn-test', '-x', '80', '-y', '24']);
+      const runtime = createTerminalRuntime('tmux');
+      await until(() => /[%$#] ?$/m.test(tmux(['capture-pane', '-p', '-t', 'respawn-test:0.0'])), 'the shell prompt');
+
+      await runtime.typeLineAsync('respawn-test', "printf 'typed-%s\\n' directly");
+      await until(() => tmux(['capture-pane', '-p', '-t', 'respawn-test:0.0']).split('\n').includes('typed-directly'), 'the typed line to run');
+
+      const pane = await runtime.inspectPaneAsync('respawn-test');
+      expect(pane).toMatchObject({ paneIndex: 0, inMode: false, inputOff: false, dead: false });
+      expect(typeof pane.currentCommand).toBe('string');
+      expect(pane.currentCommand.length).toBeGreaterThan(0);
+    } finally {
+      try { execFileSync('tmux', ['kill-server'], { stdio: 'pipe' }); }
+      finally {
+        for (const [name, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[name]; else process.env[name] = value;
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }, 20000);
+});

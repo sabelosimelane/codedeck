@@ -66,7 +66,7 @@ describe('createTerminalRuntime', () => {
       throw new Error(`unexpected sync ${args[0]}`);
     });
     execFile.mockImplementation((cmd, args, _options, cb) => {
-      if (cmd === 'tmux' && args[0] === 'list-panes') cb(null, { stdout: '200\t/dev/pts/3\n', stderr: '' });
+      if (cmd === 'tmux' && args[0] === '-u' && args[1] === 'list-panes') cb(null, { stdout: '200\t/dev/pts/3\n', stderr: '' });
       else if (cmd === 'ps') cb(null, { stdout: '200 1 pts/3\n201 200 ??\n999 1 other\n', stderr: '' });
       else throw new Error(`unexpected async ${cmd}`);
     });
@@ -93,7 +93,7 @@ describe('createTerminalRuntime', () => {
     expect(signals.filter(([, signal]) => signal === 'SIGKILL')).toEqual(survivor ? [[201, 'SIGKILL']] : []);
     expect(signals.some(([pid]) => pid === 999)).toBe(false);
     // A bare tmux target prefix-matches: closing demo-1 would kill demo-15.
-    expect(execFile.mock.calls.find(([cmd, args]) => cmd === 'tmux' && args[0] === 'list-panes')[1][3]).toBe('=demo-1:');
+    expect(execFile.mock.calls.find(([cmd, args]) => cmd === 'tmux' && args[1] === 'list-panes')[1]).toEqual(['-u', 'list-panes', '-s', '-t', '=demo-1:', '-F', '#{pane_pid}\t#{pane_tty}']);
     expect(execFileSync.mock.calls.find(([, args]) => args[0] === 'kill-session')[1]).toEqual(['kill-session', '-t', '=demo-1']);
   });
 
@@ -231,7 +231,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'list-panes') return `0\tnpm\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
+      if (args[0] === '-u' && args[1] === 'list-panes') return `0\tnpm\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return 'running tests without output\n';
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
@@ -246,7 +246,7 @@ describe('createTerminalRuntime', () => {
     });
     expect(execFileSync).toHaveBeenCalledWith(
       'tmux',
-      ['list-panes', '-t', 'demo-1:0', '-F', '#{pane_index}\t#{pane_current_command}\t#{pane_dead}\t#{window_activity}\t#{pane_current_path}'],
+      ['-u', 'list-panes', '-t', 'demo-1:0', '-F', '#{pane_index}\t#{pane_current_command}\t#{pane_dead}\t#{window_activity}\t#{pane_current_path}'],
       { stdio: 'pipe', encoding: 'utf8' }
     );
   });
@@ -255,7 +255,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'list-panes') return `1\t2.1.321\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n0\t2.1.321\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
+      if (args[0] === '-u' && args[1] === 'list-panes') return `1\t2.1.321\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n0\t2.1.321\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return args.at(-1).endsWith('.0')
         ? '✻ Baked for 24s · done 22:05\n────────────────────\n❯\n────────────────────\n  dev ~/work/demo Opus 5.5\n'
         : '✽ Hatching… (17s · ↓ 88 tokens)\n────────────────────\n❯\n────────────────────\n  dev ~/work/demo Opus 5.5\n';
@@ -271,7 +271,7 @@ describe('createTerminalRuntime', () => {
     const snapshot = vi.fn();
     execFile.mockImplementation((command, args, options, callback) => {
       if (command !== 'tmux') throw new Error('unexpected command');
-      if (args[0] === 'list-panes') return callback(null, { stdout: `0\t2.1.321\t0\t${nowSeconds}\t/tmp\n1\t2.1.321\t0\t${nowSeconds}\t/tmp\n`, stderr: '' });
+      if (args[0] === '-u' && args[1] === 'list-panes') return callback(null, { stdout: `0\t2.1.321\t0\t${nowSeconds}\t/tmp\n1\t2.1.321\t0\t${nowSeconds}\t/tmp\n`, stderr: '' });
       if (args[0] === 'capture-pane') return callback(null, { stdout: args.at(-1).endsWith('.0')
         ? '✻ Baked for 24s · done 22:05\n❯\n  dev ~/work/demo Opus 5.5\n'
         : '✽ Hatching… (17s · ↓ 88 tokens)\n❯\n  dev ~/work/demo Opus 5.5\n', stderr: '' });
@@ -288,7 +288,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
+      if (args[0] === '-u' && args[1] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return [
         '• Working (34s • esc to interrupt)',
         '',
@@ -313,7 +313,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
+      if (args[0] === '-u' && args[1] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return [
         '• Full verification is still running. The earlier targeted suites passed.',
         '',
@@ -341,7 +341,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'list-panes') return `0\t2.1.114\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
+      if (args[0] === '-u' && args[1] === 'list-panes') return `0\t2.1.114\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return [
         'Want me to also verify there are not other blocks?',
         '',
@@ -367,7 +367,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
+      if (args[0] === '-u' && args[1] === 'list-panes') return `0\tnode\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return [
         'Remaining risk: I did not run a live browser/API smoke',
         '',
@@ -393,7 +393,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'list-panes') return `0\tzsh\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
+      if (args[0] === '-u' && args[1] === 'list-panes') return `0\tzsh\t0\t${Math.floor(Date.now() / 1000)}\t/tmp\n`;
       if (args[0] === 'capture-pane') return 'dev@host backend %\n';
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
@@ -412,7 +412,7 @@ describe('createTerminalRuntime', () => {
     execFileSync.mockImplementation((command, args) => {
       if (command !== 'tmux') throw new Error('unexpected command');
       if (args[0] === '-V') return 'tmux 3.6a';
-      if (args[0] === 'list-panes') throw new Error('tmux not reachable');
+      if (args[0] === '-u' && args[1] === 'list-panes') throw new Error('tmux not reachable');
       throw new Error(`unexpected tmux args: ${args.join(' ')}`);
     });
 

@@ -1006,6 +1006,19 @@ const pipelineRunEngine = createRunEngine({
   setTerminalMuted: (sessionId, muted) => setObservedTerminalMuted(sessionAttention, sessionId, muted),
   // Pipeline runs use local projects only, so their terminals are on the local tmux server.
   restartAgentTerminal: (sessionId, cwd) => terminalRuntime.respawnMainPaneAsync(sessionId, cwd),
+  typeIntoTerminal: (sessionId, text) => terminalRuntime.typeLineAsync(sessionId, text),
+  // The pane, and how CodeDeck's own attachment to it stands: input written through a browser's
+  // or a run's tmux client goes wherever that client is.
+  inspectTerminal: async (sessionId) => {
+    const entry = sessions.get(sessionId);
+    return {
+      pane: await terminalRuntime.inspectPaneAsync(sessionId),
+      attachment: entry ? {
+        alive: entry.alive, wsAttached: entry.wsAttached, clientDetached: entry.clientDetached ?? false,
+        backgroundHolds: entry.backgroundHolds ?? 0, controllerId: entry.controllerId ?? null,
+      } : null,
+    };
+  },
   readProgressCount: async run => {
     const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: pipelineProgressReader });
     return progress?.phaseCount > 0 && ['in_progress', 'all_done'].includes(progress.status)

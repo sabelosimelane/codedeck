@@ -225,6 +225,14 @@ and sends the prompt, with nothing to clear. If the agent started again still ta
 nothing, the run fails and says so, instead of showing a step as running that nothing
 works on.
 
+The launch command itself is checked the same way. When the shell in a step's terminal
+shows no sign of it for three seconds (its screen has not changed, or the command is
+nowhere on it), CodeDeck logs what the terminal and its attachments were doing and
+types the command into the terminal once more, directly through tmux. If that does not
+arrive either, the run fails, saying the launch command never reached the terminal. An
+agent that starts and then exits by itself (Codex does after updating itself) fails the
+run as before; **Resume** launches it again.
+
 A run keeps only the terminal it is working in showing status; its other terminals
 are muted until their step starts. When the run waits for you, that step's terminal
 stays live. When the run is stopped, interrupted, failed or complete, all its

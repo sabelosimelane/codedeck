@@ -188,6 +188,8 @@ function setupEngine(overrides = {}) {
     terminalAvailable,
     setTerminalMuted,
     restartAgentTerminal: overrides.restartAgentTerminal ?? vi.fn(async () => {}),
+    typeIntoTerminal: vi.fn(async () => {}),
+    inspectTerminal: vi.fn(async () => ({})),
     setTimeout: overrides.setTimeout ?? setTimeout,
     clearTimeout: overrides.clearTimeout ?? clearTimeout,
     now: overrides.now ?? (() => new Date().toISOString()),
@@ -231,6 +233,10 @@ afterEach(() => {
 });
 
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
+  it('requires ways to type into a terminal directly and to describe it', () => {
+    expect(() => setupEngine({ engineExtras: { typeIntoTerminal: null } })).toThrow('createRunEngine: typeIntoTerminal must be a function');
+    expect(() => setupEngine({ engineExtras: { inspectTerminal: null } })).toThrow('createRunEngine: inspectTerminal must be a function');
+  });
   it('requires a way to start a terminal again for an agent that takes no input', () => {
     expect(() => setupEngine({ engineExtras: { restartAgentTerminal: 'no' } })).toThrow('createRunEngine: restartAgentTerminal must be a function');
   });
@@ -781,6 +787,8 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
           executionReason: 'shell_prompt',
           foregroundCommand: 'zsh',
           profile: null,
+          // The shell echoed the launch command before the agent exited.
+          lines: ['me@host demo % codex', 'me@host demo %'],
         }),
       ],
       classifyReadiness: vi.fn(() => 'exited'),
@@ -1420,8 +1428,10 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
   });
 
   it('Resume fails the run when the agent started again in the terminal exits too', async () => {
-    const exited = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh' });
-    const ctx = setupEngine({ readinessQueue: [exited, exited] });
+    const exited = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['me@host demo %'] });
+    // The shell echoed the launch command, then the agent exited.
+    const exitedAgain = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['me@host demo % codex', 'me@host demo %'] });
+    const ctx = setupEngine({ readinessQueue: [exited, exitedAgain] });
     const created = interruptedRun(ctx);
 
     await ctx.engine.resume(created.id);
@@ -1431,6 +1441,90 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(finished.status).toBe('error');
     expect(finished.error).toBe('The launch command for agent codex exited.');
     expect(ctx.writes.filter(data => data === 'codex')).toHaveLength(1);
+  });
+
+  describe('a launch command that never reaches the terminal', () => {
+    const PROMPT = ['me@host demo %'];
+    const shellAt = lines => executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', profile: null, lines });
+
+    it('types the command into the terminal directly once the screen has stayed unchanged, and carries on', async () => {
+      const typeIntoTerminal = vi.fn(async () => {});
+      const inspectTerminal = vi.fn(async () => ({ paneInMode: false, wsAttached: true }));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = setupEngine({
+        readinessQueue: [shellAt(PROMPT), shellAt(PROMPT), shellAt(PROMPT), shellAt(PROMPT), executionState()],
+        engineExtras: { typeIntoTerminal, inspectTerminal },
+      });
+      const created = interruptedRun(ctx);
+      try {
+        await ctx.engine.resume(created.id);
+        await advanceReadiness(2);
+        expect(typeIntoTerminal).not.toHaveBeenCalled();
+        await advanceReadiness(2);
+        expect(typeIntoTerminal).toHaveBeenCalledWith('Demo-9', 'codex');
+        expect(inspectTerminal).toHaveBeenCalledWith('Demo-9');
+        expect(warn.mock.calls.flat().join('\n')).toContain('did not reach Demo-9');
+        expect(warn.mock.calls.flat().join('\n')).toContain('"wsAttached":true');
+        await advanceReadiness(1);
+
+        const finished = ctx.runStore.get(created.id);
+        expect(finished.status).toBe('complete');
+        // Only the first launch went through the attachment.
+        expect(ctx.writes.filter(data => data === 'codex')).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('fails the run, saying so, when the command typed directly does not arrive either', async () => {
+      const typeIntoTerminal = vi.fn(async () => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = setupEngine({
+        readinessQueue: Array.from({ length: 12 }, () => shellAt(PROMPT)),
+        engineExtras: { typeIntoTerminal },
+      });
+      const created = interruptedRun(ctx);
+      try {
+        await ctx.engine.resume(created.id);
+        await advanceReadiness(8);
+        const finished = ctx.runStore.get(created.id);
+        expect(typeIntoTerminal).toHaveBeenCalledTimes(1);
+        expect(finished.status).toBe('error');
+        expect(finished.error).toBe('The launch command for agent codex never reached its terminal Demo-9, also when typed into it directly. Check the terminal, then Resume.');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('also notices it in a new terminal, where the command is nowhere on the screen', async () => {
+      const typeIntoTerminal = vi.fn(async () => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = setupEngine({
+        readinessQueue: [shellAt(PROMPT), shellAt(PROMPT), shellAt(PROMPT), executionState()],
+        engineExtras: { typeIntoTerminal },
+      });
+      const run = ctx.runStore.create(validRun());
+      try {
+        const done = ctx.engine.start(run.id);
+        await advanceReadiness(4);
+        await done;
+        expect(typeIntoTerminal).toHaveBeenCalledWith('Demo-1', 'codex');
+        expect(ctx.runStore.get(run.id).status).toBe('complete');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('never types the command again when the shell shows it ran', async () => {
+      const typeIntoTerminal = vi.fn(async () => {});
+      const ran = shellAt(['me@host demo % codex', 'Update ran successfully! Please restart Codex.', 'me@host demo %']);
+      const ctx = setupEngine({ readinessQueue: [shellAt(PROMPT), ran, ran, ran, ran], engineExtras: { typeIntoTerminal } });
+      const created = interruptedRun(ctx);
+      await ctx.engine.resume(created.id);
+      await advanceReadiness(5);
+      expect(typeIntoTerminal).not.toHaveBeenCalled();
+      expect(ctx.runStore.get(created.id)).toMatchObject({ status: 'error', error: 'The launch command for agent codex exited.' });
+    });
   });
 
   it('Resume opens a terminal for a step that never had one, without asking about a terminal', async () => {

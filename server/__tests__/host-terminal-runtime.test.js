@@ -19,12 +19,13 @@ function fakeRunner(responses = {}) {
   return {
     calls,
     ptys,
+    // A read whose format is split on tabs starts tmux with -u; the subcommand follows it.
     tmuxCalls(subcommand) {
-      return calls.filter(c => c.cmd === 'tmux' && c.args[0] === subcommand);
+      return calls.filter(c => c.cmd === 'tmux' && (c.args[0] === '-u' ? c.args[1] : c.args[0]) === subcommand);
     },
     run: vi.fn((cmd, args, opts) => {
       calls.push({ cmd, args, opts });
-      const responder = responses[cmd === 'tmux' ? args[0] : cmd];
+      const responder = responses[cmd === 'tmux' ? (args[0] === '-u' ? args[1] : args[0]) : cmd];
       if (responder instanceof Error) return Promise.reject(responder);
       if (typeof responder === 'function') {
         try {
@@ -161,7 +162,7 @@ describe('createHostTerminalRuntime.killAsync', () => {
 
     expect(entry.pty.kill).toHaveBeenCalled();
     expect(runner.tmuxCalls('kill-session')[0].args).toEqual(['kill-session', '-t', '=proj-1']);
-    expect(runner.tmuxCalls('list-panes')[0].args[3]).toBe('=proj-1:');
+    expect(runner.tmuxCalls('list-panes')[0].args).toEqual(['-u', 'list-panes', '-s', '-t', '=proj-1:', '-F', '#{pane_pid}\t#{pane_tty}']);
     expect(runner.tmuxCalls('has-session')).toHaveLength(1);
     expect(runner.calls.findIndex(c => c.args?.[0] === 'kill-session')).toBeLessThan(runner.calls.findIndex(c => c.args?.[0] === 'has-session'));
   });
@@ -357,7 +358,7 @@ describe('createHostTerminalRuntime auxiliary ops', () => {
     await makeRuntime(runner).getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
 
     const script = runner.calls[0].args[1];
-    const paneRead = script.indexOf('tmux list-panes');
+    const paneRead = script.indexOf('tmux -u list-panes');
     const clockRead = script.indexOf('date +%s');
     expect(paneRead).toBeGreaterThanOrEqual(0);
     expect(clockRead).toBeGreaterThan(paneRead);

@@ -23,6 +23,20 @@ const DEFAULT_DIALOG_POLL_MS = 2000;
 // How long an agent may sit idle at an unchanged prompt while its pass runs before the prompt
 // is taken to be lost: it is sent once more, and then the run fails.
 const DEFAULT_PROMPT_PICKUP_MS = 30_000;
+// Readings of an unchanged shell, after a launch, that mean the launch command never arrived.
+const LAUNCH_LOST_READINGS = 3;
+
+/**
+ * Whether a launch command written into a terminal never reached its shell: the screen is the
+ * one it showed before the launch, or the command appears nowhere on it (it would be echoed).
+ * Whitespace is ignored, since a long command wraps across lines.
+ */
+function launchNeverArrived(state, before, launchCommand) {
+  const screen = Array.isArray(state?.lines) ? state.lines.join('\n') : '';
+  if (before !== null && screen === before) return true;
+  const flat = text => text.replace(/\s/g, '');
+  return !flat(screen).includes(flat(launchCommand));
+}
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
 // Execution reasons that say the agent, or a sub-agent it started, is in the middle of a turn.
 const AGENT_AT_WORK = new Set(['agent_working', 'agent_delegated']);
@@ -78,6 +92,10 @@ export function createRunEngine({
   setTerminalMuted,
   // Starts the terminal of an agent that takes no input again with a fresh shell, ending the agent.
   restartAgentTerminal,
+  // Types a line into a terminal's pane directly, not through an attachment, and presses Enter.
+  typeIntoTerminal,
+  // What a terminal's pane and its attachments are doing, for the log.
+  inspectTerminal,
   // Told what a step wrote once its note is stored; nothing it does can affect the run.
   onNoteWritten = () => {},
   removeWorktree = async () => ({ ok: true }),
@@ -116,6 +134,8 @@ export function createRunEngine({
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
   if (typeof setTerminalMuted !== 'function') throw new Error('createRunEngine: setTerminalMuted is required');
   if (typeof restartAgentTerminal !== 'function') throw new Error('createRunEngine: restartAgentTerminal must be a function');
+  if (typeof typeIntoTerminal !== 'function') throw new Error('createRunEngine: typeIntoTerminal must be a function');
+  if (typeof inspectTerminal !== 'function') throw new Error('createRunEngine: inspectTerminal must be a function');
   if (!Number.isInteger(promptPickupMs) || promptPickupMs <= 0) throw new Error(`createRunEngine: promptPickupMs must be a positive integer, got ${promptPickupMs}`);
 
   const handles = new Map();
@@ -317,10 +337,15 @@ export function createRunEngine({
    * a terminal's agent is neither at its prompt nor working: work it was already doing is
    * finished first, however long it takes.
    */
-  async function waitUntilReady(runId, sessionId, agentName, returningStep = null, launchAgent = null) {
+  async function waitUntilReady(runId, sessionId, agentName, returningStep = null, launchAgent = null, launchCommand = null) {
     let waitedMs = 0;
     let lastState = null;
     let launched = false;
+    // A launch command can be lost on its way to the shell. After a launch that the shell shows no
+    // sign of, it is typed into the pane directly once; then the run fails saying so.
+    let screenBeforeLaunch = null;
+    let lostReadings = 0;
+    let typedDirectly = false;
 
     while (true) {
       await delay(readinessPollMs, setTimeoutFn);
@@ -342,12 +367,34 @@ export function createRunEngine({
           // The terminal is still there but its agent is not: start it again in this terminal.
           launched = true;
           waitedMs = 0;
+          screenBeforeLaunch = Array.isArray(lastState?.lines) ? lastState.lines.join('\n') : null;
           await launchAgent();
           continue;
+        }
+        if (typeof launchCommand === 'string' && launchNeverArrived(lastState, screenBeforeLaunch, launchCommand)) {
+          lostReadings += 1;
+          if (lostReadings < LAUNCH_LOST_READINGS) continue;
+          lostReadings = 0;
+          if (!typedDirectly) {
+            typedDirectly = true;
+            let terminal;
+            try {
+              terminal = JSON.stringify(await inspectTerminal(sessionId));
+            } catch (err) {
+              terminal = `could not be inspected: ${err?.message || err}`;
+            }
+            console.warn(`[pipeline-run] ${runId}: the launch command for ${agentName} did not reach ${sessionId}; terminal ${terminal}; typing it into the terminal directly`);
+            screenBeforeLaunch = Array.isArray(lastState?.lines) ? lastState.lines.join('\n') : null;
+            await typeIntoTerminal(sessionId, launchCommand);
+            continue;
+          }
+          failRun(runId, `The launch command for agent ${agentName} never reached its terminal ${sessionId}, also when typed into it directly. Check the terminal, then Resume.`);
+          return { ok: false, reason: 'launch_lost' };
         }
         failRun(runId, `The launch command for agent ${agentName} exited.`);
         return { ok: false, reason: 'exited' };
       }
+      lostReadings = 0;
 
       if (result === 'closed') {
         failRun(runId, returningStep === null || launched
@@ -820,7 +867,7 @@ export function createRunEngine({
         if (handle.stopped) return;
       }
 
-      const ready = await waitUntilReady(runId, sessionId, agent.name, returning ? defStep.name : null, launchAgent);
+      const ready = await waitUntilReady(runId, sessionId, agent.name, returning ? defStep.name : null, launchAgent, agent.launchCommand);
       if (!ready.ok) return;
 
       let current = runStore.get(runId);
