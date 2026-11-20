@@ -213,6 +213,10 @@ share one tab, and a new run in an existing worktree reuses the tabs an earlier 
 left there. Nodes that use different agents get different tabs, because a terminal
 holds one agent CLI. Earlier output of a shared tab stays in its scrollback; the
 agent's conversation is cleared each time, including anything you typed there yourself.
+A step goes back only to a terminal whose shell is still in the run's worktree; one that
+is somewhere else (its shell changed folder, or tmux lost the session and a new one of
+the same name was opened in the project) is set aside, and the step opens a new terminal
+in the worktree.
 
 A CLI that is still clearing or starting can drop a prompt pasted into it, and a CLI can
 stop reading input altogether while its screen still shows an idle prompt (Codex has done

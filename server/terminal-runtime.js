@@ -932,18 +932,20 @@ function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess
       await execFileAsync('tmux', ['send-keys', '-t', target, 'Enter'], { encoding: 'utf8' });
     },
 
-    /** What the main pane of a session is doing: its mode, whether it takes input, its command. */
+    /** What the main pane of a session is doing: its mode, whether it takes input, its command, its folder. */
     async inspectPaneAsync(sessionId) {
       if (typeof sessionId !== 'string' || !sessionId.trim()) {
         throw new Error(`inspectPaneAsync: sessionId must be a non-empty string, got ${sessionId}`);
       }
       const target = await mainPaneTarget(sessionId, 'inspectPaneAsync');
       const { stdout } = await execFileAsync('tmux', [TABS, 'display-message', '-p', '-t', target,
-        '#{pane_index}\t#{pane_in_mode}\t#{pane_input_off}\t#{pane_dead}\t#{pane_current_command}\t#{pane_mode}'], { encoding: 'utf8' });
+        '#{pane_index}\t#{pane_in_mode}\t#{pane_input_off}\t#{pane_dead}\t#{pane_current_command}\t#{pane_mode}\t#{pane_current_path}'], { encoding: 'utf8' });
       const fields = stdout.replace(/\r?\n$/, '').split('\t');
-      if (fields.length !== 6) throw new Error(`inspectPaneAsync: unexpected tmux pane state for ${sessionId}: ${JSON.stringify(stdout)}`);
+      if (fields.length < 7) throw new Error(`inspectPaneAsync: unexpected tmux pane state for ${sessionId}: ${JSON.stringify(stdout)}`);
+      // The path is last: it is the one field that could itself hold a tab.
       const [index, inMode, inputOff, dead, currentCommand, mode] = fields;
-      return { paneIndex: Number(index), inMode: inMode === '1', inputOff: inputOff === '1', dead: dead === '1', currentCommand, mode };
+      const currentPath = fields.slice(6).join('\t');
+      return { paneIndex: Number(index), inMode: inMode === '1', inputOff: inputOff === '1', dead: dead === '1', currentCommand, mode, currentPath };
     },
 
     /**

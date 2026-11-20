@@ -91,6 +91,7 @@ describe('typeLineAsync and inspectPaneAsync', () => {
 
       const pane = await runtime.inspectPaneAsync('respawn-test');
       expect(pane).toMatchObject({ paneIndex: 0, inMode: false, inputOff: false, dead: false });
+      expect(path.isAbsolute(pane.currentPath)).toBe(true);
       expect(typeof pane.currentCommand).toBe('string');
       expect(pane.currentCommand.length).toBeGreaterThan(0);
     } finally {

@@ -40,6 +40,28 @@ describe('promptVisible', () => {
   });
 });
 
+// agy shows its mode in the empty input line once a turn is over:
+// `> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)`. That is its prompt.
+describe('agy idle with its mode shown in the input line', () => {
+  const lines = screen('agy', 'idle-mode-hint.txt');
+
+  it('is at its prompt and ready for a step', () => {
+    const execution = classifyTerminalExecution({
+      paneCurrentCommand: 'agy', paneDead: '0', snapshotText: lines.join('\n'), subagentPanes: [], quietSeconds: 0,
+    });
+    expect(agy.read(lines)).toEqual({ turn: 'idle', backgroundShells: 0 });
+    expect(agy.promptVisible(lines)).toBe(true);
+    expect(execution.executionReason).toBe('agent_prompt_idle');
+    expect(classify({ executionReason: execution.executionReason, foregroundCommand: 'agy', lines, profile: agy, ...alive })).toBe('ready');
+  });
+
+  it('still reads its dialogs as dialogs, not as a prompt', () => {
+    for (const name of ['needs-input-approval.txt', 'needs-input-trust.txt']) {
+      expect(agy.read(screen('agy', name)).turn).toBe('needs_input');
+    }
+  });
+});
+
 // Codex hides its `• Working (…)` line while it writes text, between tools and for its final
 // answer. Its footer still says the turn is running; a step must not be started on that screen.
 describe('Codex writing text in the middle of a turn', () => {

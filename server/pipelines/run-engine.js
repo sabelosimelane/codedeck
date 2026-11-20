@@ -96,6 +96,8 @@ export function createRunEngine({
   typeIntoTerminal,
   // What a terminal's pane and its attachments are doing, for the log.
   inspectTerminal,
+  // Whether a terminal's pane is inside a folder: a step returns only to a terminal in its worktree.
+  terminalInFolder,
   // Told what a step wrote once its note is stored; nothing it does can affect the run.
   onNoteWritten = () => {},
   removeWorktree = async () => ({ ok: true }),
@@ -136,6 +138,7 @@ export function createRunEngine({
   if (typeof restartAgentTerminal !== 'function') throw new Error('createRunEngine: restartAgentTerminal must be a function');
   if (typeof typeIntoTerminal !== 'function') throw new Error('createRunEngine: typeIntoTerminal must be a function');
   if (typeof inspectTerminal !== 'function') throw new Error('createRunEngine: inspectTerminal must be a function');
+  if (typeof terminalInFolder !== 'function') throw new Error('createRunEngine: terminalInFolder must be a function');
   if (!Number.isInteger(promptPickupMs) || promptPickupMs <= 0) throw new Error(`createRunEngine: promptPickupMs must be a positive integer, got ${promptPickupMs}`);
 
   const handles = new Map();
@@ -830,6 +833,25 @@ export function createRunEngine({
       // agent has no terminal gets a new one, with the agent launched in it.
       let { sessionId } = step;
       if (sessionId === null) sessionId = findAgentTerminal(run, stepIndex);
+      // A terminal can leave the worktree: its shell changed folder, or tmux lost the session and a
+      // new one of the same name was opened in the project. Its agent would work in the wrong place.
+      if (sessionId !== null) {
+        const inside = await terminalInFolder(sessionId, run.worktreePath);
+        if (typeof inside !== 'boolean') {
+          throw new Error(`pipeline run: terminalInFolder must answer true or false for ${sessionId}`);
+        }
+        if (handle.stopped) return;
+        if (!inside) {
+          console.warn(`[pipeline-run] ${runId}: terminal ${sessionId} is not in ${run.worktreePath}; step ${defStep.name} opens a new terminal there`);
+          if (step.sessionId === sessionId) {
+            run = updateRun(runId, { steps: run.steps.map((s, i) => (
+              i === stepIndex ? { ...s, sessionId: null, priorSessionIds: [...(s.priorSessionIds || []), sessionId] } : s
+            )) });
+            step = run.steps[stepIndex];
+          }
+          sessionId = null;
+        }
+      }
       const returning = sessionId !== null;
       if (!returning) {
         sessionId = await startSession({

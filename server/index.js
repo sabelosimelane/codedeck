@@ -42,6 +42,7 @@ import {
   listWorktrees as listPipelineWorktrees,
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
+import { createTerminalInFolder } from './pipelines/terminal-folder.js';
 import { createRunTerminalCloser, createTerminalPlaces } from './pipelines/run-terminals.js';
 import { createRunPlaces } from './pipelines/run-places.js';
 import { setObservedTerminalMuted } from './pipelines/terminal-muting-adapter.js';
@@ -1007,6 +1008,7 @@ const pipelineRunEngine = createRunEngine({
   // Pipeline runs use local projects only, so their terminals are on the local tmux server.
   restartAgentTerminal: (sessionId, cwd) => terminalRuntime.respawnMainPaneAsync(sessionId, cwd),
   typeIntoTerminal: (sessionId, text) => terminalRuntime.typeLineAsync(sessionId, text),
+  terminalInFolder: createTerminalInFolder(sessionId => terminalRuntime.inspectPaneAsync(sessionId)),
   // The pane, and how CodeDeck's own attachment to it stands: input written through a browser's
   // or a run's tmux client goes wherever that client is.
   inspectTerminal: async (sessionId) => {

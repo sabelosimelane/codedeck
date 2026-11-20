@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFile, execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -14,6 +14,7 @@ import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
+import { createTerminalInFolder } from '../pipelines/terminal-folder.js';
 import { createRunProgressReader, readRunProgress, parsePhaseProgress } from '../pipelines/run-progress.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createAnswerStore } from '../pipelines/answer-store.js';
@@ -285,6 +286,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
+      terminalInFolder: createTerminalInFolder(sessionId => runtime.inspectPaneAsync(sessionId)),
       inspectTerminal: sessionId => runtime.inspectPaneAsync(sessionId),
       setTerminalMuted: (sessionId, muted) => {
         const state = runs.get(runId);
@@ -420,6 +422,7 @@ describeLive('pipeline run live notes', () => {
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
+      terminalInFolder: createTerminalInFolder(sessionId => runtime.inspectPaneAsync(sessionId)),
       inspectTerminal: sessionId => runtime.inspectPaneAsync(sessionId),
       setTerminalMuted: () => true,
       readProgressCount: async () => null, decisionStore: createDecisionStore(db), answerStore: createAnswerStore(db), noteStore: notes, reviewStore: createReviewStore(db),
@@ -554,6 +557,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
+      terminalInFolder: createTerminalInFolder(sessionId => runtime.inspectPaneAsync(sessionId)),
       inspectTerminal: sessionId => runtime.inspectPaneAsync(sessionId),
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
@@ -786,6 +790,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
+      terminalInFolder: createTerminalInFolder(sessionId => runtime.inspectPaneAsync(sessionId)),
       inspectTerminal: sessionId => runtime.inspectPaneAsync(sessionId),
       setTerminalMuted: () => true,
       readProgressCount: async run => {
@@ -979,6 +984,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
+      terminalInFolder: createTerminalInFolder(sessionId => runtime.inspectPaneAsync(sessionId)),
       inspectTerminal: sessionId => runtime.inspectPaneAsync(sessionId),
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
@@ -1140,6 +1146,7 @@ describeLive('pipeline run live — Resume', () => {
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
+      terminalInFolder: createTerminalInFolder(sessionId => runtime.inspectPaneAsync(sessionId)),
       inspectTerminal: sessionId => runtime.inspectPaneAsync(sessionId),
       setTerminalMuted: () => true,
       readProgressCount: async () => null,
@@ -1336,6 +1343,31 @@ describeLive('pipeline run live — Resume', () => {
       execFileSync('tmux', ['send-keys', '-t', 'codedeck-2', 'Enter'], { stdio: 'pipe' });
       await live.waitForRun(['complete', 'error', 'stopped'], 'the resumed run to finish');
       expect(runs.get(runId)).toMatchObject({ status: 'complete', error: null });
+    } finally {
+      await live.cleanup();
+    }
+  }, 120000);
+
+  // What happened when tmux lost its sessions: a session of the same name came back in the project.
+  it('opens a new terminal in the worktree when the terminal of the step is in another folder', async () => {
+    const live = await liveRun('dialog');
+    const { runs, engine, runId } = live;
+    const elsewhere = mkdtempSync(path.join(os.tmpdir(), 'cd-elsewhere-'));
+    temps.push(elsewhere);
+    try {
+      const done = engine.start(runId);
+      await live.waitForRun(['needs_input', 'error', 'complete'], 'the run to pause for the dialog');
+      await engine.stop(runId);
+      await done;
+      execFileSync('tmux', ['respawn-pane', '-k', '-c', elsewhere, '-t', 'codedeck-1'], { stdio: 'pipe' });
+      await waitFor(() => execFileSync('tmux', ['display-message', '-p', '-t', 'codedeck-1', '#{pane_current_path}'], { encoding: 'utf8' }).trim() === realpathSync(elsewhere), 10000, 'the terminal to be elsewhere');
+
+      await engine.resume(runId);
+      await live.waitForRun(['needs_input', 'error', 'complete'], 'the resumed run to reach the dialog again');
+      expect(runs.get(runId)).toMatchObject({ status: 'needs_input', error: null });
+      expect(runs.get(runId).steps[0]).toMatchObject({ sessionId: 'codedeck-2', priorSessionIds: ['codedeck-1'] });
+      const folder = execFileSync('tmux', ['display-message', '-p', '-t', 'codedeck-2', '#{pane_current_path}'], { encoding: 'utf8' }).trim();
+      expect(folder).toBe(realpathSync(runs.get(runId).worktreePath));
     } finally {
       await live.cleanup();
     }

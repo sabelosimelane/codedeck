@@ -190,6 +190,7 @@ function setupEngine(overrides = {}) {
     restartAgentTerminal: overrides.restartAgentTerminal ?? vi.fn(async () => {}),
     typeIntoTerminal: vi.fn(async () => {}),
     inspectTerminal: vi.fn(async () => ({})),
+    terminalInFolder: vi.fn(async () => true),
     setTimeout: overrides.setTimeout ?? setTimeout,
     clearTimeout: overrides.clearTimeout ?? clearTimeout,
     now: overrides.now ?? (() => new Date().toISOString()),
@@ -233,6 +234,9 @@ afterEach(() => {
 });
 
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
+  it('requires a way to tell whether a terminal is in a folder', () => {
+    expect(() => setupEngine({ engineExtras: { terminalInFolder: undefined } })).toThrow('createRunEngine: terminalInFolder must be a function');
+  });
   it('requires ways to type into a terminal directly and to describe it', () => {
     expect(() => setupEngine({ engineExtras: { typeIntoTerminal: null } })).toThrow('createRunEngine: typeIntoTerminal must be a function');
     expect(() => setupEngine({ engineExtras: { inspectTerminal: null } })).toThrow('createRunEngine: inspectTerminal must be a function');
@@ -1441,6 +1445,51 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(finished.status).toBe('error');
     expect(finished.error).toBe('The launch command for agent codex exited.');
     expect(ctx.writes.filter(data => data === 'codex')).toHaveLength(1);
+  });
+
+  describe('a terminal that is no longer in the run\'s worktree', () => {
+    it('opens a new terminal in the worktree instead of returning to it', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const terminalInFolder = vi.fn(async (sessionId) => sessionId !== 'Demo-9');
+      const ctx = setupEngine({ readinessQueue: [executionState()], engineExtras: { terminalInFolder } });
+      const created = interruptedRun(ctx);
+      try {
+        await ctx.engine.resume(created.id);
+        await advanceReadiness(2);
+        expect(terminalInFolder).toHaveBeenCalledWith('Demo-9', '/tmp/worktrees/home-feature-abcd1234');
+        expect(ctx.startSession).toHaveBeenCalledWith({ project: 'Demo', cwd: '/tmp/worktrees/home-feature-abcd1234' });
+        const finished = ctx.runStore.get(created.id);
+        expect(finished.status).toBe('complete');
+        expect(finished.steps[0]).toMatchObject({ sessionId: 'Demo-1', priorSessionIds: ['Demo-9'] });
+        expect(ctx.attachBackground).not.toHaveBeenCalledWith('Demo-9', expect.anything());
+        expect(warn.mock.calls.flat().join('\n')).toContain('Demo-9 is not in /tmp/worktrees/home-feature-abcd1234');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not lend another step\'s terminal that has left the worktree', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const terminalInFolder = vi.fn(async () => false);
+      const def = definition({ steps: [definition().steps[0], { ...definition().steps[0], name: 'Review' }] });
+      const ctx = setupEngine({ engineExtras: { terminalInFolder } });
+      const created = ctx.runStore.create(validRun({ definition: def, worktreeState: 'present', baseCommit: BASE_COMMIT }));
+      ctx.runStore.update(created.id, {
+        status: 'interrupted', currentStepIndex: 1,
+        steps: [step({ status: 'complete', sessionId: 'Demo-7', attempt: 1, iteration: 1 }), step({ status: 'interrupted', sessionId: null, attempt: 1 })],
+      });
+      try {
+        await ctx.engine.resume(created.id);
+        await advanceReadiness(2);
+        expect(terminalInFolder).toHaveBeenCalledWith('Demo-7', '/tmp/worktrees/home-feature-abcd1234');
+        const finished = ctx.runStore.get(created.id);
+        expect(finished.steps[1].sessionId).not.toBe('Demo-7');
+        expect(finished.steps[1].priorSessionIds).toEqual([]);
+        expect(ctx.startSession).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   describe('a launch command that never reaches the terminal', () => {
