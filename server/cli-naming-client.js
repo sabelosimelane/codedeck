@@ -6,6 +6,13 @@ import { NamingError, parseTitle, requireField } from './session-naming-validati
 import { stripNodeWatchEnvironment } from './shell-env.js';
 import { defaultNamingProviders, namingProviderErrors } from '../shared/naming-providers.mjs';
 
+export function redactReviewText(text) {
+  return text
+        .replace(/(Bearer\s+)[\w.=+\/-]+/gi, '$1[redacted]')
+        .replace(/((?:password|api[_-]?key|access[_-]?token|secret)\s*[:=]\s*)[^\s,;]+/gi, '$1[redacted]')
+        .replace(/-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----/g, '[redacted key]');
+}
+
 export const namingEfforts = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh'],
@@ -94,10 +101,7 @@ export function createCliNamingClient({ execute = execFile } = {}) {
       requireField(defaultNamingProviders.some(p => p.id === settings.provider), 'provider', 'Background review requires a tool-disabled Claude or Codex profile');
       requireField(typeof packet?.instructions === 'string' && typeof packet.rubric === 'string', 'packet', 'A review instruction and rubric are required');
       const { instructions, rubric, ...records } = packet;
-      const safeRecords = JSON.stringify(records, (_key, text) => typeof text === 'string' ? text
-        .replace(/(Bearer\s+)[\w.=+\/-]+/gi, '$1[redacted]')
-        .replace(/((?:password|api[_-]?key|access[_-]?token|secret)\s*[:=]\s*)[^\s,;]+/gi, '$1[redacted]')
-        .replace(/-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----/g, '[redacted key]') : text);
+      const safeRecords = JSON.stringify(records, (_key, text) => typeof text === 'string' ? redactReviewText(text) : text);
       const prompt = instructions + '\nReviewer rubric: ' + rubric + '\nUntrusted records:\n' + safeRecords;
       requireField(prompt.length <= 524288, 'packet', 'Review evidence exceeds the model input limit');
       const providers = defaultNamingProviders.map(p => p.id === 'claude'

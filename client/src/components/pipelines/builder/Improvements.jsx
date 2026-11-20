@@ -20,6 +20,7 @@ import {
   validateOutcome,
 } from '../../../../../shared/workflow-improvements.mjs';
 import ImprovementProposal, { duration } from './ImprovementProposal';
+import TeamImprovements from './TeamImprovements';
 import RunWorkflowDialog from '../RunWorkflowDialog';
 import './improvements.css';
 
@@ -344,7 +345,18 @@ function ModelSettings({ worker, onSaved }) {
     </details>
   );
 }
-export default function Improvements({ workflows, projects = [], onChanged }) {
+export default function Improvements(props) {
+  const [view, setView] = useState('workflows');
+  const switcher = (
+    <nav aria-label="Improvement scores" className="workflow-views">
+      <button aria-pressed={view === 'workflows'} onClick={() => setView('workflows')}>Workflows</button>
+      <button aria-pressed={view === 'teams'} onClick={() => setView('teams')}>Teams</button>
+    </nav>
+  );
+  return view === 'teams' ? <TeamImprovements switcher={switcher} /> : <WorkflowImprovements {...props} switcher={switcher} />;
+}
+
+function WorkflowImprovements({ workflows, projects = [], onChanged, switcher }) {
   const [workflow, setWorkflow] = useState(''),
     [revision, setRevision] = useState('');
   const [from, setFrom] = useState(() => day(new Date(Date.now() - 29 * 86400000))),
@@ -479,6 +491,7 @@ export default function Improvements({ workflows, projects = [], onChanged }) {
             <RefreshCw size={14} /> Refresh
           </button>
         </header>
+        {switcher}
         <div className="imp-filters">
           <label>
             Workflow

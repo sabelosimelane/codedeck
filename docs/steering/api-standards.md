@@ -239,3 +239,17 @@ are represented in the returned run; clients must inspect run status even on HTT
 
 Coverage: `server/__tests__/pipelines-api.test.js`, `pipeline-run-progress.test.js`, `pipeline-run-notes.test.js`, `pipeline-note-store.test.js`, `pipeline-review-store.test.js`, `pipeline-run-engine.test.js`,
 `pipeline-run-store.test.js`, and client pipeline settings, run-hook and sidebar tests.
+
+## Team improvements
+
+CodeDeck serves these resources under `/api/pipelines/improvements/teams`. List responses use the shared pagination envelope, zero-based pages, size 1–100 (default 20), and the record ID as the stable sort tiebreaker. Invalid filters and sorts return a traced 400 problem detail.
+
+| Resource | Contract |
+| --- | --- |
+| GET /scorecards | Scores grouped by team configuration and policy version. Filter by teamId and sort by name. Metric values can be null. |
+| GET /runs | Attributed run summaries including mixed assignments. Filter by teamId or cardId and sort by at. |
+| GET /runs/:id | Request, criteria, evidence excerpts, correction revision, delivery signature, and executed assignments. An unattributed or missing run returns 404. |
+| GET /runs/:id/history | Page through the saved reviewer assessments and owner corrections, sorted by at. |
+| POST /runs/:id/corrections | Supply the reviewed signature and revision, criterion text, verdict, and reason. A concurrent correction or changed delivery returns 409. |
+| GET /trials | Recommendations, assignment progress, observed results and approval-time results. Filter by teamId and sort by at. |
+| POST /trials/:id/decision | Supply revision and one of start, dismiss, stop, or adopt. Stale decisions return 409. Start enrolls up to five matching future runs. Adoption changes one saved team role. |

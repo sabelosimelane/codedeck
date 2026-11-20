@@ -60,6 +60,7 @@ export function createNoteStore(db, { now = () => new Date().toISOString() } = {
   const lists = {};
   for (const direction of ['asc', 'desc']) lists[direction] = db.prepare(`SELECT * FROM pipeline_run_notes WHERE run_id = ? AND (? IS NULL OR step_index = ?) ORDER BY created_at ${direction.toUpperCase()}, id ${direction.toUpperCase()} LIMIT ? OFFSET ?`);
   const latest = db.prepare('SELECT id, run_id, step_index, step_name, attempt, pass, status, summary, created_at FROM pipeline_run_notes WHERE run_id = ? AND id IN (SELECT MAX(id) FROM pipeline_run_notes WHERE run_id = ? GROUP BY step_index) ORDER BY step_index ASC');
+  const latestWrittenNotes = db.prepare("SELECT * FROM pipeline_run_notes WHERE run_id = ? AND step_index = ? AND status = 'written' ORDER BY id DESC LIMIT 3");
   const passExists = db.prepare('SELECT 1 FROM pipeline_run_notes WHERE run_id = ? AND step_index = ? AND attempt = ? AND pass = ? LIMIT 1');
   const lastWritten = db.prepare("SELECT * FROM pipeline_run_notes WHERE run_id = ? AND step_index = ? AND status = 'written' ORDER BY id DESC LIMIT 1");
   const stepGuard = stepIndex => { if (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex > 32) throw new TypeError('stepIndex must be an integer from 0 to 32'); };
@@ -86,6 +87,11 @@ export function createNoteStore(db, { now = () => new Date().toISOString() } = {
       if (!lists[direction]) throw new TypeError('direction must be asc or desc');
       if (stepIndex !== null) stepGuard(stepIndex);
       return lists[direction].all(runId, stepIndex, stepIndex, limit, offset).map(hydrate);
+    },
+    recentWritten(runId, stepIndex) {
+      runIdGuard(runId);
+      stepGuard(stepIndex);
+      return latestWrittenNotes.all(runId, stepIndex).map(hydrate);
     },
     latestByStep(runId) {
       runIdGuard(runId);

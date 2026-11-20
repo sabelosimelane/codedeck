@@ -39,10 +39,11 @@ const proposed = (ids) => ({
 function setup(runs, generate) {
   const db = new Database(':memory:');
   db.exec(
-    'CREATE TABLE pipeline_runs(id TEXT PRIMARY KEY,status TEXT, updated_at TEXT,current_step_index INTEGER)',
+    `CREATE TABLE pipeline_runs(id TEXT PRIMARY KEY,status TEXT, updated_at TEXT,current_step_index INTEGER,
+      steps TEXT DEFAULT '[{"attempt":1}]')`,
   );
   for (const r of runs)
-    db.prepare('INSERT INTO pipeline_runs VALUES(?,?,?,0)').run(r.id, r.status, r.updatedAt);
+    db.prepare('INSERT INTO pipeline_runs(id,status,updated_at,current_step_index) VALUES(?,?,?,0)').run(r.id, r.status, r.updatedAt);
   const workflow = {
     id: workflowId,
     name: 'Bug fix',
@@ -169,7 +170,7 @@ it('blinds a reviewer benchmark, fences activation and uses the approved rubric 
   ]) {
     const r = run({ input: request });
     records.push(r);
-    db.prepare('INSERT INTO pipeline_runs VALUES(?,?,?,0)').run(r.id, r.status, r.updatedAt);
+    db.prepare('INSERT INTO pipeline_runs(id,status,updated_at,current_step_index) VALUES(?,?,?,0)').run(r.id, r.status, r.updatedAt);
     await service.tick();
     service.label(r.id, label);
   }
@@ -188,7 +189,7 @@ it('separates input and approval waiting from execution for newly observed runs'
     db
       .prepare('UPDATE pipeline_runs SET status=?, updated_at=? WHERE id=?')
       .run(status, new Date(Date.parse(stamp) + seconds * 1000).toISOString(), r.id);
-  db.prepare('INSERT INTO pipeline_runs VALUES(?,?,?,0)').run(r.id, 'pending', stamp);
+  db.prepare('INSERT INTO pipeline_runs(id,status,updated_at,current_step_index) VALUES(?,?,?,0)').run(r.id, 'pending', stamp);
   update('running', 1);
   update('needs_input', 3);
   update('running', 8);
@@ -310,7 +311,7 @@ it('invalidates a passed reviewer evaluation if the chosen model changes', async
   ]) {
     const r = run({ input });
     records.push(r);
-    db.prepare('INSERT INTO pipeline_runs VALUES(?,?,?,0)').run(r.id, r.status, r.updatedAt);
+    db.prepare('INSERT INTO pipeline_runs(id,status,updated_at,current_step_index) VALUES(?,?,?,0)').run(r.id, r.status, r.updatedAt);
     await service.tick();
     service.label(r.id, label);
   }
@@ -334,7 +335,7 @@ it('reviews a new proof gap before an older routine batch waiting in the queue',
   db.prepare('UPDATE improvement_jobs SET next_at=?').run('2026-11-18T00:00:00.000Z');
   const gap = run();
   records.push(gap);
-  db.prepare('INSERT INTO pipeline_runs VALUES(?,?,?,0)').run(gap.id, gap.status, gap.updatedAt);
+  db.prepare('INSERT INTO pipeline_runs(id,status,updated_at,current_step_index) VALUES(?,?,?,0)').run(gap.id, gap.status, gap.updatedAt);
   deps.notes.list = (id) =>
     id === gap.id
       ? [
@@ -350,4 +351,15 @@ it('reviews a new proof gap before an older routine batch waiting in the queue',
   service.configure({ revision: 0, provider: 'claude', model: 'sonnet', effort: null });
   await service.tick();
   expect(generate.mock.calls[0][1].evidence.map((e) => e.outcome.id)).toEqual([gap.id]);
+});
+
+it('charges team assessments to the shared reviewer budget and records invalid responses as failed calls', async () => {
+  const {service} = setup([],async () => ({criteria:[],complete:false,cost:null}));
+  const packet = {instructions:'Assess criteria',rubric:'Cite evidence'};
+  await expect(service.reviewDelivery(workflowId,2,packet,() => {throw new Error('bad citation')})).rejects.toThrow('bad citation');
+  let saved = 0;
+  for (let i=1;i<10;i++) expect(await service.reviewDelivery(workflowId,2,packet,() => saved++)).toBe(true);
+  expect(await service.reviewDelivery(workflowId,2,packet,() => saved++)).toBe(false);
+  expect(saved).toBe(9);
+  expect(service.calls().filter(c=>c.status==='failed')).toHaveLength(1);
 });

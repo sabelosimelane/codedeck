@@ -21,6 +21,9 @@ import { createAnswerStore } from '../pipelines/answer-store.js';
 import { createTeamStore, createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
+import { createTeamObservations } from '../pipelines/team-observations.js';
+import { createTeamTrials } from '../pipelines/team-trials.js';
+import { createImprovements } from '../pipelines/improvements.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
 import { setTaskState, OWN_REPOSITORY } from './helpers/task-state.js';
 
@@ -71,7 +74,7 @@ async function setup(overrides = {}) {
   const agentStore = createAgentStore(db);
   const workflowStore = createWorkflowStore(db);
   const settingsStore = createSettingsStore(db);
-  const runStore = createRunStore(db);
+  const runStore = createRunStore(db, { now: overrides.runClock });
   const decisionStore = createDecisionStore(db);
   const noteStore = createNoteStore(db);
   const reviewStore = createReviewStore(db);
@@ -3521,6 +3524,15 @@ describe('workflow teams', () => {
     await request(ctx.app).put(path).send({ ...team, revision: 1 }).expect(409);
     await request(ctx.app).delete(path).expect(204);
     expect(ctx.runStore.get(run.body.id).definition.steps.map(step => step.agent.id)).toEqual([agent.id, reviewer.id, agent.id]);
+    expect(ctx.runStore.attribution(run.body.id)).toMatchObject({
+      teamId: created.body.id, teamRevision: 1, teamName: 'Daily', mixed: true, trialId: null,
+      configuration: [
+        { source: 'setup', agentRevision: agent.revision, teamId: null },
+        { source: 'team', role: 'reviewer', agentId: reviewer.id, provider: null, teamId: created.body.id },
+        { source: 'override', agentId: agent.id },
+      ],
+      attempts: [],
+    });
     expect(ctx.workflowStore.get(start.workflowId).nodes.map(step => step.agentId)).toEqual([null, null]);
   });
 
@@ -3591,6 +3603,9 @@ describe('changing a running workflow’s team', () => {
     expect(updated.steps[2]).toMatchObject({ priorSessionIds: ['Demo-3'], sessionId: null, attempt: 1 });
     expect(updated.status).toBe('error');
     expect(ctx.runStore.get(run.id).definition.steps[2].agent.id).toBe(trial.id);
+    expect(ctx.runStore.attribution(run.id)).toMatchObject({ teamId: team.id, mixed: true,
+      configuration: [{source:'setup'}, {source:'workflow'}, {source:'workflow'}, {source:'workflow'}],
+    });
     expect(ctx.workflowStore.get(workflow.id).nodes[1].agentId).toBe(agent.id);
     // If Verify loops back, the earlier Investigator keeps its original attribution until re-entry.
     const latest = ctx.runStore.get(run.id);
@@ -3599,4 +3614,112 @@ describe('changing a running workflow’s team', () => {
     const queued = await request(ctx.app).put(url).send({ ...change, expectedUpdatedAt: loop.updatedAt }).expect(200);
     expect(queued.body.steps[1]).toMatchObject({ agentName: agent.name, nextAgentName: trial.name, sessionId: 'Demo-2' });
   });
+});
+
+it('reserves a candidate in the run insert transaction and replays without another slot', async () => {
+  let db, candidate;
+  const reserve = vi.fn(context => {
+    expect(db.inTransaction).toBe(true);
+    expect(context).toMatchObject({ roles: ['Reviewer'], mixed: false, project: 'Demo', workflowRevision: 1 });
+    return { trialId, role: 'Reviewer', agent: candidate };
+  });
+  const trialId = randomUUID();
+  const ctx = await setup({ routerDeps: { teamScoring: { trials: { reserve } } } });
+  db = ctx.db;
+  const { agent } = await seedReady(ctx);
+  candidate = { ...agent, launchCommand: 'command codex --model m -c model_reasoning_effort="medium"' };
+  const team = (await request(ctx.app).post(base + '/teams').send({ name: 'Correctors', members: [{ role: 'Reviewer', agentId: agent.id }] }).expect(201)).body;
+  const workflow = ctx.workflowStore.create({ name: 'Validate', agentsDecide: false, nodes: [node(agent.id, {role: 'Reviewer'})] });
+  const body = { project: 'Demo', requestId: 'reserve', workflowId: workflow.id, input: 'fix', teamId: team.id };
+  const run = (await request(ctx.app).post(base + '/runs').send(body).expect(201)).body;
+  expect(ctx.runStore.get(run.id).definition.steps.at(-1).agent.launchCommand).toBe(candidate.launchCommand);
+  expect(ctx.runStore.attribution(run.id)).toMatchObject({ trialId, mixed: false, configuration: [
+    {source: 'setup'}, {source: 'trial', model: 'm', effort: 'medium', agentRevision: agent.revision}
+  ]});
+  await request(ctx.app).post(base + '/runs').send(body).expect(200);
+  expect(reserve).toHaveBeenCalledTimes(1);
+});
+
+it('measures five trial deliveries through the normal run launcher, then adopts only for the selected team', async () => {
+  let time = Date.parse('2026-11-20T12:00:00.000Z');
+  const now = () => new Date(time).toISOString();
+  const teamScoring = {};
+  const ctx = await setup({ runClock: now, routerDeps: { teamScoring } });
+  const teams = createTeamStore(ctx.db);
+  const stores = { db:ctx.db, runs:ctx.runStore, teams, notes:ctx.noteStore, answers:ctx.answerStore,
+    reviews:ctx.reviewStore, now };
+  const improvements = createImprovements({...stores, tasks:ctx.taskStore, decisions:ctx.decisionStore,
+    workflows:ctx.workflowStore, settings:()=>null, generate:vi.fn()});
+  Object.assign(teamScoring, createTeamObservations({...stores,improvements}));
+  teamScoring.trials = createTeamTrials({db:ctx.db, teams, agents:ctx.agentStore, workflows:ctx.workflowStore,
+    observations:teamScoring.observations, now});
+  const {agent} = await seedReady(ctx);
+  const high = 'command codex --model m -c model_reasoning_effort="high"';
+  const medium = 'command codex --model m -c model_reasoning_effort="medium"';
+  ctx.agentStore.update(agent.id, {...agentBody({launchCommand:high}), revision:agent.revision});
+  const members = [{role:'Fix',agentId:agent.id}];
+  const team = teams.create({name:'Trial team',members}), other = teams.create({name:'Other team',members});
+  const workflow = ctx.workflowStore.create({name:'Repair', agentsDecide:false, nodes:[node(agent.id,{role:'Fix'})]});
+  const start = async selected => {
+    const response = await request(ctx.app).post(base+'/runs').send({requestId:randomUUID(),teamId:selected.id,
+      workflowId:workflow.id,project:'Demo',input:'Fix rotation'}).expect(201);
+    return ctx.runStore.get(response.body.id);
+  };
+  const dashboard = base+'/improvements/teams';
+  async function deliver(run, ms) {
+    for (const index of [0,1]) {
+      const progress = ctx.runStore.get(run.id).steps.map((s,i) => i===index
+        ? {...s,status:'running',attempt:1,sessionId:'Demo-'+(i+1)} : {...s,status:'complete'});
+      ctx.runStore.recordAttempt(ctx.runStore.update(run.id,{currentStepIndex:index,status:'running',steps:progress}));
+      time += index === 0 ? 100 : ms;
+    }
+    const latest = ctx.runStore.get(run.id);
+    ctx.runStore.update(run.id,{status:'complete',finishedAt:now(),steps:latest.steps.map(s=>({...s,status:'complete'}))});
+    await improvements.tick();
+    const details = (await request(ctx.app).get(dashboard+'/runs/'+run.id).expect(200)).body;
+    await request(ctx.app).post(dashboard+'/runs/'+run.id+'/corrections').send({revision:0,signature:details.signature,
+      text:'Fix rotation',verdict:'met',reason:'Verified rotation on the device.'}).expect(200);
+    time += 1000;
+  }
+  for (let i=0;i<5;i++) await deliver(await start(team), 900);
+  teamScoring.trials.refresh();
+  const pending = (await request(ctx.app).get(dashboard+'/trials').expect(200)).body.data[0];
+  const decision = dashboard+'/trials/'+pending.id+'/decision';
+  await request(ctx.app).post(decision).send({action:'start',revision:pending.revision}).expect(200);
+  for (let i=0;i<5;i++) {
+    const run = await start(team);
+    expect(run.definition.steps[1].agent.launchCommand).toBe(medium);
+    await deliver(run, 400);
+  }
+  expect((await start(team)).definition.steps[1].agent.launchCommand).toBe(high);
+  const measured = (await request(ctx.app).get(dashboard+'/trials').expect(200)).body.data[0];
+  expect(measured).toMatchObject({status:'measured', comparison:{verdict:'helped'}});
+  await request(ctx.app).post(decision).send({action:'adopt',revision:measured.revision}).expect(200);
+  const later = await start(team);
+  expect(later.definition.steps[1].agent.launchCommand).toBe(medium);
+  expect(ctx.runStore.attribution(later.id)).toMatchObject({trialId:null,teamRevision:2});
+  expect((await start(other)).definition.steps[1].agent.launchCommand).toBe(high);
+});
+
+it('excludes a selected team from comparisons when none of its roles participate', async () => {
+  const ctx=await setup();
+  const {agent,workflow}=await seedReady(ctx);
+  const team=createTeamStore(ctx.db).create({name:'Unused',members:[{role:'Review',agentId:agent.id}]});
+  const run=(await request(ctx.app).post(base+'/runs').send({requestId:'no-team-roles',teamId:team.id,
+    workflowId:workflow.id,project:'Demo',input:'Fix rotation'}).expect(201)).body;
+  expect(ctx.runStore.attribution(run.id)).toMatchObject({mixed:true, attempts:[]});
+});
+
+it('returns traced problem details for invalid team score queries and missing trial evidence', async () => {
+  const {app} = await setup({routerDeps:{teamScoring:{
+    runs:()=>[], detail:()=>{throw Object.assign(new Error('Team run evidence not found'),{status:404})},
+  }}});
+  const url=base+'/improvements/teams/runs';
+  for (const [path,status] of [[url+'?sort=command,desc',400],[url+'/'+randomUUID(),404]]) {
+    const response=await request(app).get(path);
+    expect(response.status).toBe(status);
+    expect(response.type).toBe('application/problem+json');
+    expect(response.body).toMatchObject({status,traceId:response.headers['x-trace-id']});
+    if(status===400) expect(response.body.errors).toEqual([expect.objectContaining({field:'sort'})]);
+  }
 });

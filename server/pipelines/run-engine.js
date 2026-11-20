@@ -841,6 +841,8 @@ export function createRunEngine({
         ...(guidance === undefined ? {} : { guidance }),
       });
 
+      if (agent.assignment) runStore.recordAttempt(current);
+
       watchForDialog(runId, sessionId, workflow, () => settled).catch((err) => {
         try {
           failRun(runId, String(err?.message || err || 'Run failed').slice(0, 2000));

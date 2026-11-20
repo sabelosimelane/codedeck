@@ -241,6 +241,24 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     vi.useFakeTimers();
   });
 
+  it('attributes only submitted agent work and records the actual assignment on a retry', async () => {
+    const denied = vi.fn().mockRejectedValueOnce(new Error('Terminal unavailable')).mockResolvedValue('Demo-1');
+    const ctx = setupEngine({startSession:denied});
+    const def = definition();
+    const team = {id:WORKFLOW_ID,name:'Developers',revision:1};
+    def.steps[0].role = 'Fix';
+    def.steps[0].agent.assignment = {source:'team',agentRevision:1,teamId:team.id,teamRevision:1};
+    const run = ctx.runStore.create(validRun({definition:def}),{team,workload:'a'.repeat(64),mixed:false});
+    const failed = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await failed;
+    expect(ctx.runStore.get(run.id).status).toBe('error');
+    expect(ctx.runStore.attribution(run.id).attempts).toEqual([]);
+    await ctx.engine.resume(run.id);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(ctx.runStore.attribution(run.id).attempts).toMatchObject([
+      {attempt:2,agentId:AGENT_ID,teamId:team.id,role:'Fix',activeMs:expect.any(Number)}]);
+  });
+
   it('records a gated pass before waiting, then approves only once', async () => {
     const readNote = vi.fn(async () => ({ status: 'present', content: '# Analysis complete\nEvidence' }));
     const ctx = setupEngine({ engineExtras: { prepareNotes: vi.fn(async () => {}), readNote } });
@@ -2137,6 +2155,29 @@ describe('createRunEngine — a loop of steps', () => {
     await done;
     return { ctx, script, sessions, run: ctx.runStore.get(run.id), done };
   }
+  it('records a queued replacement only on the pass that actually runs it', async () => {
+    const script = scriptedWorkflow(['complete', 'continue', 'complete', 'complete', 'complete']);
+    const ctx = setupEngine({createWorkflow: script.createWorkflow});
+    const def = looping(2);
+    const team = {id: WORKFLOW_ID, name:'Builders', revision:1};
+    for (const step of def.steps) {
+      step.role = step.name;
+      step.agent.assignment = {agentRevision:1, source:'team', teamId:team.id, teamRevision:1};
+    }
+    const run = ctx.runStore.create(validRun({definition:def}), {team, workload:'a'.repeat(64), mixed:false});
+    const steps = [...def.steps];
+    steps[0] = {...steps[0], nextAgent:{...steps[0].agent, launchCommand:'command codex --model replacement',
+      assignment:{agentRevision:2, source:'override', teamId:null, teamRevision:null}}};
+    ctx.runStore.update(run.id,{definition:{...def,steps}}, {mixed:true});
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(6600);
+    await done;
+    expect(ctx.runStore.attribution(run.id).attempts.filter(a => a.stepName === 'Develop')).toMatchObject([
+      {attempt:1, source:'team', agentRevision:1, model:null},
+      {attempt:2, source:'override', agentRevision:2, model:'replacement'},
+    ]);
+  });
+
   it('gates a step inside a loop in both rounds', async () => {
     const script = scriptedWorkflow(['complete', 'continue', 'complete', 'complete', 'complete']);
     const ctx = setupEngine({ createWorkflow: script.createWorkflow });

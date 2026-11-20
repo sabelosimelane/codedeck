@@ -1,3 +1,5 @@
+import { attributedAgent, workloadKey } from '../pipelines/team-attribution.js';
+import { mountTeamScoring } from './team-scoring.js';
 import { mountImprovements } from './improvements.js';
 import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
 import express from 'express';
@@ -251,15 +253,6 @@ function agentUsedByWorkflows(workflowStore, agentId) {
   return workflowStore.list().some(workflow => workflow.nodes.some(node => node.agentId === agentId));
 }
 
-function agentSnapshot(agent) {
-  return {
-    id: agent.id,
-    name: agent.name,
-    launchCommand: agent.launchCommand,
-    resetCommand: agent.resetCommand,
-  };
-}
-
 function buildDefinitionSnapshot({
   workflow,
   agentStore,
@@ -300,6 +293,7 @@ function buildDefinitionSnapshot({
       errors.push({ field: 'stepOverrides', message: `Choose an agent for ${node.name} or assign its role in the team` });
       return null;
     }
+    const source = Object.hasOwn(stepOverrides ?? {}, node.name) ? 'override' : team && node.role ? 'team' : 'workflow';
     const prompt = composePrompt(node.prompt, input, errors, 'input');
     return {
       kind: 'node',
@@ -312,7 +306,7 @@ function buildDefinitionSnapshot({
       approval: node.approval,
       prompt,
       repeat: repeatSnapshot(index),
-      agent: agentSnapshot(agent),
+      agent: attributedAgent(agent, source, source === 'team' ? team : null),
     };
   });
 
@@ -341,7 +335,7 @@ function buildDefinitionSnapshot({
     approval: false,
     prompt: buildSetupPromptForRepositories(setupPairs),
     repeat: { mode: 'until_complete', max: 3 },
-    agent: agentSnapshot(setupAgent),
+    agent: attributedAgent(setupAgent, 'setup', null),
   }] : [];
 
   return {
@@ -456,6 +450,9 @@ export function createPipelinesRouter(deps) {
   });
   router.use(BASE, express.json({ limit: '512kb' }));
 
+  if (deps.teamScoring) {
+    mountTeamScoring({ router, service: deps.teamScoring, route, parseCollectionQuery, fieldError, PipelineError });
+  }
   if (deps.improvements) {
     mountImprovements({ router, service: deps.improvements, route, parseCollectionQuery, fieldError, PipelineError });
   }
@@ -1158,6 +1155,11 @@ export function createPipelinesRouter(deps) {
         inputRequest: null,
         taskId: task ? task.id : null,
         finishedAt: null,
+      }, {
+        team,
+        mixed: Object.keys(body.stepOverrides ?? {}).length > 0,
+        workload: workloadKey(task ? task.worktrees.map(w => w.repository) : [homePath], workflow.progressFile, input),
+        reserve: deps.teamScoring?.trials.reserve,
       });
     } catch (err) {
       if (/requestId already exists/i.test(String(err?.message || err))) {
@@ -1294,12 +1296,16 @@ export function createPipelinesRouter(deps) {
       const id = assignedAgentId(step, team, stepOverrides);
       const agent = id && agentStore.get(id);
       if (!agent) throw fieldError('stepOverrides', `Choose an agent for ${step.name}`);
-      const replacement = agentSnapshot(agent);
+      const source = Object.hasOwn(stepOverrides, step.name) ? 'override' : 'team';
+      const replacement = attributedAgent(agent, step.agent.assignment ? source : null, source === 'team' ? team : null);
       if (index < run.currentStepIndex) return { ...step, nextAgent: replacement };
       progress[index] = progressForAgent(progress[index], step.agent, replacement);
       return { ...step, agent: replacement };
     });
-    const updated = runStore.update(run.id, { definition: { ...run.definition, steps }, steps: progress });
+    const selected = team && steps.some((step, index) => step !== run.definition.steps[index]
+      && (step.nextAgent ?? step.agent).assignment?.teamId === team.id);
+    const updated = runStore.update(run.id, { definition: { ...run.definition, steps }, steps: progress },
+      { mixed: true, team: selected ? team : null });
     res.json(await asRunView(updated));
   }));
 

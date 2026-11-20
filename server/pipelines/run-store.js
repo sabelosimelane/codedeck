@@ -1,3 +1,4 @@
+import { checkedAssignment, createTeamAttribution } from './team-attribution.js';
 import { randomUUID } from 'node:crypto';
 import { isUuid, isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
 import { validateInputRequest } from './input-request.js';
@@ -103,7 +104,7 @@ function validateLoops(id, steps) {
 function validateDefinitionAgent(id, prefix, agent) {
   if (!isPlainObject(agent)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(agent)) {
-    if (!['id', 'name', 'launchCommand', 'resetCommand'].includes(key)) {
+    if (!['id', 'name', 'launchCommand', 'resetCommand', 'assignment'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
@@ -116,6 +117,7 @@ function validateDefinitionAgent(id, prefix, agent) {
     name: agent.name.trim(),
     launchCommand: agent.launchCommand,
     resetCommand: agent.resetCommand,
+    ...(Object.hasOwn(agent, 'assignment') && { assignment: checkedAssignment(id, agent.assignment) }),
   };
 }
 
@@ -609,8 +611,27 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
   });
   interruptUnfinished();
 
+  const attribution = createTeamAttribution(db);
+  const create = db.transaction((input, context) => {
+    const id = input?.id === undefined ? randomUUID() : input.id;
+    if (!isUuid(id)) throw new Error('pipeline_runs: id must be a UUID');
+    const stamp = now();
+    const record = validateRunRecord(id, { ...input, createdAt: stamp, updatedAt: stamp });
+    const origin = context ? attribution.prepare(record, context) : null;
+    try {
+      insert.run(...persistValues(origin?.trialId ? validateRunRecord(id, record) : record));
+    } catch (err) {
+      if (isUniqueConflict(err)) throw new Error('pipeline_runs: requestId already exists');
+      throw err;
+    }
+    if (origin) attribution.save(id, origin);
+    return get(id);
+  });
   return {
     get,
+    attribution: attribution.get,
+    attributedIds: attribution.ids,
+    recordAttempt: attribution.recordAttempt,
     getByRequestId(requestId) {
       if (typeof requestId !== 'string' || !REQUEST_ID_RE.test(requestId)) {
         throw new Error('pipeline_runs: requestId is invalid');
@@ -622,28 +643,8 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
     list() {
       return readAll.all().map(rowToRecord);
     },
-    create(input) {
-      const requestedId = input?.id;
-      const id = requestedId === undefined ? randomUUID() : requestedId;
-      if (!isUuid(id)) throw new Error('pipeline_runs: id must be a UUID');
-      const stamp = now();
-      const { id: _ignoredId, createdAt: _ignoredCreated, updatedAt: _ignoredUpdated, ...rest } = input ?? {};
-      const record = validateRunRecord(id, {
-        ...rest,
-        createdAt: stamp,
-        updatedAt: stamp,
-      });
-      try {
-        insert.run(...persistValues(record));
-      } catch (err) {
-        if (isUniqueConflict(err)) {
-          throw new Error('pipeline_runs: requestId already exists');
-        }
-        throw err;
-      }
-      return get(id);
-    },
-    update(id, patch) {
+    create: create.immediate,
+    update(id, patch, options) {
       const current = get(id);
       if (!current) throw new Error(`pipeline_runs row ${id}: not found`);
       const next = validateRunRecord(id, {
@@ -653,6 +654,10 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
         createdAt: current.createdAt,
         updatedAt: now(),
       });
+      if (options?.mixed) return db.transaction(() => {
+        attribution.markMixed(id, options.team);
+        return write(next);
+      })();
       return write(next);
     },
   };

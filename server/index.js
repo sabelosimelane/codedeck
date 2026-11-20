@@ -1,4 +1,7 @@
 import CircuitBreaker from 'opossum';
+import { createTeamTrials } from './pipelines/team-trials.js';
+import { createTeamObservations } from './pipelines/team-observations.js';
+import { createReviewCycle } from './pipelines/team-review-cycle.js';
 import { createImprovements } from './pipelines/improvements.js';
 import express from 'express';
 import { WebSocketServer } from 'ws';
@@ -969,7 +972,20 @@ const improvements = createImprovements({
     throw Object.assign(new Error('Review model unavailable. Check the configured Claude or Codex model and CLI login.'), {status:503});
   }),
 });
-const reviewTick = () => improvements.tick().catch(error => console.warn('[workflow-review]', error.message));
+const pipelineTeamStore = createTeamStore(db);
+const teamObservations = createTeamObservations({
+  db, runs: pipelineRunStore, teams: pipelineTeamStore, notes: pipelineNoteStore, answers: pipelineAnswerStore,
+  reviews: pipelineReviewStore, improvements,
+});
+const teamTrials = createTeamTrials({
+  db, teams: pipelineTeamStore, agents: pipelineAgentStore, workflows: pipelineWorkflowStore,
+  observations: teamObservations.observations,
+});
+const teamScoring = { ...teamObservations, trials: teamTrials };
+const reviewTick = createReviewCycle({
+  workflow: improvements.tick, assess: teamObservations.assessNext, nominate: teamTrials.refresh,
+  warn: error => console.warn('[improvements]', error.message),
+});
 const reviewInterval = setInterval(reviewTick, 30000);
 reviewInterval.unref();
 setImmediate(reviewTick);
@@ -1101,7 +1117,7 @@ try {
   console.error('[tasks] adopting existing worktrees failed:', error);
 }
 app.use(createPipelinesRouter({
-  improvements,
+  improvements, teamScoring,
   agentStore: pipelineAgentStore,
   workflowStore: pipelineWorkflowStore,
   settingsStore: pipelineSettingsStore,
@@ -1111,7 +1127,7 @@ app.use(createPipelinesRouter({
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
   answerStore: pipelineAnswerStore,
-  teamStore: createTeamStore(db),
+  teamStore: pipelineTeamStore,
   templateStore: createTemplateStore(db),
   stepPresetStore: createStepPresetStore(db),
   taskStore,

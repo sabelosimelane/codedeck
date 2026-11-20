@@ -494,6 +494,27 @@ export function createImprovements(deps) {
   });
   return {
     tick,
+    async reviewDelivery(workflowId, revision, packet, accept) {
+      check(isUuid(workflowId), 'workflowId');
+      check(Number.isSafeInteger(revision) && revision > 0, 'workflow revision');
+      check(typeof accept === 'function', 'accept');
+      const config = readModel();
+      if (!config) return false;
+      const call = db.transaction(() => reserveCall(workflowId, revision, config.provider + '/' + config.model)).immediate();
+      if (!call) return false;
+      try {
+        const result = await generate(config, packet);
+        check(validCost(result.cost), 'cost');
+        db.transaction(() => {
+          accept(result);
+          finishCall.run('complete', result.cost, call);
+        })();
+        return true;
+      } catch (error) {
+        finishCall.run('failed', null, call);
+        throw error;
+      }
+    },
     configure,
     outcomes: outcomesWithFindings,
     proposals,

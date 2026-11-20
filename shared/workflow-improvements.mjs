@@ -117,53 +117,8 @@ export function validateDraft(p, allowedIds) {
   if (p.kind === 'runner') check(runnerBrief(p).length <= 4096, 'runner brief length');
   return p;
 }
-export function median(values) {
-  if (!values.length || values.some((v) => v === null)) return null;
-  const sorted = [...values].sort((a, b) => a - b),
-    middle = Math.floor(values.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-function measure(rows, key) {
-  if (!rows.length) return null;
-  if (key === 'proofGaps' || key === 'missingFinalNotes')
-    return (
-      rows.filter((r) => (key === 'proofGaps' ? r.flags.includes('proofGap') : !r.finalNote)).length /
-      rows.length
-    );
-  return median(rows.map((r) => r[key]));
-}
-export function compareOutcomes(before, after, metric, safeguard) {
-  const a = measure(before, metric),
-    b = measure(after, metric),
-    guardBefore = measure(before, safeguard),
-    guardAfter = measure(after, safeguard);
-  const mix = (rows) =>
-    rows
-      .map((r) => JSON.stringify([r.project, r.workload, r.status]))
-      .sort()
-      .join(',');
-  let verdict = 'inconclusive';
-  if (
-    before.length === 5 &&
-    after.length === 5 &&
-    [...before, ...after].every((r) => r.workload !== null) &&
-    mix(before) === mix(after) &&
-    a !== null &&
-    b !== null
-  ) {
-    if (guardAfter > guardBefore || b > a) verdict = 'regressed';
-    else if (b < a) verdict = 'helped';
-  }
-  return {
-    verdict,
-    before: a,
-    after: b,
-    guardBefore,
-    guardAfter,
-    beforeIds: before.map((r) => r.id),
-    afterIds: after.map((r) => r.id),
-  };
-}
+export { median } from './scoring/engine.mjs';
+export { compareWorkflow as compareOutcomes } from './scoring/workflow.mjs';
 
 const finite = (x) => typeof x === 'number' && Number.isFinite(x) && x >= 0;
 const text = (x) => typeof x === 'string';
