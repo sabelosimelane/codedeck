@@ -3,15 +3,11 @@
  * Internal records keep digests; public API views project name/path/size only.
  */
 
-export const ATTACHMENT_MAX_COUNT = 20;
-export const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
-export const ATTACHMENT_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
-export const ATTACHMENT_NAME_MAX_BYTES = 255;
+import { ATTACHMENT_MAX_COUNT, ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_TOTAL_BYTES, isSafeAttachmentName } from '../../shared/workflow-attachments.mjs';
+export { ATTACHMENT_MAX_COUNT, ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_TOTAL_BYTES, ATTACHMENT_NAME_MAX_BYTES, isSafeAttachmentName } from '../../shared/workflow-attachments.mjs';
 
 const DIGEST_RE = /^[0-9a-f]{64}$/;
 const NOTES_DIR_RE = /^\.codedeck\/runs\/[0-9a-f]{8}$/;
-/** Unicode controls (Cc) and format characters (Cf), including NUL and bidi marks. */
-const UNSAFE_NAME_CHAR = /[\p{Cc}\p{Cf}/\\]/u;
 
 function fail(field, message = 'invalid') {
   throw new Error(`${field}: ${message}`);
@@ -19,21 +15,6 @@ function fail(field, message = 'invalid') {
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
- * A nonempty display basename: no separators, no `.`/`..`, no controls/format chars,
- * well-formed Unicode (no unpaired surrogates), and at most 255 UTF-8 bytes.
- * A literal U+FFFD that was validly encoded is allowed; ill-formed UTF-16 is not.
- */
-export function isSafeAttachmentName(name) {
-  if (typeof name !== 'string' || name.length === 0) return false;
-  if (name === '.' || name === '..') return false;
-  // Reject unpaired surrogates before Buffer.byteLength, which would replace them.
-  if (!name.isWellFormed()) return false;
-  if (UNSAFE_NAME_CHAR.test(name)) return false;
-  if (Buffer.byteLength(name, 'utf8') > ATTACHMENT_NAME_MAX_BYTES) return false;
-  return true;
 }
 
 /**

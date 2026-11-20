@@ -634,19 +634,9 @@ function WorkflowImprovements({ workflows, projects = [], onChanged, switcher })
             projectName={implementation.project}
             repositories={projects.find((p) => p.name === implementation.project)?.repositories}
             initialInput={runnerBrief(implementation.proposal.draft)}
+            initialRequestId={'improvement-' + implementation.proposal.id}
             onClose={() => setImplementation(null)}
-            onStart={async (request) => {
-              try {
-                return await startRun({
-                  ...request,
-                  project: implementation.project,
-                  requestId: 'improvement-' + implementation.proposal.id,
-                });
-              } catch (e) {
-                setError(e.message);
-                return null;
-              }
-            }}
+            onStart={request => startRun({ ...request, project: implementation.project })}
           />
         )}
       </div>

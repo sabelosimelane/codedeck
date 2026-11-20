@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-11-20] - Attach files in the Run workflow dialog
+
+### Executive Summary
+* Pick or drop several reference files before starting a workflow so the agent can open them in its run checkout. The larger description field lets you review dictated or pasted paragraphs before submitting.
+
+### Technical Details
+* **✨ New Feature:**
+  * `RunWorkflowDialog.jsx`, `RunWorkflowDialog.css` and `WorkflowAttachments.jsx` provide the resizable input, file picker, drop area, removal controls and retry actions.
+* **🛠️ Codebase:**
+  * `pipelinesApi.js`, `usePipelineRuns.js`, `App.jsx` and `Improvements.jsx` send files through both launch paths and preserve the submission on retry.
+  * `workflow-attachments.mjs` and `attachments.js` share filename and batch limits across the dialog and server.
+* **🧪 Tests:**
+  * `RunWorkflowDialog.test.jsx` and `pipelinesApi.test.js` cover file selection, multiline input, retry, cancellation and multipart serialization.
+
 ## [2026-11-20] - Workflow start attachment and multiline input support
 
 ### Executive Summary

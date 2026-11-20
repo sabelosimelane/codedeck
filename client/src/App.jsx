@@ -613,7 +613,7 @@ function AppContent() {
           onClose={() => setShowRunWorkflow(false)}
           onStart={async (request, { follow = true } = {}) => {
             const projectName = activeProject.name;
-            const started = await startRun(request);
+            const started = await startRun(request, { throwOnFailure: true });
             // The run's task is where the owner wants to be next; a further run started with it stays in the background.
             if (started?.worktree?.path) {
               await refreshTasks();

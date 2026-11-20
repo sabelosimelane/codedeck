@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
-import { listTeams, listAgents, listWorkflows, listWorktrees, planRun, preflightProject } from '../../utils/pipelinesApi';
+import React, { useEffect, useRef, useState } from 'react';
+import { cleanupRun, listTeams, listAgents, listWorkflows, listWorktrees, planRun, preflightProject } from '../../utils/pipelinesApi';
 import { listProjectRepositories } from '../../utils/projectRepositoriesApi.js';
 import { parseTeam, parseAgent, parseWorkflow, parsePreflight, parseRunPlan, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
-import { assignedAgentId, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
-import { Button, Dialog, Field, Note, SegmentedControl, Select, TextInput } from '../ui/index.jsx';
+import { assignedAgentId, composePrompt, isProgressFilePath, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { Button, Dialog, Field, Note, SegmentedControl, Select, TextArea, TextInput } from '../ui/index.jsx';
 import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
+import WorkflowAttachments from './WorkflowAttachments';
 
 function newRequestId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -35,13 +36,22 @@ const PLAN_DELAY_MS = 400;
 /** Another repository's own todo can be started as a run when it is committed in a repository of the project and fits the workflow. */
 const startable = entry => entry.role === 'todo' && entry.listed && entry.input !== null && entry.present === true;
 
+function failureText(error) {
+  const details = Array.isArray(error?.errors) ? error.errors.map(field => field?.message).filter(Boolean) : [];
+  return details.length ? details.join(' ') : error?.message || 'The server did not confirm the start.';
+}
+
+function requireStarted(run) {
+  if (typeof run?.id !== 'string' || !run.id) throw new Error('The server did not confirm the start. Retry the same submission.');
+}
+
 /**
  * `repositories`: the other repositories the project lists, beside its own. With any, the
  * owner also says which repository the run starts in, and which ones a new task includes. The todo
  * a new task works from can say this itself in its Repositories line; what it says is filled in
  * for the owner to change, and nothing starts before Start.
  */
-export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, initialInput = '', planDelay = PLAN_DELAY_MS, onClose, onStart }) {
+export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, initialInput = '', initialRequestId, planDelay = PLAN_DELAY_MS, onClose, onStart }) {
   const [workflows, setWorkflows] = useState([]);
   const [teams, setTeams] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -68,6 +78,13 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(false);
+  const [attachments, setAttachments] = useState([]);
+  const [checkingFiles, setCheckingFiles] = useState(false);
+  const [submission, setSubmission] = useState(null);
+  const [startFailure, setStartFailure] = useState(null);
+  const [reservation, setReservation] = useState(null);
+  const nextRequestId = useRef(initialRequestId);
+  const busy = useRef(false);
   const selectedWorkflow = workflows.find(workflow => workflow.id === workflowId);
 
   const team = teams.find(item => item.id === teamId);
@@ -154,10 +171,18 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const listable = (preflight?.reasons ?? []).every(reason => reason.code === SETUP_AGENT_MISSING);
   const placeUsable = where === NEW_TASK ? typedTitle.length > 0 || input.trim().length > 0 : Boolean(chosenWorktree?.selectable);
   const eligible = preflight !== null && reasons.length === 0 && placeUsable;
-  const canStart = !loading && !starting && eligible && Boolean(workflowId) && missing.length === 0;
+  const pathInput = runInputMode(selectedWorkflow?.progressFile) === 'path';
+  const invalidPath = pathInput && input.trim().length > 0
+    && !isProgressFilePath(composePrompt(selectedWorkflow.progressFile, input), 512);
+  const inputError = validateRunInputField(input, { mode: pathInput ? 'path' : 'descriptive' })
+    ?? (invalidPath ? 'Enter the part of the Markdown path that replaces {input} in the Progress file.' : null);
+  const inputRequired = pathInput || nodes.some(node => node.prompt.includes('{input}'));
+  const locked = starting || submission !== null;
+  const canStart = !starting && !checkingFiles && (submission !== null
+    || (!loading && eligible && Boolean(workflowId) && missing.length === 0 && !inputError && (!inputRequired || input.trim().length > 0)));
 
   // The todo is looked up for a new task of a workflow that reads a Progress file, in a project with several repositories.
-  const wantsPlan = !loading && !error && several && where === NEW_TASK && Boolean(selectedWorkflow?.progressFile) && input.trim().length > 0;
+  const wantsPlan = !loading && !error && !inputError && several && where === NEW_TASK && Boolean(selectedWorkflow?.progressFile) && input.trim().length > 0;
   useEffect(() => {
     setPlan(null);
     setPlanFailure(null);
@@ -189,29 +214,87 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
     : entry.input === null ? `${entry.todo} does not fit this workflow's Progress file, ${selectedWorkflow.progressFile}.`
       : `${entry.todo} is not committed in ${entry.repository}.`);
 
-  const handleStart = async () => {
-    if (!canStart) return;
-    setStarting(true);
-    try {
-      const started = await onStart({
+  function draftSubmission() {
+    const requestId = nextRequestId.current ?? newRequestId();
+    nextRequestId.current = undefined;
+    return {
+      primary: {
         ...assignment,
-        requestId: newRequestId(),
+        requestId,
         workflowId,
         input,
+        ...(attachments.length > 0 ? { files: attachments.map(entry => entry.file) } : {}),
         ...(where === NEW_TASK ? {
           newTask: { ...(typedTitle ? { title: typedTitle } : {}), ...(start ? { repositories: [start.name, ...alsoIncluded] } : {}) },
           ...(start ? { startIn: start.name } : {}),
         }
           : where === OPEN_TASK ? { taskId: chosenTask.id, ...(start ? { startIn: start.name } : {}) }
             : { worktreePath: chosenWorktree.path }),
-      });
-      if (!started) return;
-      // Each of the other todos gets a task and a run of its own; a failure is reported by the caller as the first one's would be.
-      for (const entry of extraRuns) {
-        await onStart({ ...assignment, requestId: newRequestId(), workflowId, input: entry.input, newTask: { repositories: [entry.repository] }, startIn: entry.repository }, { follow: false });
+      },
+      extras: extraRuns.map(entry => ({ ...assignment, requestId: newRequestId(), workflowId, input: entry.input,
+        newTask: { repositories: [entry.repository] }, startIn: entry.repository })),
+    };
+  }
+
+  const handleStart = async () => {
+    if (!canStart || busy.current) return;
+    busy.current = true;
+    const attempt = submission ?? draftSubmission();
+    setStarting(true);
+    setStartFailure(null);
+    try {
+      if (attempt.primary) {
+        try {
+          requireStarted(await onStart(attempt.primary));
+        } catch (failure) {
+          const reserved = failure?.reservation;
+          const failedReservation = reserved?.requestId === attempt.primary.requestId && reserved.provisioningState === 'failed'
+            && typeof reserved.runId === 'string' && reserved.runId.length > 0;
+          setReservation(failedReservation ? reserved : null);
+          const definitive = failure?.status >= 400 && failure.status < 500 && failure.status !== 408 && !failedReservation;
+          setSubmission(definitive ? null : attempt);
+          setStartFailure(failureText(failure));
+          return;
+        }
+        setReservation(null);
       }
-      onClose();
+      const remaining = [];
+      const errors = [];
+      for (const extra of attempt.extras) {
+        try {
+          requireStarted(await onStart(extra, { follow: false }));
+        } catch (failure) {
+          remaining.push(extra);
+          errors.push(`${extra.startIn}: ${failureText(failure)}`);
+        }
+      }
+      if (remaining.length > 0) {
+        setSubmission({ primary: null, extras: remaining });
+        setStartFailure(errors.join(' '));
+      } else {
+        setSubmission(null);
+        onClose();
+      }
     } finally {
+      busy.current = false;
+      setStarting(false);
+    }
+  };
+
+  const closeReservation = async () => {
+    if (!reservation || busy.current) return;
+    busy.current = true;
+    setStarting(true);
+    try {
+      const closed = await cleanupRun(reservation.runId);
+      if (closed?.provisioningState !== 'closed' || closed.runId !== reservation.runId) throw new Error('The server did not confirm that the start was closed.');
+      setSubmission(null);
+      setReservation(null);
+      setStartFailure(closed.worktree?.state === 'removal_blocked' ? closed.worktree.detail : null);
+    } catch (failure) {
+      setStartFailure(failureText(failure));
+    } finally {
+      busy.current = false;
       setStarting(false);
     }
   };
@@ -222,16 +305,18 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const ready = !loading && !error;
 
   return (
-    <Dialog title="Run workflow" closeLabel="Close run workflow" onClose={onClose} busy={starting}
+    <Dialog title="Run workflow" closeLabel="Close run workflow" onClose={onClose} busy={starting || Boolean(submission?.primary)}
       footer={ready && <>
-        <Button onClick={onClose} disabled={starting}>Cancel</Button>
-        <Button variant="primary" onClick={handleStart} disabled={!canStart}>{starting ? 'Starting…' : 'Start'}</Button>
+        <Button onClick={onClose} disabled={starting || Boolean(submission?.primary)}>{submission && !submission.primary ? 'Done' : 'Cancel'}</Button>
+        {reservation && <Button onClick={closeReservation} disabled={starting}>Close failed start</Button>}
+        <Button variant="primary" onClick={handleStart} disabled={!canStart}>{starting ? 'Starting…' : submission?.primary ? 'Retry start' : submission ? 'Retry remaining runs' : 'Start'}</Button>
       </>}>
       {loading && <span className="ui-field-hint" role="status">Loading…</span>}
       {error && <Note tone="danger" role="alert">{error}</Note>}
+      {startFailure && <Note tone="danger" role="alert">{startFailure}</Note>}
 
       {ready && (
-        <>
+        <fieldset className="workflow-launch-fields" disabled={locked} aria-busy={starting} aria-label="Workflow launch settings">
           <Field label="Workflow"
             action={<Button variant="link" onClick={() => { onClose(); openWorkflowBuilder(); }}>Edit workflows…</Button>}
             hint={selectedWorkflow?.description || null}>
@@ -268,9 +353,12 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
             {missing.length > 0 && <Note tone="warning">Choose an agent for {missing.map(node => node.name).join(', ')}.</Note>}
           </Field>}
 
-          <Field label="What is this run about?" hint={inputHint}>
-            <TextInput label="Input" value={input} onChange={setInput} maxLength={4096} placeholder="e.g. docs/todos/replies.md" />
+          <Field label={inputRequired ? 'What is this run about? (required)' : 'What is this run about?'} hint={inputHint} error={inputError}>
+            {pathInput && !/[\r\n]/.test(input)
+              ? <TextInput label="Input" value={input} onChange={setInput} maxLength={4096} disabled={locked} required={inputRequired} invalid={Boolean(inputError)} placeholder="e.g. docs/todos/replies.md" />
+              : <TextArea label="Input" value={input} onChange={setInput} maxLength={4096} rows={6} disabled={locked} required={inputRequired} invalid={Boolean(inputError)} placeholder="Describe what the workflow should do" />}
           </Field>
+          <WorkflowAttachments entries={attachments} onChange={setAttachments} onChecking={setCheckingFiles} disabled={locked} primaryOnly={extraRuns.length > 0} />
 
           {listable && (
             <Field label="Where to work">
@@ -332,7 +420,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
               {reasons.map(reason => <span key={reason.code || reason.message}>{reason.message}</span>)}
             </Note>
           )}
-        </>
+        </fieldset>
       )}
     </Dialog>
   );
