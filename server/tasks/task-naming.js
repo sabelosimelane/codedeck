@@ -11,12 +11,13 @@ import { TASK_TITLE_MAX } from './task-store.js';
 const CONTEXT_MAX = 12000;
 const OPEN_STATES = ['active', 'pr_open'];
 
-/** What a task is called until it is named: the first line of what was asked, or the workflow. */
+/** What a task is called until it is named: whitespace-collapsed input, or the workflow. */
 export function provisionalTaskTitle(input, workflowName) {
   if (typeof input !== 'string') throw new Error('task naming: input must be text');
   if (typeof workflowName !== 'string' || workflowName.trim() === '') throw new Error('task naming: workflowName must be nonempty text');
-  const line = input.split('\n').map(part => part.replace(/[\x00-\x1f\x7f]/g, ' ').trim()).find(part => part !== '');
-  return line === undefined ? workflowName.trim() : line.slice(0, TASK_TITLE_MAX).trim();
+  // Collapse every Unicode whitespace run (including newlines) so a multiline brief fits one title line.
+  const collapsed = input.replace(/\s+/g, ' ').trim();
+  return collapsed === '' ? workflowName.trim() : collapsed.slice(0, TASK_TITLE_MAX).trim();
 }
 
 export function createTaskNaming({ taskStore, readSettings, generate, warn } = {}) {

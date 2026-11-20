@@ -132,7 +132,18 @@ export function parseRun(run, index = 0) {
   parseProgress(run, guard);
   guard(integer(run.decisionCount), 'decisionCount');
   guard(text(run.project) && run.project.length <= 256 && !/[\x00-\x1f\x7f]/.test(run.project), 'project');
-  guard(typeof run.input === 'string' && run.input.length <= 4096 && !/[\x00-\x1f\x7f]/.test(run.input), 'input');
+  // Descriptive input keeps its line breaks (LF only); other controls stay refused.
+  guard(typeof run.input === 'string' && run.input.length <= 4096 && !/[\x00-\x09\x0b-\x1f\x7f]/.test(run.input), 'input');
+  // Public attachment projection: name, checkout-relative path and size only.
+  guard(Array.isArray(run.attachments) && run.attachments.length <= 20, 'attachments');
+  run.attachments.forEach((entry, i) => {
+    const field = name => `attachments[${i}].${name}`;
+    guard(object(entry), `attachments[${i}]`);
+    guard(typeof entry.name === 'string' && entry.name.length > 0 && entry.name.length <= 255 && !/[/\\]/.test(entry.name), field('name'));
+    guard(typeof entry.path === 'string' && entry.path.length > 0 && !entry.path.startsWith('/') && !entry.path.includes('..'), field('path'));
+    guard(Number.isSafeInteger(entry.sizeBytes) && entry.sizeBytes >= 0, field('sizeBytes'));
+    guard(!Object.hasOwn(entry, 'digest'), field('digest'));
+  });
   guard(RUN_STATUSES.includes(run.status), 'status');
   guard(run.status === 'stopped' ? ['user', 'terminal', 'no_progress'].includes(run.stopReason) : run.stopReason === null, 'stopReason');
   guard(run.status === 'error' ? text(run.error) && run.error.length <= 2000 : run.error === null, 'error');

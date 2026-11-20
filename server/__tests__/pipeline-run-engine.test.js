@@ -1,7 +1,9 @@
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { notePath } from '../pipelines/run-notes.js';
+import { remove as removeGitWorktree } from '../pipelines/run-worktree.js';
 import { buildTemplateDraft } from '../../shared/workflow-templates.mjs';
 import { createTaskChanges } from '../tasks/task-changes.js';
 import { groupFixture, git } from './helpers/group-fixture.js';
@@ -1315,8 +1317,8 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(finished.error).toContain('tmp.out');
   });
 
-  function interruptedRun(ctx, stepOverrides = {}) {
-    const created = ctx.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
+  function interruptedRun(ctx, stepOverrides = {}, runOverrides = {}) {
+    const created = ctx.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT, ...runOverrides }));
     ctx.runStore.update(created.id, {
       status: 'interrupted',
       steps: [step({
@@ -1372,6 +1374,23 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(ctx.getWorkflowStartArgs().resetFirst).toBe(false);
     // A terminal that is gone is not asked what it shows.
     expect(ctx.readExecutionState).not.toHaveBeenCalledWith('Demo-9');
+  });
+
+  it('resends the recorded multiline prompt and regenerates the brief with the original input on Resume', async () => {
+    const prepareNotes = vi.fn(async () => {});
+    const ctx = setupEngine({ engineExtras: { prepareNotes } });
+    const input = 'First paragraph\n\n```md\n{input}\n```\nLast paragraph.  \n';
+    const command = `Implement ${input}`;
+    const snapshot = definition({ inputMode: 'descriptive', notesDir: '.codedeck/runs/abcdef12' });
+    snapshot.steps[0].prompt = command;
+    const run = interruptedRun(ctx, {}, { input, definition: snapshot });
+
+    await ctx.engine.resume(run.id);
+    await advanceReadiness(1);
+
+    expect(prepareNotes).toHaveBeenCalledWith(expect.objectContaining({ input, definition: snapshot }));
+    expect(ctx.writeBrief).toHaveBeenCalledWith(expect.objectContaining({ input, definition: snapshot }));
+    expect(ctx.getWorkflowStartArgs()).toMatchObject({ command, resetFirst: true });
   });
 
   it('Resume starts the agent again in the terminal of the step when it has exited there', async () => {
@@ -3106,5 +3125,391 @@ describe('Troubleshoot verification decisions through the runner', () => {
     expect(note).toMatch(/git show REV:legacy.cjs.*matching E42 on base [a-f0-9]{40} and HEAD [a-f0-9]{40}/);
     expect(ctx.answerStore.list(run.id)).toMatchObject([{ stepName: 'Verify', answer: owner }]);
     expect(starts).not.toContain('Commit');
+  });
+});
+
+describe('createRunEngine attachment verification', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  async function driveReady(done, steps = 1) {
+    for (let i = 0; i < steps; i += 1) {
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    await done;
+  }
+
+  async function advanceReadiness(steps = 1) {
+    for (let i = 0; i < steps; i += 1) {
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  }
+
+  function interruptedAttached(ctx, runOverrides = {}) {
+    const created = ctx.runStore.create(validRun({
+      worktreeState: 'present',
+      baseCommit: BASE_COMMIT,
+      ...runOverrides,
+    }));
+    ctx.runStore.update(created.id, {
+      status: 'interrupted',
+      steps: [step({
+        status: 'interrupted',
+        sessionId: 'Demo-9',
+        priorSessionIds: [],
+        attempt: 1,
+      })],
+    });
+    return created;
+  }
+
+  const NOTES = '.codedeck/runs/abcdef12';
+  const attachment = {
+    name: 'notes.md',
+    path: `${NOTES}/attachments/01-notes.md`,
+    sizeBytes: 5,
+    digest: 'a'.repeat(64),
+  };
+
+  it('fails the run with a file-specific error and launches nothing when a copy fails verification', async () => {
+    const verifyAttachments = vi.fn(async () => {
+      const error = new Error('Attachment attachments[0] (notes.md) is missing and could not be read.');
+      error.field = 'attachments[0]';
+      throw error;
+    });
+    const prepareNotes = vi.fn(async () => {});
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      engineExtras: { verifyAttachments, prepareNotes },
+    });
+    const run = ctx.runStore.create(validRun({
+      definition: definition({ notesDir: NOTES }),
+      attachments: [attachment],
+      worktreeState: 'present',
+      baseCommit: BASE_COMMIT,
+    }));
+
+    await driveReady(ctx.engine.start(run.id));
+    const finished = ctx.runStore.get(run.id);
+    expect(finished.status).toBe('error');
+    expect(finished.error).toMatch(/attachments\[0\].*notes\.md/i);
+    expect(verifyAttachments).toHaveBeenCalledWith(expect.objectContaining({
+      worktreePath: run.worktreePath,
+      attachments: [attachment],
+      notesDir: NOTES,
+    }));
+    expect(prepareNotes).not.toHaveBeenCalled();
+    expect(ctx.startSession).not.toHaveBeenCalled();
+    expect(ctx.attachBackground).not.toHaveBeenCalled();
+    expect(ctx.getWorkflowStartArgs()).toBeNull();
+  });
+
+  it('verifies again on Resume and continues once the copies match', async () => {
+    let failOnce = true;
+    const verifyAttachments = vi.fn(async () => {
+      if (failOnce) {
+        failOnce = false;
+        throw Object.assign(new Error('Attachment attachments[0] (notes.md) does not match the recorded size or digest.'), { field: 'attachments[0]' });
+      }
+    });
+    const prepareNotes = vi.fn(async () => {});
+    const readNote = vi.fn(async () => ({ status: 'missing', content: null }));
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      engineExtras: { verifyAttachments, prepareNotes, readNote },
+    });
+    const created = interruptedAttached(ctx, {
+      definition: definition({ notesDir: NOTES }),
+      attachments: [attachment],
+    });
+
+    await ctx.engine.resume(created.id);
+    await advanceReadiness(1);
+    expect(ctx.runStore.get(created.id)).toMatchObject({
+      status: 'error',
+      error: expect.stringMatching(/does not match/i),
+    });
+    expect(prepareNotes).not.toHaveBeenCalled();
+    expect(ctx.getWorkflowStartArgs()).toBeNull();
+
+    ctx.setReadinessQueue([executionState()]);
+    await ctx.engine.resume(created.id);
+    await advanceReadiness(2);
+    expect(ctx.runStore.get(created.id).status).toBe('complete');
+    expect(verifyAttachments).toHaveBeenCalledTimes(2);
+    expect(prepareNotes).toHaveBeenCalled();
+    expect(ctx.getWorkflowStartArgs()).toMatchObject({ command: 'Implement ship it' });
+  });
+
+  it('gives the terminal workflow a check that verifies the copies again before every repeat pass', async () => {
+    const verifyAttachments = vi.fn(async () => {});
+    const startOptions = [];
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      engineExtras: { verifyAttachments, prepareNotes: vi.fn(async () => {}) },
+      createWorkflow: vi.fn(({ notify }) => ({
+        start(args, options) {
+          startOptions.push(options);
+          queueMicrotask(() => notify({ status: 'complete', active: false, error: null, requestId: args.requestId, iteration: 1, limitReached: false }));
+        },
+        stop() {},
+        snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+      })),
+    });
+    const run = ctx.runStore.create(validRun({
+      definition: definition({ notesDir: NOTES }),
+      attachments: [attachment],
+      worktreeState: 'present',
+      baseCommit: BASE_COMMIT,
+    }));
+    await driveReady(ctx.engine.start(run.id));
+    expect(startOptions).toHaveLength(1);
+    expect(typeof startOptions[0]?.beforePass).toBe('function');
+    expect(verifyAttachments).toHaveBeenCalledTimes(1);
+    await startOptions[0].beforePass();
+    expect(verifyAttachments).toHaveBeenCalledTimes(2);
+    expect(verifyAttachments).toHaveBeenLastCalledWith(expect.objectContaining({
+      worktreePath: run.worktreePath,
+      attachments: [attachment],
+      notesDir: NOTES,
+    }));
+    verifyAttachments.mockRejectedValueOnce(new Error('Attachment attachments[0] (notes.md) does not match the recorded size or digest.'));
+    await expect(startOptions[0].beforePass()).rejects.toThrow(/attachments\[0\].*does not match/);
+  });
+
+  it('starts the terminal workflow of an attachment-free run without a check', async () => {
+    const startOptions = [];
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      createWorkflow: vi.fn(({ notify }) => ({
+        start(args, ...rest) {
+          startOptions.push(rest);
+          queueMicrotask(() => notify({ status: 'complete', active: false, error: null, requestId: args.requestId, iteration: 1, limitReached: false }));
+        },
+        stop() {},
+        snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+      })),
+    });
+    const run = ctx.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
+    await driveReady(ctx.engine.start(run.id));
+    expect(startOptions).toEqual([[]]);
+  });
+
+  it('keeps a run-owned checkout whose attachment copies no longer match, and names them', async () => {
+    const listAttachmentsAtRisk = vi.fn(async () => [`${NOTES}/attachments/01-notes.md`]);
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      engineExtras: { verifyAttachments: vi.fn(async () => {}), prepareNotes: vi.fn(async () => {}), listAttachmentsAtRisk },
+    });
+    const run = ctx.runStore.create(validRun({
+      definition: definition({ notesDir: NOTES }),
+      attachments: [attachment],
+      worktreeState: 'present',
+      baseCommit: BASE_COMMIT,
+    }));
+    await driveReady(ctx.engine.start(run.id));
+    expect(listAttachmentsAtRisk).toHaveBeenCalledWith(expect.objectContaining({
+      worktreePath: run.worktreePath,
+      attachments: [attachment],
+      notesDir: NOTES,
+    }));
+    expect(ctx.removeWorktree).not.toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id)).toMatchObject({
+      worktreeState: 'removal_blocked',
+      worktreeDetail: expect.stringContaining(`${NOTES}/attachments/01-notes.md`),
+    });
+  });
+
+  it('removes a run-owned checkout whose only attachment content is verified', async () => {
+    const listAttachmentsAtRisk = vi.fn(async () => []);
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      engineExtras: { verifyAttachments: vi.fn(async () => {}), prepareNotes: vi.fn(async () => {}), listAttachmentsAtRisk },
+    });
+    const run = ctx.runStore.create(validRun({
+      definition: definition({ notesDir: NOTES }),
+      attachments: [attachment],
+      worktreeState: 'present',
+      baseCommit: BASE_COMMIT,
+    }));
+    await driveReady(ctx.engine.start(run.id));
+    expect(ctx.removeWorktree).toHaveBeenCalledOnce();
+    expect(ctx.runStore.get(run.id).worktreeState).toBe('removed');
+  });
+
+  it.each([
+    ['verified', 'removed'],
+    ['changed', 'removal_blocked'],
+    ['unknown', 'removal_blocked'],
+    ['unsafe folder', 'removal_blocked'],
+    ['retained checkout', 'released'],
+  ])('closes a real Git checkout with %s attachment content', async (scenario, expectedState) => {
+    const { backend: homePath, base } = groupFixture();
+    const worktreePath = path.join(base, 'run-checkout');
+    const worktreeBranch = 'workflow/attachments';
+    writeFileSync(path.join(homePath, '.gitignore'), '.codedeck/\n');
+    git(homePath, ['add', '.gitignore']);
+    git(homePath, ['commit', '-m', 'ignore run files']);
+    git(homePath, ['worktree', 'add', '-b', worktreeBranch, worktreePath]);
+
+    const folder = path.join(worktreePath, NOTES, 'attachments');
+    const copy = path.join(worktreePath, attachment.path);
+    const bytes = 'alpha';
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(copy, scenario === 'changed' ? 'ALPHA' : bytes);
+    let protectedPath = attachment.path;
+    if (scenario === 'unknown') {
+      protectedPath = `${NOTES}/attachments/foreign.txt`;
+      writeFileSync(path.join(worktreePath, protectedPath), 'unknown');
+    }
+    if (scenario === 'unsafe folder') {
+      protectedPath = `${NOTES}/attachments`;
+      rmSync(folder, { recursive: true });
+      symlinkSync(path.join(base, 'missing-target'), folder);
+    }
+    expect(git(worktreePath, ['status', '--porcelain'])).toBe('');
+
+    const ctx = setupEngine({ removeWorktree: run => removeGitWorktree({ ...run, execFile }) });
+    const run = ctx.runStore.create(validRun({
+      homePath,
+      worktreePath,
+      worktreeBranch,
+      worktreeState: scenario === 'retained checkout' ? 'external' : 'present',
+      baseCommit: git(worktreePath, ['rev-parse', 'HEAD']),
+      definition: definition({ notesDir: NOTES }),
+      attachments: [{ ...attachment, digest: createHash('sha256').update(bytes).digest('hex') }],
+    }));
+    ctx.runStore.update(run.id, { status: 'stopped', stopReason: 'user', finishedAt: new Date().toISOString() });
+
+    const closed = await ctx.engine.cleanup(run.id);
+    expect({
+      state: closed.worktreeState,
+      checkoutExists: existsSync(worktreePath),
+      protectedPathExists: lstatSync(path.join(worktreePath, protectedPath), { throwIfNoEntry: false }) !== undefined,
+    }).toEqual({
+      state: expectedState,
+      checkoutExists: expectedState !== 'removed',
+      protectedPathExists: expectedState !== 'removed',
+    });
+    if (expectedState === 'removal_blocked') expect(closed.worktreeDetail).toContain(protectedPath);
+  });
+
+  it('keeps the same attachment references on later steps and when the brief is refreshed', async () => {
+    const POINT = `Attachments for this run are listed under Attachments in ${NOTES}/README.md and ${NOTES}/brief.md; open each checkout-relative path under ${NOTES}/attachments/.`;
+    const second = {
+      kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
+      name: 'Review',
+      prompt: 'Review ship it',
+      repeat: { mode: 'once' },
+      agent: {
+        id: 'c410a1b2-3456-4789-8abc-def012345679',
+        name: 'codex',
+        launchCommand: 'codex',
+        resetCommand: '/clear',
+      },
+    };
+    const starts = [];
+    const createWorkflow = vi.fn(({ notify }) => ({
+      start(args) {
+        starts.push(args);
+        queueMicrotask(() => {
+          notify({
+            status: 'complete',
+            active: false,
+            error: null,
+            requestId: args.requestId,
+            iteration: 1,
+            limitReached: false,
+          });
+        });
+      },
+      stop() {},
+      snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+    }));
+    const verifyAttachments = vi.fn(async () => {});
+    const prepareNotes = vi.fn(async () => {});
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Done' }));
+    const writeBrief = vi.fn(async () => `${NOTES}/brief.md`);
+    const ctx = setupEngine({
+      readinessQueue: [executionState(), executionState()],
+      createWorkflow,
+      engineExtras: { verifyAttachments, prepareNotes, readNote, writeBrief },
+    });
+    const run = ctx.runStore.create(validRun({
+      definition: definition({ notesDir: NOTES, steps: [definition().steps[0], second] }),
+      attachments: [attachment],
+      worktreeState: 'present',
+      baseCommit: BASE_COMMIT,
+    }));
+
+    await driveReady(ctx.engine.start(run.id), 2);
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(starts).toHaveLength(2);
+    expect(starts[0].guidance).toContain(POINT);
+    expect(starts[1].guidance).toContain(POINT);
+    expect(starts[0].guidance).toContain(NOTES);
+    expect(starts[1].guidance).toContain(NOTES);
+    expect(verifyAttachments).toHaveBeenCalledTimes(2);
+    expect(prepareNotes.mock.calls).toHaveLength(2);
+    for (const [args] of prepareNotes.mock.calls) {
+      expect(args).toMatchObject({ attachments: [attachment], definition: expect.objectContaining({ notesDir: NOTES }) });
+    }
+    expect(writeBrief.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const [args] of writeBrief.mock.calls) {
+      expect(args).toMatchObject({ attachments: [attachment], definition: expect.objectContaining({ notesDir: NOTES }) });
+    }
+  });
+
+  it('refreshes the brief with the same attachments after an owner answer', async () => {
+    const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const SCREEN = ['What should we ship?', `[[CDW:${ID}:NEEDS_INPUT]]`];
+    const state = { status: 'stopped', inputs: [], notify: null };
+    const snap = status => ({ status, active: !['complete', 'stopped'].includes(status), error: null, requestId: 'r', iteration: 1, limitReached: false });
+    const publish = (status) => { state.status = status; state.notify(snap(status)); };
+    const createWorkflow = vi.fn(({ notify }) => {
+      state.notify = notify;
+      return {
+        start() { queueMicrotask(() => publish('needs_input')); },
+        stop() { state.status = 'stopped'; },
+        snapshot: () => snap(state.status),
+        answerText: text => text,
+        input(data) { state.inputs.push(data); publish('running'); },
+        signalIdentifier: () => ID,
+      };
+    });
+    const verifyAttachments = vi.fn(async () => {});
+    const writeBrief = vi.fn(async () => `${NOTES}/brief.md`);
+    const prepareNotes = vi.fn(async () => {});
+    const readNote = vi.fn(async () => ({ status: 'present', content: '# Done' }));
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      createWorkflow,
+      readScreen: vi.fn(async () => SCREEN),
+      engineExtras: { verifyAttachments, prepareNotes, readNote, writeBrief },
+    });
+    const run = ctx.runStore.create(validRun({
+      definition: definition({ notesDir: NOTES }),
+      attachments: [attachment],
+      worktreeState: 'present',
+      baseCommit: BASE_COMMIT,
+    }));
+    const done = ctx.engine.start(run.id);
+    await advanceReadiness(1);
+    expect(ctx.runStore.get(run.id).status).toBe('needs_input');
+    expect(writeBrief).toHaveBeenCalledWith(expect.objectContaining({ attachments: [attachment] }));
+
+    const answering = ctx.engine.answer(run.id, 'Ship the notes');
+    await vi.advanceTimersByTimeAsync(100);
+    await answering;
+    expect(writeBrief).toHaveBeenLastCalledWith(expect.objectContaining({
+      attachments: [attachment],
+      entries: [expect.objectContaining({ answer: 'Ship the notes' })],
+    }));
+    publish('complete');
+    await done;
   });
 });

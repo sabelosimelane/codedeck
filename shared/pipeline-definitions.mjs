@@ -1,9 +1,39 @@
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
 const MULTI_LINE = /[\x00-\x08\x0b-\x1f\x7f]/;
+/** Descriptive run input may include LF; other controls (NUL, tab, escape, …) are refused. */
+const DESCRIPTIVE_INPUT = /[\x00-\x09\x0b-\x1f\x7f]/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REQUEST_ID_RE = /^[\w-]{1,128}$/;
 const COMPOSED_PROMPT_MAX = 16384;
 const PROGRESS_CONTROL = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
+const RUN_INPUT_MAX = 4096;
+
+/** CRLF and lone CR become LF before validation and persistence. */
+export function normalizeRunInput(value) {
+  if (typeof value !== 'string') return value;
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+/**
+ * Path input when the Progress file setting includes `{input}`; otherwise descriptive
+ * (no Progress file, or a fixed Progress file path).
+ */
+export function runInputMode(progressFile) {
+  return typeof progressFile === 'string' && progressFile.includes('{input}') ? 'path' : 'descriptive';
+}
+
+/** Null when valid; otherwise a field error message for `input`. */
+export function validateRunInputField(input, { mode = 'descriptive' } = {}) {
+  const pathMode = mode === 'path';
+  const message = pathMode
+    ? `Use 0–${RUN_INPUT_MAX} characters on one line without control characters`
+    : `Use 0–${RUN_INPUT_MAX} characters without unsafe control characters`;
+  if (typeof input !== 'string') return message;
+  const normalized = normalizeRunInput(input);
+  const pattern = pathMode ? SINGLE_LINE : DESCRIPTIVE_INPUT;
+  if (normalized.length > RUN_INPUT_MAX || pattern.test(normalized)) return message;
+  return null;
+}
 
 export function isProgressFilePath(value, max = 300) {
   if (typeof value !== 'string' || value.length < 1 || value.length > max || PROGRESS_CONTROL.test(value)
@@ -331,7 +361,7 @@ export function validateTeamChange(body) {
   return errors;
 }
 
-export function validateRunStartBody(body) {
+export function validateRunStartBody(body, { inputMode = 'descriptive' } = {}) {
   const errors = [];
   if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides'])) return errors;
   validateAssignments(body, errors);
@@ -342,13 +372,8 @@ export function validateRunStartBody(body) {
   if (typeof body.project !== 'string' || !body.project.trim() || SINGLE_LINE.test(body.project)) {
     add(errors, 'project', 'A project name is required');
   }
-  if (
-    typeof body.input !== 'string'
-    || body.input.length > 4096
-    || SINGLE_LINE.test(body.input)
-  ) {
-    add(errors, 'input', 'Use 0–4096 characters on one line without control characters');
-  }
+  const inputError = validateRunInputField(body.input, { mode: inputMode });
+  if (inputError) add(errors, 'input', inputError);
   // Left out, the run gets a new worktree. Given, it names an existing worktree of the project.
   if (body.worktreePath !== undefined) {
     const value = body.worktreePath;

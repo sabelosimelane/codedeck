@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { isUuid, isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
+import { validateAttachmentManifest } from './attachments.js';
 import { validateInputRequest } from './input-request.js';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
 const MULTI_LINE = /[\x00-\x08\x0b-\x1f\x7f]/;
+/** Run input may include LF; other controls stay refused. */
+const RUN_INPUT = /[\x00-\x09\x0b-\x1f\x7f]/;
 const REQUEST_ID_RE = /^[\w-]{1,128}$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const ABS_PATH_RE = /^\//;
@@ -159,7 +162,7 @@ function validateDefinitionStep(id, index, step) {
 function validateDefinition(id, definition) {
   if (!isPlainObject(definition)) fieldError(id, 'definition', 'must be an object');
   for (const key of Object.keys(definition)) {
-    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'progressFile', 'notesDir', 'steps'].includes(key)) {
+    if (!['workflowId', 'workflowName', 'workflowRevision', 'agentsDecide', 'progressFile', 'notesDir', 'inputMode', 'steps'].includes(key)) {
       fieldError(id, `definition.${key}`, 'unknown field');
     }
   }
@@ -171,6 +174,11 @@ function validateDefinition(id, definition) {
   requireString(id, 'definition.workflowName', definition.workflowName, { max: 64 });
   if (!Number.isInteger(definition.workflowRevision) || definition.workflowRevision < 1) {
     fieldError(id, 'definition.workflowRevision', 'must be ≥ 1');
+  }
+  // Older rows omit inputMode; they were always single-line and read as path.
+  const inputMode = Object.hasOwn(definition, 'inputMode') ? definition.inputMode : 'path';
+  if (inputMode !== 'descriptive' && inputMode !== 'path') {
+    fieldError(id, 'definition.inputMode', 'must be descriptive or path');
   }
   if (!Array.isArray(definition.steps) || definition.steps.length < 1 || definition.steps.length > 33) {
     fieldError(id, 'definition.steps', 'must contain 1–33 steps');
@@ -186,6 +194,7 @@ function validateDefinition(id, definition) {
     agentsDecide: definition.agentsDecide,
     progressFile: definition.progressFile,
     notesDir: definition.notesDir,
+    inputMode,
     steps,
   };
 }
@@ -257,7 +266,7 @@ function validateRunRecord(id, record) {
   }
   if (!isUuid(record.workflowId)) fieldError(id, 'workflow_id', 'must be a UUID');
   requireString(id, 'project', record.project, { max: 256 });
-  if (typeof record.input !== 'string' || record.input.length > 4096 || SINGLE_LINE.test(record.input)) {
+  if (typeof record.input !== 'string' || record.input.length > 4096 || RUN_INPUT.test(record.input)) {
     fieldError(id, 'input', 'invalid');
   }
   if (!RUN_STATUSES.has(record.status)) fieldError(id, 'status', 'invalid');
@@ -279,6 +288,8 @@ function validateRunRecord(id, record) {
   }
 
   const definition = validateDefinition(id, record.definition);
+  // Only descriptive input may hold line breaks; path input (and older rows) stay one line.
+  if (definition.inputMode === 'path' && record.input.includes('\n')) fieldError(id, 'input', 'must be one line for path input');
   if (!Array.isArray(record.steps) || record.steps.length !== definition.steps.length) {
     fieldError(id, 'steps', 'length must match definition steps');
   }
@@ -331,6 +342,21 @@ function validateRunRecord(id, record) {
   // The task whose worktree the run works in; null for a run outside any task.
   if (record.taskId !== null && !isUuid(record.taskId)) fieldError(id, 'task_id', 'must be a UUID, or null when the run belongs to no task');
 
+  // Ordered attachment identities; older rows and attachment-free starts use [].
+  // An explicit null is not a migrated empty manifest — omit the field or pass [].
+  // Request-side validateAttachmentManifest(null) still defaults to [] for clients.
+  if (record.attachments === null) {
+    fieldError(id, 'attachments', 'must be an array');
+  }
+  let attachments;
+  try {
+    attachments = validateAttachmentManifest(record.attachments, { notesDir: definition.notesDir });
+  } catch (err) {
+    const message = err?.message || 'invalid';
+    const field = message.startsWith('attachments') ? message.split(':')[0] : 'attachments';
+    fieldError(id, field, message.includes(':') ? message.slice(message.indexOf(':') + 1).trim() : message);
+  }
+
   const finishedAt = requireIso(id, 'finished_at', record.finishedAt, { allowNull: true });
   if (['complete', 'stopped', 'error'].includes(record.status)) {
     if (finishedAt === null) fieldError(id, 'finished_at', 'required for terminal statuses');
@@ -356,6 +382,7 @@ function validateRunRecord(id, record) {
     worktreeDetail,
     inputRequest,
     taskId: record.taskId,
+    attachments,
     createdAt: requireIso(id, 'created_at', record.createdAt),
     updatedAt: requireIso(id, 'updated_at', record.updatedAt),
     finishedAt,
@@ -385,6 +412,16 @@ function rowToRecord(row) {
     // A stored JSON null would read as "not asked" without ever having been written that way.
     if (inputRequest === null) fieldError(row.id, 'input_request', 'must be SQL NULL or a JSON object');
   }
+  let attachments = [];
+  if (row.attachments !== null && row.attachments !== undefined) {
+    try {
+      attachments = JSON.parse(row.attachments);
+    } catch {
+      fieldError(row.id, 'attachments', 'must be valid JSON');
+    }
+    // A stored JSON null is not a migrated empty manifest — only a JSON array is valid.
+    if (attachments === null) fieldError(row.id, 'attachments', 'must be a JSON array');
+  }
   return validateRunRecord(row.id, {
     requestId: row.request_id,
     workflowId: row.workflow_id,
@@ -404,6 +441,7 @@ function rowToRecord(row) {
     worktreeDetail: row.worktree_detail,
     inputRequest,
     taskId: row.task_id,
+    attachments,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at,
@@ -434,6 +472,7 @@ function persistValues(record) {
     record.finishedAt,
     record.inputRequest === null ? null : JSON.stringify(record.inputRequest),
     record.taskId,
+    JSON.stringify(record.attachments),
   ];
 }
 
@@ -466,7 +505,8 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       updated_at TEXT NOT NULL,
       finished_at TEXT,
       input_request TEXT,
-      task_id TEXT
+      task_id TEXT,
+      attachments TEXT NOT NULL DEFAULT '[]'
     );
   `);
   // Databases created before input requests have no such column; their runs were not waiting on one.
@@ -476,6 +516,10 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
   // Runs stored before tasks existed belong to none.
   if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'task_id')) {
     db.exec('ALTER TABLE pipeline_runs ADD COLUMN task_id TEXT');
+  }
+  // Runs stored before attachments existed have an empty manifest.
+  if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'attachments')) {
+    db.exec(`ALTER TABLE pipeline_runs ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'`);
   }
 
   // Runs stored before step loops and agent decisions existed: the owner decided, and no loop
@@ -554,15 +598,17 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
     INSERT INTO pipeline_runs (
       id, request_id, workflow_id, project, input, status, stop_reason, current_step_index,
       error, definition, steps, home_path, worktree_path, worktree_branch, base_commit,
-      worktree_state, worktree_detail, created_at, updated_at, finished_at, input_request, task_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      worktree_state, worktree_detail, created_at, updated_at, finished_at, input_request, task_id,
+      attachments
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_runs SET
       request_id = ?, workflow_id = ?, project = ?, input = ?, status = ?, stop_reason = ?,
       current_step_index = ?, error = ?, definition = ?, steps = ?, home_path = ?,
       worktree_path = ?, worktree_branch = ?, base_commit = ?, worktree_state = ?,
-      worktree_detail = ?, created_at = ?, updated_at = ?, finished_at = ?, input_request = ?, task_id = ?
+      worktree_detail = ?, created_at = ?, updated_at = ?, finished_at = ?, input_request = ?, task_id = ?,
+      attachments = ?
     WHERE id = ?
   `);
 

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
-import { existsSync, mkdtempSync, mkdirSync, promises as fsPromises, readFileSync, realpathSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, promises as fsPromises, readdirSync, readFileSync, realpathSync, statSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -23,6 +23,9 @@ import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
 import { setTaskState, OWN_REPOSITORY } from './helpers/task-state.js';
+import { create as createRunWorktree, planNames as realPlanNames } from '../pipelines/run-worktree.js';
+import { AttachmentPublishError, publishAttachmentBatch } from '../pipelines/attachment-publisher.js';
+import { reconcileAttachmentStarts } from '../pipelines/attachment-reconcile.js';
 
 const base = '/api/pipelines';
 const cleanup = [];
@@ -723,6 +726,7 @@ describe('pipelines API — preflight and runs', () => {
       input: 'docs/todos/feature.md',
       status: 'pending',
       currentStepIndex: 0,
+      attachments: [],
       worktree: {
         state: 'not_created',
         baseCommit: null,
@@ -846,16 +850,141 @@ describe('pipelines API — preflight and runs', () => {
     const agent = ctx.agentStore.create(agentBody({ name: 'big' }));
     const huge = ctx.workflowStore.create({
       name: 'Huge', agentsDecide: false,
-      nodes: [node(agent.id, { name: 'Big', prompt: `prefix-{input}-${'x'.repeat(20)}` })],
+      nodes: [node(agent.id, { name: 'Big', prompt: '{input}'.repeat(4) })],
+    });
+    const boundaryInput = `first\n\n${'y'.repeat(4089)}`;
+    const atLimit = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'exact-compose-limit', workflowId: huge.id, project: 'Demo', input: boundaryInput,
+    });
+    expect(atLimit.status).toBe(201);
+    expect(ctx.runStore.get(atLimit.body.id).definition.steps.at(-1).prompt).toBe(boundaryInput.repeat(4));
+
+    const oneOver = ctx.workflowStore.create({
+      name: 'OverLimit', agentsDecide: false,
+      nodes: [node(agent.id, { name: 'Big', prompt: `${'{input}'.repeat(4)}x` })],
     });
     const oversized = await request(ctx.app).post(`${base}/runs`).send({
       requestId: 'oversized-compose',
-      workflowId: huge.id,
+      workflowId: oneOver.id,
       project: 'Demo',
-      input: 'y'.repeat(16384),
+      input: boundaryInput,
     });
     expect(oversized.status).toBe(400);
-    expect(oversized.body.errors.some(e => e.field === 'input')).toBe(true);
+    expect(oversized.body.errors).toEqual([{ field: 'input', message: 'Composed prompt must be at most 16384 characters' }]);
+  });
+
+  it('accepts descriptive multiline input, normalizes line endings, and keeps path Progress input single-line', async () => {
+    const ctx = await setup();
+    const { agent, workflow } = await seedReady(ctx);
+    const paragraphs = 'First paragraph.\r\n\rSecond paragraph with trailing spaces.  \n';
+    const started = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'multiline-descriptive',
+      workflowId: workflow.id,
+      project: 'Demo',
+      input: paragraphs,
+    });
+    expect(started.status).toBe(201);
+    const stored = ctx.runStore.get(started.body.id);
+    expect(stored.input).toBe('First paragraph.\n\nSecond paragraph with trailing spaces.  \n');
+    expect(stored.definition.inputMode).toBe('descriptive');
+    expect(stored.definition.steps.at(-1).prompt).toContain('First paragraph.\n\nSecond paragraph');
+    expect(started.body.input).toBe(stored.input);
+    const replayed = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'multiline-descriptive', workflowId: workflow.id, project: 'Demo', input: stored.input,
+    });
+    expect(replayed.status).toBe(200);
+    expect(replayed.body).toMatchObject({ id: started.body.id, input: stored.input });
+
+    const whitespace = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'whitespace-only',
+      workflowId: workflow.id,
+      project: 'Demo',
+      input: '  \n\n  ',
+    });
+    expect(whitespace.status).toBe(400);
+    expect(whitespace.body.errors).toEqual([{ field: 'input', message: expect.stringMatching(/input/i) }]);
+
+    const optional = ctx.workflowStore.create({
+      name: 'Optional', agentsDecide: false,
+      nodes: [node(agent.id, { prompt: 'No placeholder' })],
+    });
+    const emptyOk = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'empty-ok',
+      workflowId: optional.id,
+      project: 'Demo',
+      input: '',
+    });
+    expect(emptyOk.status).toBe(201);
+    expect(ctx.runStore.get(emptyOk.body.id).input).toBe('');
+
+    const execFile = vi.fn((_command, args, _options, callback) => {
+      callback(null, args.at(-1) === 'docs/todo.md' ? '100644 blob abc\tdocs/todo.md\0' : '', '');
+    });
+    const fixedCtx = await setup({ routerDeps: { execFile } });
+    fixedCtx.agentStore.create(agentBody());
+    fixedCtx.settingsStore.update({ setupAgentId: fixedCtx.agentStore.list()[0].id, revision: 1 });
+    const fixedWorkflow = fixedCtx.workflowStore.create({
+      name: 'FixedProgress', agentsDecide: false, progressFile: 'docs/todo.md',
+      nodes: [node(fixedCtx.agentStore.list()[0].id, { prompt: 'Work' })],
+    });
+    const fixedStart = await request(fixedCtx.app).post(`${base}/runs`).send({
+      requestId: 'fixed-multiline',
+      workflowId: fixedWorkflow.id,
+      project: 'Demo',
+      input: 'Notes about the work\nwith a second line',
+    });
+    expect(fixedStart.status).toBe(201);
+    expect(fixedCtx.runStore.get(fixedStart.body.id).input).toBe('Notes about the work\nwith a second line');
+
+    const pathWorkflow = ctx.workflowStore.create({
+      name: 'PathProgress', agentsDecide: false, progressFile: 'docs/{input}',
+      nodes: [node(agent.id, { prompt: 'Work on {input}' })],
+    });
+    const pathReject = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'path-multiline',
+      workflowId: pathWorkflow.id,
+      project: 'Demo',
+      input: 'todos/x.md\nmore',
+    });
+    expect(pathReject.status).toBe(400);
+    expect(pathReject.body.errors).toEqual([{
+      field: 'input',
+      message: 'Use 0–4096 characters on one line without control characters',
+    }]);
+    expect(ctx.runStore.getByRequestId('path-multiline')).toBeNull();
+
+    const withLiteral = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'literal-input-token',
+      workflowId: workflow.id,
+      project: 'Demo',
+      input: 'contains {input} literally\nand another line',
+      newTask: {},
+    });
+    expect(withLiteral.status).toBe(201);
+    const literalRun = ctx.runStore.get(withLiteral.body.id);
+    expect(literalRun.definition.steps.at(-1).prompt).toBe('Implement contains {input} literally\nand another line');
+    expect(literalRun.definition.inputMode).toBe('descriptive');
+    expect(withLiteral.body.taskId).toEqual(expect.any(String));
+    expect(ctx.taskStore.get(withLiteral.body.taskId).title).toBe('contains {input} literally and another line');
+  });
+
+  it('requires a title or nonblank input for a new task even if the workflow input is optional', async () => {
+    const ctx = await setup();
+    const { agent } = await seedReady(ctx);
+    const optional = ctx.workflowStore.create({
+      name: 'Optional', agentsDecide: false,
+      nodes: [node(agent.id, { prompt: 'No placeholder' })],
+    });
+    const start = { requestId: 'untitled-empty', workflowId: optional.id, project: 'Demo', input: ' \n\n ', newTask: {} };
+    const rejected = await request(ctx.app).post(`${base}/runs`).send(start);
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.errors).toContainEqual({ field: 'input', message: expect.stringMatching(/title/i) });
+    expect(ctx.taskService.plan).not.toHaveBeenCalled();
+
+    const started = await request(ctx.app).post(`${base}/runs`).send({ ...start, newTask: { title: 'Explicit title' } });
+    expect(started.status).toBe(201);
+    expect(ctx.taskStore.get(started.body.taskId).title).toBe('Explicit title');
+    expect(ctx.runStore.get(started.body.id).input).toBe(start.input);
   });
 
   it('starts a multi-node workflow with Setup as step 0', async () => {
@@ -972,13 +1101,216 @@ describe('pipelines API — preflight and runs', () => {
 
     const page0 = await request(server).get(`${base}/runs`).query({ size: 2, sort: 'createdAt,asc' });
     expect(page0.body.data.map(r => r.id)).toEqual([ids[0], ids[1]]);
+    expect(page0.body.data.every(r => Array.isArray(r.attachments) && r.attachments.length === 0)).toBe(true);
     expect(page0.body.page.hasNextPage).toBe(true);
 
     const page1 = await request(server).get(`${base}/runs`).query({ page: 1, size: 2, sort: 'createdAt,asc' });
     expect(page1.body.data.map(r => r.id)).toEqual([ids[2]]);
+    expect(page1.body.data[0].attachments).toEqual([]);
 
     const filtered = await request(server).get(`${base}/runs`).query({ project: 'Demo', open: 'true' });
     expect(filtered.body.page.totalElements).toBe(3);
+  });
+
+  it('projects ordered attachment name, path and size on detail and list without digests', async () => {
+    const ctx = await setup();
+    const { workflow } = await seedReady(ctx);
+    const started = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'attach-view',
+      workflowId: workflow.id,
+      project: 'Demo',
+      input: 'x',
+    });
+    expect(started.status).toBe(201);
+    const notesDir = ctx.runStore.get(started.body.id).definition.notesDir;
+    const digest = 'cd'.repeat(32);
+    const attachments = [
+      { name: 'a.txt', path: `${notesDir}/attachments/01-a.txt`, sizeBytes: 1, digest },
+      { name: 'b.txt', path: `${notesDir}/attachments/02-b.txt`, sizeBytes: 2, digest: 'ef'.repeat(32) },
+    ];
+    ctx.runStore.update(started.body.id, { attachments });
+
+    const detail = await request(ctx.app).get(`${base}/runs/${started.body.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.attachments).toEqual([
+      { name: 'a.txt', path: `${notesDir}/attachments/01-a.txt`, sizeBytes: 1 },
+      { name: 'b.txt', path: `${notesDir}/attachments/02-b.txt`, sizeBytes: 2 },
+    ]);
+    expect(JSON.stringify(detail.body)).not.toMatch(/digest/);
+    expect(JSON.stringify(detail.body)).not.toContain(digest);
+
+    const listed = await request(ctx.app).get(`${base}/runs`).query({ size: 1 });
+    expect(listed.body.data[0].attachments).toEqual(detail.body.attachments);
+
+    const missing = await request(ctx.app).get(`${base}/runs/11111111-1111-4111-8111-111111111111`);
+    expect(missing.status).toBe(404);
+    expect(missing.body).toMatchObject({ status: 404, traceId: expect.any(String) });
+  });
+});
+
+describe('pipelines API — multipart run start', () => {
+  // Accepted starts publish for real, so they work in a real repository with real run checkouts.
+  async function stagingSetup() {
+    const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'cd-pipe-attach-')));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const repo = path.join(dir, 'repo');
+    mkdirSync(repo);
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' });
+    git('init', '-b', 'main');
+    git('-c', 'user.name=API Test', '-c', 'user.email=api@test.local', 'commit', '--allow-empty', '-m', 'init');
+    const stagingRoot = path.join(dir, 'staging');
+    const ctx = await setup({ repo, routerDeps: { attachmentStagingRoot: stagingRoot, planNames: realPlanNames } });
+    const { workflow } = await seedReady(ctx);
+    return { ctx, workflow, stagingRoot };
+  }
+
+  function runFields(workflowId, requestId = 'mp-run') {
+    return JSON.stringify({ requestId, workflowId, project: 'Demo', input: 'brief' });
+  }
+
+  it('accepts multipart with ordered files and returns public attachments without digests', async () => {
+    const { ctx, workflow } = await stagingSetup();
+    const response = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', runFields(workflow.id, 'mp-ok'))
+      .attach('files', Buffer.from('alpha'), 'a.txt')
+      .attach('files', Buffer.from('beta'), 'b.txt');
+    expect(response.status).toBe(201);
+    expect(response.body.attachments).toEqual([
+      expect.objectContaining({ name: 'a.txt', sizeBytes: 5, path: expect.stringMatching(/\.codedeck\/runs\/[0-9a-f]{8}\/attachments\//) }),
+      expect.objectContaining({ name: 'b.txt', sizeBytes: 4 }),
+    ]);
+    expect(JSON.stringify(response.body)).not.toMatch(/digest/);
+    expect(response.headers['x-trace-id']).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  it('returns 400 with indexed files[n] errors for an unsafe filename', async () => {
+    const { ctx, workflow } = await stagingSetup();
+    // Superagent basenames path separators; overlong names still reach the server.
+    const response = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', runFields(workflow.id, 'mp-bad-name'))
+      .attach('files', Buffer.from('x'), `${'a'.repeat(256)}.txt`);
+    expect(response.status).toBe(400);
+    expect(response.type).toBe('application/problem+json');
+    expect(response.body.errors).toEqual([expect.objectContaining({ field: 'files[0]' })]);
+    expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+  });
+
+  it('returns 413 when more than 20 files are attached', async () => {
+    const { ctx, workflow } = await stagingSetup();
+    let req = request(ctx.app).post(`${base}/runs`).field('run', runFields(workflow.id, 'mp-too-many'));
+    for (let i = 0; i < 21; i++) req = req.attach('files', Buffer.from(String(i)), `f${i}.txt`);
+    const response = await req;
+    expect(response.status).toBe(413);
+    expect(response.body.errors).toEqual([expect.objectContaining({ field: 'files' })]);
+    expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+  });
+
+  it('keeps hostile unexpected part names and content out of the problem and correlated warning', async () => {
+    const { ctx, workflow } = await stagingSetup();
+    const partName = 'hostile-<img src=x>';
+    const partContent = 'private-part-marker';
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const response = await request(ctx.app)
+        .post(`${base}/runs`)
+        .field('run', runFields(workflow.id, 'mp-hostile'))
+        .field(partName, partContent)
+        .attach('files', Buffer.from('x'), 'a.txt');
+      expect(response.status).toBe(400);
+      expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+      expect(response.body.errors).toEqual([expect.objectContaining({ field: 'field' })]);
+      const correlatedWarning = warning.mock.calls.find(([line]) => line.includes(`traceId=${response.body.traceId}`));
+      expect(correlatedWarning).toBeDefined();
+      expect(JSON.stringify(correlatedWarning)).toMatch(/\bfield\b/);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(partContent);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(partName);
+      expect(response.text).not.toContain(partContent);
+      expect(response.text).not.toContain(partName);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('returns 409 when a multipart start reuses a requestId with different launch fields', async () => {
+    const { ctx, workflow } = await stagingSetup();
+    const first = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', runFields(workflow.id, 'mp-conflict'))
+      .attach('files', Buffer.from('a'), 'a.txt');
+    expect(first.status).toBe(201);
+    const conflict = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', JSON.stringify({ requestId: 'mp-conflict', workflowId: workflow.id, project: 'Demo', input: 'changed' }))
+      .attach('files', Buffer.from('a'), 'a.txt');
+    expect(conflict.status).toBe(409);
+  });
+
+  it('returns 409 when attachment order or same-size bytes change under the same requestId', async () => {
+    const { ctx, workflow } = await stagingSetup();
+    const first = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', runFields(workflow.id, 'mp-bytes'))
+      .attach('files', Buffer.from('alpha'), 'a.txt')
+      .attach('files', Buffer.from('beta'), 'b.txt');
+    expect(first.status).toBe(201);
+    const reordered = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', runFields(workflow.id, 'mp-bytes'))
+      .attach('files', Buffer.from('beta'), 'b.txt')
+      .attach('files', Buffer.from('alpha'), 'a.txt');
+    expect(reordered.status).toBe(409);
+    const sameSize = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', runFields(workflow.id, 'mp-bytes'))
+      .attach('files', Buffer.from('ALPHA'), 'a.txt')
+      .attach('files', Buffer.from('beta'), 'b.txt');
+    expect(sameSize.status).toBe(409);
+    const matching = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', runFields(workflow.id, 'mp-bytes'))
+      .attach('files', Buffer.from('alpha'), 'a.txt')
+      .attach('files', Buffer.from('beta'), 'b.txt');
+    expect(matching.status).toBe(200);
+    expect(matching.body.id).toBe(first.body.id);
+  });
+
+  it('returns 500 when attachment staging cannot be created', async () => {
+    const blocker = path.join(mkdtempSync(path.join(os.tmpdir(), 'cd-pipe-block-')), 'file');
+    writeFileSync(blocker, 'x');
+    cleanup.push(() => rmSync(path.dirname(blocker), { recursive: true, force: true }));
+    const ctx = await setup({ routerDeps: { attachmentStagingRoot: blocker } });
+    const { workflow } = await seedReady(ctx);
+    const response = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', runFields(workflow.id, 'mp-storage'))
+      .attach('files', Buffer.from('x'), 'a.txt');
+    expect(response.status).toBe(500);
+    expect(response.body.traceId).toBe(response.headers['x-trace-id']);
+  });
+
+  it('removes the staged files when the run JSON fails validation after parsing', async () => {
+    const { ctx, stagingRoot } = await stagingSetup();
+    const response = await request(ctx.app)
+      .post(`${base}/runs`)
+      .field('run', JSON.stringify({ requestId: 'mp-invalid', workflowId: 'not-a-uuid', project: 'Demo', input: 'brief' }))
+      .attach('files', Buffer.from('alpha'), 'a.txt');
+    expect(response.status).toBe(400);
+    const attempts = path.join(stagingRoot, 'attempts');
+    expect(existsSync(attempts) ? readdirSync(attempts) : []).toEqual([]);
+  });
+
+  it('keeps JSON attachment-free starts working alongside multipart', async () => {
+    const { ctx, workflow } = await stagingSetup();
+    const json = await request(ctx.app).post(`${base}/runs`).send({
+      requestId: 'json-still',
+      workflowId: workflow.id,
+      project: 'Demo',
+      input: 'plain',
+    });
+    expect(json.status).toBe(201);
+    expect(json.body.attachments).toEqual([]);
   });
 });
 
@@ -2325,7 +2657,18 @@ describe('pipelines API — decisions agents made', () => {
     const withTasks = { ...stores, taskStore: { get() {} }, taskService: { plan() {}, createPlanned() {} } };
     expect(() => createPipelinesRouter(withTasks)).toThrow('pipelines router: requestStore is required');
     expect(() => createPipelinesRouter({
-      ...withTasks, requestStore: { get() {}, reserve() {}, setTaskId() {}, release() {} },
+      ...withTasks,
+      requestStore: {
+        get() {}, reserve() {}, setTaskId() {}, release() {},
+        assertMatchingParams() {}, assignRunId() {}, setPlacement() {}, transition() {},
+      },
+    })).toThrow('pipelines router: requestStore is required');
+    expect(() => createPipelinesRouter({
+      ...withTasks,
+      requestStore: {
+        get() {}, reserve() {}, setTaskId() {}, release() {},
+        assertMatchingParams() {}, assignRunId() {}, setPlacement() {}, transition() {}, getByRunId() {}, listUnpublished() {},
+      },
     })).toThrow('pipelines router: closeRunTerminals must be a function');
   });
 
@@ -3212,6 +3555,31 @@ describe('pipelines API — runs across the repositories of a project', () => {
       expect(whole.body).toMatchObject({ progressFile: 'docs/todos/tag-phone.md', input: 'todos/tag-phone.md', foundIn: 'mobile-app' });
     });
 
+    it('plans repositories from a fixed Progress file while preserving descriptive paragraphs', async () => {
+      const ctx = await setupPlan(FILES, 'docs/todos/tag.md');
+      const response = await ctx.plan('First paragraph.\r\n\rSecond paragraph.  ');
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        progressFile: 'docs/todos/tag.md',
+        input: 'First paragraph.\n\nSecond paragraph.  ',
+        foundIn: 'codedeck',
+        problem: null,
+        repositories: [
+          { repository: 'codedeck', role: 'this', todo: null, input: null, listed: true, present: null },
+          { repository: 'mobile-app', role: 'todo', todo: 'docs/todos/tag-phone.md', input: null, listed: true, present: true },
+          { repository: 'frontend', role: 'minor', todo: null, input: null, listed: false, present: null },
+        ],
+      });
+      // Empty input is refused without claiming that descriptive input must be one line.
+      const empty = await ctx.plan('');
+      expect(empty.status).toBe(400);
+      expect(empty.body.errors).toEqual([{ field: 'input', message: 'Use 1–4096 characters' }]);
+      // Other controls are still refused for descriptive input.
+      const tab = await ctx.plan('First\tsecond');
+      expect(tab.status).toBe(400);
+      expect(tab.body.errors.map(error => error.field)).toEqual(['input']);
+    });
+
     it('answers with nothing to read when there is no such file, no line, or no Progress file', async () => {
       const ctx = await setupPlan({ [PROJECT.path]: { 'docs/todos/plain.md': '# Plain\n\n## Phase 1\n- [ ] One\n' } });
       expect((await ctx.plan('todos/absent.md')).body).toEqual({ progressFile: 'docs/todos/absent.md', input: 'todos/absent.md', foundIn: null, problem: null, repositories: null });
@@ -3598,5 +3966,514 @@ describe('changing a running workflow’s team', () => {
       index === 2 ? { ...item, repeat: { mode: 'loop_back', toStepIndex: 1, max: 3 } } : item) } });
     const queued = await request(ctx.app).put(url).send({ ...change, expectedUpdatedAt: loop.updatedAt }).expect(200);
     expect(queued.body.steps[1]).toMatchObject({ agentName: agent.name, nextAgentName: trial.name, sessionId: 'Demo-2' });
+  });
+});
+
+describe('pipelines API — attached starts reserve, publish and close', () => {
+  const IN_USE = [{ code: 'in_use', message: 'An open workflow run is already using it.' }];
+
+  async function attachedSetup({ routerDeps = {}, repositories = false, ...options } = {}) {
+    const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'codedeck-api-attach-')));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const initRepo = name => {
+      const repo = path.join(dir, name);
+      mkdirSync(repo);
+      git(repo, 'init', '-b', 'main');
+      git(repo, 'config', 'user.name', 'API Test');
+      git(repo, 'config', 'user.email', 'api@test.local');
+      writeFileSync(path.join(repo, 'README.md'), '# repo\n');
+      git(repo, 'add', 'README.md');
+      git(repo, 'commit', '-m', 'init');
+      return repo;
+    };
+    const repo = initRepo('repo');
+    const stagingRoot = path.join(dir, 'staging');
+    const ctx = await setup({ ...options, repo, routerDeps: { attachmentStagingRoot: stagingRoot, planNames: realPlanNames, ...routerDeps } });
+    const backend = repositories ? initRepo('backend') : null;
+    if (backend) ctx.projects.get('Demo').repositories = [{ name: 'backend', path: backend }];
+    const { workflow } = await seedReady(ctx);
+    const post = (fields = {}, files = [['a.txt', 'alpha'], ['a.txt', 'second a']], app = ctx.app) => {
+      let req = request(app).post(`${base}/runs`)
+        .field('run', JSON.stringify({ requestId: 'attached', workflowId: workflow.id, project: 'Demo', input: 'brief', ...fields }));
+      for (const [name, body] of files) req = req.attach('files', Buffer.from(body), name);
+      return req;
+    };
+    const postJson = fields => request(ctx.app).post(`${base}/runs`).send({ workflowId: workflow.id, project: 'Demo', input: 'plain', ...fields });
+    const attempts = () => (existsSync(path.join(stagingRoot, 'attempts')) ? readdirSync(path.join(stagingRoot, 'attempts')) : []);
+    const read = (checkout, attachment) => readFileSync(path.join(checkout, attachment.path), 'utf8');
+    const clean = checkout => git(checkout, 'status', '--porcelain', '--untracked-files=all');
+    return { ...ctx, repo, backend, git, workflow, requestStore: createRequestStore(ctx.db), post, postJson, attempts, read, clean, stagingRoot };
+  }
+
+  /** A publisher that waits at `entered` until `release` is resolved, then publishes for real. */
+  function pausedPublisher() {
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let calls = 0;
+    const publishAttachments = async options => {
+      calls += 1;
+      entered.resolve();
+      await release.promise;
+      return publishAttachmentBatch(options);
+    };
+    return { publishAttachments, entered: entered.promise, release: release.resolve, calls: () => calls };
+  }
+
+  function failingOnce(field = 'files[1]') {
+    let failed = false;
+    return async options => {
+      if (!failed) {
+        failed = true;
+        throw new AttachmentPublishError(`Attachment ${field} could not be copied: EIO`, { status: 500, code: 'copy_failed', field });
+      }
+      return publishAttachmentBatch(options);
+    };
+  }
+
+  it('publishes a new task\'s attachments in its starting worktree before answering 201', async () => {
+    const ctx = await attachedSetup();
+    const response = await ctx.post({ newTask: { title: 'Login' } });
+    expect(response.status).toBe(201);
+    const [task] = ctx.taskStore.list();
+    const run = ctx.runStore.get(response.body.id);
+    expect(run.worktreePath).toBe(task.worktreePath);
+    expect(response.body.attachments.map(entry => entry.name)).toEqual(['a.txt', 'a.txt']);
+    expect(response.body.attachments.map(entry => ctx.read(task.worktreePath, entry))).toEqual(['alpha', 'second a']);
+    expect(ctx.clean(task.worktreePath)).toBe('');
+    expect(ctx.requestStore.get('attached')).toMatchObject({
+      runId: run.id, taskId: task.id, provisioningState: 'published', placement: { worktreePath: task.worktreePath, startRepository: 'repo' },
+    });
+    expect(ctx.attempts()).toEqual([]);
+    expect(ctx.engineStarts).toEqual([]);
+    ctx.flushStart();
+    expect(ctx.engineStarts).toEqual([run.id]);
+  });
+
+  it('creates the selector-free checkout itself and publishes into it', async () => {
+    const ctx = await attachedSetup();
+    const response = await ctx.post();
+    expect(response.status).toBe(201);
+    const run = ctx.runStore.get(response.body.id);
+    expect(run).toMatchObject({ worktreeState: 'present', baseCommit: ctx.git(ctx.repo, 'rev-parse', 'HEAD').trim() });
+    expect(ctx.git(ctx.repo, 'worktree', 'list', '--porcelain')).toContain(`worktree ${run.worktreePath}\n`);
+    expect(response.body.attachments.map(entry => ctx.read(run.worktreePath, entry))).toEqual(['alpha', 'second a']);
+    expect(ctx.clean(run.worktreePath)).toBe('');
+    expect(ctx.clean(ctx.repo)).toBe('');
+  });
+
+  it('publishes in Main and in an open task\'s worktree', async () => {
+    const ctx = await attachedSetup();
+    const inMain = await ctx.post({ worktreePath: ctx.repo });
+    expect(inMain.status).toBe(201);
+    expect(ctx.runStore.get(inMain.body.id).worktreeState).toBe('external');
+    expect(inMain.body.attachments.map(entry => ctx.read(ctx.repo, entry))).toEqual(['alpha', 'second a']);
+    expect(ctx.clean(ctx.repo)).toBe('');
+
+    const task = await ctx.taskService.createPlanned(await ctx.taskService.plan({ project: 'Demo', title: 'Open', titleSource: 'owner' }));
+    const inTask = await ctx.post({ requestId: 'attached-task', taskId: task.id }, [['notes.md', '# notes']]);
+    expect(inTask.status).toBe(201);
+    expect(inTask.body.attachments.map(entry => ctx.read(task.worktreePath, entry))).toEqual(['# notes']);
+    expect(ctx.clean(task.worktreePath)).toBe('');
+  });
+
+  it('publishes only in the selected secondary repository', async () => {
+    const ctx = await attachedSetup({ repositories: true });
+    const response = await ctx.post({ worktreePath: ctx.backend });
+    expect(response.status).toBe(201);
+    expect(response.body.attachments.map(entry => ctx.read(ctx.backend, entry))).toEqual(['alpha', 'second a']);
+    expect(existsSync(path.join(ctx.repo, '.codedeck'))).toBe(false);
+    expect(ctx.requestStore.get('attached').placement).toMatchObject({ worktreePath: ctx.backend, startRepository: 'backend' });
+  });
+
+  it('answers a concurrent identical start with the same run while the copy is paused, enqueuing once', async () => {
+    const paused = pausedPublisher();
+    const ctx = await attachedSetup({ routerDeps: { publishAttachments: paused.publishAttachments } });
+    let answered = false;
+    const first = ctx.post().then(response => { answered = true; return response; });
+    await paused.entered;
+    const second = ctx.post().then(response => response);
+    await vi.waitFor(() => expect(ctx.attempts()).toHaveLength(2));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(answered).toBe(false);
+    expect(ctx.runStore.list()).toEqual([]);
+    paused.release();
+    const responses = await Promise.all([first, second]);
+    expect(responses.map(response => response.status).sort()).toEqual([200, 201]);
+    expect(responses[0].body.id).toBe(responses[1].body.id);
+    expect(paused.calls()).toBe(1);
+    ctx.flushStart();
+    expect(ctx.engineStarts).toEqual([responses[0].body.id]);
+    expect(ctx.attempts()).toEqual([]);
+  });
+
+  it('answers 201 without waiting for the agent to become ready', async () => {
+    const ctx = await attachedSetup({ routerDeps: { scheduleStart: fn => fn() } });
+    ctx.engine.start.mockImplementation(() => new Promise(() => {}));
+    const response = await ctx.post();
+    expect(response.status).toBe(201);
+    expect(ctx.engine.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a recoverable copy failure under the same reservation and retries without another task', async () => {
+    const ctx = await attachedSetup({ routerDeps: { publishAttachments: failingOnce() } });
+    const failed = await ctx.post({ newTask: { title: 'Login' } });
+    expect(failed.status).toBe(500);
+    expect(failed.type).toBe('application/problem+json');
+    const reservation = ctx.requestStore.get('attached');
+    expect(reservation).toMatchObject({ provisioningState: 'failed', runId: expect.any(String), taskId: expect.any(String) });
+    expect(failed.body).toMatchObject({
+      errors: [{ field: 'files[1]' }], traceId: failed.headers['x-trace-id'],
+      reservation: { requestId: 'attached', runId: reservation.runId, taskId: reservation.taskId, provisioningState: 'failed' },
+    });
+    expect(ctx.runStore.list()).toEqual([]);
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    expect(ctx.attempts()).toEqual([]);
+    ctx.flushStart();
+    expect(ctx.engineStarts).toEqual([]);
+
+    const retried = await ctx.post({ newTask: { title: 'Login' } });
+    expect(retried.status).toBe(201);
+    expect(retried.body).toMatchObject({ id: reservation.runId, taskId: reservation.taskId });
+    expect(ctx.taskStore.list()).toHaveLength(1);
+    expect(ctx.requestStore.get('attached').provisioningState).toBe('published');
+    ctx.flushStart();
+    expect(ctx.engineStarts).toEqual([reservation.runId]);
+  });
+
+  it('refuses a competing start for the checkout while an attached start is publishing there', async () => {
+    const paused = pausedPublisher();
+    const ctx = await attachedSetup({ routerDeps: { publishAttachments: paused.publishAttachments } });
+    const first = ctx.post({ worktreePath: ctx.repo }).then(response => response);
+    await paused.entered;
+    const competing = await ctx.postJson({ requestId: 'competing', worktreePath: ctx.repo });
+    expect(competing.status).toBe(409);
+    expect(competing.body.reasons).toEqual(IN_USE);
+    const listed = await request(ctx.app).get(`${base}/worktrees`).query({ project: 'Demo' });
+    expect(listed.body.data.find(entry => entry.path === ctx.repo)).toMatchObject({ selectable: false, reason: IN_USE[0] });
+    paused.release();
+    expect((await first).status).toBe(201);
+    expect(ctx.runStore.list()).toHaveLength(1);
+  });
+
+  it('revalidates the checkout at publication and removes the unpublished batch', async () => {
+    let ctx;
+    let other;
+    ctx = await attachedSetup({ routerDeps: { publishAttachments: async options => {
+      const published = await publishAttachmentBatch(options);
+      // Another run came to hold the checkout while the batch was being copied.
+      ctx.runStore.update(other, { worktreePath: ctx.repo, worktreeState: 'external' });
+      return published;
+    } } });
+    other = (await ctx.postJson({ requestId: 'elsewhere' })).body.id;
+    const response = await ctx.post({ worktreePath: ctx.repo });
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ reasons: IN_USE, reservation: { requestId: 'attached', provisioningState: 'failed' } });
+    expect(ctx.runStore.list().map(run => run.id)).toEqual([other]);
+    const notesDir = `.codedeck/runs/${response.body.reservation.runId.slice(0, 8)}`;
+    expect(readdirSync(path.join(ctx.repo, notesDir))).toEqual([]);
+  });
+
+  it('refuses publication if the selected checkout becomes detached during the copy', async () => {
+    const paused = pausedPublisher();
+    const ctx = await attachedSetup({ routerDeps: { publishAttachments: paused.publishAttachments } });
+    const starting = ctx.post({ worktreePath: ctx.repo }).then(response => response);
+    await paused.entered;
+    try {
+      ctx.git(ctx.repo, 'checkout', '--detach');
+    } finally {
+      paused.release();
+    }
+
+    const response = await starting;
+    expect(response.status).toBe(409);
+    expect(response.body.reasons).toEqual([expect.objectContaining({ code: 'detached' })]);
+    expect(ctx.runStore.list()).toEqual([]);
+    const reservation = ctx.requestStore.get('attached');
+    expect(reservation.provisioningState).toBe('failed');
+    const notesDir = `.codedeck/runs/${reservation.runId.slice(0, 8)}`;
+    expect(readdirSync(path.join(ctx.repo, notesDir))).toEqual([]);
+    ctx.flushStart();
+    expect(ctx.engineStarts).toEqual([]);
+  });
+
+  it('refuses publication if Git can no longer read the selected checkout after the copy', async () => {
+    const ctx = await attachedSetup({ routerDeps: { publishAttachments: async options => {
+      const published = await publishAttachmentBatch(options);
+      writeFileSync(path.join(options.checkoutPath, '.git', 'index'), 'invalid checkout index');
+      return published;
+    } } });
+
+    const response = await ctx.post({ worktreePath: ctx.repo });
+
+    expect(response.status).toBe(409);
+    expect(response.body.reasons).toEqual([expect.objectContaining({ code: 'unreadable' })]);
+    const reservation = ctx.requestStore.get('attached');
+    expect(reservation.provisioningState).toBe('failed');
+    const notesDir = `.codedeck/runs/${reservation.runId.slice(0, 8)}`;
+    expect(readdirSync(path.join(ctx.repo, notesDir))).toEqual([]);
+    expect(ctx.runStore.list()).toEqual([]);
+    ctx.flushStart();
+    expect(ctx.engineStarts).toEqual([]);
+  });
+
+  it('releases a definitive rejection before provisioning so the same ID and body can retry', async () => {
+    const ctx = await attachedSetup();
+    const holder = await ctx.postJson({ requestId: 'holder', worktreePath: ctx.repo });
+    expect(holder.status).toBe(201);
+    const refused = await ctx.post({ worktreePath: ctx.repo });
+    expect(refused.status).toBe(409);
+    expect(refused.body.reasons).toEqual(IN_USE);
+    expect(refused.body.reservation).toBeUndefined();
+    expect(ctx.requestStore.get('attached')).toBeNull();
+    expect(ctx.attempts()).toEqual([]);
+    ctx.runStore.update(holder.body.id, { status: 'complete', finishedAt: new Date().toISOString() });
+    expect((await ctx.post({ worktreePath: ctx.repo })).status).toBe(201);
+  });
+
+  it('replays a published start with 200 and never rewrites its files', async () => {
+    const ctx = await attachedSetup();
+    const first = await ctx.post();
+    const run = ctx.runStore.get(first.body.id);
+    const copy = path.join(run.worktreePath, first.body.attachments[0].path);
+    const inode = (await fsPromises.stat(copy)).ino;
+    const replay = await ctx.post();
+    expect(replay.status).toBe(200);
+    expect(replay.body.id).toBe(first.body.id);
+    expect((await fsPromises.stat(copy)).ino).toBe(inode);
+    expect(ctx.attempts()).toEqual([]);
+    ctx.flushStart();
+    expect(ctx.engineStarts).toEqual([first.body.id]);
+  });
+
+  describe('a server stop part way through, then a retry with the same ID', () => {
+    /** Holds a start at `at()` and never lets it carry on, as a server stop would. */
+    function interruption() {
+      const reached = Promise.withResolvers();
+      const stopped = Promise.withResolvers();
+      return { at: () => { reached.resolve(); return stopped.promise; }, reached: reached.promise, abandon: () => stopped.reject(new Error('server stopped')) };
+    }
+
+    /** Startup reconcile, then a new router over the same database, as after a restart. */
+    async function restart(ctx) {
+      await reconcileAttachmentStarts({ requestStore: createRequestStore(ctx.db), runStore: ctx.runStore, stagingRoot: ctx.stagingRoot });
+      return ctx.openApp();
+    }
+
+    const worktrees = ctx => ctx.git(ctx.repo, 'worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree '));
+
+    it('finishes a start stopped while its task was being created, with one task and one run', async () => {
+      const ctx = await attachedSetup();
+      const stop = interruption();
+      vi.spyOn(ctx.taskService, 'createPlanned').mockImplementationOnce(() => stop.at());
+      const abandoned = ctx.post({ newTask: { title: 'Login' } }).then(response => response);
+      await stop.reached;
+      expect(ctx.attempts()).toHaveLength(1);
+
+      const app = await restart(ctx);
+      expect(ctx.attempts()).toEqual([]);
+      expect(ctx.requestStore.get('attached').provisioningState).toBe('failed');
+      const retried = await ctx.post({ newTask: { title: 'Login' } }, undefined, app);
+      expect(retried.status).toBe(201);
+      const [task] = ctx.taskStore.list();
+      expect(ctx.taskStore.list()).toHaveLength(1);
+      expect(worktrees(ctx)).toEqual([`worktree ${ctx.repo}`, `worktree ${task.worktreePath}`]);
+      expect(retried.body.attachments.map(entry => ctx.read(task.worktreePath, entry))).toEqual(['alpha', 'second a']);
+      expect(ctx.runStore.list()).toHaveLength(1);
+      ctx.flushStart();
+      expect(ctx.engineStarts).toEqual([retried.body.id]);
+      stop.abandon();
+      await abandoned;
+    });
+
+    it('reuses the checkout a selector-free start created before it was stopped', async () => {
+      const stop = interruption();
+      let created = 0;
+      const ctx = await attachedSetup({ routerDeps: { createWorktree: async options => {
+        const result = await createRunWorktree(options);
+        if (++created === 1) await stop.at();
+        return result;
+      } } });
+      const abandoned = ctx.post().then(response => response);
+      await stop.reached;
+      const { worktreePath } = ctx.requestStore.get('attached').placement;
+
+      const retried = await ctx.post(undefined, undefined, await restart(ctx));
+      expect(retried.status).toBe(201);
+      expect(created).toBe(1);
+      expect(ctx.runStore.get(retried.body.id)).toMatchObject({ worktreePath, worktreeState: 'present' });
+      expect(worktrees(ctx)).toEqual([`worktree ${ctx.repo}`, `worktree ${worktreePath}`]);
+      expect(retried.body.attachments.map(entry => ctx.read(worktreePath, entry))).toEqual(['alpha', 'second a']);
+      stop.abandon();
+      await abandoned;
+    });
+
+    it('removes a batch promoted before its manifest was persisted, then publishes the same paths once', async () => {
+      const stop = interruption();
+      let published = null;
+      const ctx = await attachedSetup({ routerDeps: { publishAttachments: async options => {
+        const result = await publishAttachmentBatch(options);
+        if (published === null) {
+          published = { ...result, checkout: options.checkoutPath, notesDir: options.notesDir };
+          await stop.at();
+        }
+        return result;
+      } } });
+      const abandoned = ctx.post({ worktreePath: ctx.repo }).then(response => response);
+      await stop.reached;
+      const inode = statSync(path.join(ctx.repo, published.attachments[0].path)).ino;
+
+      const app = await restart(ctx);
+      expect(readdirSync(path.join(ctx.repo, published.notesDir))).toEqual([]);
+      const retried = await ctx.post({ worktreePath: ctx.repo }, undefined, app);
+      expect(retried.status).toBe(201);
+      expect(retried.body.attachments.map(entry => entry.path)).toEqual(published.attachments.map(entry => entry.path));
+      expect(statSync(path.join(ctx.repo, published.attachments[0].path)).ino).not.toBe(inode);
+      expect(retried.body.attachments.map(entry => ctx.read(ctx.repo, entry))).toEqual(['alpha', 'second a']);
+      expect(ctx.runStore.list()).toHaveLength(1);
+      ctx.flushStart();
+      expect(ctx.engineStarts).toEqual([retried.body.id]);
+      stop.abandon();
+      await abandoned;
+    });
+
+    it('keeps a batch whose run was recorded before the stop and answers the lost response with 200', async () => {
+      const ctx = await attachedSetup();
+      const first = await ctx.post();
+      ctx.flushStart();
+      // Stopped after the run and its manifest were recorded, before the reservation was marked published.
+      ctx.db.prepare("UPDATE pipeline_run_requests SET provisioning_state = 'reserved' WHERE request_id = 'attached'").run();
+      const run = ctx.runStore.get(first.body.id);
+      const inode = statSync(path.join(run.worktreePath, first.body.attachments[0].path)).ino;
+
+      const replay = await ctx.post(undefined, undefined, await restart(ctx));
+      expect(replay.status).toBe(200);
+      expect(replay.body.id).toBe(first.body.id);
+      expect(ctx.requestStore.get('attached').provisioningState).toBe('published');
+      expect(statSync(path.join(run.worktreePath, first.body.attachments[0].path)).ino).toBe(inode);
+      ctx.flushStart();
+      expect(ctx.engineStarts).toEqual([first.body.id]);
+    });
+  });
+
+  describe('Close run on an unpublished reservation', () => {
+    it.each(['Close run', 'startup reconciliation'])('preserves a foreign attachment batch during %s', async action => {
+      let foreignFile;
+      const ctx = await attachedSetup({ routerDeps: { publishAttachments: async options => {
+        const batch = path.join(options.checkoutPath, options.notesDir, 'attachments');
+        mkdirSync(batch, { recursive: true });
+        writeFileSync(path.join(options.checkoutPath, '.codedeck', '.gitignore'), '*\n');
+        foreignFile = path.join(batch, 'keep.txt');
+        writeFileSync(foreignFile, 'owner content');
+        return publishAttachmentBatch(options);
+      } } });
+      const response = await ctx.post({ worktreePath: ctx.repo });
+      expect(response.status).toBe(409);
+      expect(response.body.reservation.provisioningState).toBe('failed');
+      expect(readFileSync(foreignFile, 'utf8')).toBe('owner content');
+
+      if (action === 'Close run') {
+        await request(ctx.app).post(`${base}/runs/${response.body.reservation.runId}/cleanup`);
+      } else {
+        await reconcileAttachmentStarts({ requestStore: ctx.requestStore, runStore: ctx.runStore, stagingRoot: ctx.stagingRoot });
+      }
+
+      expect(existsSync(foreignFile)).toBe(true);
+      expect(readFileSync(foreignFile, 'utf8')).toBe('owner content');
+      expect(ctx.runStore.list()).toEqual([]);
+    });
+
+    it.each(['Close run', 'startup reconciliation'])('preserves a foreign temporary attachment directory during %s', async action => {
+      let foreignFile;
+      const ctx = await attachedSetup({ routerDeps: { publishAttachments: async options => {
+        const batch = path.join(options.checkoutPath, options.notesDir, `.attachments-${options.attemptId}.tmp`);
+        mkdirSync(batch, { recursive: true });
+        writeFileSync(path.join(options.checkoutPath, '.codedeck', '.gitignore'), '*\n');
+        foreignFile = path.join(batch, 'keep.txt');
+        writeFileSync(foreignFile, 'owner content');
+        return publishAttachmentBatch(options);
+      } } });
+      const response = await ctx.post({ worktreePath: ctx.repo });
+      expect(response.body.reservation.provisioningState).toBe('failed');
+      expect(readFileSync(foreignFile, 'utf8')).toBe('owner content');
+
+      if (action === 'Close run') {
+        const closed = await request(ctx.app).post(`${base}/runs/${response.body.reservation.runId}/cleanup`);
+        expect(closed.status).toBe(200);
+        expect(closed.body.provisioningState).toBe('closed');
+      } else {
+        const reconciled = await reconcileAttachmentStarts({ requestStore: ctx.requestStore, runStore: ctx.runStore, stagingRoot: ctx.stagingRoot });
+        expect(reconciled.failed).toEqual(['attached']);
+      }
+
+      expect(existsSync(foreignFile)).toBe(true);
+      expect(readFileSync(foreignFile, 'utf8')).toBe('owner content');
+    });
+
+    it('fences replay, removes its own checkout, and lets a fresh ID start the corrected draft', async () => {
+      const ctx = await attachedSetup({ routerDeps: { publishAttachments: failingOnce() } });
+      const failed = await ctx.post();
+      expect(failed.status).toBe(500);
+      const { runId } = failed.body.reservation;
+      const { worktreePath } = ctx.requestStore.get('attached').placement;
+      expect(existsSync(worktreePath)).toBe(true);
+
+      const closed = await request(ctx.app).post(`${base}/runs/${runId}/cleanup`);
+      expect(closed.status).toBe(200);
+      expect(closed.body).toMatchObject({
+        requestId: 'attached', runId, provisioningState: 'closed',
+        worktree: { path: worktreePath, state: 'removed' }, terminalsClosed: [], terminalsNotClosed: [],
+      });
+      expect(existsSync(worktreePath)).toBe(false);
+
+      const replay = await ctx.post();
+      expect(replay.status).toBe(409);
+      expect(ctx.runStore.list()).toEqual([]);
+      expect(existsSync(worktreePath)).toBe(false);
+      expect((await request(ctx.app).post(`${base}/runs/${runId}/cleanup`)).status).toBe(404);
+
+      const fresh = await ctx.post({ requestId: 'attached-2', input: 'corrected brief' });
+      expect(fresh.status).toBe(201);
+      expect(fresh.body.id).not.toBe(runId);
+    });
+
+    it('keeps an owned checkout with owner changes and still fences the reservation', async () => {
+      const ctx = await attachedSetup({ routerDeps: { publishAttachments: failingOnce() } });
+      const { runId } = (await ctx.post()).body.reservation;
+      const { worktreePath } = ctx.requestStore.get('attached').placement;
+      writeFileSync(path.join(worktreePath, 'README.md'), 'owner edit\n');
+      const closed = await request(ctx.app).post(`${base}/runs/${runId}/cleanup`);
+      expect(closed.status).toBe(200);
+      expect(closed.body).toMatchObject({ provisioningState: 'closed', worktree: { path: worktreePath, state: 'removal_blocked' } });
+      expect(readFileSync(path.join(worktreePath, 'README.md'), 'utf8')).toBe('owner edit\n');
+      expect((await ctx.post()).status).toBe(409);
+    });
+
+    it('leaves a created task to its own lifecycle and clears only managed files', async () => {
+      const ctx = await attachedSetup({ routerDeps: { publishAttachments: failingOnce() } });
+      const { runId } = (await ctx.post({ newTask: { title: 'Login' } })).body.reservation;
+      const [task] = ctx.taskStore.list();
+      const notes = path.join(task.worktreePath, `.codedeck/runs/${runId.slice(0, 8)}`);
+      mkdirSync(path.join(notes, 'attachments'), { recursive: true });
+      writeFileSync(path.join(notes, 'keep.md'), 'not managed');
+      const closed = await request(ctx.app).post(`${base}/runs/${runId}/cleanup`);
+      expect(closed.status).toBe(200);
+      expect(closed.body).toMatchObject({ taskId: task.id, worktree: { path: task.worktreePath, state: 'external' } });
+      expect(ctx.taskStore.get(task.id)).not.toBeNull();
+      expect(readdirSync(notes)).toEqual(['keep.md']);
+    });
+
+    it('refuses Close while the start is still provisioning', async () => {
+      const paused = pausedPublisher();
+      const ctx = await attachedSetup({ routerDeps: { publishAttachments: paused.publishAttachments } });
+      const first = ctx.post().then(response => response);
+      await paused.entered;
+      const { runId } = ctx.requestStore.get('attached');
+      const refused = await request(ctx.app).post(`${base}/runs/${runId}/cleanup`);
+      expect(refused.status).toBe(409);
+      paused.release();
+      expect((await first).status).toBe(201);
+      expect(ctx.requestStore.get('attached').provisioningState).toBe('published');
+    });
   });
 });

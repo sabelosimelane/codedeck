@@ -9,6 +9,14 @@ const DECIDE = 'The owner is not available during this run. Do not stop for a de
 
 const SUMMARY = "This is the run's last step, and the owner reads your note in their list of changes. Start the note with one line that says what this run changed, in plain words, then summarize what changed and why before anything else you record.";
 
+/** One-line pointer to the Attachments section and managed folder for Setup and every node. */
+export function attachmentStepGuidance(notesDir) {
+  if (typeof notesDir !== 'string' || !NOTES_DIR.test(notesDir)) {
+    throw new TypeError('step guidance: notesDir must be a run notes path when attachments are present');
+  }
+  return `Attachments for this run are listed under Attachments in ${notesDir}/README.md and ${notesDir}/brief.md; open each checkout-relative path under ${notesDir}/attachments/.`;
+}
+
 /**
  * The step whose note is the summary of what a run changed: its last agent step, the one that
  * commits in the built-in workflows. Null for a run that keeps no notes.
@@ -68,6 +76,10 @@ export function buildStepGuidance(definition, stepIndex, options) {
   // More than one worktree to work in, or other repositories of the project to read: the run is told about each.
   const several = places !== null && places.worktrees.length > 1;
   const named = places !== null && (several || places.readOnly.length > 0);
+  const hasAttachments = Array.isArray(options.attachments) && options.attachments.length > 0;
+  if (hasAttachments && definition.notesDir === null) {
+    throw new TypeError('step guidance: attachments require a notes directory');
+  }
 
   const parts = [];
   if (step.kind === 'node' && !named) parts.push(`Work only inside this run's worktree, ${options.worktreePath}, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing.`);
@@ -81,6 +93,8 @@ export function buildStepGuidance(definition, stepIndex, options) {
     parts.push(`If a repository that is not part of this ${scope} must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.`);
   }
   if (step.kind === 'node' && definition.notesDir !== null) parts.push(`Run notes: read ${definition.notesDir}/README.md before you start, and before your final signal write your note to ${notePath(definition, stepIndex)}.`);
+  // Setup and every node are pointed at the attachment manifest when the run has files.
+  if (hasAttachments) parts.push(attachmentStepGuidance(definition.notesDir));
   if (step.kind === 'node' && summaryStepIndex(definition) === stepIndex) parts.push(SUMMARY);
   if (step.kind === 'node' && options.feedbackPath !== undefined) parts.push(`The owner sent this step back: read ${options.feedbackPath} before you start.`);
   const untouched = several ? "any of the task's worktrees" : 'the worktree';

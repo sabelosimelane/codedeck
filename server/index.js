@@ -27,6 +27,7 @@ import { createWorkflowStore } from './pipelines/workflow-store.js';
 import { createSettingsStore } from './pipelines/settings-store.js';
 import { createRunStore } from './pipelines/run-store.js';
 import { createRequestStore } from './pipelines/request-store.js';
+import { attachmentStagingRootFor, reconcileAttachmentStarts } from './pipelines/attachment-reconcile.js';
 import { createDecisionStore } from './pipelines/decision-store.js';
 import { createNoteStore } from './pipelines/note-store.js';
 import { createReviewStore } from './pipelines/review-store.js';
@@ -919,6 +920,9 @@ const taskLanding = createTaskLanding({
   pathExists: worktreePathExists,
   // Read when asked: the run store is created below, after the routes are mounted.
   hasActiveRun: taskId => pipelineRunStore.list().some(run => run.taskId === taskId && RUN_STILL_WORKING.has(run.status)),
+  listRunAttachmentsForWorktree: worktreePath => pipelineRunStore.list()
+    .filter(run => run.worktreePath === worktreePath)
+    .map(run => ({ notesDir: run.definition?.notesDir ?? null, attachments: run.attachments ?? [] })),
   // A finished task's runs let go of its worktree, which closes them (see run-engine cleanupWorktree).
   onTaskFinished: task => {
     for (const run of pipelineRunStore.list()) {
@@ -1100,7 +1104,17 @@ try {
 } catch (error) {
   console.error('[tasks] adopting existing worktrees failed:', error);
 }
+// Attached starts a stop interrupted are settled before any start is served.
+// One staging root per database, so starting another instance never clears this one's uploads.
+const pipelineAttachmentStagingRoot = attachmentStagingRootFor(db.name);
+const reconciledStarts = await reconcileAttachmentStarts({
+  requestStore: pipelineRequestStore, runStore: pipelineRunStore, stagingRoot: pipelineAttachmentStagingRoot,
+});
+if (reconciledStarts.published.length || reconciledStarts.failed.length) {
+  console.log(`[pipelines] reconciled interrupted attached starts published=${reconciledStarts.published.length} failed=${reconciledStarts.failed.length}`);
+}
 app.use(createPipelinesRouter({
+  attachmentStagingRoot: pipelineAttachmentStagingRoot,
   improvements,
   agentStore: pipelineAgentStore,
   workflowStore: pipelineWorkflowStore,

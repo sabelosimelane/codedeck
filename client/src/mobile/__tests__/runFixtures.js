@@ -20,6 +20,7 @@ export function run(extra = {}) {
     id: RUN_ID, requestId: 'request-1', workflowId: '9d3f050c-5c99-4417-9fa7-715b24b289d5', taskId: TASK_ID,
     workflowName: 'Bug fix', agentsDecide: false, decisionCount: 0, notesDir: '.codedeck/runs/2eaa789f', progress: null,
     project: 'p', input: 'The call says the full name', status: 'running', approvalRequest: null, stopReason: null, error: null,
+    attachments: [],
     currentStepIndex: 1,
     steps: [
       step(0, 'Clarify', { status: 'complete', sessionId: 'p-1', attempt: 1, iteration: 1, startedAt: AT, finishedAt: AT }),

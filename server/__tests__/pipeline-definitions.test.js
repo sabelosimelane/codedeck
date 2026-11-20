@@ -3,7 +3,10 @@ import {
   composePrompt,
   inputFromProgressFilePath,
   isProgressFileTemplate,
+  normalizeRunInput,
+  runInputMode,
   validateAgentBody,
+  validateRunInputField,
   validateRunStartBody,
   validateSettingsBody,
   validateStepPresetBody,
@@ -233,6 +236,47 @@ describe('validateSettingsBody', () => {
   });
 });
 
+describe('run input modes and normalization', () => {
+  it('treats templated Progress files as path input and everything else as descriptive', () => {
+    expect(runInputMode('docs/{input}')).toBe('path');
+    expect(runInputMode('{input}')).toBe('path');
+    expect(runInputMode('docs/todo.md')).toBe('descriptive');
+    expect(runInputMode(null)).toBe('descriptive');
+    expect(runInputMode(undefined)).toBe('descriptive');
+  });
+
+  it('normalizes CRLF and lone CR to LF before validation', () => {
+    expect(normalizeRunInput('a\r\nb\rc')).toBe('a\nb\nc');
+    expect(normalizeRunInput('already\nfine')).toBe('already\nfine');
+  });
+
+  it('accepts descriptive paragraphs, blank lines and exact 4096 after normalization', () => {
+    expect(validateRunInputField('first\n\nsecond', { mode: 'descriptive' })).toBeNull();
+    expect(validateRunInputField('a\r\nb', { mode: 'descriptive' })).toBeNull();
+    expect(validateRunInputField('x'.repeat(4096), { mode: 'descriptive' })).toBeNull();
+    expect(validateRunInputField(`${'x'.repeat(4095)}\r`, { mode: 'descriptive' })).toBeNull();
+    expect(validateRunInputField('', { mode: 'descriptive' })).toBeNull();
+  });
+
+  it('rejects descriptive missing, null, wrong type, controls, and one over 4096', () => {
+    for (const input of [undefined, null, 12, {}, []]) {
+      expect(validateRunInputField(input, { mode: 'descriptive' })).toMatch(/4096/);
+    }
+    expect(validateRunInputField('x'.repeat(4097), { mode: 'descriptive' })).toMatch(/4096/);
+    expect(validateRunInputField('a\0b', { mode: 'descriptive' })).toMatch(/control/i);
+    expect(validateRunInputField('a\x1bb', { mode: 'descriptive' })).toMatch(/control/i);
+    expect(validateRunInputField('a\tb', { mode: 'descriptive' })).toMatch(/control/i);
+  });
+
+  it('keeps path input on one line without control characters', () => {
+    expect(validateRunInputField('docs/todos/x.md', { mode: 'path' })).toBeNull();
+    expect(validateRunInputField('a\nb', { mode: 'path' })).toMatch(/one line/i);
+    expect(validateRunInputField('a\r\nb', { mode: 'path' })).toMatch(/one line/i);
+    expect(validateRunInputField('a\0b', { mode: 'path' })).toMatch(/one line/i);
+    expect(validateRunInputField('x'.repeat(4097), { mode: 'path' })).toMatch(/4096/);
+  });
+});
+
 describe('validateRunStartBody', () => {
   const valid = {
     requestId: 'run-3f2a9c',
@@ -246,13 +290,20 @@ describe('validateRunStartBody', () => {
     expect(validateRunStartBody({ ...valid, input: '' })).toEqual([]);
   });
 
+  it('accepts descriptive multiline input by default and rejects it in path mode', () => {
+    expect(validateRunStartBody({ ...valid, input: 'first\n\nsecond paragraph' })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, input: 'a\r\nb' })).toEqual([]);
+    expect(fields(validateRunStartBody({ ...valid, input: 'a\nb' }, { inputMode: 'path' }))).toContain('input');
+  });
+
   it('rejects bad requestId, workflowId, project and input bounds', () => {
     expect(fields(validateRunStartBody({ ...valid, requestId: '' }))).toContain('requestId');
     expect(fields(validateRunStartBody({ ...valid, requestId: 'bad id' }))).toContain('requestId');
     expect(fields(validateRunStartBody({ ...valid, workflowId: 'nope' }))).toContain('workflowId');
     expect(fields(validateRunStartBody({ ...valid, project: '' }))).toContain('project');
     expect(fields(validateRunStartBody({ ...valid, input: 'x'.repeat(4097) }))).toContain('input');
-    expect(fields(validateRunStartBody({ ...valid, input: 'a\nb' }))).toContain('input');
+    expect(fields(validateRunStartBody({ ...valid, input: 'a\0b' }))).toContain('input');
+    expect(fields(validateRunStartBody({ ...valid, input: null }))).toContain('input');
   });
 
   it('accepts a run in an existing task or in a task created for it', () => {

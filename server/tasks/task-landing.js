@@ -104,8 +104,11 @@ export function describeRemote(url) {
 export function createTaskLanding({
   taskStore, findProject, execFile, pathExists, hasActiveRun, onTaskFinished, onWorktreeFinished, closeTerminals,
   rmdir = removeDirectory,
+  // Runs that published attachments into a worktree: only their verified copies are disposable.
+  listRunAttachmentsForWorktree = async () => [],
 } = {}) {
   if (typeof taskStore?.get !== 'function' || typeof taskStore?.setWorktreeState !== 'function') throw new TypeError('taskStore is required');
+  if (typeof listRunAttachmentsForWorktree !== 'function') throw new TypeError('listRunAttachmentsForWorktree must be a function');
   for (const [name, value] of Object.entries({ findProject, execFile, pathExists, hasActiveRun, onTaskFinished, onWorktreeFinished, closeTerminals, rmdir })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
@@ -199,12 +202,73 @@ export function createTaskLanding({
     return task === main;
   }
 
+  /**
+   * Whether an ignored path under `.codedeck/.../attachments/` still matches a published
+   * run manifest for this worktree (readable regular file, recorded size and digest).
+   */
+  async function isVerifiedRunAttachment(worktreePath, relativePath) {
+    const manifests = await listRunAttachmentsForWorktree(worktreePath);
+    if (!Array.isArray(manifests)) throw new TypeError('listRunAttachmentsForWorktree must return an array');
+    const expected = manifests.flatMap(entry => Array.isArray(entry?.attachments) ? entry.attachments : [])
+      .find(attachment => attachment?.path === relativePath);
+    if (!expected || !Number.isInteger(expected.sizeBytes) || typeof expected.digest !== 'string') return false;
+    const target = path.join(worktreePath, relativePath);
+    try {
+      const stat = await lstat(target);
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size !== expected.sizeBytes) return false;
+      return (await digest(target)) === expected.digest;
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ELOOP' || error?.code === 'EISDIR') return false;
+      throw error;
+    }
+  }
+
+  /** Attachment copies under `.codedeck` that are missing from every run manifest or no longer match. */
+  async function listUnverifiedAttachments(worktreePath) {
+    const attachmentsRoot = path.join(worktreePath, '.codedeck', 'runs');
+    let runDirs = [];
+    try {
+      runDirs = await readdir(attachmentsRoot, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === 'ENOENT') return [];
+      throw error;
+    }
+    const atRisk = [];
+    for (const runDir of runDirs) {
+      if (!runDir.isDirectory() || !/^[0-9a-f]{8}$/.test(runDir.name)) continue;
+      const folder = path.join(attachmentsRoot, runDir.name, 'attachments');
+      let entries = [];
+      try {
+        entries = await readdir(folder, { withFileTypes: true });
+      } catch (error) {
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+      for (const entry of entries) {
+        const relative = `.codedeck/runs/${runDir.name}/attachments/${entry.name}`;
+        if (!entry.isFile() || !(await isVerifiedRunAttachment(worktreePath, relative))) {
+          atRisk.push(relative);
+        }
+      }
+    }
+    return atRisk;
+  }
+
   /** Ignored files in the worktree that removing its folder would lose: not disposable, and not copied byte for byte in the checkout. */
   async function listIgnoredAtRisk(worktreePath, checkout) {
     const { stdout } = await git(execFile, worktreePath, ['status', '--porcelain', '-z', '--ignored']);
     const ignored = stdout.split('\0').filter(entry => entry.startsWith('!! ')).map(entry => entry.slice(3));
     const atRisk = [];
+    let scannedAttachments = false;
     for (const file of ignored) {
+      // Run notes stay disposable, but attachment copies must match a recorded manifest.
+      if (file === '.codedeck/' || file.startsWith('.codedeck/')) {
+        if (!scannedAttachments) {
+          atRisk.push(...await listUnverifiedAttachments(worktreePath));
+          scannedAttachments = true;
+        }
+        continue;
+      }
       if (file.split('/').some(segment => DISPOSABLE.has(segment))) continue;
       if (!(await sameBytes(worktreePath, checkout, file))) atRisk.push(file);
     }

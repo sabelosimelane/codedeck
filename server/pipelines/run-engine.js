@@ -13,6 +13,7 @@ import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
 import { planRunTerminalMuting } from './run-terminal-muting.js';
 import { writeCommitNote, prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
+import { listAttachmentCopiesAtRisk as defaultListAttachmentsAtRisk, verifyAttachmentCopies as defaultVerifyAttachments } from './attachment-verify.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
 const verificationPrompts = new Set(WORKFLOW_TEMPLATES.filter(t => ['bugfix', 'troubleshoot'].includes(t.kind)).map(t => t.nodes.at(-2).prompt));
@@ -70,6 +71,8 @@ export function createRunEngine({
   readNote = defaultReadNote,
   writeFeedback = defaultWriteFeedback,
   writeBrief = defaultWriteBrief,
+  verifyAttachments = defaultVerifyAttachments,
+  listAttachmentsAtRisk = defaultListAttachmentsAtRisk,
   answerStore,
   terminalAvailable,
   setTerminalMuted,
@@ -106,6 +109,8 @@ export function createRunEngine({
   if (typeof readNote !== 'function') throw new Error('createRunEngine: readNote is required');
   if (typeof writeFeedback !== 'function') throw new Error('createRunEngine: writeFeedback is required');
   if (typeof writeBrief !== 'function') throw new Error('createRunEngine: writeBrief is required');
+  if (typeof verifyAttachments !== 'function') throw new Error('createRunEngine: verifyAttachments is required');
+  if (typeof listAttachmentsAtRisk !== 'function') throw new Error('createRunEngine: listAttachmentsAtRisk is required');
   if (typeof answerStore?.add !== 'function' || typeof answerStore?.list !== 'function') throw new Error('createRunEngine: answerStore is required');
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
   if (typeof setTerminalMuted !== 'function') throw new Error('createRunEngine: setTerminalMuted is required');
@@ -234,7 +239,13 @@ export function createRunEngine({
         ...decisionStore.list(run.id, { offset: 0, limit: 100, direction: 'asc' }).map(item => ({ ...item, by: 'agent' })),
         ...answerStore.list(run.id).map(item => ({ ...item, by: 'owner' })),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      await writeBrief({ worktreePath: run.worktreePath, definition: run.definition, input: run.input, entries });
+      await writeBrief({
+        worktreePath: run.worktreePath,
+        definition: run.definition,
+        input: run.input,
+        entries,
+        attachments: run.attachments,
+      });
     } catch (err) {
       console.error(`[pipeline-run] brief could not be written for ${runId}:`, err);
     }
@@ -286,6 +297,18 @@ export function createRunEngine({
     }
     if (!['present', 'removal_blocked'].includes(run.worktreeState)) {
       return run;
+    }
+    // git worktree remove drops ignored files, and attachments are ignored: only verified run-owned copies may go with it.
+    const atRisk = await listAttachmentsAtRisk({
+      worktreePath: run.worktreePath,
+      attachments: run.attachments,
+      notesDir: run.definition.notesDir,
+    });
+    if (atRisk.length > 0) {
+      return updateRun(runId, {
+        worktreeState: 'removal_blocked',
+        worktreeDetail: ['Attachment copies that do not match the run manifest would be lost:', ...atRisk.slice(0, 20)].join('\n').slice(0, 2000),
+      });
     }
     const result = await removeWorktree(run);
     if (result?.ok) {
@@ -707,8 +730,26 @@ export function createRunEngine({
         }
       }
       if (handle.stopped) return;
+      // Every attempt, including resume, checks the recorded copies before notes rewrite or agent launch.
+      try {
+        await verifyAttachments({
+          worktreePath: run.worktreePath,
+          attachments: run.attachments,
+          notesDir: run.definition.notesDir,
+        });
+      } catch (error) {
+        failRun(runId, String(error?.message || error).slice(0, 2000));
+        return;
+      }
+      if (handle.stopped) return;
       if (run.definition.notesDir !== null) {
-        await prepareNotes({ worktreePath: run.worktreePath, definition: run.definition, input: run.input, ...(places === undefined ? {} : { places }) });
+        await prepareNotes({
+          worktreePath: run.worktreePath,
+          definition: run.definition,
+          input: run.input,
+          attachments: run.attachments,
+          ...(places === undefined ? {} : { places }),
+        });
         await refreshBrief(runId);
       }
       if (handle.stopped) return;
@@ -780,7 +821,12 @@ export function createRunEngine({
       const command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
       const maxIterations = maxIterationsFor(defStep.repeat);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
-      const guidance = buildStepGuidance(current.definition, stepIndex, { worktreePath: current.worktreePath, ...(feedbackFile ? { feedbackPath: feedbackFile } : {}), ...(places === undefined ? {} : { places }) });
+      const guidance = buildStepGuidance(current.definition, stepIndex, {
+        worktreePath: current.worktreePath,
+        attachments: current.attachments,
+        ...(feedbackFile ? { feedbackPath: feedbackFile } : {}),
+        ...(places === undefined ? {} : { places }),
+      });
 
       let settled = false;
       const settleWorkflow = () => {
@@ -839,7 +885,14 @@ export function createRunEngine({
         // and was started again.
         resetFirst: returning && !ready.launched,
         ...(guidance === undefined ? {} : { guidance }),
-      });
+      }, ...(run.attachments.length === 0 ? [] : [{
+        // A repeat pass drives the agent again: its copies are checked first, as before every attempt.
+        beforePass: () => verifyAttachments({
+          worktreePath: run.worktreePath,
+          attachments: run.attachments,
+          notesDir: run.definition.notesDir,
+        }),
+      }]));
 
       watchForDialog(runId, sessionId, workflow, () => settled).catch((err) => {
         try {
