@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-11-20] - Workflow start attachment and multiline input support
+
+### Executive Summary
+* The workflow API accepts reference files and multiline descriptions. Agents can read the files from the run checkout and receive the description with its paragraph breaks intact. The Run workflow dialog still needs the file picker and multiline editor.
+
+### Technical Details
+* **🔌 API/Interface:**
+  * The run start endpoint accepts multipart uploads, keeps JSON starts compatible, and returns the published attachment names, paths and sizes.
+* **🛠️ Codebase:**
+  * Run storage, notes and agent guidance carry the attachment manifest and multiline description. Attachments are checked before agent attempts, and cleanup preserves unsafe or changed attachment paths.
+  * The verifier rejects named pipes without waiting for a writer. Checkout cleanup protects a dangling attachment-folder symlink.
+
 ## [2026-11-20] - Team scoring, measured model trials and workflow approval feedback
 
 ### Executive Summary

@@ -20,7 +20,7 @@ export class AttachmentVerifyError extends Error {
 const CHUNK = 1024 * 1024;
 
 async function hashRegularFile(fs, target) {
-  const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.nlink !== 1) return null;
@@ -127,9 +127,14 @@ export async function listAttachmentCopiesAtRisk({
     throw new TypeError('notesDir must be a checkout-relative path or null');
   }
   const folder = `${notesDir}/attachments`;
+  const target = path.join(worktreePath, folder);
   let entries;
   try {
-    entries = await fs.readdir(path.join(worktreePath, folder), { withFileTypes: true });
+    const stat = await fs.lstat(target);
+    if (!stat.isDirectory()) return [folder];
+    const realRoot = await fs.realpath(worktreePath);
+    if (await fs.realpath(target) !== path.join(realRoot, folder)) return [folder];
+    entries = await fs.readdir(target, { withFileTypes: true });
   } catch (error) {
     if (error?.code === 'ENOENT') return [];
     throw error;
