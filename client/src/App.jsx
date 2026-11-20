@@ -9,6 +9,8 @@ import ProjectSwitcher from './components/ProjectSwitcher';
 import ShortcutsOverlay from './components/ShortcutsOverlay';
 import SessionSearch from './components/SessionSearch';
 import RunWorkflowDialog from './components/pipelines/RunWorkflowDialog';
+import Improvements from './components/pipelines/builder/Improvements';
+import { listWorkflows } from './utils/pipelinesApi';
 import WorkflowsScreen from './components/pipelines/builder/WorkflowsScreen';
 import { onOpenWorkflowBuilder } from './utils/workflowBuilder';
 import PaneDivider from './components/PaneDivider';
@@ -77,6 +79,21 @@ function AppContent() {
     return saved ? parseInt(saved, 10) : 260;
   });
   const { showToast } = useToast();
+  const [dashboardOpen, setDashboardOpen] = useState(() => window.location.hash === '#improvements');
+  const [dashboardWorkflows, setDashboardWorkflows] = useState([]);
+  useEffect(() => {
+    const sync = () => setDashboardOpen(window.location.hash === '#improvements');
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+  useEffect(() => {
+    if (!dashboardOpen) return;
+    const controller = new AbortController();
+    listWorkflows({ signal: controller.signal }).then(setDashboardWorkflows).catch(error => {
+      if (!controller.signal.aborted) showToast({ type: 'error', message: error.message });
+    });
+    return () => controller.abort();
+  }, [dashboardOpen, showToast]);
   // Finished and muted state is owned by the backend so the phone and every
   // browser tab honour the same rules.
   const { finishedSessionIds, mutedStatusSessionIds, resetFinishedSession, toggleMutedStatusSession } = useSessionAttention(sessionStatus, showToast);
@@ -188,6 +205,7 @@ function AppContent() {
   }, [fileTreeWidth]);
 
   useEffect(() => {
+    if (dashboardOpen) return;
     const handleKeyDown = (event) => {
       const key = event.key.toLowerCase();
       const isCmdOrCtrl = event.metaKey || event.ctrlKey;
@@ -230,7 +248,7 @@ function AppContent() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [dashboardOpen]);
 
   useEffect(() => {
     setAdoptedSessionIds(new Set());
@@ -458,7 +476,13 @@ function AppContent() {
   }
 
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
+    <div className="codedeck-shell">
+      <nav className="codedeck-navigation" aria-label="Main navigation">
+        <a href="#workspace" aria-current={!dashboardOpen ? 'page' : undefined}>Workspace</a>
+        <a href="#improvements" aria-current={dashboardOpen ? 'page' : undefined}>Improvements</a>
+      </nav>
+      {dashboardOpen && <Improvements workflows={dashboardWorkflows} projects={projects} />}
+      <div style={{ display: dashboardOpen ? 'none' : 'flex', flex: 1, minHeight: 0 }}>
       <Sidebar
         activeProjects={activeProjects}
         onRepositoriesChanged={fetchProjects}
@@ -640,6 +664,7 @@ function AppContent() {
           onClose={() => setShowProjectSwitcher(false)}
         />
       )}
+      </div>
     </div>
   );
 }
