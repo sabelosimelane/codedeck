@@ -1,4 +1,7 @@
 import CircuitBreaker from 'opossum';
+import { createTeamTrials } from './pipelines/team-trials.js';
+import { createTeamObservations } from './pipelines/team-observations.js';
+import { createReviewCycle } from './pipelines/team-review-cycle.js';
 import { createImprovements } from './pipelines/improvements.js';
 import express from 'express';
 import { WebSocketServer } from 'ws';
@@ -40,6 +43,7 @@ import {
   listWorktrees as listPipelineWorktrees,
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
+import { createTerminalInFolder } from './pipelines/terminal-folder.js';
 import { createRunTerminalCloser, createTerminalPlaces } from './pipelines/run-terminals.js';
 import { createRunPlaces } from './pipelines/run-places.js';
 import { setObservedTerminalMuted } from './pipelines/terminal-muting-adapter.js';
@@ -973,7 +977,20 @@ const improvements = createImprovements({
     throw Object.assign(new Error('Review model unavailable. Check the configured Claude or Codex model and CLI login.'), {status:503});
   }),
 });
-const reviewTick = () => improvements.tick().catch(error => console.warn('[workflow-review]', error.message));
+const pipelineTeamStore = createTeamStore(db);
+const teamObservations = createTeamObservations({
+  db, runs: pipelineRunStore, teams: pipelineTeamStore, notes: pipelineNoteStore, answers: pipelineAnswerStore,
+  reviews: pipelineReviewStore, improvements,
+});
+const teamTrials = createTeamTrials({
+  db, teams: pipelineTeamStore, agents: pipelineAgentStore, workflows: pipelineWorkflowStore,
+  observations: teamObservations.observations,
+});
+const teamScoring = { ...teamObservations, trials: teamTrials };
+const reviewTick = createReviewCycle({
+  workflow: improvements.tick, assess: teamObservations.assessNext, nominate: teamTrials.refresh,
+  warn: error => console.warn('[improvements]', error.message),
+});
 const reviewInterval = setInterval(reviewTick, 30000);
 reviewInterval.unref();
 setImmediate(reviewTick);
@@ -992,6 +1009,22 @@ const pipelineRunEngine = createRunEngine({
     taskNaming.noteWritten(note).catch(error => console.warn(`[task-naming] run=${note.runId} error=${error?.message || error}`));
   },
   setTerminalMuted: (sessionId, muted) => setObservedTerminalMuted(sessionAttention, sessionId, muted),
+  // Pipeline runs use local projects only, so their terminals are on the local tmux server.
+  restartAgentTerminal: (sessionId, cwd) => terminalRuntime.respawnMainPaneAsync(sessionId, cwd),
+  typeIntoTerminal: (sessionId, text) => terminalRuntime.typeLineAsync(sessionId, text),
+  terminalInFolder: createTerminalInFolder(sessionId => terminalRuntime.inspectPaneAsync(sessionId)),
+  // The pane, and how CodeDeck's own attachment to it stands: input written through a browser's
+  // or a run's tmux client goes wherever that client is.
+  inspectTerminal: async (sessionId) => {
+    const entry = sessions.get(sessionId);
+    return {
+      pane: await terminalRuntime.inspectPaneAsync(sessionId),
+      attachment: entry ? {
+        alive: entry.alive, wsAttached: entry.wsAttached, clientDetached: entry.clientDetached ?? false,
+        backgroundHolds: entry.backgroundHolds ?? 0, controllerId: entry.controllerId ?? null,
+      } : null,
+    };
+  },
   readProgressCount: async run => {
     const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: pipelineProgressReader });
     return progress?.phaseCount > 0 && ['in_progress', 'all_done'].includes(progress.status)
@@ -1116,6 +1149,7 @@ if (reconciledStarts.published.length || reconciledStarts.failed.length) {
 app.use(createPipelinesRouter({
   attachmentStagingRoot: pipelineAttachmentStagingRoot,
   improvements,
+  teamScoring,
   agentStore: pipelineAgentStore,
   workflowStore: pipelineWorkflowStore,
   settingsStore: pipelineSettingsStore,
@@ -1125,7 +1159,7 @@ app.use(createPipelinesRouter({
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
   answerStore: pipelineAnswerStore,
-  teamStore: createTeamStore(db),
+  teamStore: pipelineTeamStore,
   templateStore: createTemplateStore(db),
   stepPresetStore: createStepPresetStore(db),
   taskStore,

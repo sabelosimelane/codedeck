@@ -189,6 +189,10 @@ function setupEngine(overrides = {}) {
     pathExists,
     terminalAvailable,
     setTerminalMuted,
+    restartAgentTerminal: overrides.restartAgentTerminal ?? vi.fn(async () => {}),
+    typeIntoTerminal: vi.fn(async () => {}),
+    inspectTerminal: vi.fn(async () => ({})),
+    terminalInFolder: vi.fn(async () => true),
     setTimeout: overrides.setTimeout ?? setTimeout,
     clearTimeout: overrides.clearTimeout ?? clearTimeout,
     now: overrides.now ?? (() => new Date().toISOString()),
@@ -232,6 +236,20 @@ afterEach(() => {
 });
 
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
+  it('requires a way to tell whether a terminal is in a folder', () => {
+    expect(() => setupEngine({ engineExtras: { terminalInFolder: undefined } })).toThrow('createRunEngine: terminalInFolder must be a function');
+  });
+  it('requires ways to type into a terminal directly and to describe it', () => {
+    expect(() => setupEngine({ engineExtras: { typeIntoTerminal: null } })).toThrow('createRunEngine: typeIntoTerminal must be a function');
+    expect(() => setupEngine({ engineExtras: { inspectTerminal: null } })).toThrow('createRunEngine: inspectTerminal must be a function');
+  });
+  it('requires a way to start a terminal again for an agent that takes no input', () => {
+    expect(() => setupEngine({ engineExtras: { restartAgentTerminal: 'no' } })).toThrow('createRunEngine: restartAgentTerminal must be a function');
+  });
+  it('requires a positive whole number of milliseconds for a prompt to be taken', () => {
+    expect(() => setupEngine({ engineExtras: { promptPickupMs: 0 } })).toThrow('createRunEngine: promptPickupMs must be a positive integer, got 0');
+    expect(() => setupEngine({ engineExtras: { promptPickupMs: 1.5 } })).toThrow('createRunEngine: promptPickupMs must be a positive integer, got 1.5');
+  });
   it('requires a terminal muting function at construction', () => {
     expect(() => setupEngine({ engineExtras: { setTerminalMuted: undefined } })).toThrow('createRunEngine: setTerminalMuted is required');
   });
@@ -241,6 +259,24 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
   });
   beforeEach(() => {
     vi.useFakeTimers();
+  });
+
+  it('attributes only submitted agent work and records the actual assignment on a retry', async () => {
+    const denied = vi.fn().mockRejectedValueOnce(new Error('Terminal unavailable')).mockResolvedValue('Demo-1');
+    const ctx = setupEngine({startSession:denied});
+    const def = definition();
+    const team = {id:WORKFLOW_ID,name:'Developers',revision:1};
+    def.steps[0].role = 'Fix';
+    def.steps[0].agent.assignment = {source:'team',agentRevision:1,teamId:team.id,teamRevision:1};
+    const run = ctx.runStore.create(validRun({definition:def}),{team,workload:'a'.repeat(64),mixed:false});
+    const failed = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await failed;
+    expect(ctx.runStore.get(run.id).status).toBe('error');
+    expect(ctx.runStore.attribution(run.id).attempts).toEqual([]);
+    await ctx.engine.resume(run.id);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(ctx.runStore.attribution(run.id).attempts).toMatchObject([
+      {attempt:2,agentId:AGENT_ID,teamId:team.id,role:'Fix',activeMs:expect.any(Number)}]);
   });
 
   it('records a gated pass before waiting, then approves only once', async () => {
@@ -757,6 +793,8 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
           executionReason: 'shell_prompt',
           foregroundCommand: 'zsh',
           profile: null,
+          // The shell echoed the launch command before the agent exited.
+          lines: ['me@host demo % codex', 'me@host demo %'],
         }),
       ],
       classifyReadiness: vi.fn(() => 'exited'),
@@ -1413,8 +1451,10 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
   });
 
   it('Resume fails the run when the agent started again in the terminal exits too', async () => {
-    const exited = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh' });
-    const ctx = setupEngine({ readinessQueue: [exited, exited] });
+    const exited = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['me@host demo %'] });
+    // The shell echoed the launch command, then the agent exited.
+    const exitedAgain = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['me@host demo % codex', 'me@host demo %'] });
+    const ctx = setupEngine({ readinessQueue: [exited, exitedAgain] });
     const created = interruptedRun(ctx);
 
     await ctx.engine.resume(created.id);
@@ -1424,6 +1464,135 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(finished.status).toBe('error');
     expect(finished.error).toBe('The launch command for agent codex exited.');
     expect(ctx.writes.filter(data => data === 'codex')).toHaveLength(1);
+  });
+
+  describe('a terminal that is no longer in the run\'s worktree', () => {
+    it('opens a new terminal in the worktree instead of returning to it', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const terminalInFolder = vi.fn(async (sessionId) => sessionId !== 'Demo-9');
+      const ctx = setupEngine({ readinessQueue: [executionState()], engineExtras: { terminalInFolder } });
+      const created = interruptedRun(ctx);
+      try {
+        await ctx.engine.resume(created.id);
+        await advanceReadiness(2);
+        expect(terminalInFolder).toHaveBeenCalledWith('Demo-9', '/tmp/worktrees/home-feature-abcd1234');
+        expect(ctx.startSession).toHaveBeenCalledWith({ project: 'Demo', cwd: '/tmp/worktrees/home-feature-abcd1234' });
+        const finished = ctx.runStore.get(created.id);
+        expect(finished.status).toBe('complete');
+        expect(finished.steps[0]).toMatchObject({ sessionId: 'Demo-1', priorSessionIds: ['Demo-9'] });
+        expect(ctx.attachBackground).not.toHaveBeenCalledWith('Demo-9', expect.anything());
+        expect(warn.mock.calls.flat().join('\n')).toContain('Demo-9 is not in /tmp/worktrees/home-feature-abcd1234');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not lend another step\'s terminal that has left the worktree', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const terminalInFolder = vi.fn(async () => false);
+      const def = definition({ steps: [definition().steps[0], { ...definition().steps[0], name: 'Review' }] });
+      const ctx = setupEngine({ engineExtras: { terminalInFolder } });
+      const created = ctx.runStore.create(validRun({ definition: def, worktreeState: 'present', baseCommit: BASE_COMMIT }));
+      ctx.runStore.update(created.id, {
+        status: 'interrupted', currentStepIndex: 1,
+        steps: [step({ status: 'complete', sessionId: 'Demo-7', attempt: 1, iteration: 1 }), step({ status: 'interrupted', sessionId: null, attempt: 1 })],
+      });
+      try {
+        await ctx.engine.resume(created.id);
+        await advanceReadiness(2);
+        expect(terminalInFolder).toHaveBeenCalledWith('Demo-7', '/tmp/worktrees/home-feature-abcd1234');
+        const finished = ctx.runStore.get(created.id);
+        expect(finished.steps[1].sessionId).not.toBe('Demo-7');
+        expect(finished.steps[1].priorSessionIds).toEqual([]);
+        expect(ctx.startSession).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
+  describe('a launch command that never reaches the terminal', () => {
+    const PROMPT = ['me@host demo %'];
+    const shellAt = lines => executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', profile: null, lines });
+
+    it('types the command into the terminal directly once the screen has stayed unchanged, and carries on', async () => {
+      const typeIntoTerminal = vi.fn(async () => {});
+      const inspectTerminal = vi.fn(async () => ({ paneInMode: false, wsAttached: true }));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = setupEngine({
+        readinessQueue: [shellAt(PROMPT), shellAt(PROMPT), shellAt(PROMPT), shellAt(PROMPT), executionState()],
+        engineExtras: { typeIntoTerminal, inspectTerminal },
+      });
+      const created = interruptedRun(ctx);
+      try {
+        await ctx.engine.resume(created.id);
+        await advanceReadiness(2);
+        expect(typeIntoTerminal).not.toHaveBeenCalled();
+        await advanceReadiness(2);
+        expect(typeIntoTerminal).toHaveBeenCalledWith('Demo-9', 'codex');
+        expect(inspectTerminal).toHaveBeenCalledWith('Demo-9');
+        expect(warn.mock.calls.flat().join('\n')).toContain('did not reach Demo-9');
+        expect(warn.mock.calls.flat().join('\n')).toContain('"wsAttached":true');
+        await advanceReadiness(1);
+
+        const finished = ctx.runStore.get(created.id);
+        expect(finished.status).toBe('complete');
+        // Only the first launch went through the attachment.
+        expect(ctx.writes.filter(data => data === 'codex')).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('fails the run, saying so, when the command typed directly does not arrive either', async () => {
+      const typeIntoTerminal = vi.fn(async () => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = setupEngine({
+        readinessQueue: Array.from({ length: 12 }, () => shellAt(PROMPT)),
+        engineExtras: { typeIntoTerminal },
+      });
+      const created = interruptedRun(ctx);
+      try {
+        await ctx.engine.resume(created.id);
+        await advanceReadiness(8);
+        const finished = ctx.runStore.get(created.id);
+        expect(typeIntoTerminal).toHaveBeenCalledTimes(1);
+        expect(finished.status).toBe('error');
+        expect(finished.error).toBe('The launch command for agent codex never reached its terminal Demo-9, also when typed into it directly. Check the terminal, then Resume.');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('also notices it in a new terminal, where the command is nowhere on the screen', async () => {
+      const typeIntoTerminal = vi.fn(async () => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = setupEngine({
+        readinessQueue: [shellAt(PROMPT), shellAt(PROMPT), shellAt(PROMPT), executionState()],
+        engineExtras: { typeIntoTerminal },
+      });
+      const run = ctx.runStore.create(validRun());
+      try {
+        const done = ctx.engine.start(run.id);
+        await advanceReadiness(4);
+        await done;
+        expect(typeIntoTerminal).toHaveBeenCalledWith('Demo-1', 'codex');
+        expect(ctx.runStore.get(run.id).status).toBe('complete');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('never types the command again when the shell shows it ran', async () => {
+      const typeIntoTerminal = vi.fn(async () => {});
+      const ran = shellAt(['me@host demo % codex', 'Update ran successfully! Please restart Codex.', 'me@host demo %']);
+      const ctx = setupEngine({ readinessQueue: [shellAt(PROMPT), ran, ran, ran, ran], engineExtras: { typeIntoTerminal } });
+      const created = interruptedRun(ctx);
+      await ctx.engine.resume(created.id);
+      await advanceReadiness(5);
+      expect(typeIntoTerminal).not.toHaveBeenCalled();
+      expect(ctx.runStore.get(created.id)).toMatchObject({ status: 'error', error: 'The launch command for agent codex exited.' });
+    });
   });
 
   it('Resume opens a terminal for a step that never had one, without asking about a terminal', async () => {
@@ -2156,6 +2325,29 @@ describe('createRunEngine — a loop of steps', () => {
     await done;
     return { ctx, script, sessions, run: ctx.runStore.get(run.id), done };
   }
+  it('records a queued replacement only on the pass that actually runs it', async () => {
+    const script = scriptedWorkflow(['complete', 'continue', 'complete', 'complete', 'complete']);
+    const ctx = setupEngine({createWorkflow: script.createWorkflow});
+    const def = looping(2);
+    const team = {id: WORKFLOW_ID, name:'Builders', revision:1};
+    for (const step of def.steps) {
+      step.role = step.name;
+      step.agent.assignment = {agentRevision:1, source:'team', teamId:team.id, teamRevision:1};
+    }
+    const run = ctx.runStore.create(validRun({definition:def}), {team, workload:'a'.repeat(64), mixed:false});
+    const steps = [...def.steps];
+    steps[0] = {...steps[0], nextAgent:{...steps[0].agent, launchCommand:'command codex --model replacement',
+      assignment:{agentRevision:2, source:'override', teamId:null, teamRevision:null}}};
+    ctx.runStore.update(run.id,{definition:{...def,steps}}, {mixed:true});
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(6600);
+    await done;
+    expect(ctx.runStore.attribution(run.id).attempts.filter(a => a.stepName === 'Develop')).toMatchObject([
+      {attempt:1, source:'team', agentRevision:1, model:null},
+      {attempt:2, source:'override', agentRevision:2, model:'replacement'},
+    ]);
+  });
+
   it('gates a step inside a loop in both rounds', async () => {
     const script = scriptedWorkflow(['complete', 'continue', 'complete', 'complete', 'complete']);
     const ctx = setupEngine({ createWorkflow: script.createWorkflow });
@@ -2697,6 +2889,190 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await done;
     expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'disk full' });
+  });
+});
+
+describe('createRunEngine — a prompt the agent never took', () => {
+  const IDLE = () => executionState();
+  const WORKING = () => executionState({ executionReason: 'agent_working', profile: { promptVisible: () => false } });
+  const GAVE_UP = 'The agent codex did not start step Develop, also after it was started again in its terminal: it stays idle at an unchanged prompt and takes no input. Check the terminal, then Resume.';
+  const SHELL = () => executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', profile: null, lines: ['me@host demo %'] });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  // A loop whose pass stays running until the test moves it on.
+  function passLoop() {
+    const state = { status: 'stopped', iteration: 0, notify: null };
+    const snap = () => ({ status: state.status, active: !['complete', 'stopped'].includes(state.status), error: null, requestId: 'r', iteration: state.iteration, limitReached: false });
+    const publish = (status) => { state.status = status; state.notify(snap()); };
+    const resubmit = vi.fn();
+    const stop = vi.fn(() => publish('stopped'));
+    const starts = [];
+    const createWorkflow = vi.fn(({ notify }) => {
+      state.notify = notify;
+      return {
+        start(args) { starts.push(args); state.iteration = 1; queueMicrotask(() => publish('running')); },
+        stop,
+        resubmit,
+        snapshot: snap,
+        signalIdentifier: () => 'abc-1',
+        answerText: text => text,
+        input() { publish('running'); },
+      };
+    });
+    return {
+      createWorkflow, resubmit, stop, starts,
+      ask: () => publish('needs_input'),
+      answered: () => publish('running'),
+      nextPass: () => { state.iteration += 1; publish('running'); },
+      complete: () => publish('complete'),
+    };
+  }
+
+  async function startPass(screens = [], extras = {}) {
+    const loop = passLoop();
+    const ctx = setupEngine({
+      readinessQueue: [executionState(), ...screens],
+      createWorkflow: loop.createWorkflow,
+      engineExtras: { dialogPollMs: 2000, promptPickupMs: 10_000, ...extras },
+    });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100); // launch Enter
+    await vi.advanceTimersByTimeAsync(1000); // ready → prompt sent
+    await vi.advanceTimersByTimeAsync(0);
+    return { ctx, loop, run, done };
+  }
+
+  it('sends the prompt again when the agent stays idle at an unchanged prompt after it was sent', async () => {
+    const { ctx, loop, run, done } = await startPass();
+    // The first look sets what the screen shows; ten seconds unchanged after it count.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+
+    ctx.setReadinessQueue(Array.from({ length: 40 }, WORKING));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+
+  it('starts the agent again in its terminal when it does not take the prompt sent a second time', async () => {
+    const restartAgentTerminal = vi.fn(async () => {});
+    const { ctx, loop, run } = await startPass([], { restartAgentTerminal });
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    const writesBefore = ctx.writes.length;
+    // After the restart the terminal shows its shell, then the relaunched agent at its prompt.
+    ctx.setReadinessQueue([...Array.from({ length: 5 }, IDLE), SHELL(), IDLE(), ...Array.from({ length: 40 }, WORKING)]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(loop.stop).toHaveBeenCalled();
+    expect(restartAgentTerminal).toHaveBeenCalledWith('Demo-1', '/tmp/worktrees/home-feature-abcd1234');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(ctx.writes.slice(writesBefore)).toContain('codex');
+    expect(loop.createWorkflow).toHaveBeenCalledTimes(2);
+    // A newly started agent has no context to clear: the prompt goes straight in.
+    expect(loop.starts).toHaveLength(2);
+    expect(loop.starts[1].resetFirst).toBe(false);
+    expect(loop.starts[1].requestId).not.toBe(loop.starts[0].requestId);
+    const after = ctx.runStore.get(run.id);
+    expect(after.status).toBe('running');
+    expect(after.steps[0]).toMatchObject({ status: 'running', sessionId: 'Demo-1', attempt: 2, iteration: 1 });
+  });
+
+  it('fails the run when the agent started again also takes no prompt', async () => {
+    const restartAgentTerminal = vi.fn(async () => {});
+    const { ctx, loop, run, done } = await startPass([], { restartAgentTerminal });
+    await vi.advanceTimersByTimeAsync(12_000);
+    ctx.setReadinessQueue([...Array.from({ length: 5 }, IDLE), SHELL()]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(restartAgentTerminal).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(ctx.runStore.get(run.id).steps[0]).toMatchObject({ status: 'running', attempt: 2 });
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await done;
+    expect(restartAgentTerminal).toHaveBeenCalledTimes(1);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: GAVE_UP });
+  });
+
+  it('fails the run, naming the reason, when its terminal cannot be started again', async () => {
+    const restartAgentTerminal = vi.fn(async () => { throw new Error('respawn-pane failed'); });
+    const { ctx, run, done } = await startPass([], { restartAgentTerminal });
+    await vi.advanceTimersByTimeAsync(22_000);
+    await done;
+    expect(ctx.runStore.get(run.id)).toMatchObject({
+      status: 'error',
+      error: 'The agent codex did not take the prompt of step Develop, and its terminal could not be started again: respawn-pane failed',
+    });
+  });
+
+  it('does not start the agent again once the owner has stopped the run', async () => {
+    const restartAgentTerminal = vi.fn(async () => {});
+    const { ctx, loop, run } = await startPass([], { restartAgentTerminal });
+    await vi.advanceTimersByTimeAsync(12_000);
+    await ctx.engine.stop(run.id);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(restartAgentTerminal).not.toHaveBeenCalled();
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    expect(ctx.runStore.get(run.id).status).toBe('stopped');
+  });
+
+  it('never sends the prompt again while the agent shows it is working between idle moments', async () => {
+    const screens = [];
+    for (let round = 0; round < 6; round += 1) screens.push(IDLE(), IDLE(), IDLE(), IDLE(), WORKING());
+    const { ctx, loop, run } = await startPass(screens);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+  });
+
+  it('never sends the prompt again while the screen keeps changing at an idle prompt', async () => {
+    const screens = Array.from({ length: 30 }, (_, index) => executionState({ lines: [`line ${index}`, '› '] }));
+    const { ctx, loop, run } = await startPass(screens);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+  });
+
+  it('leaves a pass alone once its agent has asked for input, also after the answer', async () => {
+    const screen = ['[[CDW:abc-1:QUESTIONS]]', '1. Which schema?', 'Recommended: guardian.', '[[CDW:abc-1:NEEDS_INPUT]]'];
+    const loop = passLoop();
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      createWorkflow: loop.createWorkflow,
+      readScreen: vi.fn(async () => screen),
+      engineExtras: { dialogPollMs: 2000, promptPickupMs: 10_000 },
+    });
+    const run = ctx.runStore.create(validRun());
+    ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.advanceTimersByTimeAsync(0);
+    loop.ask();
+    await vi.advanceTimersByTimeAsync(30_000);
+    loop.answered();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id).status).not.toBe('error');
+  });
+
+  it('gives each new pass its own resend', async () => {
+    const { ctx, loop, run } = await startPass();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    loop.nextPass();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(2);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
   });
 });
 

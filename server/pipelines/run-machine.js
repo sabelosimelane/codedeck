@@ -260,6 +260,22 @@ function applyContinue(run, event) {
   return run;
 }
 
+/**
+ * The agent of the running step took no input, so its terminal was started again: the step
+ * relaunches its agent there as a new attempt. It never stopped working, so its clock runs on.
+ */
+function applyAgentRestarted(run, event) {
+  if (run.status !== 'running') illegal(run.status, event.type);
+  const step = currentStep(run);
+  if (step.status !== 'running') illegal(`step:${step.status}`, event.type);
+  if (!step.sessionId) throw new Error('agent_restarted event: the step has no terminal to restart its agent in');
+  step.status = 'launching';
+  step.attempt = (step.attempt ?? 0) + 1;
+  step.iteration = 0;
+  step.finishedAt = null;
+  return run;
+}
+
 function applyResume(run, event) {
   if (!RESUMABLE.has(run.status)) illegal(run.status, event.type);
   if (!RESUME_WORKTREE.has(run.worktreeState)) illegal(`worktree:${run.worktreeState}`, event.type);
@@ -304,6 +320,7 @@ const HANDLERS = {
   stop: applyStop,
   continue: applyContinue,
   resume: applyResume,
+  agent_restarted: applyAgentRestarted,
 };
 
 /**

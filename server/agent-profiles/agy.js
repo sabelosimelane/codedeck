@@ -4,7 +4,9 @@ export const id = 'agy';
 // How this CLI invokes a skill; workflow prompts are written with `/name`.
 export const skillPrefix = '/';
 
-const INPUT_PROMPT = /^>$/;
+// The empty input line: `>`, or, once a turn is over, `>` with the mode as a hint in it:
+// `> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)`.
+const INPUT_PROMPT = /^>(?: [A-Z][\w-]* mode: .*\(shift\+tab to cycle\))?$/;
 const DIALOG_OPTION = /^> \S/;
 const DIALOG_HINT = /↑\/↓ Navigate\b/;
 // `⣻  Generating...`: any braille spinner frame followed by a status phrase.

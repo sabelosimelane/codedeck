@@ -1,0 +1,35 @@
+  finish.
+
+○ Thought for 19.9s (All integration tests passed, confirming the fix.)
+● Edited 2 files (plan.md, 04-develop.md) (ctrl+o to expand)
+
+▸ Thought for 5s, 96 tokens
+
+  Completed Phase 1: Authorize workspace keys for entity records and recorded the changes in .codedeck/runs/fb0fb54e/04-develop.md with all Phase 1 tasks
+  ticked in .codedeck/runs/fb0fb54e/plan.md.
+
+  Summary of changes
+
+  • Split src/main/java/com/issuetracker/entity/core/domain/EntityManagementPolicy.java into requireRecordManager (allows workspace API clients and active
+  human admins) and requireLayoutManager (retains active human-admin-only enforcement).
+  • Applied requireRecordManager in the six entity record handlers and requireLayoutManager in
+  src/main/java/com/issuetracker/entity/core/command/EntityPosition2dCommandHandler.java and
+  src/main/java/com/issuetracker/entity/core/command/EntityPosition3dCommandHandler.java.
+  • Updated src/test/java/com/issuetracker/entity/core/domain/EntityManagementPolicyTest.java and src/test/java/com/issuetracker/entity/EntityApiIT.java
+  to cover workspace-key record CRUD, audit attribution, admin/non-admin/layout/admin-route boundaries, frontend & issue-placement compatibility, 401/403
+  key handling, and 404/tenant isolation.
+
+  Verification
+
+  • ./mvnw test -Dtest=EntityManagementPolicyTest — Tests run: 6, Failures: 0, Errors: 0, Skipped: 0 (BUILD SUCCESS).
+  • ./mvnw verify -Dit.test=EntityApiIT,EntityReadApiIT,EntityPosition2dApiIT,EntityPosition3dApiIT,EntityCrossPhaseIT — Tests run: 66, Failures: 0,
+  Errors: 0, Skipped: 0 (BUILD SUCCESS).
+
+  Phases 2–7 remain in .codedeck/runs/fb0fb54e/plan.md.
+
+  [[CDW:da869d28-2:CONTINUE]]
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                                                                                                 auto · Gemini 4 Neon · medium

@@ -21,6 +21,23 @@ const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
 const DEFAULT_DIALOG_POLL_MS = 2000;
+// How long an agent may sit idle at an unchanged prompt while its pass runs before the prompt
+// is taken to be lost: it is sent once more, and then the run fails.
+const DEFAULT_PROMPT_PICKUP_MS = 30_000;
+// Readings of an unchanged shell, after a launch, that mean the launch command never arrived.
+const LAUNCH_LOST_READINGS = 3;
+
+/**
+ * Whether a launch command written into a terminal never reached its shell: the screen is the
+ * one it showed before the launch, or the command appears nowhere on it (it would be echoed).
+ * Whitespace is ignored, since a long command wraps across lines.
+ */
+function launchNeverArrived(state, before, launchCommand) {
+  const screen = Array.isArray(state?.lines) ? state.lines.join('\n') : '';
+  if (before !== null && screen === before) return true;
+  const flat = text => text.replace(/\s/g, '');
+  return !flat(screen).includes(flat(launchCommand));
+}
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
 // Execution reasons that say the agent, or a sub-agent it started, is in the middle of a turn.
 const AGENT_AT_WORK = new Set(['agent_working', 'agent_delegated']);
@@ -76,6 +93,14 @@ export function createRunEngine({
   answerStore,
   terminalAvailable,
   setTerminalMuted,
+  // Starts the terminal of an agent that takes no input again with a fresh shell, ending the agent.
+  restartAgentTerminal,
+  // Types a line into a terminal's pane directly, not through an attachment, and presses Enter.
+  typeIntoTerminal,
+  // What a terminal's pane and its attachments are doing, for the log.
+  inspectTerminal,
+  // Whether a terminal's pane is inside a folder: a step returns only to a terminal in its worktree.
+  terminalInFolder,
   // Told what a step wrote once its note is stored; nothing it does can affect the run.
   onNoteWritten = () => {},
   removeWorktree = async () => ({ ok: true }),
@@ -91,6 +116,7 @@ export function createRunEngine({
   readinessTimeoutMs = DEFAULT_TIMEOUT_MS,
   launchEnterDelayMs = DEFAULT_ENTER_DELAY_MS,
   dialogPollMs = DEFAULT_DIALOG_POLL_MS,
+  promptPickupMs = DEFAULT_PROMPT_PICKUP_MS,
 } = {}) {
   if (!runStore) throw new Error('createRunEngine: runStore is required');
   if (typeof createWorktree !== 'function') throw new Error('createRunEngine: createWorktree is required');
@@ -114,6 +140,11 @@ export function createRunEngine({
   if (typeof answerStore?.add !== 'function' || typeof answerStore?.list !== 'function') throw new Error('createRunEngine: answerStore is required');
   if (typeof terminalAvailable !== 'function') throw new Error('createRunEngine: terminalAvailable is required');
   if (typeof setTerminalMuted !== 'function') throw new Error('createRunEngine: setTerminalMuted is required');
+  if (typeof restartAgentTerminal !== 'function') throw new Error('createRunEngine: restartAgentTerminal must be a function');
+  if (typeof typeIntoTerminal !== 'function') throw new Error('createRunEngine: typeIntoTerminal must be a function');
+  if (typeof inspectTerminal !== 'function') throw new Error('createRunEngine: inspectTerminal must be a function');
+  if (typeof terminalInFolder !== 'function') throw new Error('createRunEngine: terminalInFolder must be a function');
+  if (!Number.isInteger(promptPickupMs) || promptPickupMs <= 0) throw new Error(`createRunEngine: promptPickupMs must be a positive integer, got ${promptPickupMs}`);
 
   const handles = new Map();
   const noteWarnings = new Set();
@@ -184,6 +215,10 @@ export function createRunEngine({
         dialogPause: false,
         lastTasksDone: null,
         roundsWithoutProgress: 0,
+        // Set when an agent that takes no input is to be started again: its terminal and folder.
+        agentRestart: null,
+        // `${stepIndex}:${attempt}` of the attempt that relaunched an agent after a restart.
+        restartedAttempt: null,
       };
       handles.set(runId, handle);
     }
@@ -328,10 +363,15 @@ export function createRunEngine({
    * a terminal's agent is neither at its prompt nor working: work it was already doing is
    * finished first, however long it takes.
    */
-  async function waitUntilReady(runId, sessionId, agentName, returningStep = null, launchAgent = null) {
+  async function waitUntilReady(runId, sessionId, agentName, returningStep = null, launchAgent = null, launchCommand = null) {
     let waitedMs = 0;
     let lastState = null;
     let launched = false;
+    // A launch command can be lost on its way to the shell. After a launch that the shell shows no
+    // sign of, it is typed into the pane directly once; then the run fails saying so.
+    let screenBeforeLaunch = null;
+    let lostReadings = 0;
+    let typedDirectly = false;
 
     while (true) {
       await delay(readinessPollMs, setTimeoutFn);
@@ -353,12 +393,34 @@ export function createRunEngine({
           // The terminal is still there but its agent is not: start it again in this terminal.
           launched = true;
           waitedMs = 0;
+          screenBeforeLaunch = Array.isArray(lastState?.lines) ? lastState.lines.join('\n') : null;
           await launchAgent();
           continue;
+        }
+        if (typeof launchCommand === 'string' && launchNeverArrived(lastState, screenBeforeLaunch, launchCommand)) {
+          lostReadings += 1;
+          if (lostReadings < LAUNCH_LOST_READINGS) continue;
+          lostReadings = 0;
+          if (!typedDirectly) {
+            typedDirectly = true;
+            let terminal;
+            try {
+              terminal = JSON.stringify(await inspectTerminal(sessionId));
+            } catch (err) {
+              terminal = `could not be inspected: ${err?.message || err}`;
+            }
+            console.warn(`[pipeline-run] ${runId}: the launch command for ${agentName} did not reach ${sessionId}; terminal ${terminal}; typing it into the terminal directly`);
+            screenBeforeLaunch = Array.isArray(lastState?.lines) ? lastState.lines.join('\n') : null;
+            await typeIntoTerminal(sessionId, launchCommand);
+            continue;
+          }
+          failRun(runId, `The launch command for agent ${agentName} never reached its terminal ${sessionId}, also when typed into it directly. Check the terminal, then Resume.`);
+          return { ok: false, reason: 'launch_lost' };
         }
         failRun(runId, `The launch command for agent ${agentName} exited.`);
         return { ok: false, reason: 'exited' };
       }
+      lostReadings = 0;
 
       if (result === 'closed') {
         failRun(runId, returningStep === null || launched
@@ -458,14 +520,57 @@ export function createRunEngine({
    * signal. While one is on screen the run waits for the owner, as it does for a launch dialog;
    * it is answered in the terminal. `isOver` says the step's loop has ended.
    */
-  async function watchForDialog(runId, sessionId, workflow, isOver) {
+  async function watchForDialog(runId, sessionId, workflow, isOver, { agentName, stepName, settle, cwd, restartedAttempt }) {
     const handle = getHandle(runId);
     const over = () => isOver() || handle.stopped || handle.workflow !== workflow;
+    // A pass whose agent sits idle at an unchanged prompt never took its prompt (the CLI was
+    // still clearing or starting when it was pasted, or stopped reading input). It is sent once
+    // more; then the agent's terminal is started again and the step relaunches its agent there.
+    // An agent started again that still takes nothing fails the run, rather than show a pass as
+    // running that nothing works on. A pass in which the agent asked for input is left alone: it
+    // was working, and the owner's answer came after.
+    let pickup = { pass: null, idleMs: 0, resent: false, asked: false, screen: null };
+    const watchPickup = (readiness, screen) => {
+      const pass = workflow.snapshot();
+      if (pass.iteration !== pickup.pass) pickup = { pass: pass.iteration, idleMs: 0, resent: false, asked: false, screen: null };
+      if (pass.status === 'needs_input') pickup.asked = true;
+      const unchanged = pickup.screen !== null && pickup.screen === screen;
+      pickup.screen = screen;
+      if (pass.status !== 'running' || pickup.asked || handle.dialogPause
+        || runStore.get(runId)?.status !== 'running' || readiness !== 'ready' || !unchanged) {
+        pickup.idleMs = 0;
+        return;
+      }
+      pickup.idleMs += dialogPollMs;
+      if (pickup.idleMs < promptPickupMs) return;
+      pickup.idleMs = 0;
+      if (!pickup.resent) {
+        pickup.resent = true;
+        console.warn(`[pipeline-run] ${runId}: step ${stepName} left its prompt untaken in ${sessionId}; sending it again`);
+        workflow.resubmit();
+        return;
+      }
+      if (restartedAttempt) {
+        failRun(runId, `The agent ${agentName} did not start step ${stepName}, also after it was started again in its terminal: it stays idle at an unchanged prompt and takes no input. Check the terminal, then Resume.`);
+        workflow.stop();
+        settle();
+        return;
+      }
+      console.warn(`[pipeline-run] ${runId}: step ${stepName} still has not taken its prompt in ${sessionId}; starting its agent again`);
+      handle.agentRestart = { sessionId, cwd };
+      workflow.stop();
+      settle();
+    };
     while (true) {
       await delay(dialogPollMs, setTimeoutFn);
       if (over()) return;
-      const showsDialog = classifyReadiness(await readExecutionState(sessionId)) === 'needs_input';
+      const state = await readExecutionState(sessionId);
+      const readiness = classifyReadiness(state);
+      const showsDialog = readiness === 'needs_input';
+      const screen = Array.isArray(state?.lines) ? state.lines.join('\n') : null;
       await enqueueTransition(runId, async () => {
+        if (over()) return;
+        watchPickup(readiness, screen);
         if (over()) return;
         if (!showsDialog) {
           endDialogPause(runId);
@@ -620,7 +725,7 @@ export function createRunEngine({
     }
 
     if (snapshot.status === 'stopped') {
-      if (getHandle(runId).stopRequested) {
+      if (getHandle(runId).stopRequested || getHandle(runId).agentRestart) {
         return { terminal: true };
       }
       if (['pending', 'running', 'needs_input', 'limit_paused', 'interrupted'].includes(current.status)) {
@@ -769,6 +874,25 @@ export function createRunEngine({
       // agent has no terminal gets a new one, with the agent launched in it.
       let { sessionId } = step;
       if (sessionId === null) sessionId = findAgentTerminal(run, stepIndex);
+      // A terminal can leave the worktree: its shell changed folder, or tmux lost the session and a
+      // new one of the same name was opened in the project. Its agent would work in the wrong place.
+      if (sessionId !== null) {
+        const inside = await terminalInFolder(sessionId, run.worktreePath);
+        if (typeof inside !== 'boolean') {
+          throw new Error(`pipeline run: terminalInFolder must answer true or false for ${sessionId}`);
+        }
+        if (handle.stopped) return;
+        if (!inside) {
+          console.warn(`[pipeline-run] ${runId}: terminal ${sessionId} is not in ${run.worktreePath}; step ${defStep.name} opens a new terminal there`);
+          if (step.sessionId === sessionId) {
+            run = updateRun(runId, { steps: run.steps.map((s, i) => (
+              i === stepIndex ? { ...s, sessionId: null, priorSessionIds: [...(s.priorSessionIds || []), sessionId] } : s
+            )) });
+            step = run.steps[stepIndex];
+          }
+          sessionId = null;
+        }
+      }
       const returning = sessionId !== null;
       if (!returning) {
         sessionId = await startSession({
@@ -806,7 +930,7 @@ export function createRunEngine({
         if (handle.stopped) return;
       }
 
-      const ready = await waitUntilReady(runId, sessionId, agent.name, returning ? defStep.name : null, launchAgent);
+      const ready = await waitUntilReady(runId, sessionId, agent.name, returning ? defStep.name : null, launchAgent, agent.launchCommand);
       if (!ready.ok) return;
 
       let current = runStore.get(runId);
@@ -894,7 +1018,10 @@ export function createRunEngine({
         }),
       }]));
 
-      watchForDialog(runId, sessionId, workflow, () => settled).catch((err) => {
+      if (agent.assignment) runStore.recordAttempt(current);
+
+      const restartedAttempt = handle.restartedAttempt === `${stepIndex}:${attempt}`;
+      watchForDialog(runId, sessionId, workflow, () => settled, { agentName: agent.name, stepName: defStep.name, settle: settleWorkflow, cwd: current.worktreePath, restartedAttempt }).catch((err) => {
         try {
           failRun(runId, String(err?.message || err || 'Run failed').slice(0, 2000));
         } catch (failErr) {
@@ -920,7 +1047,25 @@ export function createRunEngine({
       handle.dialogPause = false;
     }
 
+    const restart = handle.agentRestart;
+    handle.agentRestart = null;
     if (handle.stopped) return;
+
+    if (restart) {
+      const stepIndex = runStore.get(runId)?.currentStepIndex;
+      const { name: stepName, agent: { name: agentName } } = runStore.get(runId).definition.steps[stepIndex];
+      try {
+        await restartAgentTerminal(restart.sessionId, restart.cwd);
+      } catch (err) {
+        failRun(runId, `The agent ${agentName} did not take the prompt of step ${stepName}, and its terminal could not be started again: ${String(err?.message || err)}`.slice(0, 2000));
+        return;
+      }
+      if (handle.stopped || runStore.get(runId)?.status !== 'running') return;
+      const relaunched = persistTransition(runId, { type: 'agent_restarted' });
+      handle.restartedAttempt = `${stepIndex}:${relaunched.steps[stepIndex].attempt}`;
+      await runStep(runId);
+      return;
+    }
 
     const after = runStore.get(runId);
     if (!after) return;

@@ -213,6 +213,29 @@ share one tab, and a new run in an existing worktree reuses the tabs an earlier 
 left there. Nodes that use different agents get different tabs, because a terminal
 holds one agent CLI. Earlier output of a shared tab stays in its scrollback; the
 agent's conversation is cleared each time, including anything you typed there yourself.
+A step goes back only to a terminal whose shell is still in the run's worktree; one that
+is somewhere else (its shell changed folder, or tmux lost the session and a new one of
+the same name was opened in the project) is set aside, and the step opens a new terminal
+in the worktree.
+
+A CLI that is still clearing or starting can drop a prompt pasted into it, and a CLI can
+stop reading input altogether while its screen still shows an idle prompt (Codex has done
+so right after the reset command). So while a pass runs, CodeDeck watches its terminal:
+when the agent sits idle at a prompt that has not changed for 30 seconds, and has not
+asked for anything in that pass, the prompt is taken to be lost and is sent once more.
+If that is not taken either, CodeDeck starts the terminal again with a fresh shell in the
+same folder (ending the agent and resetting the terminal's modes), starts the agent there
+and sends the prompt, with nothing to clear. If the agent started again still takes
+nothing, the run fails and says so, instead of showing a step as running that nothing
+works on.
+
+The launch command itself is checked the same way. When the shell in a step's terminal
+shows no sign of it for three seconds (its screen has not changed, or the command is
+nowhere on it), CodeDeck logs what the terminal and its attachments were doing and
+types the command into the terminal once more, directly through tmux. If that does not
+arrive either, the run fails, saying the launch command never reached the terminal. An
+agent that starts and then exits by itself (Codex does after updating itself) fails the
+run as before; **Resume** launches it again.
 
 A run keeps only the terminal it is working in showing status; its other terminals
 are muted until their step starts. When the run waits for you, that step's terminal

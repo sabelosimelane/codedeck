@@ -11,6 +11,7 @@ import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
+import { isAbsolute } from 'node:path';
 import { buildShellEnv } from './shell-env.js';
 import { isTransportFailure, STATUS_POLL_TIMEOUT_MS } from './command-runner.js';
 import { collectSessionProcessIds, parsePaneProcesses, parseProcessSnapshot } from './session-processes.js';
@@ -39,6 +40,9 @@ export const TERMINAL_HISTORY_WARNING_REASON_SNAPSHOT_UNAVAILABLE = 'snapshot_un
 export const TERMINAL_HISTORY_WARNING_MESSAGE_SNAPSHOT_UNAVAILABLE = 'Recent scrollback could not be restored accurately. Live terminal output is attached, but preserved history is unavailable.';
 const execFileAsync = promisify(execFile);
 const PANE_FORMAT = '#{pane_index}\t#{pane_current_command}\t#{pane_dead}\t#{window_activity}\t#{pane_current_path}';
+// Without a UTF-8 locale tmux (3.8) prints a tab in a -F format as `_`. Every read whose format is
+// split on tabs starts tmux with -u, so it does not depend on the locale CodeDeck was started in.
+const TABS = '-u';
 const UNKNOWN_EXECUTION_DETAILS = Object.freeze({ agentCli: null, backgroundAgents: 0, backgroundShells: 0, needsInput: false });
 const processSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -756,6 +760,17 @@ function normalizeCapturedSnapshot(output, windowLines = TERMINAL_SNAPSHOT_WINDO
   };
 }
 
+/** The main pane of a session: the lowest pane of window 0, the one the status reader reads. */
+async function mainPaneTarget(sessionId, caller) {
+  const tmuxName = sanitizeTmuxName(sessionId);
+  const { stdout } = await execFileAsync('tmux', ['list-panes', '-t', `${tmuxName}:0`, '-F', '#{pane_index}'], { encoding: 'utf8' });
+  const indexes = stdout.split('\n').filter(Boolean).map(Number);
+  if (!indexes.length || indexes.some(index => !Number.isSafeInteger(index) || index < 0)) {
+    throw new Error(`${caller}: no main pane found in ${sessionId}`);
+  }
+  return `${tmuxName}:0.${Math.min(...indexes)}`;
+}
+
 function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess = process.kill.bind(process), excludePids = [process.pid, process.ppid] } = {}) {
   let ptySpawnStatus = null;
 
@@ -901,12 +916,63 @@ function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess
       }
     },
 
+    /**
+     * Types one line into the main pane of a session and presses Enter, through tmux itself rather
+     * than through an attached client, for input that did not arrive the usual way.
+     */
+    async typeLineAsync(sessionId, text) {
+      if (typeof sessionId !== 'string' || !sessionId.trim()) {
+        throw new Error(`typeLineAsync: sessionId must be a non-empty string, got ${sessionId}`);
+      }
+      if (typeof text !== 'string' || !text.trim() || /[\r\n]/.test(text)) {
+        throw new Error('typeLineAsync: text must be one non-empty line');
+      }
+      const target = await mainPaneTarget(sessionId, 'typeLineAsync');
+      await execFileAsync('tmux', ['send-keys', '-t', target, '-l', '--', text], { encoding: 'utf8' });
+      await execFileAsync('tmux', ['send-keys', '-t', target, 'Enter'], { encoding: 'utf8' });
+    },
+
+    /** What the main pane of a session is doing: its mode, whether it takes input, its command, its folder. */
+    async inspectPaneAsync(sessionId) {
+      if (typeof sessionId !== 'string' || !sessionId.trim()) {
+        throw new Error(`inspectPaneAsync: sessionId must be a non-empty string, got ${sessionId}`);
+      }
+      const target = await mainPaneTarget(sessionId, 'inspectPaneAsync');
+      const { stdout } = await execFileAsync('tmux', [TABS, 'display-message', '-p', '-t', target,
+        '#{pane_index}\t#{pane_in_mode}\t#{pane_input_off}\t#{pane_dead}\t#{pane_current_command}\t#{pane_mode}\t#{pane_current_path}'], { encoding: 'utf8' });
+      const fields = stdout.replace(/\r?\n$/, '').split('\t');
+      if (fields.length < 7) throw new Error(`inspectPaneAsync: unexpected tmux pane state for ${sessionId}: ${JSON.stringify(stdout)}`);
+      // The path is last: it is the one field that could itself hold a tab.
+      const [index, inMode, inputOff, dead, currentCommand, mode] = fields;
+      const currentPath = fields.slice(6).join('\t');
+      return { paneIndex: Number(index), inMode: inMode === '1', inputOff: inputOff === '1', dead: dead === '1', currentCommand, mode, currentPath };
+    },
+
+    /**
+     * Starts the main pane of a session again with a fresh shell in `cwd`, for an agent that
+     * takes no input: whatever runs there is ended and the pane's terminal modes are reset.
+     * The main pane is the lowest pane of window 0, the one the status reader reads as the agent.
+     */
+    async respawnMainPaneAsync(sessionId, cwd) {
+      if (typeof sessionId !== 'string' || !sessionId.trim()) {
+        throw new Error(`respawnMainPaneAsync: sessionId must be a non-empty string, got ${sessionId}`);
+      }
+      if (typeof cwd !== 'string' || !isAbsolute(cwd) || cwd.includes('\0')) {
+        throw new Error(`respawnMainPaneAsync: cwd must be an absolute path, got ${cwd}`);
+      }
+      const target = await mainPaneTarget(sessionId, 'respawnMainPaneAsync');
+      // respawn-pane keeps the modes the agent switched on (mouse reporting, …): reset them first,
+      // so the reset cannot clear the prompt of the new shell.
+      await execFileAsync('tmux', ['send-keys', '-R', '-t', target], { encoding: 'utf8' });
+      await execFileAsync('tmux', ['respawn-pane', '-k', '-c', cwd, '-t', target], { encoding: 'utf8' });
+    },
+
     async killAsync(entry, sessionId) {
       if (this.isAvailable()) {
         const tmuxName = sanitizeTmuxName(sessionId);
         let panes = [];
         try {
-          const { stdout } = await execFileAsync('tmux', ['list-panes', '-s', '-t', `=${tmuxName}:`, '-F', '#{pane_pid}\t#{pane_tty}'], { encoding: 'utf8' });
+          const { stdout } = await execFileAsync('tmux', [TABS, 'list-panes', '-s', '-t', `=${tmuxName}:`, '-F', '#{pane_pid}\t#{pane_tty}'], { encoding: 'utf8' });
           panes = parsePaneProcesses(stdout);
         } catch (error) {
           if (!isTmuxMissingSessionError(error)) throw error;
@@ -1006,7 +1072,7 @@ function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess
 
       try {
         const panes = parseTerminalPaneMetadata(execFileSync('tmux',
-          ['list-panes', '-t', `${tmuxName}:0`, '-F', PANE_FORMAT],
+          [TABS, 'list-panes', '-t', `${tmuxName}:0`, '-F', PANE_FORMAT],
           { stdio: 'pipe', encoding: 'utf8' }));
         const snapshots = panes.map(pane => execFileSync('tmux',
           ['capture-pane', '-p', '-t', `${tmuxName}:0.${pane.paneIndex}`],
@@ -1028,7 +1094,7 @@ function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess
 
       try {
         const { stdout } = await execFileAsync('tmux',
-          ['list-panes', '-t', `${tmuxName}:0`, '-F', PANE_FORMAT], { encoding: 'utf8' });
+          [TABS, 'list-panes', '-t', `${tmuxName}:0`, '-F', PANE_FORMAT], { encoding: 'utf8' });
         const panes = parseTerminalPaneMetadata(stdout);
         const snapshots = await Promise.all(panes.map(async pane => (await execFileAsync('tmux',
           ['capture-pane', '-p', '-t', `${tmuxName}:0.${pane.paneIndex}`], { encoding: 'utf8' })).stdout));
@@ -1275,7 +1341,7 @@ export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sl
     'set -e',
     // Read pane activity first: a clock sampled before it could trail an
     // actively printing pane and fail the activity <= clock guard.
-    `panes=$(tmux list-panes -t "$1:0" -F '${PANE_FORMAT}')`,
+    `panes=$(tmux ${TABS} list-panes -t "$1:0" -F '${PANE_FORMAT}')`,
     'date +%s',
     `printf '\\000'`,
     `printf '%s\\n' "$panes"`,
@@ -1352,7 +1418,7 @@ export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sl
       const tmuxName = sanitizeTmuxName(sessionId);
       let panes = [];
       try {
-        const { stdout } = await tmux(['list-panes', '-s', '-t', `=${tmuxName}:`, '-F', '#{pane_pid}\t#{pane_tty}']);
+        const { stdout } = await tmux([TABS, 'list-panes', '-s', '-t', `=${tmuxName}:`, '-F', '#{pane_pid}\t#{pane_tty}']);
         panes = parsePaneProcesses(stdout);
       } catch (error) {
         if (isTransportFailure(error) || !isTmuxMissingSessionError(error)) throw error;

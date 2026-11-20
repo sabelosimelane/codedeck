@@ -1,24 +1,15 @@
+import { createRunClock } from './run-clock.js';
 import { createHash } from 'node:crypto';
 import { classifyEvidence, statuses, validateOutcome } from '../../shared/workflow-improvements.mjs';
 
 // Record status boundaries in the same transaction as the run. Earlier runs have no clock.
 export function createEvidence({ db, runs, notes, answers, decisions, reviews, tasks }) {
-  db.exec(`CREATE TABLE IF NOT EXISTS improvement_clock (
-    seq INTEGER PRIMARY KEY, run_id TEXT NOT NULL, step INTEGER NOT NULL, status TEXT NOT NULL, at TEXT NOT NULL, first INTEGER NOT NULL);
-    CREATE INDEX IF NOT EXISTS improvement_clock_run ON improvement_clock(run_id,seq);
-    CREATE TRIGGER IF NOT EXISTS improvement_run_created AFTER INSERT ON pipeline_runs BEGIN
-      INSERT INTO improvement_clock(run_id,step,status,at,first) VALUES(NEW.id,NEW.current_step_index,NEW.status,NEW.updated_at,1);
-    END;
-    CREATE TRIGGER IF NOT EXISTS improvement_run_changed AFTER UPDATE ON pipeline_runs
-    WHEN OLD.status<>NEW.status OR OLD.current_step_index<>NEW.current_step_index BEGIN
-      INSERT INTO improvement_clock(run_id,step,status,at,first) VALUES(NEW.id,NEW.current_step_index,NEW.status,NEW.updated_at,0);
-    END;
-    CREATE TABLE IF NOT EXISTS improvement_outcomes(id TEXT PRIMARY KEY, at TEXT NOT NULL, value TEXT NOT NULL CHECK(json_valid(value)));
+  const clock = createRunClock(db);
+  db.exec(`CREATE TABLE IF NOT EXISTS improvement_outcomes(id TEXT PRIMARY KEY, at TEXT NOT NULL, value TEXT NOT NULL CHECK(json_valid(value)));
     CREATE INDEX IF NOT EXISTS improvement_outcomes_at ON improvement_outcomes(at);`);
   const changed = db.prepare(`SELECT r.id FROM pipeline_runs r LEFT JOIN improvement_outcomes o ON o.id=r.id
     WHERE r.status IN ('complete','error','stopped','interrupted') AND (o.at IS NULL OR r.updated_at<>o.at) ORDER BY r.updated_at,r.id LIMIT 100`);
   const save = db.prepare('INSERT OR REPLACE INTO improvement_outcomes VALUES(?,?,?)');
-  const clock = db.prepare('SELECT * FROM improvement_clock WHERE run_id=? ORDER BY seq');
   function history(id) {
     const noteList = [];
     for (let offset = 0; ; offset += 100) {
@@ -35,7 +26,7 @@ export function createEvidence({ db, runs, notes, answers, decisions, reviews, t
   }
   function snapshot(run) {
     const { notes: written } = history(run.id);
-    const times = clock.all(run.id),
+    const times = clock(run.id),
       measured = times[0]?.first === 1;
     const active = run.steps.map(() => 0);
     let waitMs = 0;

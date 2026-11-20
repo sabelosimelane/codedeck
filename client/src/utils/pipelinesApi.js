@@ -1,3 +1,5 @@
+import { teamScoreResponse } from '../../../shared/team-score-responses.mjs';
+
 const BASE = '/api/pipelines';
 
 export class PipelineApiError extends Error {
@@ -299,4 +301,27 @@ export function improvementAction(path, body) {
 }
 export function configureReviewer(body) {
   return request('/improvements/model', { method: 'PUT', body });
+}
+
+const teamBase = '/improvements/teams';
+export function teamImprovementDashboard(signal) {
+  return Promise.all([
+    listAll(teamBase + '/scorecards', { signal }).then(teamScoreResponse.scorecards),
+    listAll(teamBase + '/trials', { signal }).then(teamScoreResponse.trials),
+  ]);
+}
+export function teamScoreRuns(cardId, signal) {
+  return listAll(teamBase + '/runs', { signal, query: { cardId } }).then(teamScoreResponse.runs);
+}
+export function teamRunEvidence(id, signal) {
+  return request(itemPath('improvements/teams/runs', id), { signal }).then(teamScoreResponse.detail);
+}
+export function teamRunHistory(id, signal) {
+  return listAll(itemPath('improvements/teams/runs', id) + '/history', { signal }).then(teamScoreResponse.history);
+}
+export function correctDeliveryVerdict(id, body) {
+  return request(itemPath('improvements/teams/runs', id) + '/corrections', { method: 'POST', body }).then(teamScoreResponse.detail);
+}
+export function decideTeamTrial(id, body) {
+  return request(itemPath('improvements/teams/trials', id) + '/decision', { method: 'POST', body }).then(teamScoreResponse.trial);
 }

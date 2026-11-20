@@ -350,3 +350,15 @@
 .workflows-screen-body[hidden] {
   display: none;
 }
+.team-score-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(215px, 100%), 1fr));
+  margin-block: 14px;
+}
+.team-correction {
+  display: grid;
+  gap: 8px;
+}
+.team-correction label {
+  display: grid;
+  gap: 4px;
+}

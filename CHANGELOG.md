@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-11-20] - Team scoring, measured model trials and workflow approval feedback
+
+### Executive Summary
+
+* Teams can compare delivery speed and accuracy, inspect the evidence for a score, and correct a verdict. Owners can approve a model or effort change for five comparable runs, see whether it helped, and decide separately whether to keep it. Workflow proposals now show when an approval is stale or has failed.
+
+### Technical Details
+
+* **✨ New Feature**
+  * The Teams view in Improvements shows scorecards, run evidence, correction history, trial assignments and results. Adoption updates the selected team's role and preserves other teams that share its agent.
+* **🐛 Bug Fix**
+  * Workflow approval cards display revision conflicts and decision errors at the point of action.
+* **🛠️ Codebase**
+  * Versioned policies in `shared/scoring` calculate workflow and team measurements from observations. Run attribution records the effective configuration for each attempt, and the review worker reassesses deliveries when new verification arrives.
+* **🔌 API/Interface**
+  * Team scoring routes provide paginated scorecards, runs, history and trials. Changes require the revision the owner reviewed.
+* **🧪 Tests**
+  * The scoring, launcher, API and dashboard suites exercise attribution, evidence, trial limits and adoption. The browser test runs the owner flow against disposable SQLite data.
+
 ## [2026-11-19] - Workflow evidence, background reviews and an improvements dashboard
 
 ### Executive Summary
