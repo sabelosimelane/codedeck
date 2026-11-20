@@ -125,6 +125,20 @@ describe('App polling', () => {
     vi.restoreAllMocks();
   });
 
+  it('opens the dashboard directly from the main navigation and returns to the workspace', async () => {
+    window.history.replaceState({}, '', '/#improvements');
+    global.fetch = vi.fn(url => String(url).includes('/api/pipelines/') ? okJson({ data: [], page: { hasNextPage: false } }) : okJson([]));
+    render(<App />);
+    expect(screen.getByRole('link', { name: 'Improvements' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('heading', { name: 'Workflow improvements' })).toBeTruthy();
+    await act(async () => {
+      window.location.hash = 'workspace';
+      window.dispatchEvent(new Event('hashchange'));
+    });
+    expect(screen.getByRole('link', { name: 'Workspace' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.queryByRole('heading', { name: 'Workflow improvements' })).toBeNull();
+  });
+
   it('does not start a new /api/sessions poll while the previous one is still in flight', async () => {
     let sessionRequestCount = 0;
 
