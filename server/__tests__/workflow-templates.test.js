@@ -97,6 +97,20 @@ describe('workflow templates', () => {
     }
   });
 
+  it.each(['feature-build', 'feature-from-requirements'])('%s sizes its plan to the change and runs the full suite once, at the end', (id) => {
+    const byName = Object.fromEntries(WORKFLOW_TEMPLATES.find(item => item.id === id).nodes.map(node => [node.name, node]));
+    // A small change is one phase; a phase is built behaviour, never checking or tests alone.
+    expect(byName.Plan.prompt).toMatch(/Size the plan to the change/);
+    expect(byName.Plan.prompt).toMatch(/one phase/);
+    expect(byName.Plan.prompt).toMatch(/never a phase that only checks or adds tests/);
+    expect(byName.Plan.prompt).toMatch(/at most 4 phases/);
+    expect(byName.Plan.prompt).toMatch(/in the phase that builds what it checks/);
+    expect(byName.Plan.prompt).not.toMatch(/small enough to build and test in one round/);
+    // Each round runs the phase's own tests; the whole suite runs once, when nothing is left to build.
+    expect(byName.Test.prompt).toMatch(/only the tests for that phase/);
+    expect(byName.Test.prompt).toMatch(/full test suite once/);
+  });
+
   it('builds a feature from requirements: asks what is missing, agrees a specification, then plans and builds it', () => {
     const template = WORKFLOW_TEMPLATES.find(item => item.id === 'feature-from-requirements');
     const byName = Object.fromEntries(template.nodes.map(node => [node.name, node]));
