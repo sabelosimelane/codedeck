@@ -352,6 +352,7 @@ export default function Improvements({ workflows, projects = [], onChanged }) {
   const [version, setVersion] = useState(0),
     [data, setData] = useState(null),
     [error, setError] = useState(''),
+    [actionError, setActionError] = useState(null),
     [busy, setBusy] = useState(false);
   const [drill, setDrill] = useState(null),
     [source, setSource] = useState(null),
@@ -397,15 +398,15 @@ export default function Improvements({ workflows, projects = [], onChanged }) {
     setSource(null);
     setDrill({ title, rows });
   };
-  const action = async (path, body) => {
+  const action = async (proposalId, suffix, body) => {
     setBusy(true);
-    setError('');
+    setActionError(null);
     try {
-      await improvementAction(path, body);
+      await improvementAction('proposals/' + proposalId + '/' + suffix, body);
       setVersion((v) => v + 1);
       if (body.action === 'approve') onChanged?.();
     } catch (e) {
-      setError(e.message);
+      setActionError({ proposalId, message: e.message });
     } finally {
       setBusy(false);
     }
@@ -457,7 +458,9 @@ export default function Improvements({ workflows, projects = [], onChanged }) {
       key={p.id}
       proposal={p}
       openRun={setSource}
-      action={(suffix, b) => action('proposals/' + p.id + '/' + suffix, b)}
+      action={(suffix, body) => action(p.id, suffix, body)}
+      actionError={actionError?.proposalId === p.id ? actionError.message : null}
+      workflow={workflows.find((w) => w.id === p.workflowId)}
       projects={projects}
       busy={busy}
       implement={(proposal, project) => setImplementation({ proposal, project })}

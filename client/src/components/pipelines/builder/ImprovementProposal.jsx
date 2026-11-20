@@ -9,11 +9,12 @@ export function duration(ms) {
 }
 const metricValue = (key, v) =>
   v === null ? 'Unavailable' : key === 'activeMs' ? duration(v) : Number(v.toFixed(2));
-export default function ImprovementProposal({ proposal: p, action, openRun, projects, implement, busy }) {
+export default function ImprovementProposal({ proposal: p, workflow, action, actionError, openRun, projects, implement, busy }) {
   const [reason, setReason] = useState(''),
     [destination, setDestination] = useState('');
   const d = p.draft,
     result = p.result;
+  const stale = workflow && workflow.revision > p.revision;
   const references = (ids, label) => (
     <div className="imp-refs">
       <span>{label}</span>
@@ -55,6 +56,13 @@ export default function ImprovementProposal({ proposal: p, action, openRun, proj
           Benchmark {p.evaluation.passed ? 'passed' : 'failed'} · {p.evaluation.count} labelled cases
         </p>
       )}
+      {actionError && <p role="alert">{actionError}</p>}
+      {p.status === 'pending' && stale && (
+        <p>
+          {workflow.name} is now at revision {workflow.revision}. This proposal applies to revision {p.revision}.
+          {' '}Dismiss it to clear it from the list.
+        </p>
+      )}
       {p.status === 'pending' && (
         <div className="imp-actions">
           {d.kind === 'reviewer' && (
@@ -64,7 +72,7 @@ export default function ImprovementProposal({ proposal: p, action, openRun, proj
           )}
           <button
             className="imp-primary"
-            disabled={busy || (d.kind === 'reviewer' && !p.evaluation?.passed)}
+            disabled={busy || stale || (d.kind === 'reviewer' && !p.evaluation?.passed)}
             onClick={() => action('decision', { action: 'approve' })}
           >
             Approve {d.kind === 'workflow' ? 'workflow edit' : 'proposal'}

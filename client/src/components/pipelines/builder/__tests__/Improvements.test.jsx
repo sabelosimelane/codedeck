@@ -85,3 +85,45 @@ it('saves a dedicated reviewer model through the revision-fenced API', async () 
     ),
   ).toBe(true);
 });
+
+function renderPendingProposal(currentRevision) {
+  const workflowId = '88c09e87-e36c-4e50-9f39-461b9b15783a';
+  const proposal = {
+    id: '6d079853-3e6a-474e-a094-2ff23cf81ea3', workflowId, revision: 2,
+    reviewerRevision: 1, at: new Date().toISOString(), status: 'pending',
+    reason: null, effectiveAt: null, effectiveRevision: null, evaluation: null, result: null,
+    draft: {
+      kind: 'workflow', title: 'Update Clarify', reason: 'Check the spec', citations: [workflowId],
+      change: 'Read the spec first', step: 'Clarify', test: 'Replay the run',
+      counterevidence: 'The owner clarified', metric: 'loops', safeguard: 'proofGaps',
+    },
+  };
+  vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+    if (opts?.method === 'POST') {
+      return { ok: false, status: 409, json: async () => ({ message: 'Workflow revision changed. Review fresh evidence.' }) };
+    }
+    const body = url.endsWith('/status')
+      ? { configured: true, provider: 'codex', model: 'test', effort: null, modelRevision: 1, reviewerRevision: 1, dailyBudget: 10, queued: 0 }
+      : { data: url.includes('/proposals') ? [proposal] : [], page: { hasNextPage: false } };
+    return { ok: true, json: async () => body };
+  }));
+  render(<Improvements workflows={[{ id: workflowId, name: 'Troubleshoot', revision: currentRevision }]} />);
+}
+
+it('explains a stale revision beside the disabled approval and allows dismissal', async () => {
+  renderPendingProposal(3);
+  const approve = await screen.findByRole('button', { name: 'Approve workflow edit' });
+  expect(approve.disabled).toBe(true);
+  expect(approve.closest('article').textContent).toMatch(/revision 3/i);
+  fireEvent.change(screen.getByRole('textbox', { name: 'Dismissal reason' }), { target: { value: 'Superseded' } });
+  expect(screen.getByRole('button', { name: 'Dismiss' }).disabled).toBe(false);
+});
+
+it('shows a server rejection on the proposal when the workflow changes after loading', async () => {
+  renderPendingProposal(2);
+  const approve = await screen.findByRole('button', { name: 'Approve workflow edit' });
+  fireEvent.click(approve);
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toBe('Workflow revision changed. Review fresh evidence.');
+  expect(approve.closest('article').contains(alert)).toBe(true);
+});
