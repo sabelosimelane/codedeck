@@ -237,6 +237,12 @@ describe('computeActions (Spec §8.8)', () => {
     expect(computeActions(run({ status: 'complete', worktreeState: 'released', finishedAt: AT }))).toMatchObject({ stop: false, resume: false, continue: false, cleanup: false, answer: false });
   });
 
+  it('allows Resume for a released run only after its task worktree was checked for reclaim', () => {
+    expect(computeActions(run({ status: 'interrupted', worktreeState: 'released', taskId: 'task-1' })).resume).toBe(false);
+    expect(computeActions(run({ status: 'interrupted', worktreeState: 'released', taskId: 'task-1', reclaimableTaskWorktree: true })).resume).toBe(true);
+    expect(computeActions(run({ status: 'complete', worktreeState: 'released', taskId: 'task-1', reclaimableTaskWorktree: true })).resume).toBe(false);
+  });
+
   it('resumes a stopped run in an existing worktree', () => {
     const stopped = run({
       status: 'stopped', stopReason: 'user', worktreeState: 'external', finishedAt: AT,

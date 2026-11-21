@@ -149,6 +149,33 @@ describe('terminal workflow', () => {
     expect(token(write)).not.toBe(id);
   });
 
+  it('ignores split terminal color replies while waiting and preserves a real answer', () => {
+    const { workflow } = setup();
+    workflow.start(request);
+    const id = workflow.signalIdentifier();
+    workflow.output(`[[CDW:${id}:QUESTIONS]]\n1. One?\nRecommended: A\n2. Two?\nRecommended: B\n3. Three?\nRecommended: C\n4. Four?\nRecommended: D\n${signal(id, 'NEEDS_INPUT')}`);
+    expect(workflow.snapshot().status).toBe('needs_input');
+    workflow.input('\x1b]11;rgb:12/34/56');
+    expect(workflow.snapshot().status).toBe('needs_input');
+    workflow.input('/78\x07');
+    expect(workflow.snapshot().status).toBe('needs_input');
+    workflow.output(signal(id, 'NEEDS_INPUT'));
+    expect(workflow.snapshot().status).toBe('needs_input');
+    const answer = workflow.answerText('edited answer');
+    workflow.input('edited answer\r');
+    expect(workflow.snapshot().status).toBe('running');
+    expect(answer).toContain('edited answer');
+  });
+
+  it('keeps direct terminal answers alongside a complete OSC reply', () => {
+    const { workflow } = setup();
+    workflow.start(request);
+    const id = workflow.signalIdentifier();
+    workflow.output(signal(id, 'NEEDS_INPUT'));
+    workflow.input('\x1b]11;rgb:12/34/56\x07yes\r');
+    expect(workflow.snapshot().status).toBe('running');
+  });
+
   it.each(['CONTINUE', 'COMPLETE'])('accepts %s straight from a paused iteration', status => {
     const { workflow, write } = setup();
     workflow.start(request);

@@ -47,9 +47,9 @@ const scored = (id) => ({
   criteria,
   evidenceRefs: sources.map((s) => s.id),
 });
-const before = scoreTeam(ids.slice(0, 5).map(scored)),
-  after = scoreTeam(ids.slice(5).map(scored));
-const comparison = { goal: 'speed', policyVersion: 1, verdict: 'helped', exposedRuns: 5, before, after };
+const before = scoreTeam(ids.slice(0, 3).map(scored)),
+  after = scoreTeam(ids.slice(3, 6).map(scored));
+const comparison = { goal: 'speed', policyVersion: 1, verdict: 'helped', exposedRuns: 3, before, after };
 const card = {
   id: hash,
   teamId,
@@ -102,8 +102,8 @@ const trial = {
   workload: hash,
   from: { provider: 'codex', model: 'm1', effort: 'high' },
   to: { provider: 'codex', model: 'm1', effort: 'medium' },
-  baselineIds: ids.slice(0, 5),
-  assignmentIds: ids.slice(5),
+  baselineIds: ids.slice(0, 3),
+  assignmentIds: ids.slice(3, 6),
   policyVersion: 1,
   reason: 'Measure lower effort',
   counterevidence: 'Only five observations',

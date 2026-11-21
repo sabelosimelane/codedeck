@@ -45,11 +45,7 @@ export const workflowPolicy = Object.freeze({
   ]),
 });
 
-const mix = (rows) =>
-  rows
-    .map((row) => JSON.stringify([row.project, row.workload, row.status]))
-    .sort()
-    .join(',');
+const WORKFLOW_COMPARE_MIN = 3;
 
 // Preserve the workflow v1 comparison wire format, including unknown historical timings.
 export function compareWorkflow(before, after, metric, safeguard) {
@@ -60,10 +56,8 @@ export function compareWorkflow(before, after, metric, safeguard) {
   const guardAfter = measure(after, safeguard);
   let verdict = 'inconclusive';
   if (
-    before.length === 5 &&
-    after.length === 5 &&
-    [...before, ...after].every((row) => row.workload !== null) &&
-    mix(before) === mix(after) &&
+    before.length >= WORKFLOW_COMPARE_MIN &&
+    after.length >= WORKFLOW_COMPARE_MIN &&
     a !== null &&
     b !== null
   ) {

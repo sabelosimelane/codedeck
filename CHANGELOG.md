@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-21] - Workflow efficiency, autonomous self-improvement, and resilient run controls
+
+### Executive Summary
+* Workflows now avoid no-op reviews, skip clean Commit launches on build workflows, debounce transient terminal dialogs, and remove redundant pre-coding approval pauses so tasks finish faster with fewer manual interruptions. Background self-improvement no longer wastes its daily budget on obsolete revisions or transient interruptions, reserves a dedicated lane for team delivery assessments, and lowers trial cohorts to three cross-project runs so autonomous recommendations actually trigger in day-to-day use.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Background workflow reviews re-queued the same runs on transient `interrupted`/`error`/`stopped` states, kept burning daily budget on obsolete workflow revisions, timed out at 65s with swallowed CLI errors, and starved `team_delivery_reviews` of shared budget.
+  * **Solution:** Excluded `interrupted` runs and added a 6-hour cooldown for non-complete outcomes in `server/pipelines/improvement-evidence.js`; deduplicated active jobs, auto-purged obsolete revision jobs, and split the daily budget into dedicated `workflow` (6) and `team` (6) lanes in `server/pipelines/improvements.js`; increased review CLI timeout to 180s (`185s` circuit breaker) and logged underlying CLI failures in `server/cli-naming-client.js` and `server/index.js`.
+  * **Problem:** Transient TUI redraws flapped `needs_input`, terminal query replies (OSC/string sequences) could prematurely resume `needs_input`, and `Develop` committing early left `Review` inspecting empty working trees.
+  * **Solution:** Debounced `watchForDialog` `needs_input` transitions to two consecutive polls and added 15-minute silent-stall warnings in `server/pipelines/run-engine.js`; hardened escape-sequence parsing across chunks in `server/terminal-workflow.js`; updated `Develop` and `Review` prompts in `shared/workflow-templates.mjs` so changes stay uncommitted and `Review` inspects both uncommitted and branch-committed diffs.
+* **✨ New Feature:**
+  * `shared/scoring/team.mjs`, `shared/scoring/index.mjs`, `shared/team-score-responses.mjs`, `server/pipelines/team-trials.js`, `client/src/components/pipelines/builder/TeamTrial.jsx`, and `client/src/components/pipelines/builder/TeamImprovements.jsx` — lowered team trial cohorts from five to three runs and grouped trials across projects by `(teamId, teamRevision, workflowId, workflowRevision, configurationKey)`.
+  * `shared/scoring/workflow.mjs` — relaxed `compareWorkflow` to compare ≥ 3 runs per side across projects while preserving safeguard checks.
+  * `server/pipelines/released-task-run.js`, `server/pipelines/run-machine.js`, `server/pipelines/run-engine.js`, and `server/routes/pipelines.js` — allow reclaiming and resuming a dismissed run while its task still owns the same open worktree, and enable `inspectCleanCommit` for `feature-build` and `feature-from-requirements` workflows.
+  * `client/src/components/tasks/QuestionsPanel.jsx`, `client/src/components/tasks/TaskView.jsx`, and `client/src/components/pipelines/PipelineRunsBar.jsx` — preserve unsent question answer drafts across re-renders and add confirmation prompts before closing/cleaning up runs.
+* **🗄️ Database:**
+  * `server/pipelines/improvements.js` — added idempotent `lane` column migration (`TEXT NOT NULL DEFAULT 'workflow'`) on `improvement_calls`.
+* **🛠️ Codebase:**
+  * `shared/workflow-templates.mjs` — streamlined pre-coding approval gates to a single gate (`Specify`) on `Bug fix` and `Feature from requirements`, and aligned `Commit` outcome guidance across templates.
+* **🧪 Tests:**
+  * Updated and added unit/integration coverage in `server/__tests__/workflow-improvements.test.js`, `server/__tests__/team-trials.test.js`, `server/__tests__/team-scoring-engine.test.js`, `server/__tests__/team-score-responses.test.js`, `server/__tests__/workflow-templates.test.js`, `server/__tests__/pipeline-run-engine.test.js`, `server/__tests__/pipeline-run-machine.test.js`, `server/__tests__/pipelines-api.test.js`, `server/__tests__/terminal-workflow.test.js`, `server/__tests__/agent-profile-generalization.test.js`, `server/__tests__/released-task-run.test.js`, `client/src/components/pipelines/builder/__tests__/TeamImprovements.test.jsx`, `client/src/components/pipelines/__tests__/PipelineRunsBar.test.jsx`, `client/src/components/tasks/__tests__/QuestionsPanel.test.jsx`, and `client/src/components/tasks/__tests__/TaskView.test.jsx`.
+
 ## [2026-11-20] - Attach files in the Run workflow dialog
 
 ### Executive Summary

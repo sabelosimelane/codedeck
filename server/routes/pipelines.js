@@ -62,6 +62,7 @@ import { parseTodoRepositories } from '../../shared/todo-repositories.mjs';
 import { GUIDANCE_MAX } from '../terminal-workflow.js';
 import { parseCollectionQuery as parseQuery, paginate } from './collection-query.js';
 import { provisionalTaskTitle } from '../tasks/task-naming.js';
+import { canReclaimReleasedTaskRun } from '../pipelines/released-task-run.js';
 
 const BASE = '/api/pipelines';
 const OPEN_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', 'external']);
@@ -303,7 +304,12 @@ function buildDefinitionSnapshot({
     return { mode: 'loop_back', toStepIndex: firstNodeStep + loopTargetIndex(workflow.nodes, index), max: repeat.max };
   };
 
-  const standardCommit = WORKFLOW_TEMPLATES.find(template => ['bug-fix', 'troubleshoot'].includes(template.id) && template.kind === workflow.kind)?.nodes.at(-1);
+  const standardCommits = new Set(
+    WORKFLOW_TEMPLATES
+      .filter(template => ['bug-fix', 'troubleshoot', 'feature-build', 'feature-from-requirements'].includes(template.id) && template.kind === workflow.kind)
+      .map(template => template.nodes.at(-1)?.prompt)
+      .filter(Boolean),
+  );
   const nodeSteps = workflow.nodes.map((node, index) => {
     const id = assignedAgentId(node, team, stepOverrides);
     const agent = id && agentStore.get(id);
@@ -316,7 +322,7 @@ function buildDefinitionSnapshot({
     return {
       kind: 'node',
       ...(index > 0 && index === workflow.nodes.length - 1 && node.name === 'Commit' && node.repeat.mode === 'once'
-        && !node.readOnly && !node.askOwner && node.prompt === standardCommit?.prompt ? { inspectCleanCommit: true } : {}),
+        && !node.readOnly && !node.askOwner && standardCommits.has(node.prompt) ? { inspectCleanCommit: true } : {}),
       name: node.name,
       role: node.role,
       askOwner: node.askOwner,
@@ -465,10 +471,12 @@ export function createPipelinesRouter(deps) {
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
   const asRunView = async run => {
-    const inspected = await readRunProgress({ run, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader });
+    const viewRun = run.worktreeState === 'released' && canReclaimReleasedTaskRun({ run, taskStore, runStore })
+      ? { ...run, reclaimableTaskWorktree: true } : run;
+    const inspected = await readRunProgress({ run: viewRun, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader });
     // `tasksDone`/`tasksTotal` count every phase; `phase` is the first one with work left.
     const progress = inspected === null ? null : { file: inspected.file, status: inspected.status, phaseCount: inspected.phaseCount, phase: inspected.phase, tasksDone: inspected.tasksDone, tasksTotal: inspected.tasksTotal };
-    return buildRunView(run, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
+    return buildRunView(viewRun, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
   };
 
   const router = express.Router();

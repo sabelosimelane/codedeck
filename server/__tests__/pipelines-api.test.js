@@ -397,7 +397,7 @@ describe('pipelines API — agents', () => {
 
 describe('pipelines API — run notes', () => {
   it.each([
-    ['bug-fix', null, true], ['troubleshoot', null, true], ['feature-build', null, false],
+    ['bug-fix', null, true], ['troubleshoot', null, true], ['feature-build', null, true], ['feature-from-requirements', null, true],
     ['bug-fix', 'Also write release notes.', false],
   ])('snapshots the standard final Commit only (%s, %s)', async (id, extra, eligible) => {
     const ctx = await setup();
@@ -4568,12 +4568,12 @@ it('measures five trial deliveries through the normal run launcher, then adopts 
       text:'Fix rotation',verdict:'met',reason:'Verified rotation on the device.'}).expect(200);
     time += 1000;
   }
-  for (let i=0;i<5;i++) await deliver(await start(team), 900);
+  for (let i=0;i<3;i++) await deliver(await start(team), 900);
   teamScoring.trials.refresh();
   const pending = (await request(ctx.app).get(dashboard+'/trials').expect(200)).body.data[0];
   const decision = dashboard+'/trials/'+pending.id+'/decision';
   await request(ctx.app).post(decision).send({action:'start',revision:pending.revision}).expect(200);
-  for (let i=0;i<5;i++) {
+  for (let i=0;i<3;i++) {
     const run = await start(team);
     expect(run.definition.steps[1].agent.launchCommand).toBe(medium);
     await deliver(run, 400);

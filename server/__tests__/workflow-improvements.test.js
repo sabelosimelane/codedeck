@@ -124,7 +124,7 @@ describe('workflow reviewer', () => {
       classifyEvidence('Commit', 'Committed the fix; tree clean. Git now reports nothing to commit.'),
     ).toEqual([]);
   });
-  it('requires comparable workloads, five cases and a preserved safeguard', () => {
+  it('requires at least three cases per side and a preserved safeguard across projects', () => {
     const row = {
       project: 'Demo',
       workload: 'backend',
@@ -133,13 +133,13 @@ describe('workflow reviewer', () => {
       flags: [],
       finalNote: true,
     };
-    const before = Array(5).fill(row),
-      after = Array(5).fill({ ...row, loops: 1 });
+    const before = Array(3).fill(row),
+      after = Array(3).fill({ ...row, loops: 1 });
     const result = (a) => compareOutcomes(before, a, 'loops', 'proofGaps').verdict;
     expect(result(after)).toBe('helped');
-    expect(result(after.map((r) => ({ ...r, workload: 'backend and mobile' })))).toBe('inconclusive');
+    expect(result(after.map((r) => ({ ...r, workload: 'backend and mobile' })))).toBe('helped');
     expect(result(after.slice(1))).toBe('inconclusive');
-    expect(result(after.map((x) => ({ ...x, project: 'Different' })))).toBe('inconclusive');
+    expect(result(after.map((x) => ({ ...x, project: 'Different' })))).toBe('helped');
     expect(result(after.map((x) => ({ ...x, flags: ['proofGap'] })))).toBe('regressed');
   });
 });
@@ -266,14 +266,19 @@ it('keeps unresolved proof visible when an agent calls it ordinary', async () =>
   await service.tick();
   expect(service.outcomes()[0].flags).toContain('proofGap');
 });
-it('enforces its daily call budget across processes', async () => {
-  const records = Array.from({ length: 55 }, () => run()),
+it('enforces its daily workflow call budget across processes without starving team reviews', async () => {
+  const records = Array.from({ length: 35 }, () => run()),
     generate = vi.fn(async () => ({ proposal: null, cost: null }));
   const { service, deps } = setup(records, generate);
-  for (let i = 0; i < 10; i++) await service.tick();
+  for (let i = 0; i < 6; i++) await service.tick();
   await createImprovements(deps).tick();
-  expect(generate).toHaveBeenCalledTimes(10);
+  expect(generate).toHaveBeenCalledTimes(6);
   expect(service.status().queued).toBe(1);
+  // Team lane retains its own daily budget even when workflow lane is exhausted.
+  const packet = { instructions: 'Assess criteria', rubric: 'Cite evidence' };
+  let teamSaved = 0;
+  expect(await service.reviewDelivery(workflowId, 2, packet, () => teamSaved++)).toBe(true);
+  expect(teamSaved).toBe(1);
 });
 it('validates the public dashboard records on read for every field', async () => {
   const { validateProposal, validateCall, validateReviewerStatus, validatePacket, validateOutcome } =
@@ -353,13 +358,33 @@ it('reviews a new proof gap before an older routine batch waiting in the queue',
   expect(generate.mock.calls[0][1].evidence.map((e) => e.outcome.id)).toEqual([gap.id]);
 });
 
-it('charges team assessments to the shared reviewer budget and records invalid responses as failed calls', async () => {
+it('charges team assessments to the team reviewer budget and records invalid responses as failed calls', async () => {
   const {service} = setup([],async () => ({criteria:[],complete:false,cost:null}));
   const packet = {instructions:'Assess criteria',rubric:'Cite evidence'};
   await expect(service.reviewDelivery(workflowId,2,packet,() => {throw new Error('bad citation')})).rejects.toThrow('bad citation');
   let saved = 0;
-  for (let i=1;i<10;i++) expect(await service.reviewDelivery(workflowId,2,packet,() => saved++)).toBe(true);
+  for (let i=1;i<6;i++) expect(await service.reviewDelivery(workflowId,2,packet,() => saved++)).toBe(true);
   expect(await service.reviewDelivery(workflowId,2,packet,() => saved++)).toBe(false);
-  expect(saved).toBe(9);
+  expect(saved).toBe(5);
   expect(service.calls().filter(c=>c.status==='failed')).toHaveLength(1);
+});
+
+it('drops queued jobs for obsolete workflow revisions and ignores transient interrupted runs', async () => {
+  const r1 = run({ status: 'interrupted' });
+  const records = [r1, ...Array.from({ length: 5 }, () => run())];
+  const generate = vi.fn(async () => ({ proposal: null, cost: null }));
+  const { service, deps, db } = setup(records, generate);
+  // Queue a stale rev=1 job while workflow is at rev=2.
+  db.prepare("INSERT INTO improvement_jobs VALUES(?,?,1,?,'queued',0,?,NULL,1)").run(
+    randomUUID(),
+    workflowId,
+    JSON.stringify([records[1]]),
+    stamp,
+  );
+  await service.tick();
+  // Interrupted run is never snapshotted into outcomes.
+  expect(service.outcomes().some((o) => o.id === r1.id)).toBe(false);
+  // Stale rev=1 job was purged; only the current rev=2 batch was reviewed.
+  expect(db.prepare('SELECT count(*) n FROM improvement_jobs WHERE revision=1').get().n).toBe(0);
+  expect(generate).toHaveBeenCalledTimes(1);
 });

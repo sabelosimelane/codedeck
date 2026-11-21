@@ -2,13 +2,18 @@ import { createRunClock } from './run-clock.js';
 import { createHash } from 'node:crypto';
 import { classifyEvidence, statuses, validateOutcome } from '../../shared/workflow-improvements.mjs';
 
+const NON_COMPLETE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
 // Record status boundaries in the same transaction as the run. Earlier runs have no clock.
-export function createEvidence({ db, runs, notes, answers, decisions, reviews, tasks }) {
+export function createEvidence({ db, runs, notes, answers, decisions, reviews, tasks, now = () => new Date().toISOString() }) {
   const clock = createRunClock(db);
   db.exec(`CREATE TABLE IF NOT EXISTS improvement_outcomes(id TEXT PRIMARY KEY, at TEXT NOT NULL, value TEXT NOT NULL CHECK(json_valid(value)));
     CREATE INDEX IF NOT EXISTS improvement_outcomes_at ON improvement_outcomes(at);`);
+  // Only snapshot completed runs immediately; wait for a cooldown before snapshotting error/stopped runs
+  // so transient pauses that get resumed don't churn outcomes and duplicate review jobs. Never snapshot interrupted.
   const changed = db.prepare(`SELECT r.id FROM pipeline_runs r LEFT JOIN improvement_outcomes o ON o.id=r.id
-    WHERE r.status IN ('complete','error','stopped','interrupted') AND (o.at IS NULL OR r.updated_at<>o.at) ORDER BY r.updated_at,r.id LIMIT 100`);
+    WHERE (r.status = 'complete' OR (r.status IN ('error','stopped') AND r.updated_at <= ?))
+      AND (o.at IS NULL OR r.updated_at<>o.at) ORDER BY r.updated_at,r.id LIMIT 100`);
   const save = db.prepare('INSERT OR REPLACE INTO improvement_outcomes VALUES(?,?,?)');
   function history(id) {
     const noteList = [];
@@ -94,9 +99,10 @@ export function createEvidence({ db, runs, notes, answers, decisions, reviews, t
   return {
     refresh: db.transaction(() => {
       db.prepare(
-        `DELETE FROM improvement_outcomes WHERE id NOT IN (SELECT id FROM pipeline_runs WHERE status IN ('complete','error','stopped','interrupted'))`,
+        `DELETE FROM improvement_outcomes WHERE id NOT IN (SELECT id FROM pipeline_runs WHERE status IN ('complete','error','stopped'))`,
       ).run();
-      const pending = changed.all();
+      const cutoff = new Date(Date.parse(now()) - NON_COMPLETE_COOLDOWN_MS).toISOString();
+      const pending = changed.all(cutoff);
       for (const { id } of pending) {
         const run = runs.get(id);
         if (run && statuses.includes(run.status)) save.run(id, run.updatedAt, JSON.stringify(snapshot(run)));

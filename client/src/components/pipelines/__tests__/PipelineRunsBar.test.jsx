@@ -339,6 +339,7 @@ describe('PipelineRunsBar', () => {
 
   it('offers Dismiss run, not worktree cleanup, for a run in an existing worktree', () => {
     const onCleanup = vi.fn();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
     render(
       <PipelineRunsBar
         runs={[runView({
@@ -356,7 +357,11 @@ describe('PipelineRunsBar', () => {
 
     expect(screen.queryByRole('button', { name: 'Clean up worktree' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss run' }));
+    expect(onCleanup).not.toHaveBeenCalled();
+    expect(confirm.mock.calls[0][0]).toContain('The task and its files remain available');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss run' }));
     expect(onCleanup).toHaveBeenCalledWith('r1');
+    confirm.mockRestore();
   });
 
   it('hides actions the backend does not allow', () => {

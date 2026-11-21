@@ -2011,6 +2011,25 @@ describe('createRunEngine with an existing worktree', () => {
     await expect(ctx.engine.resume(run.id)).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
   });
 
+  it('reclaims a released task worktree before resuming the interrupted step', async () => {
+    const canReclaim = vi.fn(() => true);
+    const ctx = setupEngine({
+      terminalAvailable: vi.fn(() => false),
+      engineExtras: { canReclaimReleasedTaskWorktree: canReclaim },
+    });
+    const run = ctx.runStore.create(external({ taskId: '11111111-1111-4111-8111-111111111111' }));
+    ctx.runStore.update(run.id, {
+      status: 'interrupted',
+      worktreeState: 'released',
+      steps: [step({ status: 'interrupted', sessionId: 'Demo-9', attempt: 1 })],
+    });
+
+    const resumed = await ctx.engine.resume(run.id);
+    expect(resumed.status).toBe('running');
+    expect(ctx.runStore.get(run.id).worktreeState).toBe('external');
+    expect(canReclaim).toHaveBeenCalledWith(expect.objectContaining({ id: run.id, worktreeState: 'released' }));
+  });
+
   it('refuses Resume when the chosen worktree directory is gone', async () => {
     const ctx = setupEngine({ pathExists: vi.fn(async () => false) });
     const run = ctx.runStore.create(external());
@@ -2807,8 +2826,12 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
     return { ctx, loop, run, done };
   }
 
-  it('pauses the run while the dialog is shown and continues once it is answered in the terminal', async () => {
-    const { ctx, loop, run, done } = await startWorking([DIALOG(), DIALOG(), WORKING()]);
+  it('pauses the run after two consecutive dialog readings and continues once it is answered in the terminal', async () => {
+    const { ctx, loop, run, done } = await startWorking([DIALOG(), DIALOG(), DIALOG(), WORKING()]);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+
+    // First reading alone does not pause (debounces transient TUI redraws).
+    await vi.advanceTimersByTimeAsync(2000);
     expect(ctx.runStore.get(run.id).status).toBe('running');
 
     await vi.advanceTimersByTimeAsync(2000);
@@ -2829,9 +2852,18 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
     expect(ctx.runStore.get(run.id).status).toBe('complete');
   });
 
+  it('ignores a single transient dialog reading so TUI redraws do not flap needs_input', async () => {
+    const { ctx, loop, run, done } = await startWorking([DIALOG(), WORKING(), DIALOG(), WORKING()]);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+    loop.complete();
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+  });
+
   it('completes the step when the agent finishes while the run is still marked as showing a dialog', async () => {
-    const { ctx, loop, run, done } = await startWorking([DIALOG()]);
-    await vi.advanceTimersByTimeAsync(2000);
+    const { ctx, loop, run, done } = await startWorking([DIALOG(), DIALOG()]);
+    await vi.advanceTimersByTimeAsync(4000);
     expect(ctx.runStore.get(run.id).status).toBe('needs_input');
 
     loop.complete();
@@ -2841,8 +2873,8 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
 
   it('replaces the dialog pause with what the agent asks when it signals NEEDS_INPUT', async () => {
     const screen = ['[[CDW:abc-1:QUESTIONS]]', '1. Which schema?', 'Recommended: guardian.', '[[CDW:abc-1:NEEDS_INPUT]]'];
-    const { ctx, loop, run } = await startWorking([DIALOG()], { readScreen: vi.fn(async () => screen) });
-    await vi.advanceTimersByTimeAsync(2000);
+    const { ctx, loop, run } = await startWorking([DIALOG(), DIALOG()], { readScreen: vi.fn(async () => screen) });
+    await vi.advanceTimersByTimeAsync(4000);
     expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'needs_input', inputRequest: null });
 
     loop.ask();
@@ -2880,13 +2912,13 @@ describe('createRunEngine — a dialog the agent shows during a pass', () => {
   });
 
   it('fails the run when the pause cannot be recorded', async () => {
-    const { ctx, run, done } = await startWorking([DIALOG()]);
+    const { ctx, run, done } = await startWorking([DIALOG(), DIALOG()]);
     const update = ctx.runStore.update;
     ctx.runStore.update = vi.fn((id, patch) => {
       if (patch.status === 'needs_input') throw new Error('disk full');
       return update(id, patch);
     });
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(4000);
     await done;
     expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: 'disk full' });
   });

@@ -207,7 +207,7 @@ export default function TeamImprovements({ switcher }) {
             )}
             <section>
               <h3>Recommendations and trials</h3>
-              {!data[1].length && <p>No recommendations yet. Trials need five comparable team runs.</p>}
+              {!data[1].length && <p>No recommendations yet. Trials need three comparable team runs.</p>}
               {data[1].map((trial) => (
                 <Trial key={trial.id} trial={trial} open={setRunId} refresh={refresh} />
               ))}

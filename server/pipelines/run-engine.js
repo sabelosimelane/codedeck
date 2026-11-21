@@ -26,6 +26,10 @@ const DEFAULT_DIALOG_POLL_MS = 2000;
 const DEFAULT_PROMPT_PICKUP_MS = 30_000;
 // Readings of an unchanged shell, after a launch, that mean the launch command never arrived.
 const LAUNCH_LOST_READINGS = 3;
+// Consecutive dialog readings required before pausing a running step, preventing transient TUI redraw flaps.
+const DIALOG_DEBOUNCE_READINGS = 2;
+// Log a stall warning if a running step's screen stays unchanged for 15 minutes while not idle at prompt.
+const SILENT_STALL_WARN_MS = 15 * 60 * 1000;
 
 /**
  * Whether a launch command written into a terminal never reached its shell: the screen is the
@@ -110,6 +114,7 @@ export function createRunEngine({
   // Left out, a run has only its own worktree.
   listRunPlaces = async () => undefined,
   pathExists = async () => true,
+  canReclaimReleasedTaskWorktree = () => false,
   now = () => new Date().toISOString(),
   setTimeout: setTimeoutFn = setTimeout,
   readinessPollMs = DEFAULT_POLL_MS,
@@ -125,6 +130,7 @@ export function createRunEngine({
   if (typeof createWorkflow !== 'function') throw new Error('createRunEngine: createWorkflow is required');
   if (typeof classifyReadiness !== 'function') throw new Error('createRunEngine: classifyReadiness is required');
   if (typeof readExecutionState !== 'function') throw new Error('createRunEngine: readExecutionState is required');
+  if (typeof canReclaimReleasedTaskWorktree !== 'function') throw new TypeError('createRunEngine: canReclaimReleasedTaskWorktree must be a function');
   if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
   if (typeof inspectCommitWorktree !== 'function') throw new TypeError('createRunEngine: inspectCommitWorktree must be a function');
   if (typeof readProgressCount !== 'function') throw new Error('createRunEngine: readProgressCount is required');
@@ -530,12 +536,27 @@ export function createRunEngine({
     // running that nothing works on. A pass in which the agent asked for input is left alone: it
     // was working, and the owner's answer came after.
     let pickup = { pass: null, idleMs: 0, resent: false, asked: false, screen: null };
+    let silentStall = { pass: null, unchangedMs: 0, warned: false, screen: null };
+    let dialogReadings = 0;
     const watchPickup = (readiness, screen) => {
       const pass = workflow.snapshot();
       if (pass.iteration !== pickup.pass) pickup = { pass: pass.iteration, idleMs: 0, resent: false, asked: false, screen: null };
+      if (pass.iteration !== silentStall.pass) silentStall = { pass: pass.iteration, unchangedMs: 0, warned: false, screen: null };
       if (pass.status === 'needs_input') pickup.asked = true;
       const unchanged = pickup.screen !== null && pickup.screen === screen;
       pickup.screen = screen;
+      const stallUnchanged = silentStall.screen !== null && silentStall.screen === screen;
+      silentStall.screen = screen;
+      if (pass.status === 'running' && !handle.dialogPause && runStore.get(runId)?.status === 'running' && readiness !== 'ready' && stallUnchanged) {
+        silentStall.unchangedMs += dialogPollMs;
+        if (!silentStall.warned && silentStall.unchangedMs >= SILENT_STALL_WARN_MS) {
+          silentStall.warned = true;
+          console.warn(`[pipeline-run] ${runId}: step ${stepName} has shown no screen change for ${Math.round(silentStall.unchangedMs / 60000)}m in ${sessionId}`);
+        }
+      } else {
+        silentStall.unchangedMs = 0;
+        silentStall.warned = false;
+      }
       if (pass.status !== 'running' || pickup.asked || handle.dialogPause
         || runStore.get(runId)?.status !== 'running' || readiness !== 'ready' || !unchanged) {
         pickup.idleMs = 0;
@@ -573,9 +594,12 @@ export function createRunEngine({
         watchPickup(readiness, screen);
         if (over()) return;
         if (!showsDialog) {
+          dialogReadings = 0;
           endDialogPause(runId);
           return;
         }
+        dialogReadings += 1;
+        if (dialogReadings < DIALOG_DEBOUNCE_READINGS) return;
         // A request the agent signalled, or one being answered for the owner, is left alone.
         if (handle.dialogPause || runStore.get(runId)?.status !== 'running'
           || !['running', 'resetting'].includes(workflow.snapshot().status)) return;
@@ -1199,9 +1223,26 @@ export function createRunEngine({
     },
 
     async resume(runId) {
-      loadActionRun(runId, 'resume');
+      const initial = runStore.get(runId);
+      if (!initial) throw new Error(`pipeline run ${runId}: not found`);
+      const reclaimable = initial.worktreeState === 'released' && canReclaimReleasedTaskWorktree(initial) === true;
+      assertActionAllowed(reclaimable ? { ...initial, reclaimableTaskWorktree: true } : initial, 'resume');
       return enqueue(runId, async () => {
-        const run = loadActionRun(runId, 'resume');
+        let run = runStore.get(runId);
+        if (run?.worktreeState === 'released') {
+          if (canReclaimReleasedTaskWorktree(run) !== true) {
+            const err = new Error('The task no longer owns this worktree, or another run is using it.');
+            err.code = 'ACTION_REFUSED';
+            throw err;
+          }
+          if (!await pathExists(run.worktreePath)) {
+            const err = new Error('The task worktree directory is missing');
+            err.code = 'WORKTREE_MISSING';
+            throw err;
+          }
+          run = updateRun(runId, { worktreeState: 'external', worktreeDetail: null });
+        }
+        run = loadActionRun(runId, 'resume');
         if (['present', 'external'].includes(run.worktreeState)) {
           const exists = await pathExists(run.worktreePath);
           if (!exists) {

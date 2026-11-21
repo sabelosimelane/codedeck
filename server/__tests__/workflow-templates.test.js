@@ -37,11 +37,11 @@ describe('workflow templates', () => {
   it('gates the build and fix workflows on approval and ends them with a commit', () => {
     for (const id of ['bug-fix', 'feature-build']) {
       const template = WORKFLOW_TEMPLATES.find(item => item.id === id);
-      // The first step that does the work (after Clarify, where there is one) waits for approval.
-      expect(template.nodes.find(node => node.name !== 'Clarify')).toMatchObject({ readOnly: true, approval: true });
+      expect(template.nodes.some(node => node.readOnly && node.approval)).toBe(true);
       expect(template.nodes.at(-1)).toMatchObject({ name: 'Commit', repeat: { mode: 'once' } });
       expect(template.nodes.find(node => node.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: id === 'bug-fix' ? 5 : 12 });
     }
+    expect(WORKFLOW_TEMPLATES[0].nodes.find(node => node.name === 'Analyse')).toMatchObject({ readOnly: true, approval: false });
     expect(WORKFLOW_TEMPLATES[0].nodes.find(node => node.name === 'Specify')).toMatchObject({ readOnly: true, approval: true });
     expect(WORKFLOW_TEMPLATES[1].nodes[0].prompt).toContain('plan.md');
   });
@@ -128,8 +128,10 @@ describe('workflow templates', () => {
     expect(byName.Specify.prompt).toMatch(/Change no code/);
     expect(byName.Specify.prompt).toMatch(/give the path of the file/);
     // The plan stays in the run notes, where a run without a Progress file reads its progress.
-    expect(byName.Plan).toMatchObject({ readOnly: true, approval: true, repeat: { mode: 'once' } });
+    expect(byName.Plan).toMatchObject({ readOnly: true, approval: false, repeat: { mode: 'once' } });
     expect(byName.Plan.prompt).toMatch(/Write plan\.md in the run notes folder/);
+    expect(byName.Develop.prompt).toMatch(/do not run git commit/i);
+    expect(byName.Review.prompt).toMatch(/commits since the base commit/i);
     for (const name of ['Plan', 'Develop', 'Review', 'Test']) expect(byName[name].prompt, name).toMatch(/specification named in the Specify note/);
     expect(byName.Test.repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 12 });
     expect(template.nodes.at(-1)).toMatchObject({ name: 'Commit', repeat: { mode: 'once' } });

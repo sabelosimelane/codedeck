@@ -44,6 +44,7 @@ import {
 } from './pipelines/run-worktree.js';
 import { createRunEngine } from './pipelines/run-engine.js';
 import { createTerminalInFolder } from './pipelines/terminal-folder.js';
+import { canReclaimReleasedTaskRun } from './pipelines/released-task-run.js';
 import { createRunTerminalCloser, createTerminalPlaces } from './pipelines/run-terminals.js';
 import { createRunPlaces } from './pipelines/run-places.js';
 import { setObservedTerminalMuted } from './pipelines/terminal-muting-adapter.js';
@@ -967,13 +968,15 @@ const pipelineNoteStore = createNoteStore(db);
 const pipelineReviewStore = createReviewStore(db);
 const pipelineAnswerStore = createAnswerStore(db);
 const reviewModel = new CircuitBreaker((settings, packet) => namingCli.review(settings, packet), {
-  timeout: 68000, resetTimeout: 180000, volumeThreshold: 3, errorThresholdPercentage: 60, capacity: 1,
+  timeout: 185000, resetTimeout: 180000, volumeThreshold: 3, errorThresholdPercentage: 60, capacity: 1,
 });
 for (const event of ['open', 'halfOpen', 'close']) reviewModel.on(event, () => console.info('[workflow-review] model circuit ' + event));
 const improvements = createImprovements({
   db, tasks: taskStore, runs: pipelineRunStore, workflows: pipelineWorkflowStore, notes: pipelineNoteStore, answers: pipelineAnswerStore,
   decisions: pipelineDecisionStore, reviews: pipelineReviewStore, settings: () => namingStore.settings(),
-  generate: (settings, packet) => reviewModel.fire(settings, packet).catch(() => {
+  generate: (settings, packet) => reviewModel.fire(settings, packet).catch((err) => {
+    const detail = err?.cause?.message || err?.message || String(err);
+    console.warn(`[workflow-review] CLI review failed (${settings?.provider}/${settings?.model}): ${detail}`);
     throw Object.assign(new Error('Review model unavailable. Check the configured Claude or Codex model and CLI login.'), {status:503});
   }),
 });
@@ -1053,6 +1056,7 @@ const pipelineRunEngine = createRunEngine({
   listDirtyPaths: async ({ worktreePath }) => listPipelineDirtyPaths({ worktreePath, execFile }),
   // Where a run may work and read: the worktrees of its task and the project's other repositories, as they are when a step starts.
   listRunPlaces: createRunPlaces({ taskStore, findProject: name => loadProjects().find(project => project.name === name) ?? null, execFile }),
+  canReclaimReleasedTaskWorktree: run => canReclaimReleasedTaskRun({ run, taskStore, runStore: pipelineRunStore }),
   pathExists: async (target) => {
     try {
       await fs.access(target);

@@ -78,6 +78,11 @@ describe('agent profiles beyond the exact captured frame', () => {
       .toMatchObject({ executionStatus: 'running', executionReason: 'agent_needs_input', needsInput: true });
   });
 
+  it('reports Antigravity folder trust as needing input', () => {
+    expect(classify(screen('agy/needs-input-trust.txt')))
+      .toMatchObject({ executionStatus: 'running', executionReason: 'agent_needs_input', needsInput: true });
+  });
+
   it('recognises Cursor Agent whichever model its footer names', () => {
     expect(classify(screen('agent/working.txt').replace(/Composer [\d.]+/g, 'Sonnet 5').replace(/^.*Cursor Agent.*$/m, '')))
       .toMatchObject({ agentCli: 'cursor', executionStatus: 'running', executionReason: 'agent_working' });

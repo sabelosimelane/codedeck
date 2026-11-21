@@ -346,7 +346,7 @@ export function computeActions(run) {
   const worktree = run.worktreeState;
   return {
     stop: STOPPABLE.has(status),
-    resume: RESUMABLE.has(status) && RESUME_WORKTREE.has(worktree),
+    resume: RESUMABLE.has(status) && (RESUME_WORKTREE.has(worktree) || (run.reclaimableTaskWorktree === true && worktree === 'released')),
     continue: status === 'limit_paused',
     cleanup: CLEANUP_STATUS.has(status) && CLEANUP_WORKTREE.has(worktree),
     // Only a request the agent signalled can be answered by typing into its terminal.

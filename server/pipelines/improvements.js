@@ -14,7 +14,9 @@ import {
 } from '../../shared/workflow-improvements.mjs';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
 
-const budget = 10,
+const workflowBudget = 6,
+  teamBudget = 6,
+  budget = workflowBudget + teamBudget,
   leaseMs = 180000;
 const rubric =
   'Inspect acceptance criteria, notes, owner decisions and contrary evidence. Distinguish useful verification loops from wasted work. Agent decisions cannot waive an owner check.';
@@ -48,13 +50,16 @@ export function createImprovements(deps) {
     CREATE TABLE IF NOT EXISTS improvement_model(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS improvement_seen(run TEXT PRIMARY KEY, signature TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS improvement_calls(id TEXT PRIMARY KEY,workflow TEXT NOT NULL,revision INTEGER NOT NULL,at TEXT NOT NULL,
-    model TEXT NOT NULL,status TEXT NOT NULL,cost REAL CHECK(cost>=0));
+    model TEXT NOT NULL,status TEXT NOT NULL,cost REAL CHECK(cost>=0),lane TEXT NOT NULL DEFAULT 'workflow');
     CREATE TABLE IF NOT EXISTS improvement_proposals(id TEXT PRIMARY KEY,workflow TEXT NOT NULL,revision INTEGER NOT NULL,
     draft TEXT NOT NULL,baseline TEXT NOT NULL,created TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',
     reason TEXT,effective_at TEXT,effective_revision INTEGER,reviewer_revision INTEGER NOT NULL,evaluation TEXT);
     CREATE TABLE IF NOT EXISTS improvement_rubrics(revision INTEGER PRIMARY KEY, instruction TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS improvement_findings(run TEXT PRIMARY KEY, signature TEXT NOT NULL,label TEXT NOT NULL,quote TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS improvement_holdouts(run TEXT PRIMARY KEY, label TEXT NOT NULL, packet TEXT NOT NULL);`);
+  if (!db.pragma('table_info(improvement_calls)').some((c) => c.name === 'lane')) {
+    db.exec("ALTER TABLE improvement_calls ADD COLUMN lane TEXT NOT NULL DEFAULT 'workflow'");
+  }
   db.prepare('INSERT OR IGNORE INTO improvement_rubrics VALUES(1,?)').run(rubric);
   const modelRow = () => db.prepare('SELECT * FROM improvement_model WHERE id=1').get();
   const readModel = () => {
@@ -160,8 +165,42 @@ export function createImprovements(deps) {
     const held = new Set(holdouts().map((h) => h.run)),
       groups = new Map();
     const seen = db.prepare('SELECT signature FROM improvement_seen WHERE run=?');
+    const activeJobs = db.prepare("SELECT id, workflow, revision, status, members FROM improvement_jobs WHERE status IN ('queued','working')").all();
+    const workingRuns = new Set();
+    const queuedByRun = new Map();
+    const deleteQueued = db.prepare("DELETE FROM improvement_jobs WHERE id=? AND status='queued'");
+    const revisionCache = new Map();
+    const currentRevisionOf = (workflowId) => {
+      if (!revisionCache.has(workflowId)) revisionCache.set(workflowId, workflows.get(workflowId)?.revision ?? null);
+      return revisionCache.get(workflowId);
+    };
+    for (const j of activeJobs) {
+      if (j.status === 'queued' && currentRevisionOf(j.workflow) !== j.revision) {
+        deleteQueued.run(j.id);
+        continue;
+      }
+      const members = JSON.parse(j.members);
+      for (const m of members) {
+        if (j.status === 'working') workingRuns.add(m.id);
+        else {
+          if (!queuedByRun.has(m.id)) queuedByRun.set(m.id, []);
+          queuedByRun.get(m.id).push({ jobId: j.id, status: m.status, workflow: j.workflow, revision: j.revision });
+        }
+      }
+    }
     for (const r of outcomes.sort(stampOrder)) {
       if (held.has(r.id) || seen.get(r.id)?.signature === fingerprint(r)) continue;
+      // Never queue runs for an obsolete workflow revision whose proposals cannot be applied.
+      if (currentRevisionOf(r.workflowId) !== r.revision) continue;
+      if (workingRuns.has(r.id)) continue;
+      const queued = queuedByRun.get(r.id);
+      if (queued?.length) {
+        if (r.status === 'complete' && queued.every((q) => q.status !== 'complete')) {
+          for (const q of queued) deleteQueued.run(q.jobId);
+        } else {
+          continue;
+        }
+      }
       const key = r.workflowId + ':' + r.revision;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(r);
@@ -198,17 +237,19 @@ export function createImprovements(deps) {
       }
     }
   }
-  function reserveCall(workflow, revision, model) {
+  function reserveCall(workflow, revision, model, lane = 'workflow') {
     const at = now(),
       day = at.slice(0, 10);
-    if (db.prepare('SELECT count(*) n FROM improvement_calls WHERE at>=?').get(day).n >= budget) return null;
+    const limit = lane === 'team' ? teamBudget : workflowBudget;
+    if (db.prepare('SELECT count(*) n FROM improvement_calls WHERE at>=? AND lane=?').get(day, lane).n >= limit) return null;
     const id = randomUUID();
-    db.prepare("INSERT INTO improvement_calls VALUES(?,?,?,?,?,'started',NULL)").run(
+    db.prepare("INSERT INTO improvement_calls(id,workflow,revision,at,model,status,cost,lane) VALUES(?,?,?,?,?,'started',NULL,?)").run(
       id,
       workflow,
       revision,
       at,
       model,
+      lane,
     );
     return id;
   }
@@ -219,6 +260,12 @@ export function createImprovements(deps) {
     db.prepare(
       "UPDATE improvement_jobs SET status='failed' WHERE status='working' AND attempts>=3 AND next_at<=?",
     ).run(now());
+    // Drop queued jobs for superseded or deleted workflow revisions so they never burn daily budget.
+    const queuedJobs = db.prepare("SELECT id, workflow, revision FROM improvement_jobs WHERE status='queued'").all();
+    const dropObsolete = db.prepare("DELETE FROM improvement_jobs WHERE id=? AND status='queued'");
+    for (const q of queuedJobs) {
+      if (workflows.get(q.workflow)?.revision !== q.revision) dropObsolete.run(q.id);
+    }
     const job = db
       .prepare(
         `SELECT * FROM improvement_jobs WHERE status IN ('working','queued') AND next_at<=? AND attempts<3
@@ -227,7 +274,7 @@ export function createImprovements(deps) {
       )
       .get(now());
     if (!job) return null;
-    const call = reserveCall(job.workflow, job.revision, model);
+    const call = reserveCall(job.workflow, job.revision, model, 'workflow');
     if (!call) return null;
     db.prepare(
       "UPDATE improvement_jobs SET status='working', attempts=attempts+1, next_at=?,token=? WHERE id=?",
@@ -500,7 +547,7 @@ export function createImprovements(deps) {
       check(typeof accept === 'function', 'accept');
       const config = readModel();
       if (!config) return false;
-      const call = db.transaction(() => reserveCall(workflowId, revision, config.provider + '/' + config.model)).immediate();
+      const call = db.transaction(() => reserveCall(workflowId, revision, config.provider + '/' + config.model, 'team')).immediate();
       if (!call) return false;
       try {
         const result = await generate(config, packet);

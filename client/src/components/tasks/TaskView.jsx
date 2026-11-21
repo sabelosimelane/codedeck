@@ -17,6 +17,13 @@ function resumeConfirmation(run, step) {
     + 'If its agent has exited, it is started again there. A new terminal is opened only if that one was closed.';
 }
 
+function cleanupConfirmation(run) {
+  if (run.worktree?.state === 'external') {
+    return `Close ${run.workflowName}? Its terminals are closed and the run leaves the screen. The task and its files remain available.`;
+  }
+  return `Clean up the worktree for ${run.workflowName}? This removes the run's worktree and closes its terminals.`;
+}
+
 function progressLine(progress) {
   if (progress === null || progress === undefined) return null;
   if (progress.status === 'in_progress') {
@@ -217,7 +224,7 @@ export default function TaskView({
             {run.status !== 'complete' && <ChangeRunTeam run={run} disabledReason={run.actions?.resume ? null : 'Stop the run to change its team. Steps already done keep their agents.'} />}
             {run.actions?.resume && <button type="button" onClick={() => { if (window.confirm(resumeConfirmation(run, current))) onResume(run.id); }} className={status.primaryAction === 'resume' ? 'pipeline-run-primary' : undefined}>Resume</button>}
             {run.actions?.cleanup && (
-              <button type="button" onClick={() => onCleanup(run.id)} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}
+              <button type="button" onClick={() => { if (window.confirm(cleanupConfirmation(run))) onCleanup(run.id); }} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}
                 title={run.worktree?.state === 'external' ? 'Takes the run off the screen and closes the terminals it used. An agent still working in one of them is stopped.' : undefined}>
                 {/* A task keeps its files; ending the run closes the run and the terminals it used. */}
                 {run.worktree?.state === 'external' ? 'Close run' : 'Clean up worktree'}

@@ -61,6 +61,15 @@ describe('QuestionsPanel', () => {
     expect(onAnswer).toHaveBeenCalledTimes(1);
   });
 
+  it('restores edited answers after the waiting panel redraws for the same request', () => {
+    const view = render(<QuestionsPanel run={run({ id: 'redraw-run' })} onAnswer={vi.fn()} />);
+    fireEvent.click(card(2).getByRole('radio', { name: 'My own answer' }));
+    fireEvent.change(card(2).getByRole('textbox', { name: 'Your answer to question 2' }), { target: { value: 'Keep the route' } });
+    view.unmount();
+    render(<QuestionsPanel run={run({ id: 'redraw-run' })} onAnswer={vi.fn()} />);
+    expect(card(2).getByRole('textbox', { name: 'Your answer to question 2' }).value).toBe('Keep the route');
+  });
+
   it('shows a request that is not a numbered list as written, with one box to answer', async () => {
     const { onAnswer } = mount({ run: run({ inputRequest: { questions: 'I need the staging address.', truncated: true } }) });
     expect(screen.getByText('I need the staging address.')).toBeTruthy();

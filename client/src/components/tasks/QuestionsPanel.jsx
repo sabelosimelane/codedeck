@@ -3,6 +3,7 @@ import { Button, Note, TextArea } from '../ui';
 import { composeAnswer, parseQuestions } from '../../utils/inputQuestions.js';
 
 const ANSWER_MAX = 4000;
+const answerDrafts = new Map();
 
 /** One question: the agent's recommendation chosen to begin with, or the owner's own words. */
 function QuestionCard({ item, answer, disabled, onChange }) {
@@ -43,11 +44,20 @@ export default function QuestionsPanel({ run, onAnswer }) {
   if (typeof onAnswer !== 'function') throw new Error('questions panel: onAnswer must be a function');
   const request = run.inputRequest;
   const text = request?.questions ?? null;
+  const draftKey = `${run.id}:${run.currentStepIndex ?? ''}:${run.steps?.[run.currentStepIndex]?.iteration ?? ''}:${text ?? '<free-text>'}`;
   const questions = useMemo(() => (text === null ? null : parseQuestions(text)), [text]);
-  const [answers, setAnswers] = useState(() => (questions ?? []).map(item => ({ choice: item.recommended === null ? 'own' : 'recommended', text: '' })));
-  const [note, setNote] = useState('');
-  const [draft, setDraft] = useState('');
+  const saved = answerDrafts.get(draftKey);
+  const [answers, setAnswers] = useState(() => saved?.answers ?? (questions ?? []).map(item => ({ choice: item.recommended === null ? 'own' : 'recommended', text: '' })));
+  const [note, setNote] = useState(() => saved?.note ?? '');
+  const [draft, setDraft] = useState(() => saved?.draft ?? '');
   const [sending, setSending] = useState(false);
+  const updateAnswers = update => setAnswers(current => {
+    const next = typeof update === 'function' ? update(current) : update;
+    answerDrafts.set(draftKey, { ...answerDrafts.get(draftKey), answers: next });
+    return next;
+  });
+  const updateNote = value => { setNote(value); answerDrafts.set(draftKey, { ...answerDrafts.get(draftKey), note: value }); };
+  const updateDraft = value => { setDraft(value); answerDrafts.set(draftKey, { ...answerDrafts.get(draftKey), draft: value }); };
 
   const send = async (answer) => {
     if (sending) return;
@@ -55,7 +65,7 @@ export default function QuestionsPanel({ run, onAnswer }) {
     // `onAnswer` resolves to the updated run, or null when the answer was not delivered.
     const delivered = await onAnswer(run.id, answer);
     setSending(false);
-    if (delivered) { setDraft(''); setNote(''); }
+    if (delivered) { answerDrafts.delete(draftKey); setDraft(''); setNote(''); }
   };
 
   const listed = questions !== null && answers.length === questions.length;
@@ -69,13 +79,13 @@ export default function QuestionsPanel({ run, onAnswer }) {
       {text !== null && !listed && <div className="task-questions-written">{text}</div>}
       {listed && questions.map((item, index) => (
         <QuestionCard key={item.number} item={item} answer={answers[index]} disabled={sending || !run.actions?.answer}
-          onChange={next => setAnswers(current => current.map((answer, position) => (position === index ? next : answer)))} />
+          onChange={next => updateAnswers(current => current.map((answer, position) => (position === index ? next : answer)))} />
       ))}
       {request?.truncated && <Note tone="warning">The list was cut here. Read the rest in the agent&apos;s terminal.</Note>}
       {run.actions?.answer && listed && (
         <div className="task-questions-footer">
           <TextArea label="Anything else for the agent" rows={1} maxLength={ANSWER_MAX} value={note} disabled={sending}
-            placeholder="Anything else for the agent (optional)" onChange={setNote} />
+            placeholder="Anything else for the agent (optional)" onChange={updateNote} />
           <div className="task-questions-send">
             {missing > 0 && <span className="task-questions-missing">{`${missing} of ${questions.length} still ${missing === 1 ? 'needs' : 'need'} your answer`}</span>}
             <Button variant="primary" disabled={sending || composed === null} onClick={() => send(composed)}>{sending ? 'Sending…' : 'Send answers'}</Button>
@@ -85,7 +95,7 @@ export default function QuestionsPanel({ run, onAnswer }) {
       {run.actions?.answer && !listed && (
         <div className="task-questions-footer">
           <TextArea label="Your answer" rows={2} maxLength={ANSWER_MAX} value={draft} disabled={sending}
-            placeholder="Type your answer; it is sent to the agent's terminal" onChange={setDraft} />
+            placeholder="Type your answer; it is sent to the agent's terminal" onChange={updateDraft} />
           <div className="task-questions-send">
             <Button variant="primary" disabled={sending || draft.trim() === ''} onClick={() => send(draft.trim())}>{sending ? 'Sending…' : 'Send answer'}</Button>
           </div>

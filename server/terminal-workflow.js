@@ -31,9 +31,37 @@ function validateStart(request) {
   }
 }
 
-// Focus reports, mouse events and cursor keys are not an answer; Enter or text is.
-function isAnswer(data) {
-  return /[^\x00-\x1f\x7f]|\r/.test(data.replace(/\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O.|.)/gs, ''));
+// Focus reports, mouse events, cursor keys and terminal query replies are not an answer.
+// Keep parser state across websocket chunks because OSC replies often contain printable bytes.
+function answerText(data, state) {
+  let visible = '';
+  for (let i = 0; i < data.length; i += 1) {
+    const char = data[i];
+    if (state.mode === 'normal') {
+      if (char === '\x1b') state.mode = 'escape';
+      else visible += char;
+    } else if (state.mode === 'escape') {
+      if (char === '[') state.mode = 'csi';
+      else if (char === ']') state.mode = 'osc';
+      else if (char === 'P' || char === '^' || char === '_') state.mode = 'string';
+      else if (char === 'O') state.mode = 'ss3';
+      else state.mode = 'normal';
+    } else if (state.mode === 'csi') {
+      if (char >= '@' && char <= '~') state.mode = 'normal';
+    } else if (state.mode === 'ss3') {
+      state.mode = 'normal';
+    } else if (state.mode === 'osc') {
+      if (char === '\x07') state.mode = 'normal';
+      else if (char === '\x1b') state.mode = 'osc_escape';
+    } else if (state.mode === 'osc_escape') {
+      state.mode = char === '\\' ? 'normal' : char === '\x1b' ? 'osc_escape' : 'osc';
+    } else if (state.mode === 'string') {
+      if (char === '\x1b') state.mode = 'string_escape';
+    } else if (state.mode === 'string_escape') {
+      state.mode = char === '\\' ? 'normal' : char === '\x1b' ? 'string_escape' : 'string';
+    }
+  }
+  return visible;
 }
 
 /** What is typed into the agent for one pass: the step's prompt, the standing instruction, and the step's guidance. */
@@ -62,6 +90,7 @@ export function createTerminalWorkflow({ write, notify }) {
   let beforePass = null;
   let resetTimer;
   let enterTimer;
+  const inputParser = { mode: 'normal' };
   const requests = new Map();
   const issuedIdentifiers = new Set();
 
@@ -204,7 +233,9 @@ export function createTerminalWorkflow({ write, notify }) {
     },
     input(data) {
       if (typeof data !== 'string') throw new Error('Workflow input must be a string.');
-      if (status !== 'needs_input' || !isAnswer(data)) return;
+      if (status !== 'needs_input') return;
+      const text = answerText(data, inputParser);
+      if (!/[^\x00-\x1f\x7f]|\r/.test(text)) return;
       if (pendingIdentifier !== null) {
         identifier = pendingIdentifier;
         passIdentifiers.add(identifier);

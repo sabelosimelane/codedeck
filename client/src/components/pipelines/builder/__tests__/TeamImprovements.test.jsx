@@ -104,7 +104,7 @@ const trial = {
   reason: 'Fix accounted for most active time',
   counterevidence: 'A harder case may need more effort',
   success: 'Improve speed without losing accuracy',
-  baselineIds: [runId, ...['1100e100', '1100e101', '1100e102', '1100e103'].map((p) => p + runId.slice(8))],
+  baselineIds: [runId, ...['1100e100', '1100e101'].map((p) => p + runId.slice(8))],
   assignmentIds: [],
   stale: false,
   comparison: null,
@@ -304,7 +304,7 @@ it('displays a newly registered score without a dashboard-specific metric render
 it('shows both the executed check and its outcome and the scope of a trial before approval', async () => {
   const { open } = setup();
   await open();
-  expect(await screen.findByText(/Next five matching runs in Example/)).toBeTruthy();
+  expect(await screen.findByText(/Next 3 matching runs \(Example\)/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: runId.slice(0, 8), exact: true }));
   expect(await screen.findByText('Open the setting on device')).toBeTruthy();
 });

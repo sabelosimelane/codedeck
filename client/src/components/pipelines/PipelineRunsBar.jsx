@@ -42,6 +42,13 @@ function resumeConfirmation(run, step) {
     + 'If its agent has exited, it is started again there. A new terminal is opened only if that one was closed.';
 }
 
+function cleanupConfirmation(run) {
+  if (run.worktree?.state === 'external') {
+    return `Close ${run.workflowName}? Its terminals are closed and the run leaves the screen. The task and its files remain available.`;
+  }
+  return `Clean up the worktree for ${run.workflowName}? This removes the run's worktree and closes its terminals.`;
+}
+
 function chipLabel(step) {
   if (step.status === 'awaiting_approval') return `${step.name} awaiting approval`;
   const pass = passLabel(step);
@@ -338,7 +345,7 @@ export default function PipelineRunsBar({
                 <button type="button" onClick={() => { if (window.confirm(resumeConfirmation(run, currentStep))) onResume(run.id); }} className={status.primaryAction === 'resume' ? 'pipeline-run-primary' : undefined}>Resume</button>
               )}
               {run.actions?.cleanup && (
-                <button type="button" onClick={() => onCleanup(run.id)} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}>
+                <button type="button" onClick={() => { if (window.confirm(cleanupConfirmation(run))) onCleanup(run.id); }} className={status.primaryAction === 'cleanup' ? 'pipeline-run-primary' : undefined}>
                   {/* A worktree the owner chose is never removed; the run only lets go of it. */}
                   {run.worktree?.state === 'external' ? 'Dismiss run' : 'Clean up worktree'}
                 </button>

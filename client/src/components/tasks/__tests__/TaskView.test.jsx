@@ -233,7 +233,7 @@ describe('TaskView', () => {
   });
 
   it('asks before Resume and closes a finished run without removing the task', () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true).mockReturnValueOnce(false).mockReturnValueOnce(true);
     const { h } = view({ run: run({ status: 'stopped', stopReason: 'no_progress', actions: { ...run().actions, stop: false, resume: true, cleanup: true },
       steps: run().steps.map(item => (item.index === 1 ? { ...item, status: 'stopped' } : item)) }) });
     expect(screen.getByText(/No task was ticked in the last/)).toBeTruthy();
@@ -244,6 +244,9 @@ describe('TaskView', () => {
     expect(confirm.mock.calls[0][0]).toContain('Develop starts again there');
     // Closing a run that did not finish can stop an agent that is still working in its terminal.
     expect(screen.getByRole('button', { name: 'Close run' }).getAttribute('title')).toBe('Takes the run off the screen and closes the terminals it used. An agent still working in one of them is stopped.');
+    fireEvent.click(screen.getByRole('button', { name: 'Close run' }));
+    expect(h.onCleanup).not.toHaveBeenCalled();
+    expect(confirm.mock.calls[2][0]).toContain('The task and its files remain available');
     fireEvent.click(screen.getByRole('button', { name: 'Close run' }));
     expect(h.onCleanup).toHaveBeenCalledWith('run-1');
   });

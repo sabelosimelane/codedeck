@@ -88,7 +88,7 @@ export default function Trial({ trial, open, refresh }) {
       </dl>
       {status === 'pending' && (
         <p>
-          Next five matching runs in {trial.project} · Workflow {trial.workflowId.slice(0, 8)} revision{' '}
+          Next {trial.baselineIds.length} matching runs ({trial.project}) · Workflow {trial.workflowId.slice(0, 8)} revision{' '}
           {trial.workflowRevision}. Adoption requires a second approval.
         </p>
       )}
@@ -99,7 +99,7 @@ export default function Trial({ trial, open, refresh }) {
       )}
       {refs(trial.baselineIds, 'Baseline runs')}
       {status !== 'pending' &&
-        refs(trial.assignmentIds, 'Trial assignments (' + trial.assignmentIds.length + '/5)')}
+        refs(trial.assignmentIds, 'Trial assignments (' + trial.assignmentIds.length + '/' + trial.baselineIds.length + ')')}
       {trial.adoptedComparison ? (
         <>
           <p>Result at adoption</p>

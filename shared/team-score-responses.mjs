@@ -2,6 +2,7 @@
 import { isUuid } from './pipeline-definitions.mjs';
 
 import { buildLaunchCommand } from './agent-presets.mjs';
+import { TEAM_TRIAL_SIZE } from './scoring/team.mjs';
 
 const string = (x) => typeof x === 'string';
 const text = (x) => string(x) && x.trim().length > 0;
@@ -227,7 +228,7 @@ const detail = all(
 const profile = all(fields({ provider: text, model: string, effort: string }), preset);
 const goal = choice('speed', 'accuracy');
 const comparison = fields({
-  exposedRuns: (v) => count(v) && v <= 5,
+  exposedRuns: (v) => count(v) && v <= TEAM_TRIAL_SIZE,
   before: score,
   after: score,
   verdict: choice('helped', 'regressed', 'inconclusive'),
@@ -250,8 +251,8 @@ const trial = fields({
   workload: hash,
   from: profile,
   to: profile,
-  baselineIds: ids(5, 5),
-  assignmentIds: ids(0, 5),
+  baselineIds: ids(TEAM_TRIAL_SIZE, TEAM_TRIAL_SIZE),
+  assignmentIds: ids(0, TEAM_TRIAL_SIZE),
   policyVersion: positive,
   reason: text,
   counterevidence: text,

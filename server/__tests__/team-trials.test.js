@@ -79,7 +79,7 @@ function fixture({ effort = 'high', model = 'm1', alternate = false } = {}) {
       ...patch,
     };
   };
-  const rows = Array.from({ length: 5 }, () => sample());
+  const rows = Array.from({ length: 3 }, () => sample());
   const service = () =>
     createTeamTrials({
       db,
@@ -105,7 +105,7 @@ function fixture({ effort = 'high', model = 'm1', alternate = false } = {}) {
     return trials.decide(p.id, { action: 'start', revision: p.revision });
   };
   const fill = (p, patch = {}) => {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) {
       const ctx = context();
       const assignment = trials.reserve(ctx);
       expect(assignment.trialId).toBe(p.id);
@@ -138,11 +138,11 @@ function fixture({ effort = 'high', model = 'm1', alternate = false } = {}) {
 }
 
 describe('bounded team role trials', () => {
-  it('pins five matching runs, explains a single role change, and deduplicates across restart', () => {
+  it('pins three matching runs across projects, explains a single role change, and deduplicates across restart', () => {
     const f = fixture();
+    f.rows[2] = f.sample({ project: 'Somewhere else', workload: 'b'.repeat(64) });
     f.rows.push(
       f.sample({ mixed: true }),
-      f.sample({ project: 'Somewhere else' }),
       f.sample({ configuration: [] }),
     );
     const p = f.propose();
@@ -151,21 +151,23 @@ describe('bounded team role trials', () => {
       role: 'Build',
       goal: 'speed',
       teamRevision: 1,
+      project: 'Multiple projects',
       from: { model: 'm1', effort: 'high' },
       to: { model: 'm1', effort: 'medium' },
       policyVersion: 1,
     });
-    expect(new Set(p.baselineIds)).toEqual(new Set(f.rows.slice(0, 5).map((r) => r.id)));
+    expect(new Set(p.baselineIds)).toEqual(new Set(f.rows.slice(0, 3).map((r) => r.id)));
+    expect(p.counterevidence).toMatch(/2 projects/);
     for (const field of ['reason', 'counterevidence', 'success']) expect(p[field].length).toBeGreaterThan(15);
     f.service().refresh();
     expect(f.trials.list()).toHaveLength(1);
     expect(f.trials.reserve(f.context())).toBeNull();
   });
-  it('never mixes workloads, revisions or roles across insufficient baselines', () => {
+  it('never mixes revisions or configurations across insufficient baselines', () => {
     const f = fixture();
-    f.rows[4] = {
-      ...f.rows[4],
-      configuration: f.rows[4].configuration.map((a) => ({ ...a, agentRevision: 9 })),
+    f.rows[2] = {
+      ...f.rows[2],
+      configuration: f.rows[2].configuration.map((a) => ({ ...a, agentRevision: 9 })),
     };
     f.trials.refresh();
     expect(f.trials.list()).toEqual([]);
@@ -225,13 +227,12 @@ describe('bounded team role trials', () => {
     const p = f.propose();
     expect(p).toMatchObject({ goal: 'accuracy', from: { effort: 'high' }, to: { effort: 'xhigh' } });
   });
-  it('reserves at most five matching launches and rolls back slots with the launch transaction', () => {
+  it('reserves at most three matching launches and rolls back slots with the launch transaction', () => {
     const f = fixture(),
       p = f.start(),
       ctx = f.context();
     expect(f.trials.reserve({ ...ctx, mixed: true })).toBeNull();
     expect(f.trials.reserve({ ...ctx, roles: ['Verify'] })).toBeNull();
-    expect(f.trials.reserve({ ...ctx, workload: 'b'.repeat(64) })).toBeNull();
     expect(f.trials.reserve({ ...ctx, configuration: ctx.configuration.slice(0, 1) })).toBeNull();
     expect(() =>
       f.db.transaction(() => {
@@ -248,9 +249,9 @@ describe('bounded team role trials', () => {
     });
     expect(f.trials.reserve(ctx)).toEqual(result);
     const restarted = f.service();
-    for (let i = 0; i < 4; i++) expect(restarted.reserve(f.context())).not.toBeNull();
+    for (let i = 0; i < 2; i++) expect(restarted.reserve({ ...f.context(), project: 'Other', workload: 'b'.repeat(64) })).not.toBeNull();
     expect(restarted.reserve(f.context())).toBeNull();
-    expect(restarted.list()[0].assignmentIds).toHaveLength(5);
+    expect(restarted.list()[0].assignmentIds).toHaveLength(3);
     expect(f.teams.get(f.team.id).revision).toBe(1);
   });
   it('rechecks independent team, workflow and member revisions and exposes conflicts', () => {
@@ -297,7 +298,7 @@ describe('bounded team role trials', () => {
     f.fill(p);
     const measured = f.trials.list()[0];
     expect(measured.comparison.verdict).toBe('helped');
-    f.rows[5].criteria[0] = { ...f.rows[5].criteria[0], verdict: 'missed' };
+    f.rows[3].criteria[0] = { ...f.rows[3].criteria[0], verdict: 'missed' };
     expect(f.trials.list()[0].comparison.verdict).toBe('regressed');
     expect(() => f.trials.decide(p.id, { action: 'adopt', revision: measured.revision })).toThrow();
   });
@@ -305,7 +306,7 @@ describe('bounded team role trials', () => {
     const f = fixture(),
       p = f.start();
     f.fill(p);
-    for (const record of f.rows.slice(0, 5)) {
+    for (const record of f.rows.slice(0, 3)) {
       record.signature = record.deliverySignature = '0'.repeat(64);
       record.activeMs = 30;
       record.status = 'stopped';
@@ -326,8 +327,8 @@ describe('bounded team role trials', () => {
     expect(current.comparison.verdict).toBe('helped');
     expect(() => f.trials.decide(p.id, { action: 'adopt', revision: earlier.revision })).toThrow(/changed/i);
     const adopted = f.trials.decide(p.id, { action: 'adopt', revision: current.revision });
-    f.rows[5].criteria[0].verdict = 'missed';
-    f.rows[6].criteria[0].verdict = 'missed';
+    f.rows[3].criteria[0].verdict = 'missed';
+    f.rows[4].criteria[0].verdict = 'missed';
     const history = f.service().list()[0];
     expect(history.adoptedComparison).toEqual(adopted.adoptedComparison);
     expect(history.comparison.verdict).toBe('regressed');

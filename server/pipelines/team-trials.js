@@ -2,9 +2,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
 import { AGENT_PRESETS, buildLaunchCommand, parseLaunchCommand } from '../../shared/agent-presets.mjs';
-import { compareTeamTrial, scoreTeam, TEAM_POLICY_VERSION } from '../../shared/scoring/index.mjs';
+import { compareTeamTrial, scoreTeam, TEAM_POLICY_VERSION, TEAM_TRIAL_SIZE } from '../../shared/scoring/index.mjs';
 
-const LIMIT = 5;
+const LIMIT = TEAM_TRIAL_SIZE;
 const terminal = new Set(['complete', 'stopped', 'interrupted', 'error']);
 const closed = new Set(['stopped', 'dismissed', 'adopted']);
 const revision = (n) => Number.isSafeInteger(n) && n > 0;
@@ -208,11 +208,14 @@ function nominate(rows, team, agents, previous) {
       member.role +
       ' used ' +
       (ms / 1000).toFixed(1) +
-      ' seconds of active time across the five baseline runs.';
+      ` seconds of active time across the ${LIMIT} baseline runs.`;
     const last = previous.find((p) => p.role === member.role && p.comparison);
-    const counterevidence = last
-      ? 'The earlier ' + last.to.model + ' ' + last.to.effort + ' trial was ' + last.comparison.verdict + '. '
-      : '';
+    const projects = [...new Set(baseline.map((r) => r.project))].sort();
+    const projectLabel = projects.length === 1 ? projects[0] : 'Multiple projects';
+    const projectNote = projects.length > 1 ? `Baseline spanned ${projects.length} projects (${projects.join(', ')}). ` : '';
+    const counterevidence =
+      (last ? 'The earlier ' + last.to.model + ' ' + last.to.effort + ' trial was ' + last.comparison.verdict + '. ' : '') +
+      projectNote;
     return {
       teamId: team.id,
       teamName: team.name,
@@ -223,7 +226,7 @@ function nominate(rows, team, agents, previous) {
       workflowId: latest.workflowId,
       workflowRevision: latest.workflowRevision,
       workload: latest.workload,
-      project: latest.project,
+      project: projectLabel,
       role: member.role,
       goal,
       configurationKey: configurationKey(latest.configuration),
@@ -373,10 +376,8 @@ export function createTeamTrials({
       const key = JSON.stringify([
         r.teamId,
         r.teamRevision,
-        r.project,
         r.workflowId,
         r.workflowRevision,
-        r.workload,
         configurationKey(r.configuration),
       ]);
       if (!groups.has(key)) groups.set(key, []);
@@ -398,8 +399,6 @@ export function createTeamTrials({
             draft.teamRevision === r.teamRevision &&
             draft.workflowId === r.workflowId &&
             draft.workflowRevision === r.workflowRevision &&
-            draft.workload === r.workload &&
-            draft.project === r.project &&
             draft.configurationKey === key,
         )
         .map(({ row }) => present(row, records));
@@ -425,8 +424,6 @@ export function createTeamTrials({
         d.teamRevision,
         d.workflowId,
         d.workflowRevision,
-        d.project,
-        d.workload,
         d.configurationKey,
         d.pins,
         d.role,
@@ -478,8 +475,6 @@ export function createTeamTrials({
         d.teamRevision !== ctx.teamRevision ||
         d.workflowId !== ctx.workflowId ||
         d.workflowRevision !== ctx.workflowRevision ||
-        d.project !== ctx.project ||
-        d.workload !== ctx.workload ||
         d.configurationKey !== key ||
         !ctx.roles.some((r) => r.toLowerCase() === d.role.toLowerCase()) ||
         staleReason(d)

@@ -62,12 +62,17 @@ export function createCliNamingClient({ execute = execFile } = {}) {
     const interpolate = arg => arg.replace(/\{(model|effort|prompt)\}/g, (_match, key) => values[key]);
     const args = [...profile.args, ...(settings.effort === null ? [] : profile.effortArgs)].map(interpolate);
     try {
+      const timeout = purpose === 'review' ? 180000 : 65000;
       const output = await new Promise((resolve, reject) => {
         if (closed) { reject(new Error('stopped')); return; }
-        const child = execute(profile.command, args, { cwd, env, shell: false, timeout: 65000, killSignal: 'SIGKILL', maxBuffer: 1048576, encoding: 'utf8' }, (error, stdout) => {
+        const child = execute(profile.command, args, { cwd, env, shell: false, timeout, killSignal: 'SIGKILL', maxBuffer: 1048576, encoding: 'utf8' }, (error, stdout, stderr) => {
           children.delete(child);
           const modelError = rejectedModelError(settings, profile, stdout);
-          if (modelError) reject(modelError); else if (error) reject(error); else resolve(stdout);
+          if (modelError) reject(modelError);
+          else if (error) {
+            const detail = [error.killed ? `timed out after ${timeout}ms` : error.message, typeof stderr === 'string' && stderr.trim() ? stderr.trim().slice(0, 300) : ''].filter(Boolean).join(' | ');
+            reject(Object.assign(new Error(detail || 'CLI execution failed'), { cause: error }));
+          } else resolve(stdout);
         });
         children.add(child);
         child.stdin.on('error', reject);
@@ -87,7 +92,9 @@ export function createCliNamingClient({ execute = execFile } = {}) {
       return parse(messages[0].item.text, null);
     } catch (error) {
       if (error instanceof NamingError && error.status === 503) throw error;
-      throw new NamingError(`The ${settings.provider} ${purpose} CLI failed, timed out, or returned invalid output. Check its installation, login, model and effort in Settings.`, 503);
+      const wrapped = new NamingError(`The ${settings.provider} ${purpose} CLI failed, timed out, or returned invalid output. Check its installation, login, model and effort in Settings.`, 503);
+      wrapped.cause = error;
+      throw wrapped;
     } finally { await rm(cwd, { recursive: true, force: true }); }
   }
   return {

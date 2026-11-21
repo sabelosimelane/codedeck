@@ -10,6 +10,7 @@ import {
 } from './engine.mjs';
 
 export const TEAM_POLICY_VERSION = 1;
+export const TEAM_TRIAL_SIZE = 3;
 const statuses = new Set([
   'pending',
   'running',
@@ -141,7 +142,7 @@ export function scoreTeam(observations) {
 }
 
 function trialVerdict(before, after, goal) {
-  if ([before, after].some((card) => card.total !== 5 || card.mixed || card.unfinished))
+  if ([before, after].some((card) => card.total !== TEAM_TRIAL_SIZE || card.mixed || card.unfinished))
     return 'inconclusive';
   const previous = before.metrics;
   const current = after.metrics;

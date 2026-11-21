@@ -32,8 +32,8 @@ const row = (id, fields = {}) => ({
   ],
   ...fields,
 });
-const before = Array.from({ length: 5 }, (_, i) => row('before' + i));
-const after = Array.from({ length: 5 }, (_, i) => row('after' + i, { activeMs: 6 }));
+const before = Array.from({ length: 3 }, (_, i) => row('before' + i));
+const after = Array.from({ length: 3 }, (_, i) => row('after' + i, { activeMs: 6 }));
 const score = (...extra) => scoreTeam([...before, ...extra]);
 const compare = (trial, goal, version) => compareTeamTrial(before, trial, goal, version);
 
@@ -49,34 +49,34 @@ it('measures delivered time, accuracy, coverage and separate terminal states', (
   );
   expect(card).toMatchObject({
     policyVersion: 1,
-    total: 12,
+    total: 10,
     mixed: 1,
-    delivered: 7,
+    delivered: 5,
     failed: 1,
     stopped: 1,
     unfinished: 1,
     interrupted: 1,
-    met: 5,
+    met: 3,
     missed: 1,
     unverified: 1,
-    timed: 6,
+    timed: 4,
   });
   expect(card.metrics.activeMs).toMatchObject({
     value: 10,
     unit: 'ms',
     direction: 'lower',
-    eligible: 6,
+    eligible: 4,
     excluded: 6,
   });
   expect(card.metrics.elapsedMs.value).toBe(90);
   expect(card.metrics.accuracy).toMatchObject({
-    value: 5 / 6,
-    eligible: 6,
+    value: 3 / 4,
+    eligible: 4,
     excluded: 6,
     evidenceIds: [...before.map((r) => r.id), 'miss'],
   });
-  expect(card.metrics.deliveryRate.value).toBe(7 / 11);
-  expect(card.metrics.verificationCoverage.value).toBe(6 / 7);
+  expect(card.metrics.deliveryRate.value).toBe(5 / 9);
+  expect(card.metrics.verificationCoverage.value).toBe(4 / 5);
   expect(card.roles[0].activeMs).toBe(10);
   expect(card.roles[0].runIds).toContain('manual'); // Attributable attempts remain visible for mixed runs.
   expect(scoreTeam([]).metrics.accuracy.value).toBeNull();
@@ -158,9 +158,9 @@ it('replays a versioned JSON envelope standalone and registers a metric without 
   ]);
   const extended = { ...teamPolicy, version: 2, registry };
   expect(scoreEnvelope({ ...input, policyVersion: 2 }, extended).metrics.deliveries).toMatchObject({
-    value: 5,
+    value: 3,
     version: 1,
-    eligible: 5,
+    eligible: 3,
   });
   for (const key of Object.keys(input))
     expect(() => scoreEnvelope({ ...input, [key]: undefined }, teamPolicy)).toThrow();
@@ -200,7 +200,7 @@ it('retains workflow v1 null timing, workload, safeguard and median rules', () =
     afterIds: faster.map((r) => r.id),
   });
   expect(result([...faster.slice(1), { ...faster[0], activeMs: null }]).verdict).toBe('inconclusive');
-  expect(result(faster.map((r) => ({ ...r, workload: null }))).verdict).toBe('inconclusive');
+  expect(result(faster.map((r) => ({ ...r, workload: null }))).verdict).toBe('helped');
   expect(
     result(
       faster.map((r) => ({ ...r, finalNote: false })),
@@ -208,7 +208,7 @@ it('retains workflow v1 null timing, workload, safeguard and median rules', () =
       'missingFinalNotes',
     ).verdict,
   ).toBe('regressed');
-  expect(result(faster, 'loops').before).toBe(2);
+  expect(result(faster, 'loops').before).toBe(1);
   expect(compareOutcomes(legacy, faster, 'activeMs', 'proofGaps')).toEqual(result(faster));
 });
 
