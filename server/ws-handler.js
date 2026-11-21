@@ -714,6 +714,93 @@ export function backgroundSessionAvailable(sessionId, sessions, runtime, deleted
     && runtime.isSessionRecoverable(sessionId) === true;
 }
 
+export async function backgroundSessionAvailableAsync(sessionId, sessions, runtime, deletedSessionIds = new Set()) {
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256 || /[\x00-\x1f\x7f]/.test(sessionId)) {
+    return false;
+  }
+  if (deletedSessionIds.has(sessionId)) return false;
+  const entry = sessions.get(sessionId);
+  if (entry?.alive) return true;
+  if (entry && entry.runtimeType !== 'tmux') return false;
+  if (runtime?.type !== 'tmux') return false;
+  if (typeof runtime.isSessionRecoverableAsync === 'function') {
+    return (await runtime.isSessionRecoverableAsync(sessionId)) === true;
+  }
+  return typeof runtime.isSessionRecoverable === 'function'
+    && runtime.isSessionRecoverable(sessionId) === true;
+}
+
+export async function attachBackgroundSessionAsync(sessionId, sessions, runtime, deletedSessionIds = new Set(), options = {}) {
+  if (runtime && typeof runtime.spawn === 'function') {
+    return attachBackgroundSession(sessionId, sessions, runtime, deletedSessionIds, options);
+  }
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256 || /[\x00-\x1f\x7f]/.test(sessionId)) {
+    throw new Error('Background attach sessionId must be a valid terminal identity.');
+  }
+  if (deletedSessionIds.has(sessionId)) throw new Error('Background attach refused: session is deleted.');
+  if (!runtime || typeof runtime.spawnAsync !== 'function') throw new Error('Background attach requires a terminal runtime.');
+
+  const cols = options.cols === undefined ? INITIAL_COLS : options.cols;
+  const rows = options.rows === undefined ? INITIAL_ROWS : options.rows;
+  if (!validDimensions(cols, rows)) throw new Error('Background attach cols and rows must be valid terminal dimensions.');
+  const cwd = options.cwd === undefined ? (process.env.HOME || '/') : options.cwd;
+  if (typeof cwd !== 'string' || cwd.length === 0 || !path.isAbsolute(cwd) || cwd.includes('\0')) {
+    throw new Error('Background attach cwd must be a nonempty absolute path.');
+  }
+
+  let entry = sessions.get(sessionId);
+  const workflowOpsFor = (target) => ({
+    sessionId,
+    onInput: options.onInput,
+    sessionExists: () => sessions.get(sessionId) === target && !deletedSessionIds.has(sessionId),
+  });
+  const recoverableWithoutEntry = !entry
+    && runtime.type === 'tmux'
+    && typeof runtime.isSessionRecoverableAsync === 'function'
+    && await runtime.isSessionRecoverableAsync(sessionId);
+  const recoverableDeadEntry = !!entry
+    && entry.runtimeType === 'tmux'
+    && !entry.alive
+    && typeof runtime.isSessionRecoverableAsync === 'function'
+    && await runtime.isSessionRecoverableAsync(sessionId);
+
+  if (!entry) {
+    if (!recoverableWithoutEntry) throw new Error('Background attach refused: session does not exist or is not recoverable.');
+    const incarnation = typeof runtime.getSessionIncarnationAsync === 'function'
+      ? await runtime.getSessionIncarnationAsync(sessionId)
+      : (options.getSessionIncarnation?.(sessionId) ?? null);
+    const ptyProcess = await runtime.spawnAsync({ cwd, cols, rows, sessionId });
+    entry = createSessionEntry({
+      pty: ptyProcess, ws: null, cwd, cols, rows, incarnation, runtimeType: runtime.type,
+      extra: { host: runtime.host, hostRuntime: runtime, onSessionEnded: options.onSessionEnded, wsAttached: false },
+    });
+    sessions.set(sessionId, entry);
+    registerPtyDataHandler(ptyProcess, sessionId, sessions);
+    registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, rows);
+    pushTimelineEvent(entry, 'attach', 'background');
+    console.log(`[terminal] attach session=${sessionId} host=${runtime.host} type=background`);
+    return buildBackgroundHandle(entry, sessionId, sessions, deletedSessionIds, workflowOpsFor(entry));
+  }
+
+  if (entry.alive) {
+    return buildBackgroundHandle(entry, sessionId, sessions, deletedSessionIds, workflowOpsFor(entry));
+  }
+
+  if (!recoverableDeadEntry) throw new Error('Background attach refused: session ended.');
+
+  const ptyProcess = await runtime.spawnAsync({ cwd: entry.cwd, cols, rows, sessionId });
+  entry.pty = ptyProcess;
+  entry.host = runtime.host;
+  entry.hostRuntime = runtime;
+  registerPtyDataHandler(ptyProcess, sessionId, sessions);
+  registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, rows);
+  entry.alive = true;
+  entry.clientDetached = false;
+  pushTimelineEvent(entry, 'tmux_reattach', 'background recovery');
+  console.log(`[terminal] tmux_reattach session=${sessionId} host=${runtime.host} type=background_recovery`);
+  return buildBackgroundHandle(entry, sessionId, sessions, deletedSessionIds, workflowOpsFor(entry));
+}
+
 export function attachBackgroundSession(sessionId, sessions, runtime, deletedSessionIds = new Set(), options = {}) {
   if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256 || /[\x00-\x1f\x7f]/.test(sessionId)) {
     throw new Error('Background attach sessionId must be a valid terminal identity.');

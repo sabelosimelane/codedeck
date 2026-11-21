@@ -493,8 +493,8 @@ export function createRunEngine({
    * Whether a resumed step can go back to the terminal it had. Only a terminal that no
    * longer exists is replaced; an agent that exited in it is started again there.
    */
-  function terminalStillThere(sessionId) {
-    const available = terminalAvailable(sessionId);
+  async function terminalStillThere(sessionId) {
+    const available = await terminalAvailable(sessionId);
     if (typeof available !== 'boolean') {
       throw new Error(`pipeline run: terminalAvailable must answer true or false for ${sessionId}`);
     }
@@ -507,20 +507,20 @@ export function createRunEngine({
    * runs that ended in the same worktree, most recent first. An agent is the same when its
    * id and its launch command are: an edited agent starts in a terminal of its own.
    */
-  function findAgentTerminal(run, stepIndex) {
+  async function findAgentTerminal(run, stepIndex) {
     const { agent } = run.definition.steps[stepIndex];
-    const terminalOf = (candidate, index) => {
+    const terminalOf = async (candidate, index) => {
       const other = candidate.definition.steps[index].agent;
       const { sessionId } = candidate.steps[index];
       if (sessionId === null || other.id !== agent.id || other.launchCommand !== agent.launchCommand) return null;
-      return terminalStillThere(sessionId) ? sessionId : null;
+      return await terminalStillThere(sessionId) ? sessionId : null;
     };
 
     const own = [];
     for (let index = stepIndex - 1; index >= 0; index -= 1) own.push(index);
     for (let index = stepIndex + 1; index < run.steps.length; index += 1) own.push(index);
     for (const index of own) {
-      const sessionId = terminalOf(run, index);
+      const sessionId = await terminalOf(run, index);
       if (sessionId !== null) return sessionId;
     }
 
@@ -531,7 +531,7 @@ export function createRunEngine({
       // A run that may still be typing into its terminals keeps them.
       if (ACTIVE_RUN_STATUSES.has(earlier.status)) continue;
       for (let index = earlier.steps.length - 1; index >= 0; index -= 1) {
-        const sessionId = terminalOf(earlier, index);
+        const sessionId = await terminalOf(earlier, index);
         if (sessionId !== null) return sessionId;
       }
     }
@@ -946,7 +946,7 @@ export function createRunEngine({
       // this worktree. Its agent is cleared there before the prompt is sent. Only a step whose
       // agent has no terminal gets a new one, with the agent launched in it.
       let { sessionId } = step;
-      if (sessionId === null) sessionId = findAgentTerminal(run, stepIndex);
+      if (sessionId === null) sessionId = await findAgentTerminal(run, stepIndex);
       // A terminal can leave the worktree: its shell changed folder, or tmux lost the session and a
       // new one of the same name was opened in the project. Its agent would work in the wrong place.
       if (sessionId !== null) {
@@ -983,7 +983,7 @@ export function createRunEngine({
       }
 
       try {
-        attachment = attachBackground(sessionId, { cwd: run.worktreePath });
+        attachment = await attachBackground(sessionId, { cwd: run.worktreePath });
       } catch (err) {
         if (!returning) throw err;
         console.warn(`[pipeline-run] returning to ${sessionId} failed for ${runId}: ${err?.message || err}`);
@@ -1345,7 +1345,7 @@ export function createRunEngine({
         if (typeof comment !== 'string' || !comment.trim() || comment.length > 4000 || /[\x00-\x09\x0b-\x1f\x7f]/.test(comment)) throw new TypeError('send-back comment is invalid');
         const index = run.currentStepIndex;
         const sessionId = run.steps[index].sessionId;
-        const newTerminal = sessionId === null || !terminalStillThere(sessionId);
+        const newTerminal = sessionId === null || !(await terminalStillThere(sessionId));
         reviewStore.add({ runId, stepIndex: index, stepName: run.definition.steps[index].name, attempt: run.steps[index].attempt, verdict: 'sent_back', comment });
         const handle = getHandle(runId);
         handle.stopped = false;
@@ -1391,7 +1391,7 @@ export function createRunEngine({
         // terminal to return to.
         const latest = loadActionRun(runId, 'resume');
         const { sessionId } = latest.steps[latest.currentStepIndex];
-        const newTerminal = sessionId === null || !terminalStillThere(sessionId);
+        const newTerminal = sessionId === null || !(await terminalStillThere(sessionId));
         const handle = getHandle(runId);
         handle.stopped = false;
         handle.stopRequested = false;
@@ -1493,7 +1493,7 @@ export function createRunEngine({
         const sessionId = step.sessionId;
         let available = false;
         try {
-          available = terminalStillThere(sessionId) && await terminalInFolder(sessionId, run.worktreePath);
+          available = (await terminalStillThere(sessionId)) && await terminalInFolder(sessionId, run.worktreePath);
         } catch (err) {
           console.warn(`[pipeline-run] startup terminal check failed for ${run.id} (${sessionId}): ${err?.message || err}`);
           available = false;
@@ -1529,7 +1529,7 @@ export function createRunEngine({
 
         let attachment;
         try {
-          attachment = attachBackground(sessionId, { cwd: run.worktreePath });
+          attachment = await attachBackground(sessionId, { cwd: run.worktreePath });
         } catch (err) {
           console.warn(`[pipeline-run] startup background attach failed for ${run.id} (${sessionId}): ${err?.message || err}`);
           markRunInterrupted(run.id);

@@ -20,8 +20,8 @@ import {
   computeSessionHealth,
   computeStallReason,
   sanitizePreviewLine,
-  attachBackgroundSession,
-  backgroundSessionAvailable,
+  attachBackgroundSessionAsync,
+  backgroundSessionAvailableAsync,
 } from './ws-handler.js';
 import { createTerminalWorkflow } from './terminal-workflow.js';
 import { findAgentProfile } from './agent-profiles/index.js';
@@ -1111,7 +1111,7 @@ const pipelineRunEngine = createRunEngine({
   typeIntoTerminal: (sessionId, text) => runtimeForSession(sessionId).typeLineAsync(sessionId, text),
   terminalInFolder: createTerminalInFolder(
     sessionId => runtimeForSession(sessionId).inspectPaneAsync(sessionId),
-    { resolveRealpath: (sessionId, target) => resolveHostTools(resolveHostRuntime(sessionId)?.hostName ?? LOCAL_HOST).realpath(target) },
+    { resolveRealpath: (sessionId, target) => resolveHostTools(resolveHostRuntime(sessionId)?.host ?? LOCAL_HOST).realpath(target) },
   ),
   // The pane, and how CodeDeck's own attachment to it stands: input written through a browser's
   // or a run's tmux client goes wherever that client is.
@@ -1191,12 +1191,12 @@ const pipelineRunEngine = createRunEngine({
     const started = await startSessionWithWorktree(project, { cwd, ...(host && host !== LOCAL_HOST ? { host, skipSync: true } : {}) });
     return started.id;
   },
-  attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
+  attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSessionAsync(
     sessionId, sessions, runtimeForSession(sessionId), deletedSessionIds,
     { cwd, onSessionEnded: endedId => { mobileStore.retireSession(endedId); terminalSessionWorktreeStore.clear(endedId); } },
   ),
   // Resume returns a step to its own terminal while that terminal can still be attached to.
-  terminalAvailable: (sessionId) => backgroundSessionAvailable(
+  terminalAvailable: (sessionId) => backgroundSessionAvailableAsync(
     sessionId, sessions, runtimeForSession(sessionId), deletedSessionIds,
   ),
   createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),

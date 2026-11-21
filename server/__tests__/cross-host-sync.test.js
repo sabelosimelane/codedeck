@@ -23,6 +23,9 @@ import {
 } from '../git-sync-service.js';
 import { createProjectsRouter } from '../routes/projects.js';
 import { createProjectDeletionService } from '../project-deletion-service.js';
+import { attachBackgroundSessionAsync, backgroundSessionAvailableAsync } from '../ws-handler.js';
+import { createTaskLanding } from '../tasks/task-landing.js';
+import { createTaskStore } from '../tasks/task-store.js';
 import { loopbackTestServer } from './helpers/loopback-test-server.js';
 
 describe('cross-host project-config', () => {
@@ -360,5 +363,105 @@ describe('remote host-fs compatibility with pipeline run notes', () => {
     await handle.close();
 
     await expect(hostFs.mkdir('/home/dev/app/.codedeck')).rejects.toMatchObject({ code: 'EEXIST' });
+  });
+});
+
+describe('remote background attach and task landing', () => {
+  it('attaches to a remote hostRuntime via attachBackgroundSessionAsync and backgroundSessionAvailableAsync', async () => {
+    const pty = {
+      write: vi.fn(),
+      kill: vi.fn(),
+      onData: vi.fn(),
+      onExit: vi.fn(),
+    };
+    const hostRuntime = {
+      type: 'tmux',
+      host: 'devbox',
+      isSessionRecoverableAsync: vi.fn(async () => true),
+      getSessionIncarnationAsync: vi.fn(async () => 'inc-1'),
+      spawnAsync: vi.fn(async () => pty),
+    };
+    const sessions = new Map();
+    expect(await backgroundSessionAvailableAsync('Demo-34', sessions, hostRuntime)).toBe(true);
+
+    const handle = await attachBackgroundSessionAsync('Demo-34', sessions, hostRuntime, new Set(), {
+      cwd: '/home/dev/git/demo/worktrees/task-1/backend',
+    });
+    expect(hostRuntime.spawnAsync).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'Demo-34',
+      cwd: '/home/dev/git/demo/worktrees/task-1/backend',
+    }));
+    expect(sessions.get('Demo-34')).toMatchObject({
+      host: 'devbox',
+      hostRuntime,
+      alive: true,
+    });
+    handle.write('hello\r');
+    expect(pty.write).toHaveBeenCalledWith('hello\r');
+    handle.release();
+  });
+
+  it('inspects a remote task via resolveHostTools instead of local execFile', async () => {
+    const db = new Database(':memory:');
+    const taskStore = createTaskStore(db);
+    const task = taskStore.create({
+      id: '08dd8562-7959-4b2d-8060-61a6bb5cceb9',
+      project: 'Demo',
+      host: 'devbox',
+      title: 'Remote task',
+      titleSource: 'owner',
+      folder: null,
+      repository: 'backend',
+      repositoryPath: null,
+      worktreePath: '/home/dev/git/demo/worktrees/remote-task/backend',
+      branch: 'task/remote-task',
+      baseBranch: 'main',
+      baseCommit: 'a'.repeat(40),
+    });
+    const remoteCalls = [];
+    const remoteExecFile = (cmd, args, optsOrCb, maybeCb) => {
+      const cb = typeof optsOrCb === 'function' ? optsOrCb : maybeCb;
+      remoteCalls.push({ cmd, args });
+      if (args.includes('--abbrev-ref')) return cb(null, 'main\n', '');
+      if (args.includes('--left-right')) return cb(null, '0\t0\n', '');
+      if (args.includes('--count')) return cb(null, '0\n', '');
+      if (args.includes('remote')) return cb(null, '', '');
+      return cb(null, '', '');
+    };
+    const landing = createTaskLanding({
+      taskStore,
+      findProject: () => ({
+        name: 'Demo',
+        path: '/Users/local/git/demo/backend',
+        defaultHost: 'local',
+        locations: [
+          { host: 'local', path: '/Users/local/git/demo/backend', repositories: [] },
+          { host: 'devbox', path: '/home/dev/git/demo/backend', repositories: [] },
+        ],
+      }),
+      execFile: () => { throw new Error('local execFile must not be called for remote task'); },
+      pathExists: async () => { throw new Error('local pathExists must not be called for remote task'); },
+      hasActiveRun: () => false,
+      onTaskFinished: () => {},
+      onWorktreeFinished: () => {},
+      closeTerminals: async () => ({ closed: [], notClosed: [] }),
+      resolveHostTools: () => ({
+        host: 'devbox',
+        execFile: remoteExecFile,
+        pathExists: async () => true,
+        fs: {
+          lstat: async () => ({ isFile: () => false, size: 0, nlink: 1 }),
+          readdir: async () => [],
+          rmdir: async () => {},
+        },
+        sha256: async () => '0'.repeat(64),
+      }),
+    });
+
+    const view = await landing.status(task.id);
+    expect(remoteCalls.length).toBeGreaterThan(0);
+    expect(view.filesPresent).toBe(true);
+    expect(view.main.branch).toBe('main');
+    db.close();
   });
 });

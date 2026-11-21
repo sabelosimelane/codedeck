@@ -157,20 +157,20 @@ export function createTaskLanding({
     return worktree;
   }
 
-  async function remotes(checkout) {
-    const { stdout } = await git(execFile, checkout, ['remote']);
+  async function remotes(checkout, tools) {
+    const { stdout } = await git(tools.execFile, checkout, ['remote']);
     const names = stdout.split('\n').map(name => name.trim()).filter(name => REMOTE_NAME.test(name));
     return Promise.all(names.map(async name => {
       // The configured address names the host; `remote get-url` would apply the owner's URL rewrites.
-      const { stdout: url } = await git(execFile, checkout, ['config', '--get', `remote.${name}.url`]);
+      const { stdout: url } = await git(tools.execFile, checkout, ['config', '--get', `remote.${name}.url`]);
       const { host, tool } = describeRemote(url);
       return { name, host, tool };
     }));
   }
 
   /** The checkout's branch now, or null when its HEAD is detached. */
-  async function currentBranch(cwd) {
-    const { stdout } = await git(execFile, cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  async function currentBranch(cwd, tools) {
+    const { stdout } = await git(tools.execFile, cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
     return stdout.trim() === 'HEAD' ? null : stdout.trim();
   }
 
@@ -178,23 +178,23 @@ export function createTaskLanding({
    * Whether the checkout has commits made since the commit its task started from. With no
    * commit that its base lacks, such a task is not untouched: its work is already in the base.
    */
-  async function movedPast(cwd, baseCommit) {
-    const { stdout } = await git(execFile, cwd, ['rev-list', '--count', `${baseCommit}..HEAD`]);
+  async function movedPast(cwd, baseCommit, tools) {
+    const { stdout } = await git(tools.execFile, cwd, ['rev-list', '--count', `${baseCommit}..HEAD`]);
     const made = Number(stdout.trim());
     if (stdout.trim() === '' || !Number.isSafeInteger(made) || made < 0) throw new Error('git rev-list returned an unexpected count');
     return made > 0;
   }
 
-  async function sameBytes(worktreePath, checkout, file) {
+  async function sameBytes(worktreePath, checkout, file, tools) {
     // Git lists a wholly ignored folder as one entry; it is a copy when everything in it is.
-    if (file.endsWith('/')) return sameFolder(path.join(worktreePath, file), path.join(checkout, file));
+    if (file.endsWith('/')) return sameFolder(path.join(worktreePath, file), path.join(checkout, file), tools);
     // Only a regular file in the checkout can hold the same bytes; a folder or link of that name cannot.
-    const home = await lstat(path.join(checkout, file)).catch(error => {
+    const home = await tools.lstat(path.join(checkout, file)).catch(error => {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
       throw error;
     });
     if (!home?.isFile()) return false;
-    const hash = async cwd => (await git(execFile, cwd, ['hash-object', '--no-filters', '--', file])).stdout.trim();
+    const hash = async cwd => (await git(tools.execFile, cwd, ['hash-object', '--no-filters', '--', file])).stdout.trim();
     return (await hash(worktreePath)) === (await hash(checkout));
   }
 
@@ -204,27 +204,27 @@ export function createTaskLanding({
    * kind of entry cannot be shown to be a copy, so it counts as one that would be lost. Disposable
    * folders inside are not looked into, as at the top level. Stops at the first difference.
    */
-  async function sameFolder(taskDir, homeDir) {
-    for (const entry of await readdir(taskDir, { withFileTypes: true })) {
+  async function sameFolder(taskDir, homeDir, tools) {
+    for (const entry of await tools.readdir(taskDir, { withFileTypes: true })) {
       if (DISPOSABLE.has(entry.name)) continue;
       const inTask = path.join(taskDir, entry.name);
       const inHome = path.join(homeDir, entry.name);
       if (entry.isDirectory()) {
-        if (!(await sameFolder(inTask, inHome))) return false;
-      } else if (!entry.isFile() || !(await sameFile(inTask, inHome))) {
+        if (!(await sameFolder(inTask, inHome, tools))) return false;
+      } else if (!entry.isFile() || !(await sameFile(inTask, inHome, tools))) {
         return false;
       }
     }
     return true;
   }
 
-  async function sameFile(inTask, inHome) {
-    const home = await lstat(inHome).catch(error => {
+  async function sameFile(inTask, inHome, tools) {
+    const home = await tools.lstat(inHome).catch(error => {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
       throw error;
     });
-    if (!home?.isFile() || home.size !== (await lstat(inTask)).size) return false;
-    const [task, main] = await Promise.all([digest(inTask), digest(inHome)]);
+    if (!home?.isFile() || home.size !== (await tools.lstat(inTask)).size) return false;
+    const [task, main] = await Promise.all([tools.digest(inTask), tools.digest(inHome)]);
     return task === main;
   }
 
@@ -232,7 +232,7 @@ export function createTaskLanding({
    * Whether an ignored path under `.codedeck/.../attachments/` still matches a published
    * run manifest for this worktree (readable regular file, recorded size and digest).
    */
-  async function isVerifiedRunAttachment(worktreePath, relativePath) {
+  async function isVerifiedRunAttachment(worktreePath, relativePath, tools) {
     const manifests = await listRunAttachmentsForWorktree(worktreePath);
     if (!Array.isArray(manifests)) throw new TypeError('listRunAttachmentsForWorktree must return an array');
     const expected = manifests.flatMap(entry => Array.isArray(entry?.attachments) ? entry.attachments : [])
@@ -240,9 +240,9 @@ export function createTaskLanding({
     if (!expected || !Number.isInteger(expected.sizeBytes) || typeof expected.digest !== 'string') return false;
     const target = path.join(worktreePath, relativePath);
     try {
-      const stat = await lstat(target);
+      const stat = await tools.lstat(target);
       if (!stat.isFile() || stat.nlink !== 1 || stat.size !== expected.sizeBytes) return false;
-      return (await digest(target)) === expected.digest;
+      return (await tools.digest(target)) === expected.digest;
     } catch (error) {
       if (error?.code === 'ENOENT' || error?.code === 'ELOOP' || error?.code === 'EISDIR') return false;
       throw error;
@@ -250,11 +250,11 @@ export function createTaskLanding({
   }
 
   /** Attachment copies under `.codedeck` that are missing from every run manifest or no longer match. */
-  async function listUnverifiedAttachments(worktreePath) {
+  async function listUnverifiedAttachments(worktreePath, tools) {
     const attachmentsRoot = path.join(worktreePath, '.codedeck', 'runs');
     let runDirs = [];
     try {
-      runDirs = await readdir(attachmentsRoot, { withFileTypes: true });
+      runDirs = await tools.readdir(attachmentsRoot, { withFileTypes: true });
     } catch (error) {
       if (error?.code === 'ENOENT') return [];
       throw error;
@@ -265,14 +265,14 @@ export function createTaskLanding({
       const folder = path.join(attachmentsRoot, runDir.name, 'attachments');
       let entries = [];
       try {
-        entries = await readdir(folder, { withFileTypes: true });
+        entries = await tools.readdir(folder, { withFileTypes: true });
       } catch (error) {
         if (error?.code === 'ENOENT') continue;
         throw error;
       }
       for (const entry of entries) {
         const relative = `.codedeck/runs/${runDir.name}/attachments/${entry.name}`;
-        if (!entry.isFile() || !(await isVerifiedRunAttachment(worktreePath, relative))) {
+        if (!entry.isFile() || !(await isVerifiedRunAttachment(worktreePath, relative, tools))) {
           atRisk.push(relative);
         }
       }
@@ -281,8 +281,8 @@ export function createTaskLanding({
   }
 
   /** Ignored files in the worktree that removing its folder would lose: not disposable, and not copied byte for byte in the checkout. */
-  async function listIgnoredAtRisk(worktreePath, checkout) {
-    const { stdout } = await git(execFile, worktreePath, ['status', '--porcelain', '-z', '--ignored']);
+  async function listIgnoredAtRisk(worktreePath, checkout, tools) {
+    const { stdout } = await git(tools.execFile, worktreePath, ['status', '--porcelain', '-z', '--ignored']);
     const ignored = stdout.split('\0').filter(entry => entry.startsWith('!! ')).map(entry => entry.slice(3));
     const atRisk = [];
     let scannedAttachments = false;
@@ -290,25 +290,25 @@ export function createTaskLanding({
       // Run notes stay disposable, but attachment copies must match a recorded manifest.
       if (file === '.codedeck/' || file.startsWith('.codedeck/')) {
         if (!scannedAttachments) {
-          atRisk.push(...await listUnverifiedAttachments(worktreePath));
+          atRisk.push(...await listUnverifiedAttachments(worktreePath, tools));
           scannedAttachments = true;
         }
         continue;
       }
       if (file.split('/').some(segment => DISPOSABLE.has(segment))) continue;
-      if (!(await sameBytes(worktreePath, checkout, file))) atRisk.push(file);
+      if (!(await sameBytes(worktreePath, checkout, file, tools))) atRisk.push(file);
     }
     return atRisk;
   }
 
   /** Everything the owner needs to decide how to land one repository of the task, read from Git now. */
   async function inspect(id, worktreeId) {
-    const { task, project } = await load(id);
+    const { task, project, tools } = await load(id);
     const worktree = pick(task, worktreeId);
     // The checkout this repository merges into: the project's path for its own repository, else the one it is listed with.
     const checkout = worktree.own ? project.path : worktree.repositoryPath;
     const open = OPEN_STATES.includes(worktree.state);
-    const present = open && await pathExists(worktree.worktreePath);
+    const present = open && await tools.pathExists(worktree.worktreePath);
     if (typeof present !== 'boolean') throw new Error('pathExists must return a boolean');
     const active = open && hasActiveRun(task.id) === true;
 
@@ -320,20 +320,20 @@ export function createTaskLanding({
     let checkoutBranch = null;
     let ignoredAtRisk = [];
     if (present) {
-      uncommitted = await listDirtyPaths({ worktreePath: worktree.worktreePath, execFile });
-      checkoutBranch = await currentBranch(worktree.worktreePath);
-      ignoredAtRisk = await listIgnoredAtRisk(worktree.worktreePath, checkout);
+      uncommitted = await listDirtyPaths({ worktreePath: worktree.worktreePath, execFile: tools.execFile });
+      checkoutBranch = await currentBranch(worktree.worktreePath, tools);
+      ignoredAtRisk = await listIgnoredAtRisk(worktree.worktreePath, checkout, tools);
       const base = worktree.baseBranch ?? worktree.baseCommit;
-      const { stdout } = await git(execFile, worktree.worktreePath, ['rev-list', '--left-right', '--count', `${base}...HEAD`]);
+      const { stdout } = await git(tools.execFile, worktree.worktreePath, ['rev-list', '--left-right', '--count', `${base}...HEAD`]);
       const counts = stdout.trim().split(/\s+/).map(Number);
       if (counts.length !== 2 || counts.some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('git rev-list returned unexpected counts');
       [behind, ahead] = counts;
-      alreadyInBase = ahead === 0 && await movedPast(worktree.worktreePath, worktree.baseCommit);
+      alreadyInBase = ahead === 0 && await movedPast(worktree.worktreePath, worktree.baseCommit, tools);
     }
 
-    const mainBranch = await currentBranch(checkout);
-    const mainDirty = (await listDirtyPaths({ worktreePath: checkout, execFile })).length > 0;
-    const remoteList = await remotes(checkout);
+    const mainBranch = await currentBranch(checkout, tools);
+    const mainDirty = (await listDirtyPaths({ worktreePath: checkout, execFile: tools.execFile })).length > 0;
+    const remoteList = await remotes(checkout, tools);
 
     const common = [];
     if (!open) common.push('finished');
@@ -369,6 +369,7 @@ export function createTaskLanding({
     return {
       task,
       project,
+      tools,
       worktree,
       checkout,
       ignoredAtRisk: ignoredAtRisk.length > 0 ? describe('ignored_files') : null,
@@ -427,9 +428,9 @@ export function createTaskLanding({
   };
 
   /** The folder that held the task's worktrees goes when it is empty; one that holds something else stays. Says whether it is gone. */
-  async function removeFolder(folder) {
+  async function removeFolder(folder, tools) {
     try {
-      await rmdir(folder);
+      await tools.rmdir(folder);
       return true;
     } catch (error) {
       if (error?.code === 'ENOENT') return true;
@@ -443,9 +444,9 @@ export function createTaskLanding({
    * are released and all its terminals closed; otherwise only the runs and terminals of that
    * one worktree, and the rest of the task is left as it is.
    */
-  async function afterFinished(task, worktree) {
+  async function afterFinished(task, worktree, tools) {
     if (FINISHED_STATES.includes(task.state)) {
-      const folderRemoved = task.folder === null ? {} : { folderRemoved: await removeFolder(task.folder) };
+      const folderRemoved = task.folder === null ? {} : { folderRemoved: await removeFolder(task.folder, tools) };
       onTaskFinished(task);
       return { taskFinished: true, ...folderRemoved, ...requireClosed(await closeTerminals(task)) };
     }
@@ -453,16 +454,16 @@ export function createTaskLanding({
     return { taskFinished: false, ...requireClosed(await closeTerminals(task, worktree)) };
   }
 
-  async function removeFiles(worktree, checkout) {
-    const home = await resolveHomeRepoPath({ projectPath: checkout, execFile });
-    const removed = await removeWorktree({ homePath: home, worktreePath: worktree.worktreePath, execFile });
+  async function removeFiles(worktree, checkout, tools) {
+    const home = await resolveHomeRepoPath({ projectPath: checkout, execFile: tools.execFile });
+    const removed = await removeWorktree({ homePath: home, worktreePath: worktree.worktreePath, execFile: tools.execFile });
     return { home, removed };
   }
 
   /** Closes one worktree whose blockers were already checked. */
-  async function closeInspected({ task, worktree, checkout, view }) {
+  async function closeInspected({ task, tools, worktree, checkout, view }) {
     if (view.filesPresent) {
-      const { removed } = await removeFiles(worktree, checkout);
+      const { removed } = await removeFiles(worktree, checkout, tools);
       if (!removed.ok) {
         throw new TaskError(task.worktrees.length > 1
           ? `The files of ${worktree.repository} in this task could not be removed: ${firstLine(removed.detail)}`
@@ -471,7 +472,7 @@ export function createTaskLanding({
     }
     // The branch stays: it may hold commits that are not merged anywhere.
     const after = taskStore.setWorktreeState(task.id, worktree.id, { state: 'closed' });
-    return { after, closed: { repository: worktree.repository, branchKept: worktree.branch, unmergedCommits: view.commitsAhead ?? 0 }, finish: await afterFinished(after, worktree) };
+    return { after, closed: { repository: worktree.repository, branchKept: worktree.branch, unmergedCommits: view.commitsAhead ?? 0 }, finish: await afterFinished(after, worktree, tools) };
   }
 
   // Git refuses two operations at once in one repository; landing actions run one at a time.
@@ -501,11 +502,11 @@ export function createTaskLanding({
         throw new TaskError('One or more fields failed validation.', 400, [{ field: 'message', message: `Use 1–${MESSAGE_MAX} characters on one line` }]);
       }
       return serial(async () => {
-        const { worktree, view } = await inspect(id, worktreeId);
+        const { tools, worktree, view } = await inspect(id, worktreeId);
         if (view.blockers.commit.length) throw refuse(view.blockers.commit);
-        await git(execFile, worktree.worktreePath, ['add', '--all']);
+        await git(tools.execFile, worktree.worktreePath, ['add', '--all']);
         try {
-          await git(execFile, worktree.worktreePath, ['commit', '--message', message.trim()]);
+          await git(tools.execFile, worktree.worktreePath, ['commit', '--message', message.trim()]);
         } catch (error) {
           throw new TaskError(`Git could not commit: ${firstLine(error.stderr || error.stdout || error.message)}`, 409, undefined, { cause: error });
         }
@@ -515,15 +516,15 @@ export function createTaskLanding({
 
     merge(id, { worktreeId } = {}) {
       return serial(async () => {
-        const { task, worktree, checkout, view, ignoredAtRisk } = await inspect(id, worktreeId);
+        const { task, tools, worktree, checkout, view, ignoredAtRisk } = await inspect(id, worktreeId);
         if (view.blockers.merge.length) throw refuse(view.blockers.merge);
         try {
-          await git(execFile, checkout, ['merge', '--no-edit', worktree.branch]);
+          await git(tools.execFile, checkout, ['merge', '--no-edit', worktree.branch]);
         } catch (error) {
-          const { stdout } = await git(execFile, checkout, ['diff', '--name-only', '--diff-filter=U']);
+          const { stdout } = await git(tools.execFile, checkout, ['diff', '--name-only', '--diff-filter=U']);
           const conflicts = stdout.split('\n').map(line => line.trim()).filter(Boolean).slice(0, MAX_LISTED);
           // Leave the checkout exactly as it was; a merge that never started has nothing to abort.
-          await git(execFile, checkout, ['merge', '--abort']).catch(() => undefined);
+          await git(tools.execFile, checkout, ['merge', '--abort']).catch(() => undefined);
           const message = conflicts.length
             ? `${task.worktrees.length > 1 ? worktree.repository : 'This task'} conflicts with ${worktree.baseBranch} in ${conflicts.length} ${conflicts.length === 1 ? 'file' : 'files'}. Nothing was merged.`
             : `Git could not merge: ${firstLine(error.stderr || error.stdout || error.message)}`;
@@ -532,22 +533,22 @@ export function createTaskLanding({
         // The work is merged either way; a folder holding ignored files that exist nowhere else is kept and reported.
         const { removed } = ignoredAtRisk
           ? { removed: { ok: false, detail: `The task's folder was kept. ${ignoredAtRisk.message}` } }
-          : await removeFiles(worktree, checkout);
+          : await removeFiles(worktree, checkout, tools);
         let branchDeleted = false;
         if (removed.ok) {
           try {
             // Asked in the checkout that was merged into: Git deletes a branch only when it is merged into the branch checked out where it is asked.
-            await git(execFile, checkout, ['branch', '-d', worktree.branch]);
+            await git(tools.execFile, checkout, ['branch', '-d', worktree.branch]);
             branchDeleted = true;
           } catch (error) {
             console.warn(`[tasks] merged branch kept task=${task.id} repository=${worktree.repository}: ${firstLine(error.stderr || error.message)}`);
           }
         }
         // Where the checkout stands now: the merge commit, or the task's last commit when Git fast-forwarded.
-        const mergedCommit = (await git(execFile, checkout, ['rev-parse', 'HEAD'])).stdout.trim();
+        const mergedCommit = (await git(tools.execFile, checkout, ['rev-parse', 'HEAD'])).stdout.trim();
         const after = taskStore.setWorktreeState(task.id, worktree.id, { state: 'merged', mergedCommit });
         // Runs and terminals that worked in what is now gone have nothing left to work in; they are closed with it.
-        const finish = await afterFinished(after, worktree);
+        const finish = await afterFinished(after, worktree, tools);
         return { task: after, repository: worktree.repository, mergedInto: worktree.baseBranch, filesRemoved: removed.ok, filesDetail: removed.ok ? null : removed.detail, branchDeleted, ...finish };
       });
     },
@@ -557,22 +558,22 @@ export function createTaskLanding({
         throw new TaskError('One or more fields failed validation.', 400, [{ field: 'remote', message: 'Use the name of one of the project remotes' }]);
       }
       return serial(async () => {
-        const { task, worktree, checkout, view } = await inspect(id, worktreeId);
+        const { task, tools, worktree, checkout, view } = await inspect(id, worktreeId);
         if (view.blockers.pullRequest.length) throw refuse(view.blockers.pullRequest);
         const chosen = view.remotes.find(candidate => candidate.name === remote);
         if (!chosen) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'remote', message: 'Use the name of one of the project remotes' }]);
         if (chosen.tool === null) throw new TaskError(`CodeDeck can open pull requests on GitHub and GitLab only; ${remote} is on ${chosen.host ?? 'an unknown host'}.`, 409);
         if (worktree.baseBranch === null) throw new TaskError(blockerMessage('no_base_branch', { several: task.worktrees.length > 1, repository: worktree.repository }), 409);
         try {
-          await run(execFile, chosen.tool, ['--version'], { timeout: GIT_TIMEOUT_MS });
+          await run(tools.execFile, chosen.tool, ['--version'], { timeout: GIT_TIMEOUT_MS });
         } catch (error) {
           throw new TaskError(`Install ${chosen.tool === 'gh' ? 'the GitHub CLI (gh)' : 'the GitLab CLI (glab)'} and sign in to open a pull request from here.`, 409, undefined, { cause: error });
         }
-        const { stdout: url } = await git(execFile, checkout, ['config', '--get', `remote.${remote}.url`]);
+        const { stdout: url } = await git(tools.execFile, checkout, ['config', '--get', `remote.${remote}.url`]);
         const { repository } = describeRemote(url);
         if (!repository) throw new Error('Remote repository could not be read');
         try {
-          await git(execFile, worktree.worktreePath, ['push', '--set-upstream', remote, worktree.branch], { timeout: REMOTE_TIMEOUT_MS });
+          await git(tools.execFile, worktree.worktreePath, ['push', '--set-upstream', remote, worktree.branch], { timeout: REMOTE_TIMEOUT_MS });
         } catch (error) {
           throw new TaskError(`The branch could not be pushed to ${remote}: ${firstLine(error.stderr || error.message)}`, 503, undefined, { cause: error });
         }
@@ -581,7 +582,7 @@ export function createTaskLanding({
           : ['mr', 'create', '--fill', '--yes', '--repo', repository, '--source-branch', worktree.branch, '--target-branch', worktree.baseBranch];
         let output;
         try {
-          output = await run(execFile, chosen.tool, args, { cwd: worktree.worktreePath, timeout: REMOTE_TIMEOUT_MS });
+          output = await run(tools.execFile, chosen.tool, args, { cwd: worktree.worktreePath, timeout: REMOTE_TIMEOUT_MS });
         } catch (error) {
           throw new TaskError(`The branch was pushed to ${remote}, but the pull request could not be opened: ${firstLine(error.stderr || error.message)}`, 503, undefined, { cause: error });
         }

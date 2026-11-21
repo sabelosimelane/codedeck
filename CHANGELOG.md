@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-11-21] - Fix remote background terminal attach and remote task landing
+
+### Executive Summary
+* Remote workflow runs can now attach to remote tmux terminals in the background and inspect or land remote tasks without failing on local-only runtime checks or local Git calls.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Starting a workflow on a remote host failed immediately with `Background attach requires a terminal runtime.` because `attachBackgroundSession` required a synchronous `runtime.spawn()` method, while remote `hostRuntime`s expose `spawnAsync()`/`isSessionRecoverableAsync()`. In addition, task status/landing requests failed with 500 (`Task request failed`) because `task-landing.js` computed host-scoped `tools` in `load()` but ignored them and ran local `execFile`/`fs` against remote paths.
+  * **Solution:** Added async remote-aware `attachBackgroundSessionAsync` and `backgroundSessionAvailableAsync` in `server/ws-handler.js`, awaited them in `server/pipelines/run-engine.js`, fixed `resolveHostRuntime(sessionId)?.host` in `server/index.js`, and threaded `tools` through every helper and action in `server/tasks/task-landing.js`.
+* **🛠️ Codebase:**
+  * `server/ws-handler.js` — added `backgroundSessionAvailableAsync` and `attachBackgroundSessionAsync` supporting both sync local runtimes and async remote `hostRuntime`s with `registerRemotePtyExitHandler`.
+  * `server/pipelines/run-engine.js` — awaited `attachBackground` and made `terminalStillThere` and `findAgentTerminal` async.
+  * `server/index.js` — wired `attachBackgroundSessionAsync`, `backgroundSessionAvailableAsync`, and `resolveHostRuntime(sessionId)?.host` into `pipelineRunEngine`.
+  * `server/tasks/task-landing.js` — threaded `tools` from `load()`/`inspect()` into `remotes`, `currentBranch`, `movedPast`, `sameBytes`, `sameFolder`, `sameFile`, `isVerifiedRunAttachment`, `listUnverifiedAttachments`, `listIgnoredAtRisk`, `removeFolder`, `removeFiles`, `afterFinished`, `closeInspected`, `commit`, `merge`, and `pullRequest`.
+* **🧪 Tests:**
+  * `server/__tests__/cross-host-sync.test.js` — added regression tests for remote `attachBackgroundSessionAsync`/`backgroundSessionAvailableAsync` and remote `createTaskLanding` inspection via `resolveHostTools`.
+
 ## [2026-11-21] - Fix remote-host workflow runs executing locally
 
 ### Executive Summary
