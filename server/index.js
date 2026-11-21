@@ -911,6 +911,10 @@ const taskStore = createTaskStore(db, { findProject: name => loadProjects().find
 const taskService = createTaskService({
   // Read when asked: the run store is created below. A run that is starting or running may be writing in the task.
   isRunWorking: taskId => pipelineRunStore.list().some(run => run.taskId === taskId && (run.status === 'pending' || run.status === 'running')),
+  listRuns: () => pipelineRunStore.list(),
+  reservedWorktreePaths: () => new Set(pipelineRequestStore.listUnpublished()
+    .filter(record => record.placement !== null)
+    .map(record => record.placement.worktreePath)),
   taskStore,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   execFile,

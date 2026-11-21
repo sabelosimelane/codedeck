@@ -116,6 +116,57 @@ export async function listOpenTasks({ signal } = {}) {
   }
 }
 
+const CANDIDATE_REASONS = ['missing', 'detached', 'unreadable', 'in_use', 'base_unknown'];
+
+/** A linked Git worktree offered for adoption, with every server field checked before display. */
+export function parseWorktreeCandidate(value, index = 0) {
+  const guard = (valid, field) => { if (!valid) throw new Error(`Invalid worktree candidate ${index} field ${field}`); };
+  guard(value !== null && typeof value === 'object' && !Array.isArray(value), 'candidate');
+  guard(absolute(value.path), 'path');
+  guard(text(value.name) && !value.name.includes('/'), 'name');
+  guard(text(value.repository) && !value.repository.includes('/'), 'repository');
+  guard(typeof value.own === 'boolean', 'own');
+  guard(value.branch === null || text(value.branch), 'branch');
+  guard(typeof value.head === 'string' && /^[0-9a-f]{40}$/.test(value.head), 'head');
+  guard(value.uncommittedCount === null || (Number.isSafeInteger(value.uncommittedCount) && value.uncommittedCount >= 0), 'uncommittedCount');
+  guard(typeof value.selectable === 'boolean', 'selectable');
+  guard(value.reason === null || (value.reason !== null && typeof value.reason === 'object' && !Array.isArray(value.reason)), 'reason');
+  if (value.reason !== null) {
+    guard(CANDIDATE_REASONS.includes(value.reason.code), 'reason.code');
+    guard(text(value.reason.message), 'reason.message');
+  }
+  guard(value.selectable === (value.reason === null), 'selectable');
+  return { path: value.path, name: value.name, repository: value.repository, own: value.own, branch: value.branch,
+    head: value.head, uncommittedCount: value.uncommittedCount, selectable: value.selectable,
+    reason: value.reason === null ? null : { code: value.reason.code, message: value.reason.message } };
+}
+
+export async function listWorktreeCandidates(project, { signal } = {}) {
+  if (!text(project)) throw new TypeError('project must be a nonempty string');
+  const candidates = [];
+  for (let page = 0; ; page += 1) {
+    const body = await request(`/worktree-candidates?project=${encodeURIComponent(project)}&page=${page}&size=100&sort=${encodeURIComponent('path,asc')}`, { signal });
+    const guard = (valid, field) => { if (!valid) throw new Error(`Invalid worktree candidates response field ${field}`); };
+    guard(body !== null && typeof body === 'object' && !Array.isArray(body), 'body');
+    guard(Array.isArray(body.data), 'data');
+    guard(body.page !== null && typeof body.page === 'object' && !Array.isArray(body.page), 'page');
+    guard(Number.isSafeInteger(body.page.currentPage) && body.page.currentPage === page, 'page.currentPage');
+    guard(Number.isSafeInteger(body.page.size) && body.page.size === 100, 'page.size');
+    guard(Number.isSafeInteger(body.page.totalElements) && body.page.totalElements >= 0, 'page.totalElements');
+    guard(Number.isSafeInteger(body.page.totalPages) && body.page.totalPages >= 0, 'page.totalPages');
+    guard(typeof body.page.hasNextPage === 'boolean', 'page.hasNextPage');
+    body.data.forEach((entry, index) => candidates.push(parseWorktreeCandidate(entry, page * 100 + index)));
+    if (!body.page.hasNextPage) return candidates;
+  }
+}
+
+export async function makeTaskFromWorktree({ project, worktreePath, title } = {}) {
+  if (!text(project)) throw new TypeError('project must be a nonempty string');
+  if (!absolute(worktreePath)) throw new TypeError('worktreePath must be an absolute path');
+  if (title !== undefined && (!text(title) || title.trim().length > 80 || /[\r\n]/.test(title))) throw new TypeError('title must be 1–80 characters on one line');
+  return parseTask(await request('', { method: 'POST', body: { project, worktreePath, ...(title === undefined ? {} : { title: title.trim() }) } }));
+}
+
 /**
  * A change: a task with at least one repository merged. `summary` and `detail` are the first line
  * and the whole of the note the last step of its run wrote, or null when there is none; `commit`

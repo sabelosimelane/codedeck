@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  parseTaskForPhone, addTaskRepository, listTaskChanges, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, mergeTask, mergeTaskWorktree,
+  parseTaskForPhone, addTaskRepository, listTaskChanges, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, listWorktreeCandidates, makeTaskFromWorktree, parseWorktreeCandidate, mergeTask, mergeTaskWorktree,
   openTaskPullRequest, openTaskTerminal, openTaskWorktreePullRequest, parseLanding, parseTask, parseTaskSummary, parseWorktreeLanding, renameTask,
 } from '../tasksApi';
 
@@ -18,6 +18,8 @@ const task = (overrides = {}) => ({
   folder: null, worktrees: [worktree()], ...overrides,
 });
 const reply = (body, { ok = true, status = 200 } = {}) => ({ ok, status, json: async () => body });
+const candidate = (overrides = {}) => ({ path: '/tmp/worktrees/external-1', name: 'external-1', repository: 'demo', own: true,
+  branch: 'feature/spec', head: 'a'.repeat(40), uncommittedCount: 1, selectable: true, reason: null, ...overrides });
 const page = (data, hasNextPage = false) => ({ data, page: { currentPage: 0, size: 100, totalElements: data.length, totalPages: 1, hasNextPage } });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -88,6 +90,42 @@ describe('parseTaskForPhone', () => {
 });
 
 describe('tasks API client', () => {
+  it('lists and validates every candidate and page field', async () => {
+    const fetchMock = vi.fn(async () => reply({ data: [candidate()], page: { currentPage: 0, size: 100, totalElements: 1, totalPages: 1, hasNextPage: false } }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await listWorktreeCandidates('Demo')).toEqual([candidate()]);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/tasks/worktree-candidates?project=Demo&page=0&size=100&sort=path%2Casc');
+  });
+
+  it.each([
+    ['path', 'relative'], ['name', ''], ['repository', ''], ['own', null], ['branch', 42], ['head', 'bad'],
+    ['uncommittedCount', -1], ['selectable', null], ['reason', {}],
+  ])('rejects invalid candidate %s', (field, value) => {
+    expect(() => parseWorktreeCandidate(candidate({ [field]: value }))).toThrow(new RegExp(field));
+  });
+
+  it.each([['code', 'unknown'], ['message', null]])('rejects invalid candidate reason.%s', (field, value) => {
+    expect(() => parseWorktreeCandidate(candidate({ selectable: false, reason: { code: 'in_use', message: 'Busy', [field]: value } }))).toThrow(new RegExp(`reason\\.${field}`));
+  });
+
+  it.each([
+    ['data', null], ['page', null], ['page.currentPage', -1], ['page.size', 0],
+    ['page.totalElements', -1], ['page.totalPages', null], ['page.hasNextPage', 'yes'],
+  ])('rejects invalid candidate response %s', async (field, value) => {
+    const response = { data: [candidate()], page: { currentPage: 0, size: 100, totalElements: 1, totalPages: 1, hasNextPage: false } };
+    if (field.startsWith('page.')) response.page[field.slice(5)] = value;
+    else response[field] = value;
+    vi.stubGlobal('fetch', vi.fn(async () => reply(response)));
+    await expect(listWorktreeCandidates('Demo')).rejects.toThrow(new RegExp(field.replace('.', '\\.')));
+  });
+
+  it('makes a task from a worktree with an optional title', async () => {
+    const fetchMock = vi.fn(async () => reply(task({ worktreePath: candidate().path }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await makeTaskFromWorktree({ project: 'Demo', worktreePath: candidate().path, title: '  Replies  ' })).title).toBe('Replies');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ project: 'Demo', worktreePath: candidate().path, title: 'Replies' });
+    await expect(makeTaskFromWorktree({ project: 'Demo', worktreePath: 'relative' })).rejects.toThrow('worktreePath');
+  });
   it('lists every page of open tasks', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(reply(page([task()], true)))

@@ -1,7 +1,8 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { TaskError } from '../tasks/task-service.js';
-import { TASK_STATES } from '../tasks/task-store.js';
+import { isTaskTitle, TASK_STATES, TASK_TITLE_MAX } from '../tasks/task-store.js';
 import { parseCollectionQuery, paginate } from './collection-query.js';
 
 const BASE = '/api/tasks';
@@ -79,6 +80,20 @@ function taskView(task) {
 
 const reasonView = reason => ({ code: reason.code, message: reason.message });
 
+function candidateView(candidate) {
+  return {
+    path: candidate.path,
+    name: candidate.name,
+    repository: candidate.repository,
+    own: candidate.own,
+    branch: candidate.branch,
+    head: candidate.head,
+    uncommittedCount: candidate.uncommittedCount,
+    selectable: candidate.selectable,
+    reason: candidate.reason === null ? null : reasonView(candidate.reason),
+  };
+}
+
 /** How one repository of a task stands; spelled out for the same reason as a task. */
 function worktreeLandingView(view) {
   return {
@@ -154,9 +169,25 @@ export function createTasksRouter({ service, taskStore, landing, changes } = {})
 
   router.post(BASE, route(async (req, res) => {
     // `repositories` names the project's repositories the task includes, the one it starts in first; left out, its own only.
-    const body = requireBody(req.body, ['project', 'title', 'repositories']);
+    const body = requireBody(req.body, ['project', 'title', 'repositories', 'worktreePath']);
+    if (Object.hasOwn(body, 'worktreePath')) {
+      if (Object.hasOwn(body, 'repositories')) throw new TaskError('One or more fields failed validation.', 400,
+        [{ field: 'worktreePath', message: 'Choose either worktreePath or repositories' }, { field: 'repositories', message: 'Choose either repositories or worktreePath' }]);
+      if (typeof body.project !== 'string' || !body.project) throw fieldError('project', 'A project name is required');
+      if (typeof body.worktreePath !== 'string' || !path.isAbsolute(body.worktreePath) || body.worktreePath.includes('\0')) throw fieldError('worktreePath', 'Use an absolute worktree path');
+      if (body.title !== undefined && !isTaskTitle(body.title)) throw fieldError('title', `Use 1–${TASK_TITLE_MAX} characters on one line`);
+      res.status(201).json(taskView(await service.adoptWorktree(body)));
+      return;
+    }
     if (Object.prototype.hasOwnProperty.call(body, 'repositories') && !Array.isArray(body.repositories)) throw fieldError('repositories', 'Use a list of repository names');
     res.status(201).json(taskView(await service.create({ project: body.project, title: body.title, repositories: body.repositories })));
+  }));
+
+  router.get(`${BASE}/worktree-candidates`, route(async (req, res) => {
+    const query = parseCollectionQuery(req.query, { sortFields: ['path'], defaultSort: 'path,asc', filters: [FILTERS[0]] }, fieldError);
+    if (query.filters.project === undefined) throw fieldError('project', 'A project name is required');
+    const page = paginate(await service.listWorktreeCandidates(query.filters.project), query);
+    res.json({ data: page.data.map(candidateView), page: page.page });
   }));
 
   // What has been merged, newest first. Registered before `/:id`: a task id is a UUID, never this word.

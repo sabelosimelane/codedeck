@@ -24,6 +24,24 @@ async function setup({ openTerminal, landing, changes = [] } = {}) {
   let created = 0;
   const real = createTaskService({ isRunWorking: () => false, taskStore, findProject: () => null, execFile: () => {}, startSession: async () => ({ id: 'Demo-1' }), pathExists: async () => true });
   const service = {
+    listWorktreeCandidates: vi.fn(async project => {
+      if (project === 'Nope') throw new TaskError('Project not found', 404);
+      if (project === 'Remote') throw new TaskError('Tasks are only available for local projects.', 409);
+      return [1, 2, 3].map(number => ({ path: `/tmp/worktrees/external-${number}`, name: `external-${number}`,
+        repository: 'demo', own: true, branch: `feature/thing-${number}`, head: 'a'.repeat(40),
+        uncommittedCount: number, selectable: number !== 3, reason: number === 3 ? { code: 'detached', message: 'No branch is checked out.' } : null,
+        repositoryPath: '/internal/repository', checkout: '/internal/checkout', baseBranch: 'main' }));
+    }),
+    adoptWorktree: vi.fn(async ({ project, worktreePath, title }) => {
+      if (project === 'Nope') throw new TaskError('Project not found', 404);
+      if (project === 'Remote') throw new TaskError('Tasks are only available for local projects.', 409);
+      if (!worktreePath.startsWith('/tmp/worktrees/external-')) throw new TaskError('Worktree not found', 404);
+      if (worktreePath.endsWith('-3')) throw new TaskError('No branch is checked out.', 409);
+      if (taskStore.findOpenByWorktreePath(worktreePath)) throw new TaskError('Already belongs to a task', 409);
+      created += 1;
+      return taskStore.create({ ...OWN_REPOSITORY, id: id(created), project, title: title ?? 'thing 1', worktreePath,
+        branch: 'feature/thing-1', baseBranch: 'main', baseCommit: 'a'.repeat(40), titleSource: title ? 'owner' : 'input' });
+    }),
     create: vi.fn(async ({ project, title, repositories }) => {
       if (repositories !== undefined && (!Array.isArray(repositories) || repositories.includes('nope'))) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'repositories', message: 'nope is not a repository of this project' }]);
       if (typeof project !== 'string' || !project) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'project', message: 'A project name is required' }]);
@@ -97,6 +115,64 @@ function expectProblem(response, status, path = base) {
 }
 
 describe('tasks API', () => {
+  it('pages and sorts external worktree candidates with a full envelope', async () => {
+    const { server } = await setup();
+    const response = await request(server).get(`${base}/worktree-candidates?project=Demo&size=1&page=1&sort=path,desc`);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ data: [{ path: '/tmp/worktrees/external-2', name: 'external-2', repository: 'demo', own: true,
+      branch: 'feature/thing-2', head: 'a'.repeat(40), uncommittedCount: 2, selectable: true, reason: null }],
+      page: { currentPage: 1, size: 1, totalElements: 3, totalPages: 3, hasNextPage: true } });
+  });
+
+  it.each(['', '?project=', '?project[]=Demo', '?project=Demo&size=0', '?project=Demo&size=101',
+    '?project=Demo&page=-1', '?project=Demo&page=wat', '?project=Demo&sort=title,asc', '?project=Demo&extra=x'])
+  ('rejects invalid worktree candidate query %s', async query => {
+    const { server } = await setup();
+    expectProblem(await request(server).get(`${base}/worktree-candidates${query}`), 400, `${base}/worktree-candidates`);
+  });
+
+  it('makes a task from a worktree and rejects a repeated request', async () => {
+    const { server, taskStore } = await setup();
+    const body = { project: 'Demo', worktreePath: '/tmp/worktrees/external-1' };
+    const first = await request(server).post(base).send(body);
+    expect(first.status).toBe(201);
+    expect(first.body).toMatchObject({ title: 'thing 1', worktreePath: body.worktreePath, folder: null });
+    expect(taskStore.findOpenByWorktreePath(body.worktreePath)?.id).toBe(first.body.id);
+    expectProblem(await request(server).post(base).send(body), 409);
+  });
+
+  it('reports unknown and remote projects, and a listed refusal', async () => {
+    const { server } = await setup();
+    expectProblem(await request(server).get(`${base}/worktree-candidates?project=Nope`), 404, `${base}/worktree-candidates`);
+    expectProblem(await request(server).get(`${base}/worktree-candidates?project=Remote`), 409, `${base}/worktree-candidates`);
+    expectProblem(await request(server).post(base).send({ project: 'Demo', worktreePath: '/tmp/worktrees/external-3' }), 409);
+    expectProblem(await request(server).post(base).send({ project: 'Remote', worktreePath: '/tmp/worktrees/external-1' }), 409);
+  });
+
+  it('accepts the title limit and treats hostile text as data', async () => {
+    const { server } = await setup();
+    const title = "<script>alert(1)</script>'; DROP TABLE tasks;--".padEnd(80, 'x');
+    const response = await request(server).post(base).send({ project: 'Demo', worktreePath: '/tmp/worktrees/external-1', title });
+    expect(response.status).toBe(201);
+    expect(response.body.title).toBe(title);
+  });
+
+  it.each([
+    [{ project: 'Demo', worktreePath: null }, ['worktreePath']],
+    [{ project: 'Demo', worktreePath: '' }, ['worktreePath']],
+    [{ project: 'Demo', worktreePath: [] }, ['worktreePath']],
+    [{ project: 'Demo', worktreePath: 'relative' }, ['worktreePath']],
+    [{ project: 'Demo', worktreePath: '/tmp/unknown' }, null],
+    [{ project: 'Demo', worktreePath: '/tmp/worktrees/external-1', repositories: [] }, ['worktreePath', 'repositories']],
+    [{ project: 'Demo', worktreePath: '/tmp/worktrees/external-1', title: '' }, ['title']],
+    [{ project: 'Demo', worktreePath: '/tmp/worktrees/external-1', title: 'x'.repeat(81) }, ['title']],
+  ])('validates worktree adoption body %j', async (body, fields) => {
+    const { server, taskStore } = await setup();
+    const response = await request(server).post(base).send(body);
+    expectProblem(response, fields ? 400 : 404);
+    if (fields) expect(response.body.errors.map(entry => entry.field)).toEqual(fields);
+    expect(taskStore.list()).toEqual([]);
+  });
   it('creates a task and returns exactly its public fields', async () => {
     const { server } = await setup();
     const response = await request(server).post(base).send({ project: 'Demo', title: 'WhatsApp replies' });

@@ -51,7 +51,7 @@ codedeck/
 │   ├── terminal-worktree-service.js # Older endpoint's service: branch + worktree + terminal (the client now uses tasks)
 │   ├── tasks/
 │   │   ├── task-store.js     # SQLite store for tasks: title, worktree, branch, base, state, PR URL
-│   │   ├── task-service.js   # Plans and creates a task's worktree; opens terminals in it; renames
+│   │   ├── task-service.js   # Plans and creates tasks; discovers and adopts existing Git worktrees; opens terminals; renames
 │   │   ├── task-landing.js   # Live Git status and commit, merge, pull request and close; nothing forced
 │   │   ├── task-changes.js   # What was merged: a merged task with the note its run's last step wrote; nothing stored
 │   │   ├── task-terminals.js # Closes a finished task's terminals: those opened in it and those its runs used
@@ -60,7 +60,7 @@ codedeck/
 │   ├── routes/
 │   │   ├── terminal-waiting.js   # Paginated waiting collection + PUT mark/clear (RFC 9457 errors)
 │   │   ├── terminal-worktrees.js # POST new worktree terminal (kept for older clients)
-│   │   ├── tasks.js              # Tasks: list, create, rename, terminals, landing of the task and of one repository (RFC 9457 errors)
+│   │   ├── tasks.js              # Tasks: list, create, worktree candidates/adoption, rename, terminals, landing (RFC 9457 errors)
 │   │   ├── project-repositories.js # A project's repositories: list, candidates, add, remove, terminal (RFC 9457 errors)
 │   │   ├── collection-query.js   # Shared page/size/sort/filter parsing and the page envelope
 │   │   └── agent-sessions.js     # Paginated local agent conversations + resume API
