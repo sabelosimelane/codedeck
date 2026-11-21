@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-11-21] - Live CLI and UI sync across backend restarts and mid-pass exits
+
+### Executive Summary
+* Workflow runs now stay in sync with live CLI agents across backend restarts instead of being marked `Interrupted` while the model is still actively working. Active pass state is persisted so the server seamlessly reattaches to running tmux sessions, picks up completion signals emitted during downtime, and immediately flags mid-pass CLI exits rather than leaving the UI stuck on `Running`.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Backend restarts unconditionally marked all `pending`, `running`, and `needs_input` pipeline runs as `interrupted` while their tmux-backed CLI sessions kept working, causing the UI to display `Interrupted` / `Resume` over a busy agent and miss completion signals. Additionally, mid-pass CLI exits back to the shell were not detected by `watchForDialog`, leaving runs stuck on `Running`.
+  * **Solution:** Persisted active workflow pass state in SQLite, added non-destructive workflow reattachment and scrollback signal replay on startup reconciliation, and added debounced mid-pass exit/close detection in `watchForDialog`.
+* **🗄️ Database:**
+  * `server/pipelines/run-store.js` — added nullable `workflow_state` column and migration on `pipeline_runs`, `interruptOnStart` option on `createRunStore`, and `markInterrupted(id)` helper that clears `input_request` and `workflow_state`.
+* **🛠️ Codebase:**
+  * `server/terminal-workflow.js` — added `exportState()`, `reattach(savedState, options)`, `findPassSignal()`, and `replayScreen(screenText)` to hydrate in-flight passes without re-sending prompts or resetting context and to match only signals from the active pass.
+  * `server/pipelines/run-engine.js` — persisted `workflowState` on pass start and transitions, added `reconcileOnStartup()` and `observeReattachedStep()` to reattach to live tmux sessions (or mark truly non-recoverable runs `interrupted`), and added 2-poll debounced `exited`/`closed` detection in `watchForDialog`.
+  * `server/index.js` — initialized `pipelineRunStore` with `{ interruptOnStart: false }` and invoked `await pipelineRunEngine.reconcileOnStartup()` before mounting pipeline routes.
+* **🧪 Tests:**
+  * `server/__tests__/terminal-workflow.test.js` — added tests for `exportState`, `reattach`, `replayScreen` scrollback filtering, and `reset_output` timer recovery.
+  * `server/__tests__/pipeline-run-store.test.js` — added tests for `workflowState` persistence, `interruptOnStart: false`, and `markInterrupted`.
+  * `server/__tests__/pipeline-run-engine.test.js` — added tests for startup reattachment to a still-working CLI, downtime signal replay ignoring older scrollback signals, truthful interruption when a CLI exited, and debounced mid-pass CLI exit detection.
+
 ## [2026-11-21] - Workflow Committer changelog and dated release notes
 
 ### Executive Summary

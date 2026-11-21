@@ -377,6 +377,23 @@ function validateRunRecord(id, record) {
     fieldError(id, field, message.includes(':') ? message.slice(message.indexOf(':') + 1).trim() : message);
   }
 
+  let workflowState = record.workflowState ?? null;
+  if (workflowState !== null) {
+    if (!isPlainObject(workflowState)) fieldError(id, 'workflow_state', 'must be null or an object');
+    if (!isPlainObject(workflowState.request)
+      || typeof workflowState.status !== 'string'
+      || typeof workflowState.phase !== 'string'
+      || !Number.isInteger(workflowState.pass) || workflowState.pass < 0
+      || (workflowState.identifier !== null && typeof workflowState.identifier !== 'string')
+      || !Array.isArray(workflowState.passIdentifiers)
+      || !Array.isArray(workflowState.issuedIdentifiers)) {
+      fieldError(id, 'workflow_state', 'is malformed');
+    }
+    if (!['running', 'needs_input'].includes(record.status)) {
+      workflowState = null;
+    }
+  }
+
   const finishedAt = requireIso(id, 'finished_at', record.finishedAt, { allowNull: true });
   if (['complete', 'stopped', 'error'].includes(record.status)) {
     if (finishedAt === null) fieldError(id, 'finished_at', 'required for terminal statuses');
@@ -403,6 +420,7 @@ function validateRunRecord(id, record) {
     inputRequest,
     taskId: record.taskId,
     attachments,
+    workflowState,
     createdAt: requireIso(id, 'created_at', record.createdAt),
     updatedAt: requireIso(id, 'updated_at', record.updatedAt),
     finishedAt,
@@ -442,6 +460,15 @@ function rowToRecord(row) {
     // A stored JSON null is not a migrated empty manifest — only a JSON array is valid.
     if (attachments === null) fieldError(row.id, 'attachments', 'must be a JSON array');
   }
+  let workflowState = null;
+  if (row.workflow_state !== null && row.workflow_state !== undefined) {
+    try {
+      workflowState = JSON.parse(row.workflow_state);
+    } catch {
+      fieldError(row.id, 'workflow_state', 'must be valid JSON');
+    }
+    if (workflowState === null) fieldError(row.id, 'workflow_state', 'must be SQL NULL or a JSON object');
+  }
   return validateRunRecord(row.id, {
     requestId: row.request_id,
     workflowId: row.workflow_id,
@@ -462,6 +489,7 @@ function rowToRecord(row) {
     inputRequest,
     taskId: row.task_id,
     attachments,
+    workflowState,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at,
@@ -493,6 +521,7 @@ function persistValues(record) {
     record.inputRequest === null ? null : JSON.stringify(record.inputRequest),
     record.taskId,
     JSON.stringify(record.attachments),
+    record.workflowState === null ? null : JSON.stringify(record.workflowState),
   ];
 }
 
@@ -500,7 +529,7 @@ function isUniqueConflict(err) {
   return err && (err.code === 'SQLITE_CONSTRAINT_UNIQUE' || /UNIQUE constraint failed/i.test(err.message));
 }
 
-export function createRunStore(db, { now = () => new Date().toISOString() } = {}) {
+export function createRunStore(db, { now = () => new Date().toISOString(), interruptOnStart = true } = {}) {
   if (!db) throw new Error('pipeline_runs: a database handle is required');
   db.exec(`
     CREATE TABLE IF NOT EXISTS pipeline_runs (
@@ -526,7 +555,8 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       finished_at TEXT,
       input_request TEXT,
       task_id TEXT,
-      attachments TEXT NOT NULL DEFAULT '[]'
+      attachments TEXT NOT NULL DEFAULT '[]',
+      workflow_state TEXT
     );
   `);
   // Databases created before input requests have no such column; their runs were not waiting on one.
@@ -540,6 +570,10 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
   // Runs stored before attachments existed have an empty manifest.
   if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'attachments')) {
     db.exec(`ALTER TABLE pipeline_runs ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'`);
+  }
+  // Runs stored before live restart recovery existed have no persisted workflow pass state.
+  if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'workflow_state')) {
+    db.exec('ALTER TABLE pipeline_runs ADD COLUMN workflow_state TEXT');
   }
 
   // Runs stored before step loops and agent decisions existed: the owner decided, and no loop
@@ -619,8 +653,8 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       id, request_id, workflow_id, project, input, status, stop_reason, current_step_index,
       error, definition, steps, home_path, worktree_path, worktree_branch, base_commit,
       worktree_state, worktree_detail, created_at, updated_at, finished_at, input_request, task_id,
-      attachments
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      attachments, workflow_state
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_runs SET
@@ -628,7 +662,7 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
       current_step_index = ?, error = ?, definition = ?, steps = ?, home_path = ?,
       worktree_path = ?, worktree_branch = ?, base_commit = ?, worktree_state = ?,
       worktree_detail = ?, created_at = ?, updated_at = ?, finished_at = ?, input_request = ?, task_id = ?,
-      attachments = ?
+      attachments = ?, workflow_state = ?
     WHERE id = ?
   `);
 
@@ -649,31 +683,44 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
     return get(record.id);
   };
 
+  const markInterruptedRow = (row, stamp) => {
+    if (!INTERRUPTIBLE.has(row.status)) return false;
+    let steps;
+    try {
+      steps = JSON.parse(row.steps);
+    } catch {
+      fieldError(row.id, 'steps', 'must be valid JSON');
+    }
+    if (!Array.isArray(steps) || row.current_step_index < 0 || row.current_step_index >= steps.length) {
+      fieldError(row.id, 'current_step_index', 'out of range');
+    }
+    const nextSteps = steps.map((step, index) => (
+      index === row.current_step_index ? { ...step, status: 'interrupted' } : step
+    ));
+    db.prepare(`
+      UPDATE pipeline_runs
+      SET status = 'interrupted', steps = ?, updated_at = ?, input_request = NULL, workflow_state = NULL
+      WHERE id = ?
+    `).run(JSON.stringify(nextSteps), stamp, row.id);
+    return true;
+  };
+
   const interruptUnfinished = db.transaction(() => {
     const rows = db.prepare('SELECT id, status, current_step_index, steps, updated_at FROM pipeline_runs').all();
     const stamp = now();
     for (const row of rows) {
-      if (!INTERRUPTIBLE.has(row.status)) continue;
-      let steps;
-      try {
-        steps = JSON.parse(row.steps);
-      } catch {
-        fieldError(row.id, 'steps', 'must be valid JSON');
-      }
-      if (!Array.isArray(steps) || row.current_step_index < 0 || row.current_step_index >= steps.length) {
-        fieldError(row.id, 'current_step_index', 'out of range');
-      }
-      const nextSteps = steps.map((step, index) => (
-        index === row.current_step_index ? { ...step, status: 'interrupted' } : step
-      ));
-      db.prepare(`
-        UPDATE pipeline_runs
-        SET status = 'interrupted', steps = ?, updated_at = ?, input_request = NULL
-        WHERE id = ?
-      `).run(JSON.stringify(nextSteps), stamp, row.id);
+      markInterruptedRow(row, stamp);
     }
   });
-  interruptUnfinished();
+  if (interruptOnStart) interruptUnfinished();
+
+  const markInterrupted = db.transaction((id) => {
+    if (!isUuid(id)) throw new Error('pipeline_runs: id must be a UUID');
+    const row = read.get(id);
+    if (!row) throw new Error(`pipeline_runs row ${id}: not found`);
+    markInterruptedRow(row, now());
+    return get(id);
+  });
 
   const attribution = createTeamAttribution(db);
   const create = db.transaction((input, context) => {
@@ -693,6 +740,7 @@ export function createRunStore(db, { now = () => new Date().toISOString() } = {}
   });
   return {
     get,
+    markInterrupted,
     attribution: attribution.get,
     attributedIds: attribution.ids,
     recordAttempt: attribution.recordAttempt,

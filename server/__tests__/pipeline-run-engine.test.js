@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
+import { createTerminalWorkflow } from '../terminal-workflow.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createAnswerStore } from '../pipelines/answer-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
@@ -3919,5 +3920,174 @@ describe('createRunEngine attachment verification', () => {
     }));
     publish('complete');
     await done;
+  });
+});
+
+describe('CLI and UI sync — restart recovery & mid-pass exit detection', () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  function realWorkflowSetup(db, overrides = {}) {
+    const runStore = createRunStore(db, {
+      now: overrides.now ?? (() => new Date().toISOString()),
+      interruptOnStart: overrides.interruptOnStart ?? false,
+    });
+    const writes = [];
+    let activeWorkflow = null;
+    const attachBackground = overrides.attachBackground ?? vi.fn(() => ({
+      write: (data) => { writes.push(data); },
+      release: vi.fn(),
+    }));
+    const createWorkflow = vi.fn(({ write, notify }) => {
+      activeWorkflow = createTerminalWorkflow({ write, notify });
+      return activeWorkflow;
+    });
+    const engine = createRunEngine({
+      runStore,
+      createWorktree: vi.fn(async () => ({ baseCommit: BASE_COMMIT })),
+      startSession: vi.fn(async () => 'Demo-1'),
+      attachBackground,
+      createWorkflow,
+      classifyReadiness: (state) => {
+        if (state.entryExists === false || state.isAlive === false) return 'closed';
+        if (state.executionReason === 'agent_needs_input') return 'needs_input';
+        if (state.executionReason === 'shell_prompt') return 'exited';
+        if (state.executionReason === 'agent_prompt_idle' && state.profile?.promptVisible?.(state.lines)) return 'ready';
+        return 'waiting';
+      },
+      readExecutionState: overrides.readExecutionState ?? vi.fn(async () => executionState({ executionReason: 'agent_working', lines: ['Editing files...'] })),
+      readScreen: overrides.readScreen ?? vi.fn(async () => []),
+      readProgressCount: vi.fn(async () => null),
+      decisionStore: createDecisionStore(db),
+      answerStore: createAnswerStore(db),
+      writeBrief: vi.fn(async () => null),
+      noteStore: createNoteStore(db),
+      reviewStore: createReviewStore(db),
+      removeWorktree: vi.fn(async () => ({ ok: true })),
+      listDirtyPaths: vi.fn(async () => []),
+      pathExists: vi.fn(async () => true),
+      terminalAvailable: overrides.terminalAvailable ?? vi.fn(() => true),
+      setTerminalMuted: vi.fn(() => true),
+      restartAgentTerminal: vi.fn(async () => {}),
+      typeIntoTerminal: vi.fn(async () => {}),
+      inspectTerminal: vi.fn(async () => ({})),
+      terminalInFolder: overrides.terminalInFolder ?? vi.fn(async () => true),
+      setTimeout,
+      now: overrides.now ?? (() => new Date().toISOString()),
+      readinessPollMs: 1000,
+      dialogPollMs: 2000,
+      launchEnterDelayMs: 100,
+    });
+    return { runStore, engine, writes, attachBackground, getWorkflow: () => activeWorkflow };
+  }
+
+  it('reattaches to a still-working CLI after backend restart without marking interrupted or resending the prompt', async () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    const first = realWorkflowSetup(db, {
+      readExecutionState: vi.fn()
+        .mockResolvedValueOnce(executionState())
+        .mockResolvedValue(executionState({ executionReason: 'agent_working', lines: ['Editing files...'] })),
+    });
+    const run = first.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
+    first.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1200);
+
+    const beforeRestart = first.runStore.get(run.id);
+    expect(beforeRestart.status).toBe('running');
+    expect(beforeRestart.workflowState).not.toBeNull();
+    const activeId = beforeRestart.workflowState.identifier;
+    expect(activeId).toBeTruthy();
+
+    // Simulate backend restart on the same SQLite DB while tmux session Demo-1 keeps working.
+    const restarted = realWorkflowSetup(db, {
+      readExecutionState: vi.fn(async () => executionState({ executionReason: 'agent_working', lines: ['Editing files...'] })),
+      readScreen: vi.fn(async () => ['Editing files...']),
+    });
+    const reconciled = await restarted.engine.reconcileOnStartup();
+    expect(reconciled).toEqual({ reattached: [run.id], interrupted: [] });
+    expect(restarted.writes).toHaveLength(0);
+    expect(restarted.runStore.get(run.id).status).toBe('running');
+
+    // When the CLI finishes its pass later, the reattached engine catches the signal and completes the run.
+    restarted.getWorkflow().output(`[[CDW:${activeId}:COMPLETE]]`);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(restarted.runStore.get(run.id).status).toBe('complete');
+    expect(restarted.runStore.get(run.id).workflowState).toBeNull();
+  });
+
+  it('catches a signal that appeared on screen while the backend was restarting, ignoring older scrollback signals', async () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    const first = realWorkflowSetup(db, {
+      readExecutionState: vi.fn()
+        .mockResolvedValueOnce(executionState())
+        .mockResolvedValue(executionState({ executionReason: 'agent_working', lines: ['Working...'] })),
+    });
+    const run = first.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
+    first.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1200);
+    const activeId = first.runStore.get(run.id).workflowState.identifier;
+
+    // During downtime, the CLI finished and printed its signal; scrollback also has an earlier step's signal.
+    const restarted = realWorkflowSetup(db, {
+      readExecutionState: vi.fn(async () => executionState()),
+      readScreen: vi.fn(async () => [
+        '[[CDW:oldstep1-1:COMPLETE]]',
+        'All tests passed.',
+        `[[CDW:${activeId}:COMPLETE]]`,
+        '> ',
+      ]),
+    });
+    const reconciled = await restarted.engine.reconcileOnStartup();
+    expect(reconciled).toEqual({ reattached: [run.id], interrupted: [] });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(restarted.runStore.get(run.id).status).toBe('complete');
+    expect(restarted.writes).toHaveLength(0);
+  });
+
+  it('marks a run interrupted on startup when its terminal is gone or the agent exited with no signal', async () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    const first = realWorkflowSetup(db, {
+      readExecutionState: vi.fn()
+        .mockResolvedValueOnce(executionState())
+        .mockResolvedValue(executionState({ executionReason: 'agent_working', lines: ['Working...'] })),
+    });
+    const run = first.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
+    first.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1200);
+
+    const restarted = realWorkflowSetup(db, {
+      readExecutionState: vi.fn(async () => executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['user@host ~ %'] })),
+      readScreen: vi.fn(async () => ['user@host ~ %']),
+    });
+    const reconciled = await restarted.engine.reconcileOnStartup();
+    expect(reconciled).toEqual({ reattached: [], interrupted: [run.id] });
+    expect(restarted.runStore.get(run.id).status).toBe('interrupted');
+    expect(restarted.runStore.get(run.id).workflowState).toBeNull();
+  });
+
+  it('fails a running step when the CLI exits to the shell mid-pass across two consecutive polls', async () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    const readExecutionState = vi.fn()
+      .mockResolvedValueOnce(executionState())
+      // Single transient exit blip recovers on next poll
+      .mockResolvedValueOnce(executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['%'] }))
+      .mockResolvedValueOnce(executionState({ executionReason: 'agent_working', lines: ['Working...'] }))
+      // Two consecutive exited readings fail the run
+      .mockResolvedValue(executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['%'] }));
+    const ctx = realWorkflowSetup(db, { readExecutionState });
+    const run = ctx.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(5200);
+    // Still running after the single transient blip + recovery
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+
+    await vi.advanceTimersByTimeAsync(4500);
+    await done;
+    const failed = ctx.runStore.get(run.id);
+    expect(failed.status).toBe('error');
+    expect(failed.error).toMatch(/exited during step Develop/i);
   });
 });

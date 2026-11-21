@@ -807,3 +807,33 @@ describe('pipeline run store — loops and who decides', () => {
     }
   });
 
+  describe('workflowState persistence and deferred startup interruption', () => {
+    const sampleWorkflowState = {
+      request: { requestId: 'run-1-0-1', command: 'do work', resetCommand: '/clear', maxIterations: 2 },
+      status: 'running',
+      phase: 'waiting',
+      pass: 1,
+      identifier: 'cc960f63-2',
+      passIdentifiers: ['cc960f63-2'],
+      issuedIdentifiers: ['cc960f63-1', 'cc960f63-2'],
+    };
+
+    it('persists workflowState across reopen when interruptOnStart is false and clears it on markInterrupted', () => {
+      const { db, store } = setup();
+      const created = store.create(validRun({
+        status: 'running',
+        steps: [step({ status: 'running', sessionId: 'Demo-1', attempt: 1, iteration: 1, startedAt: '2026-11-21T10:00:00.000Z' })],
+        workflowState: sampleWorkflowState,
+      }));
+      const reopened = createRunStore(db, { interruptOnStart: false });
+      const loaded = reopened.get(created.id);
+      expect(loaded.status).toBe('running');
+      expect(loaded.workflowState).toEqual(sampleWorkflowState);
+
+      const interrupted = reopened.markInterrupted(created.id);
+      expect(interrupted.status).toBe('interrupted');
+      expect(interrupted.steps[0].status).toBe('interrupted');
+      expect(interrupted.workflowState).toBeNull();
+    });
+  });
+

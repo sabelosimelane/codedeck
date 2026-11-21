@@ -70,6 +70,22 @@ export function buildPrompt(command, identifier, guidance) {
   return `${command}\n\nCodeDeck workflow instruction: perform one pass of the command above. As your final output, emit exactly one signal, only after all work and tools for this pass have finished. Use CONTINUE if this pass finished and the overall requested task still has work remaining. Use COMPLETE only if the entire requested task is finished. Use NEEDS_INPUT if you need an answer, permission, or encounter a problem that prevents continuation. Before a NEEDS_INPUT signal, state what you need: print the questions marker on a line of its own, then a numbered list with one short question per item, each followed by Recommended: and the answer you recommend; write nothing else between the questions marker and the signal. Do not reset context yourself. Do not print a signal as an example or while explaining this instruction.${guidance === undefined ? '' : ` ${guidance}`}\nIteration identifier: ${identifier}\nCopy the iteration identifier verbatim; do not reconstruct or invent it. Construct the signal by joining these parts without spaces: opening [[CDW: ; the iteration identifier ; a colon ; the chosen uppercase status ; closing ]] . Construct the questions marker the same way, with QUESTIONS in place of the status.`;
 }
 
+/**
+ * Find the last signal in captured terminal screen text that belongs to the active pass.
+ * Signals from earlier passes or other runs in the same terminal are ignored.
+ */
+export function findPassSignal(screenText, { status, phase, identifier, passIdentifiers } = {}) {
+  if (typeof screenText !== 'string' || !screenText) return null;
+  if (!ACTIVE.has(status) || phase !== 'waiting') return null;
+  const known = passIdentifiers instanceof Set ? passIdentifiers : new Set(Array.isArray(passIdentifiers) ? passIdentifiers : []);
+  const text = stripVTControlCharacters(screenText).replace(/\s/g, '');
+  const matches = [...text.matchAll(/\[\[CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]/g)]
+    .filter(candidate => !(status === 'needs_input' && candidate[1] === identifier && candidate[2] === 'NEEDS_INPUT'))
+    .filter(candidate => (candidate[2] === 'NEEDS_INPUT' ? candidate[1] === identifier : known.has(candidate[1])));
+  const last = matches.at(-1);
+  return last ? { id: last[1], signal: last[2] } : null;
+}
+
 /** A terminal session owns a loop in backend memory, independently of its browser socket. */
 export function createTerminalWorkflow({ write, notify }) {
   if (typeof write !== 'function') throw new Error('Workflow write must be a function.');
@@ -163,10 +179,117 @@ export function createTerminalWorkflow({ write, notify }) {
     quietTimer = setTimeout(action, QUIET_MS);
   }
 
+  function exportState() {
+    if (!ACTIVE.has(status) || !request) return null;
+    return {
+      request: { ...request },
+      status,
+      phase,
+      pass,
+      identifier,
+      passIdentifiers: [...passIdentifiers],
+      issuedIdentifiers: [...issuedIdentifiers],
+    };
+  }
+  function startBeforePassReset() {
+    if (beforePass === null) {
+      phase = 'before_reset';
+      publish();
+      scheduleQuiet(reset);
+      return;
+    }
+    // Nothing reaches the agent until the check passes; a Stop or new start meanwhile wins.
+    phase = 'checking';
+    publish();
+    const checking = request;
+    const current = () => request === checking && status === 'resetting' && phase === 'checking';
+    Promise.resolve().then(() => beforePass()).then(() => {
+      if (!current()) return;
+      phase = 'before_reset';
+      publish();
+      scheduleQuiet(reset);
+    }, (err) => {
+      if (!current()) return;
+      finish('error', String(err?.message || err || 'The check before the next pass failed.').slice(0, 2000));
+    });
+  }
+
   return {
     snapshot,
+    /** Serializable state of the active pass for backend-restart recovery, or null when inactive. */
+    exportState,
     /** The identifier the agent copies into its signal for the pass in progress, or null. */
     signalIdentifier: () => identifier,
+    /**
+     * Hydrate an in-flight pass after a backend restart without re-sending the prompt or
+     * resetting the agent.
+     */
+    reattach(savedState, options = {}) {
+      if (!savedState || typeof savedState !== 'object' || Array.isArray(savedState)) {
+        throw new Error('Workflow reattach requires a state object.');
+      }
+      validateStart(savedState.request);
+      if (!ACTIVE.has(savedState.status)) throw new Error('Workflow reattach status must be active.');
+      if (!['waiting', 'before_reset', 'reset_output', 'checking'].includes(savedState.phase)) {
+        throw new Error('Workflow reattach phase is invalid.');
+      }
+      if (!Number.isInteger(savedState.pass) || savedState.pass < 0) {
+        throw new Error('Workflow reattach pass must be a nonnegative integer.');
+      }
+      if (savedState.identifier !== null && (typeof savedState.identifier !== 'string' || !/^[\w-]+$/.test(savedState.identifier))) {
+        throw new Error('Workflow reattach identifier is invalid.');
+      }
+      if (!Array.isArray(savedState.passIdentifiers) || !savedState.passIdentifiers.every(id => typeof id === 'string' && /^[\w-]+$/.test(id))) {
+        throw new Error('Workflow reattach passIdentifiers must be an array of identifiers.');
+      }
+      if (!Array.isArray(savedState.issuedIdentifiers) || !savedState.issuedIdentifiers.every(id => typeof id === 'string' && /^[\w-]+$/.test(id))) {
+        throw new Error('Workflow reattach issuedIdentifiers must be an array of identifiers.');
+      }
+      if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Workflow reattach options must be an object.');
+      for (const field of Object.keys(options)) {
+        if (field !== 'beforePass') throw new Error('Workflow reattach contains an unknown option.');
+      }
+      if (options.beforePass !== undefined && typeof options.beforePass !== 'function') throw new Error('Workflow beforePass must be a function.');
+      if (ACTIVE.has(status)) throw new Error('A workflow is already running in this terminal.');
+
+      cancelTimers();
+      request = { ...savedState.request };
+      beforePass = options.beforePass ?? null;
+      requests.set(request.requestId, request);
+      error = null;
+      limitReached = false;
+      status = savedState.status;
+      phase = savedState.phase;
+      pass = savedState.pass;
+      identifier = savedState.identifier;
+      passIdentifiers = new Set(savedState.passIdentifiers);
+      issuedIdentifiers.clear();
+      for (const id of savedState.issuedIdentifiers) issuedIdentifiers.add(id);
+      pendingIdentifier = null;
+      rawOutput = '';
+
+      if (status === 'resetting') {
+        if (phase === 'reset_output') {
+          resetTimer = setTimeout(() => finish('error', 'Reset did not settle within 15 seconds. Check the terminal before starting again.'), RESET_TIMEOUT_MS);
+          scheduleQuiet(iteration);
+        } else {
+          startBeforePassReset();
+        }
+      }
+    },
+    /**
+     * Inspect captured terminal scrollback on startup recovery for a signal belonging to this
+     * pass. Signals from earlier passes or other runs in the same terminal are ignored.
+     * @returns {boolean} true if a matching signal was found and processed
+     */
+    replayScreen(screenText) {
+      if (typeof screenText !== 'string') throw new Error('Workflow replayScreen must be a string.');
+      const match = findPassSignal(screenText, { status, phase, identifier, passIdentifiers });
+      if (!match) return false;
+      rawOutput = '';
+      this.output(`[[CDW:${match.id}:${match.signal}]]`);
+      return true;
+    },
     start(input, options = {}) {
       validateStart(input);
       if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Workflow start options must be an object.');
@@ -199,6 +322,7 @@ export function createTerminalWorkflow({ write, notify }) {
         // The agent in this terminal has context from earlier work: clear it, then start pass 1.
         cancelTimers();
         status = 'resetting';
+        phase = 'reset_output';
         identifier = null;
         publish();
         reset();
@@ -284,24 +408,7 @@ export function createTerminalWorkflow({ write, notify }) {
       } else {
         identifier = null;
         status = 'resetting';
-        publish();
-        if (beforePass === null) {
-          phase = 'before_reset';
-          scheduleQuiet(reset);
-          return;
-        }
-        // Nothing reaches the agent until the check passes; a Stop or new start meanwhile wins.
-        phase = 'checking';
-        const checking = request;
-        const current = () => request === checking && status === 'resetting' && phase === 'checking';
-        Promise.resolve().then(() => beforePass()).then(() => {
-          if (!current()) return;
-          phase = 'before_reset';
-          scheduleQuiet(reset);
-        }, (err) => {
-          if (!current()) return;
-          finish('error', String(err?.message || err || 'The check before the next pass failed.').slice(0, 2000));
-        });
+        startBeforePassReset();
       }
     },
   };

@@ -960,7 +960,7 @@ const PIPELINE_QUESTION_SCREEN_LINES = 400;
 const pipelineAgentStore = createAgentStore(db);
 const pipelineWorkflowStore = createWorkflowStore(db);
 const pipelineSettingsStore = createSettingsStore(db);
-const pipelineRunStore = createRunStore(db);
+const pipelineRunStore = createRunStore(db, { interruptOnStart: false });
 const pipelineRequestStore = createRequestStore(db);
 pipelineRunStoreForMobile = pipelineRunStore;
 const pipelineDecisionStore = createDecisionStore(db);
@@ -1149,6 +1149,10 @@ const reconciledStarts = await reconcileAttachmentStarts({
 });
 if (reconciledStarts.published.length || reconciledStarts.failed.length) {
   console.log(`[pipelines] reconciled interrupted attached starts published=${reconciledStarts.published.length} failed=${reconciledStarts.failed.length}`);
+}
+const reconciledRuns = await pipelineRunEngine.reconcileOnStartup();
+if (reconciledRuns.reattached.length || reconciledRuns.interrupted.length) {
+  console.log(`[pipelines] reconciled startup runs reattached=${reconciledRuns.reattached.length} interrupted=${reconciledRuns.interrupted.length}`);
 }
 app.use(createPipelinesRouter({
   attachmentStagingRoot: pipelineAttachmentStagingRoot,

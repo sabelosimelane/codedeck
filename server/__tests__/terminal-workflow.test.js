@@ -690,4 +690,73 @@ describe('terminal workflow — guidance for the pass', () => {
     expect(() => workflow.resubmit()).toThrow('The prompt can be sent again only while a pass is running.');
     expect(write.mock.calls.every(([text]) => !text.includes('Iteration identifier'))).toBe(true);
   });
+
+  describe('restart recovery (exportState, reattach, replayScreen)', () => {
+    it('exports active pass state and reattaches in a fresh workflow without re-sending the prompt', () => {
+      const first = setup();
+      expect(first.workflow.exportState()).toBeNull();
+      first.workflow.start({ ...request, maxIterations: 3 });
+      const id = token(first.write);
+      const saved = first.workflow.exportState();
+      expect(saved).toMatchObject({
+        request: { ...request, maxIterations: 3 },
+        status: 'running',
+        phase: 'waiting',
+        pass: 1,
+        identifier: id,
+        passIdentifiers: [id],
+        issuedIdentifiers: [id],
+      });
+
+      const restored = setup();
+      restored.workflow.reattach(saved);
+      expect(restored.write).not.toHaveBeenCalled();
+      expect(restored.workflow.snapshot()).toMatchObject({ status: 'running', active: true, iteration: 1, requestId: request.requestId });
+      expect(restored.workflow.signalIdentifier()).toBe(id);
+
+      restored.workflow.output(signal(id, 'COMPLETE'));
+      expect(restored.workflow.snapshot()).toMatchObject({ status: 'complete', active: false, iteration: 1 });
+      expect(restored.workflow.exportState()).toBeNull();
+    });
+
+    it('replays a matching pass signal from captured scrollback and ignores signals from earlier runs or passes', () => {
+      const first = setup();
+      first.workflow.start({ ...request, maxIterations: 3 });
+      const pass1Id = token(first.write);
+      first.workflow.output(signal(pass1Id, 'CONTINUE'));
+      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(100);
+      first.workflow.output('cleared\r\n> ');
+      vi.advanceTimersByTime(1000);
+      const pass2Id = token(first.write);
+      const saved = first.workflow.exportState();
+
+      const restored = setup();
+      restored.workflow.reattach(saved);
+      // Scrollback contains an unrelated earlier step's signal and pass 1's signal: neither should error or complete pass 2.
+      expect(restored.workflow.replayScreen(`old output ${signal('deadbeef-1', 'COMPLETE')}\n${signal(pass1Id, 'CONTINUE')}`)).toBe(false);
+      expect(restored.workflow.snapshot()).toMatchObject({ status: 'running', iteration: 2 });
+
+      // When pass 2's signal is on screen (even after an earlier NEEDS_INPUT in the same pass), replayScreen takes the latest matching signal.
+      expect(restored.workflow.replayScreen(`${signal('deadbeef-1', 'COMPLETE')}\n${signal(pass2Id, 'NEEDS_INPUT')}\nanswer\n${signal(pass2Id, 'COMPLETE')}`)).toBe(true);
+      expect(restored.workflow.snapshot()).toMatchObject({ status: 'complete', active: false, iteration: 2 });
+    });
+
+    it('resumes resetting timers when reattached during reset_output', () => {
+      const first = setup();
+      first.workflow.start({ ...request, maxIterations: 3 });
+      const pass1Id = token(first.write);
+      first.workflow.output(signal(pass1Id, 'CONTINUE'));
+      vi.advanceTimersByTime(1000);
+      const saved = first.workflow.exportState();
+      expect(saved).toMatchObject({ status: 'resetting', phase: 'reset_output', pass: 1 });
+
+      const restored = setup();
+      restored.workflow.reattach(saved);
+      expect(restored.write).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1000);
+      expect(restored.workflow.snapshot()).toMatchObject({ status: 'running', iteration: 2 });
+      expect(restored.write).toHaveBeenCalledTimes(1);
+    });
+  });
 });

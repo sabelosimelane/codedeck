@@ -8,6 +8,7 @@ import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
  */
 
 import { applyEvent, computeActions } from './run-machine.js';
+import { findPassSignal } from '../terminal-workflow.js';
 import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
@@ -28,8 +29,11 @@ const DEFAULT_PROMPT_PICKUP_MS = 30_000;
 const LAUNCH_LOST_READINGS = 3;
 // Consecutive dialog readings required before pausing a running step, preventing transient TUI redraw flaps.
 const DIALOG_DEBOUNCE_READINGS = 2;
+// Consecutive exited/closed readings required before failing a running step mid-pass.
+const EXIT_DEBOUNCE_READINGS = 2;
 // Log a stall warning if a running step's screen stays unchanged for 15 minutes while not idle at prompt.
 const SILENT_STALL_WARN_MS = 15 * 60 * 1000;
+const INTERRUPTIBLE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input']);
 
 /**
  * Whether a launch command written into a terminal never reached its shell: the screen is the
@@ -157,8 +161,7 @@ export function createRunEngine({
   const progressWarnings = new Set();
   const mutingWarnings = new Set();
 
-  function updateRun(runId, patch) {
-    const stored = runStore.update(runId, patch);
+  function syncTerminalMuting(runId, stored) {
     for (const [sessionId, muted] of planRunTerminalMuting(stored)) {
       try {
         setTerminalMuted(sessionId, muted);
@@ -170,6 +173,24 @@ export function createRunEngine({
         }
       }
     }
+  }
+
+  function updateRun(runId, patch) {
+    const stored = runStore.update(runId, patch);
+    syncTerminalMuting(runId, stored);
+    return stored;
+  }
+
+  function persistWorkflowState(runId, workflow) {
+    const current = runStore.get(runId);
+    if (!current || !['running', 'needs_input'].includes(current.status)) return;
+    const exported = typeof workflow?.exportState === 'function' ? workflow.exportState() : null;
+    updateRun(runId, { workflowState: exported });
+  }
+
+  function markRunInterrupted(runId) {
+    const stored = runStore.markInterrupted(runId);
+    syncTerminalMuting(runId, stored);
     return stored;
   }
 
@@ -256,6 +277,7 @@ export function createRunEngine({
       finishedAt: next.finishedAt,
       steps: next.steps,
       inputRequest: next.inputRequest,
+      ...(!['running', 'needs_input'].includes(next.status) ? { workflowState: null } : {}),
     });
   }
 
@@ -538,6 +560,7 @@ export function createRunEngine({
     let pickup = { pass: null, idleMs: 0, resent: false, asked: false, screen: null };
     let silentStall = { pass: null, unchangedMs: 0, warned: false, screen: null };
     let dialogReadings = 0;
+    let exitedReadings = 0;
     const watchPickup = (readiness, screen) => {
       const pass = workflow.snapshot();
       if (pass.iteration !== pickup.pass) pickup = { pass: pass.iteration, idleMs: 0, resent: false, asked: false, screen: null };
@@ -591,6 +614,23 @@ export function createRunEngine({
       const screen = Array.isArray(state?.lines) ? state.lines.join('\n') : null;
       await enqueueTransition(runId, async () => {
         if (over()) return;
+        if (readiness === 'exited' || readiness === 'closed') {
+          if (['running', 'needs_input'].includes(runStore.get(runId)?.status)
+            && ['running', 'resetting', 'needs_input'].includes(workflow.snapshot().status)) {
+            exitedReadings += 1;
+            if (exitedReadings >= EXIT_DEBOUNCE_READINGS) {
+              const message = readiness === 'closed'
+                ? terminalGoneMessage(stepName)
+                : `The agent ${agentName} exited during step ${stepName}. Check the terminal, then Resume.`;
+              failRun(runId, message);
+              workflow.stop();
+              settle();
+              return;
+            }
+          }
+          return;
+        }
+        exitedReadings = 0;
         watchPickup(readiness, screen);
         if (over()) return;
         if (!showsDialog) {
@@ -766,6 +806,7 @@ export function createRunEngine({
         if (await decideForOwner(runId, current, inputRequest, snapshot)) return { terminal: false };
         persistTransition(runId, { type: 'needs_input', inputRequest });
       }
+      persistWorkflowState(runId, getHandle(runId).workflow);
       return { terminal: false };
     }
 
@@ -783,6 +824,7 @@ export function createRunEngine({
         ));
         updateRun(runId, { steps });
       }
+      persistWorkflowState(runId, getHandle(runId).workflow);
       return { terminal: false };
     }
 
@@ -1041,6 +1083,7 @@ export function createRunEngine({
           notesDir: run.definition.notesDir,
         }),
       }]));
+      persistWorkflowState(runId, workflow);
 
       if (agent.assignment) runStore.recordAttempt(current);
 
@@ -1082,6 +1125,90 @@ export function createRunEngine({
         await restartAgentTerminal(restart.sessionId, restart.cwd);
       } catch (err) {
         failRun(runId, `The agent ${agentName} did not take the prompt of step ${stepName}, and its terminal could not be started again: ${String(err?.message || err)}`.slice(0, 2000));
+        return;
+      }
+      if (handle.stopped || runStore.get(runId)?.status !== 'running') return;
+      const relaunched = persistTransition(runId, { type: 'agent_restarted' });
+      handle.restartedAttempt = `${stepIndex}:${relaunched.steps[stepIndex].attempt}`;
+      await runStep(runId);
+      return;
+    }
+
+    const after = runStore.get(runId);
+    if (!after) return;
+
+    if (after.status === 'running') {
+      const nextStep = after.steps[after.currentStepIndex];
+      if (nextStep?.status === 'pending') {
+        await runStep(runId);
+        return;
+      }
+    }
+
+    if (after.status === 'complete') {
+      await finishComplete(runId);
+    }
+  }
+
+  /**
+   * Continues observing a pass that was reattached after a backend restart, then handles
+   * restart/next-step/completion identically to `runStep`.
+   */
+  async function observeReattachedStep(runId, {
+    sessionId,
+    attachment,
+    workflow,
+    workflowFinished,
+    settleWorkflow,
+    isSettled,
+    agentName,
+    stepName,
+    cwd,
+  }) {
+    const handle = getHandle(runId);
+    try {
+      watchForDialog(runId, sessionId, workflow, isSettled, {
+        agentName,
+        stepName,
+        settle: settleWorkflow,
+        cwd,
+        restartedAttempt: false,
+      }).catch((err) => {
+        try {
+          failRun(runId, String(err?.message || err || 'Run failed').slice(0, 2000));
+        } catch (failErr) {
+          console.error(`[pipeline-run] failRun after dialog watch error failed for ${runId}:`, failErr);
+        }
+        settleWorkflow();
+      });
+
+      await workflowFinished;
+      await handle.transitions;
+    } catch (err) {
+      const message = String(err?.message || err || 'Run failed').slice(0, 2000);
+      failRun(runId, message);
+    } finally {
+      try {
+        attachment?.release?.();
+      } catch (err) {
+        console.error(`[pipeline-run] release failed for ${runId}:`, err);
+      }
+      handle.attachment = null;
+      handle.workflow = null;
+      handle.dialogPause = false;
+    }
+
+    const restart = handle.agentRestart;
+    handle.agentRestart = null;
+    if (handle.stopped) return;
+
+    if (restart) {
+      const stepIndex = runStore.get(runId)?.currentStepIndex;
+      const { name: currentStepName, agent: { name: currentAgentName } } = runStore.get(runId).definition.steps[stepIndex];
+      try {
+        await restartAgentTerminal(restart.sessionId, restart.cwd);
+      } catch (err) {
+        failRun(runId, `The agent ${currentAgentName} did not take the prompt of step ${currentStepName}, and its terminal could not be started again: ${String(err?.message || err)}`.slice(0, 2000));
         return;
       }
       if (handle.stopped || runStore.get(runId)?.status !== 'running') return;
@@ -1327,6 +1454,176 @@ export function createRunEngine({
         loadActionRun(runId, 'cleanup');
         return cleanupWorktree(runId);
       });
+    },
+
+    /**
+     * Reconcile unfinished runs after a backend restart: reattach to live agent terminals
+     * whose pass is still in flight (or whose signal arrived during downtime), and mark
+     * truly non-recoverable runs as interrupted.
+     * @returns {Promise<{ reattached: string[], interrupted: string[] }>}
+     */
+    async reconcileOnStartup() {
+      const summary = { reattached: [], interrupted: [] };
+      for (const run of runStore.list()) {
+        if (!INTERRUPTIBLE_RUN_STATUSES.has(run.status)) continue;
+        const stepIndex = run.currentStepIndex;
+        const step = run.steps[stepIndex];
+        const defStep = run.definition.steps[stepIndex];
+        const savedState = run.workflowState;
+
+        const eligible = ['running', 'needs_input'].includes(run.status)
+          && ['running', 'needs_input'].includes(step?.status)
+          && typeof step?.sessionId === 'string'
+          && savedState !== null;
+
+        if (!eligible) {
+          markRunInterrupted(run.id);
+          summary.interrupted.push(run.id);
+          continue;
+        }
+
+        const sessionId = step.sessionId;
+        let available = false;
+        try {
+          available = terminalStillThere(sessionId) && await terminalInFolder(sessionId, run.worktreePath);
+        } catch (err) {
+          console.warn(`[pipeline-run] startup terminal check failed for ${run.id} (${sessionId}): ${err?.message || err}`);
+          available = false;
+        }
+        if (!available) {
+          markRunInterrupted(run.id);
+          summary.interrupted.push(run.id);
+          continue;
+        }
+
+        let readiness = 'waiting';
+        try {
+          const execState = await readExecutionState(sessionId);
+          readiness = classifyReadiness(execState);
+        } catch (err) {
+          console.warn(`[pipeline-run] startup execution state failed for ${run.id} (${sessionId}): ${err?.message || err}`);
+        }
+
+        let screenText = '';
+        try {
+          const lines = await readScreen(sessionId);
+          if (Array.isArray(lines)) screenText = lines.join('\n');
+        } catch (err) {
+          console.warn(`[pipeline-run] startup screen read failed for ${run.id} (${sessionId}): ${err?.message || err}`);
+        }
+
+        const hasSignalOnScreen = savedState.phase === 'waiting' && findPassSignal(screenText, savedState) !== null;
+        if (readiness === 'closed' || (readiness === 'exited' && !hasSignalOnScreen)) {
+          markRunInterrupted(run.id);
+          summary.interrupted.push(run.id);
+          continue;
+        }
+
+        let attachment;
+        try {
+          attachment = attachBackground(sessionId, { cwd: run.worktreePath });
+        } catch (err) {
+          console.warn(`[pipeline-run] startup background attach failed for ${run.id} (${sessionId}): ${err?.message || err}`);
+          markRunInterrupted(run.id);
+          summary.interrupted.push(run.id);
+          continue;
+        }
+
+        const handle = getHandle(run.id);
+        handle.stopped = false;
+        handle.stopRequested = false;
+        handle.attachment = attachment;
+        handle.dialogPause = run.status === 'needs_input' && run.inputRequest === null;
+        syncTerminalMuting(run.id, run);
+
+        const beforePassOption = run.attachments.length === 0 ? {} : {
+          beforePass: () => verifyAttachments({
+            worktreePath: run.worktreePath,
+            attachments: run.attachments,
+            notesDir: run.definition.notesDir,
+          }),
+        };
+
+        let settled = false;
+        let resolveWorkflow;
+        const workflowFinished = new Promise(resolve => { resolveWorkflow = resolve; });
+        const settleWorkflow = () => {
+          if (settled) return;
+          settled = true;
+          handle.settleWorkflow = null;
+          resolveWorkflow();
+        };
+        handle.settleWorkflow = settleWorkflow;
+
+        const onNotify = (snapshot) => {
+          enqueueTransition(run.id, async () => {
+            try {
+              const { terminal } = await applyWorkflowSnapshot(run.id, snapshot);
+              if (terminal) settleWorkflow();
+            } catch (err) {
+              const message = String(err?.message || err || 'Run failed').slice(0, 2000);
+              try {
+                failRun(run.id, message);
+              } catch (failErr) {
+                console.error(`[pipeline-run] failRun after transition error failed for ${run.id}:`, failErr);
+              }
+              settleWorkflow();
+            }
+          });
+        };
+
+        let workflow = attachment.workflow;
+        if (workflow) {
+          if (typeof attachment.observe !== 'function') {
+            try { attachment.release?.(); } catch (err) { console.warn(`[pipeline-run] release failed for ${run.id}:`, err); }
+            handle.attachment = null;
+            handle.dialogPause = false;
+            markRunInterrupted(run.id);
+            summary.interrupted.push(run.id);
+            continue;
+          }
+          attachment.observe(onNotify);
+        } else {
+          workflow = createWorkflow({
+            write: (data) => attachment.write(data),
+            notify: onNotify,
+          });
+        }
+        handle.workflow = workflow;
+
+        try {
+          workflow.reattach(savedState, beforePassOption);
+        } catch (err) {
+          console.warn(`[pipeline-run] startup workflow reattach failed for ${run.id} (${sessionId}): ${err?.message || err}`);
+          try { attachment.release?.(); } catch (relErr) { console.warn(`[pipeline-run] release failed for ${run.id}:`, relErr); }
+          handle.attachment = null;
+          handle.workflow = null;
+          handle.dialogPause = false;
+          markRunInterrupted(run.id);
+          summary.interrupted.push(run.id);
+          continue;
+        }
+
+        if (hasSignalOnScreen) {
+          workflow.replayScreen(screenText);
+        }
+
+        summary.reattached.push(run.id);
+        enqueue(run.id, () => observeReattachedStep(run.id, {
+          sessionId,
+          attachment,
+          workflow,
+          workflowFinished,
+          settleWorkflow,
+          isSettled: () => settled,
+          agentName: defStep.agent.name,
+          stepName: defStep.name,
+          cwd: run.worktreePath,
+        })).catch((err) => {
+          console.error(`[pipeline-run] reattached execution failed for ${run.id}:`, err);
+        });
+      }
+      return summary;
     },
 
     /**
