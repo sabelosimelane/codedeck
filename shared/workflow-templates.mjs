@@ -21,6 +21,7 @@ export const BUILT_IN_STEPS = Object.freeze([
 
 const acceptance = 'Record the agreed acceptance checks in your note, including how each outcome will be verified and which checks need external evidence.';
 const verification = 'Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. When implementation exists but proof needs a device, account or other external access, use NEEDS_INPUT. Say what passed, what is pending and exactly what would verify it (for example, "Backend verified. Phone prompt pending."). Only the owner may explicitly defer a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence or an explicit owner-approved scope change.';
+const commitReleaseNotes = 'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically.';
 const commitOutcome = 'In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD.';
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -33,7 +34,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Develop', 'Developer', 'Implement the Specify note for {input}. Write a failing test first, then make it pass. Keep the change as small as the specification allows. Leave changes uncommitted for Review and Commit; do not run git commit. Record what changed and what remains.'),
       node('Review', 'Reviewer', 'Review all changes on this branch (both uncommitted changes and any commits since the base commit) against the Specify note. Fix every defect you find and record your findings and fixes.'),
       node('Test', 'Tester', 'Run tests covering the change and the agreed checks from the Specify note. ' + verification, loop(5), false, false, true),
-      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the fix for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
+      node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message describing the fix for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
   Object.freeze({
@@ -43,7 +44,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Develop', 'Developer', 'Build the first phase in plan.md with unticked tasks. Write failing tests first, make them pass, tick each task when done, leave changes uncommitted for Review and Commit (do not run git commit), and record what changed.'),
       node('Review', 'Reviewer', 'Review all feature changes on this branch (both uncommitted changes and any commits since the base commit) against plan.md and the task. Fix every defect and record findings and fixes.'),
       node('Test', 'Tester', 'Test the phase just built. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.', loop(12)),
-      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
+      node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
   Object.freeze({
@@ -56,7 +57,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Develop', 'Developer', 'Build the first phase in plan.md with unticked tasks, following the specification named in the Specify note. Write failing tests first, make them pass, tick each task when done, leave changes uncommitted for Review and Commit (do not run git commit), and record what changed.'),
       node('Review', 'Reviewer', 'Review all feature changes on this branch (both uncommitted changes and any commits since the base commit) against plan.md and the specification named in the Specify note. Fix every defect and record findings and fixes.'),
       node('Test', 'Tester', 'Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.', loop(12)),
-      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include the specification and untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
+      node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include the specification and untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
   Object.freeze({
@@ -67,7 +68,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Prove', 'Tester', 'Write the test named in the approved Investigate note so that it fails for the stated cause of {input}, and run it. Change no production code. If the test passes, the hypothesis is wrong: record what you saw and report NEEDS_INPUT. Otherwise record the test and its failing output.'),
       node('Fix', 'Developer', 'Make the failing test from the Prove note pass with the smallest change that removes the cause. Do not weaken or delete the test. Record what changed and why it removes the cause.'),
       node('Verify', 'Tester', 'Read the agreed checks in the Clarify note. Repeat the original symptom check from the Investigate note, run the Prove test and tests around the change. ' + verification, loop(5, 'Fix'), false, false, true),
-      node('Commit', 'Committer', 'Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
+      node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
   Object.freeze({

@@ -1,7 +1,6 @@
 import { attributedAgent, workloadKey } from '../pipelines/team-attribution.js';
 import { mountTeamScoring } from './team-scoring.js';
 import { mountImprovements } from './improvements.js';
-import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { execFile as defaultExecFile } from 'node:child_process';
@@ -304,12 +303,6 @@ function buildDefinitionSnapshot({
     return { mode: 'loop_back', toStepIndex: firstNodeStep + loopTargetIndex(workflow.nodes, index), max: repeat.max };
   };
 
-  const standardCommits = new Set(
-    WORKFLOW_TEMPLATES
-      .filter(template => ['bug-fix', 'troubleshoot', 'feature-build', 'feature-from-requirements'].includes(template.id) && template.kind === workflow.kind)
-      .map(template => template.nodes.at(-1)?.prompt)
-      .filter(Boolean),
-  );
   const nodeSteps = workflow.nodes.map((node, index) => {
     const id = assignedAgentId(node, team, stepOverrides);
     const agent = id && agentStore.get(id);
@@ -321,8 +314,6 @@ function buildDefinitionSnapshot({
     const prompt = composePrompt(node.prompt, input, errors, 'input');
     return {
       kind: 'node',
-      ...(index > 0 && index === workflow.nodes.length - 1 && node.name === 'Commit' && node.repeat.mode === 'once'
-        && !node.readOnly && !node.askOwner && standardCommits.has(node.prompt) ? { inspectCleanCommit: true } : {}),
       name: node.name,
       role: node.role,
       askOwner: node.askOwner,

@@ -29,7 +29,7 @@ describe('workflow templates', () => {
         expect(node.role.trim()).not.toBe('');
         expect(node.role.length).toBeLessThanOrEqual(32);
         expect(node.prompt.length).toBeLessThanOrEqual(8192);
-        expect(node.prompt).not.toMatch(/(?:\/|\$)[\w-]+/);
+        expect(node.prompt).not.toMatch(/(?:^|\s)\/[\w-]+|\$[\w-]+/);
       }
     }
   });
@@ -185,6 +185,16 @@ describe('workflow templates', () => {
         expect(node.prompt).not.toMatch(/\$[\w-]+/);
         expect(node.prompt.length).toBeLessThanOrEqual(8192);
       }
+    }
+  });
+
+  it('instructs Committer steps to update CHANGELOG.md and write a dated release file under docs/releases/', () => {
+    for (const id of ['bug-fix', 'feature-build', 'feature-from-requirements', 'troubleshoot']) {
+      const commit = WORKFLOW_TEMPLATES.find(item => item.id === id).nodes.at(-1);
+      expect(commit.role).toBe('Committer');
+      expect(commit.prompt).toContain('CHANGELOG.md');
+      expect(commit.prompt).toContain('docs/releases/');
+      expect(commit.prompt).toContain('YYYY-MM-DD-HHmmss-<short-slug>.md');
     }
   });
 

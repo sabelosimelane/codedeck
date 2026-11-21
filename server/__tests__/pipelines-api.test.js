@@ -397,9 +397,9 @@ describe('pipelines API — agents', () => {
 
 describe('pipelines API — run notes', () => {
   it.each([
-    ['bug-fix', null, true], ['troubleshoot', null, true], ['feature-build', null, true], ['feature-from-requirements', null, true],
-    ['bug-fix', 'Also write release notes.', false],
-  ])('snapshots the standard final Commit only (%s, %s)', async (id, extra, eligible) => {
+    ['bug-fix', null], ['troubleshoot', null], ['feature-build', null], ['feature-from-requirements', null],
+    ['bug-fix', 'Also write release notes.'],
+  ])('does not mark Commit as inspectCleanCommit so release notes and changelog are always written (%s, %s)', async (id, extra) => {
     const ctx = await setup();
     await seedReady(ctx);
     const draft = buildTemplateDraft(id);
@@ -409,7 +409,7 @@ describe('pipelines API — run notes', () => {
     const response = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'snapshot', workflowId: workflow.id, project: 'Demo', input: 'Watch' });
     expect(response.status).toBe(201);
     const commit = ctx.runStore.get(response.body.id).definition.steps.at(-1);
-    expect(commit.inspectCleanCommit === true).toBe(eligible);
+    expect(commit.inspectCleanCommit).toBeUndefined();
   });
 
   it('creates a notes directory and exposes a paged notes list and latest step note', async () => {
