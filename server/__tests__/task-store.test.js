@@ -104,6 +104,7 @@ describe('task store', () => {
     expect(task).toEqual({
       id: ID,
       project: 'Demo',
+      host: 'local',
       title: 'WhatsApp replies',
       titleSource: 'owner',
       state: 'active',

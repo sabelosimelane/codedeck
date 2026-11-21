@@ -363,7 +363,13 @@ export function validateTeamChange(body) {
 
 export function validateRunStartBody(body, { inputMode = 'descriptive' } = {}) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides'])) return errors;
+  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides', 'host', 'skipSync'])) return errors;
+  if (body.host !== undefined && (typeof body.host !== 'string' || !body.host.trim() || SINGLE_LINE.test(body.host))) {
+    add(errors, 'host', 'Use a host name');
+  }
+  if (body.skipSync !== undefined && typeof body.skipSync !== 'boolean') {
+    add(errors, 'skipSync', 'Use true or false');
+  }
   validateAssignments(body, errors);
   if (!isRunRequestId(body.requestId)) {
     add(errors, 'requestId', 'Use 1–128 letters, digits, underscores or hyphens');

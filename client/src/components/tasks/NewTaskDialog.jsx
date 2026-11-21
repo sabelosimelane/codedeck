@@ -13,7 +13,7 @@ const FALLBACK = 'Something went wrong. Please try again.';
  * with several repositories (`withRepositories`) the owner also ticks the ones the task
  * includes; the rest stay readable and can be added to the task later.
  */
-export default function NewTaskDialog({ projectName, withRepositories = false, onCreate, onClose }) {
+export default function NewTaskDialog({ projectName, host, withRepositories = false, onCreate, onClose }) {
   const { showToast } = useToast();
   const [title, setTitle] = useState('');
   const [source, setSource] = useState('new');
@@ -84,7 +84,7 @@ export default function NewTaskDialog({ projectName, withRepositories = false, o
         }
         await onCreate({ adoptedTask: task });
       } else {
-        await onCreate({ project: projectName, title: title.trim(), ...(withRepositories ? { repositories: chosen } : {}) });
+        await onCreate({ project: projectName, ...(host && host !== 'local' ? { host } : {}), title: title.trim(), ...(withRepositories ? { repositories: chosen } : {}) });
       }
       onClose();
     } catch (failure) {

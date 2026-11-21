@@ -33,8 +33,9 @@ export default function HostsSection({ onDirtyChange }) {
   const [loading, setLoading] = useState(true);
   const [newName, setNewName] = useState('');
   const [newTarget, setNewTarget] = useState('');
+  const [newDefaultRoot, setNewDefaultRoot] = useState('');
   const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState(null); // { name, sshTarget }
+  const [editing, setEditing] = useState(null); // { original, name, sshTarget, defaultRoot }
   const [testResults, setTestResults] = useState({}); // name -> result | { testing: true }
 
   const loadHosts = useCallback(async () => {
@@ -58,8 +59,12 @@ export default function HostsSection({ onDirtyChange }) {
 
   // A half-typed new host or a changed edit form is unsaved work the settings modal asks about on close.
   const editedHost = editing ? hosts.find(host => host.name === editing.original) : null;
-  const dirty = newName.trim() !== '' || newTarget.trim() !== ''
-    || (editing !== null && (editing.name !== editing.original || editing.sshTarget !== editedHost?.sshTarget));
+  const dirty = newName.trim() !== '' || newTarget.trim() !== '' || newDefaultRoot.trim() !== ''
+    || (editing !== null && (
+      editing.name !== editing.original
+      || editing.sshTarget !== editedHost?.sshTarget
+      || (editing.defaultRoot || '') !== (editedHost?.defaultRoot || '')
+    ));
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
@@ -73,10 +78,11 @@ export default function HostsSection({ onDirtyChange }) {
     }
     setAdding(true);
     try {
+      const defaultRoot = newDefaultRoot.trim();
       const res = await fetch('/api/hosts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, sshTarget }),
+        body: JSON.stringify({ name, sshTarget, ...(defaultRoot ? { defaultRoot } : {}) }),
       });
       if (!res.ok) {
         showToast({ type: 'error', message: await readError(res) });
@@ -84,6 +90,7 @@ export default function HostsSection({ onDirtyChange }) {
       }
       setNewName('');
       setNewTarget('');
+      setNewDefaultRoot('');
       showToast({ type: 'success', message: `Host "${name}" added` });
       await loadHosts();
     } catch {
@@ -106,7 +113,7 @@ export default function HostsSection({ onDirtyChange }) {
       const res = await fetch(`/api/hosts/${encodeURIComponent(original)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, sshTarget }),
+        body: JSON.stringify({ name, sshTarget, defaultRoot: editing.defaultRoot?.trim() || '' }),
       });
       if (!res.ok) {
         showToast({ type: 'error', message: await readError(res) });
@@ -190,6 +197,13 @@ export default function HostsSection({ onDirtyChange }) {
                     spellCheck={false}
                     className="ui-input"
                   />
+                  <input
+                    value={editing.defaultRoot || ''}
+                    onChange={e => setEditing({ ...editing, defaultRoot: e.target.value })}
+                    placeholder="default workspace folder (optional, e.g. /home/dev/git)"
+                    spellCheck={false}
+                    className="ui-input"
+                  />
                   <div style={{ display: 'flex', gap: 6 }}>
                     <Button variant="primary" onClick={handleSaveEdit}  title="Save">
                       <Check size={12} /> Save
@@ -223,7 +237,7 @@ export default function HostsSection({ onDirtyChange }) {
                           <Wifi size={13} />
                         </IconButton>
                         <IconButton aria-label="Rename / edit"
-                          onClick={() => setEditing({ original: host.name, name: host.name, sshTarget: host.sshTarget })}
+                          onClick={() => setEditing({ original: host.name, name: host.name, sshTarget: host.sshTarget, defaultRoot: host.defaultRoot || '' })}
                           title="Rename / edit"
                         >
                           <Pencil size={13} />
@@ -239,6 +253,7 @@ export default function HostsSection({ onDirtyChange }) {
                   </div>
                   <div style={hostTargetStyle}>
                     {host.builtIn ? 'this machine' : host.sshTarget}
+                    {host.defaultRoot ? ` · root: ${host.defaultRoot}` : ''}
                   </div>
                   {result && !result.testing && (
                     <div style={testResultStyle}>
@@ -278,6 +293,13 @@ export default function HostsSection({ onDirtyChange }) {
             value={newTarget}
             onChange={e => setNewTarget(e.target.value)}
             placeholder="ssh target (~/.ssh/config alias or user@host)"
+            spellCheck={false}
+            className="ui-input"
+          />
+          <input
+            value={newDefaultRoot}
+            onChange={e => setNewDefaultRoot(e.target.value)}
+            placeholder="default workspace folder (optional, e.g. /home/dev/git)"
             spellCheck={false}
             className="ui-input"
           />

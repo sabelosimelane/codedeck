@@ -30,7 +30,7 @@ export function parseTaskSummary(task, index = 0) {
   guard(stamp(task.updatedAt), 'updatedAt');
   guard(task.finishedAt === null || stamp(task.finishedAt), 'finishedAt');
   return {
-    id: task.id, project: task.project, title: task.title, state: task.state, worktreePath: task.worktreePath,
+    id: task.id, project: task.project, host: text(task.host) ? task.host : 'local', title: task.title, state: task.state, worktreePath: task.worktreePath,
     branch: task.branch, baseBranch: task.baseBranch, baseCommit: task.baseCommit, prUrl: task.prUrl,
     revision: task.revision, createdAt: task.createdAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt,
   };
@@ -95,9 +95,12 @@ async function request(path, { method = 'GET', body, signal } = {}) {
   catch { throw new Error(FALLBACK); }
   if (!response.ok) {
     const field = Array.isArray(payload?.errors) && typeof payload.errors[0]?.message === 'string' ? payload.errors[0].message : null;
-    // A refusal may say why: `reasons` (code and message each) or `conflicts` (file paths).
+    // A refusal may say why: `reasons` (code and message each), `conflicts` (file paths), or `code: 'sync_blocked'` with `results`.
     throw Object.assign(new Error(field ?? (text(payload?.message) ? payload.message : FALLBACK)), {
       status: response.status,
+      ...(payload?.code ? { code: payload.code } : {}),
+      ...(payload?.host ? { host: payload.host } : {}),
+      ...(Array.isArray(payload?.results) ? { results: payload.results } : {}),
       reasons: Array.isArray(payload?.reasons) ? payload.reasons.filter(reason => text(reason?.message)).map(reason => ({ code: String(reason.code), message: reason.message })) : [],
       conflicts: Array.isArray(payload?.conflicts) ? payload.conflicts.filter(text) : [],
     });
@@ -212,11 +215,20 @@ export async function listTaskChanges({ project, page, signal } = {}) {
 }
 
 /** `repositories`: the project's repositories the task includes, the one it starts in first; left out, its own only. */
-export async function createTask({ project, title, repositories }) {
+export async function createTask({ project, title, repositories, host, skipSync }) {
   if (!text(project)) throw new TypeError('project must be a nonempty string');
   if (!text(title)) throw new TypeError('title must be a nonempty string');
   if (repositories !== undefined && (!Array.isArray(repositories) || repositories.length === 0 || !repositories.every(text))) throw new TypeError('repositories must be a nonempty list of names');
-  return parseTask(await request('', { method: 'POST', body: { project, title: title.trim(), ...(repositories === undefined ? {} : { repositories }) } }));
+  return parseTask(await request('', {
+    method: 'POST',
+    body: {
+      project,
+      title: title.trim(),
+      ...(repositories === undefined ? {} : { repositories }),
+      ...(host === undefined ? {} : { host }),
+      ...(skipSync === undefined ? {} : { skipSync }),
+    },
+  }));
 }
 
 /**

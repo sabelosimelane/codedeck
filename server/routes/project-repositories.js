@@ -56,14 +56,15 @@ export function createProjectRepositoriesRouter({ service } = {}) {
   };
 
   router.get('/api/projects/:name/repositories', route(async (req, res) => {
-    // The query is checked before Git is asked anything.
-    parseCollectionQuery(req.query, SORT, fieldError);
-    res.json(page(req, await service.list(req.params.name), repositoryView));
+    const { host, ...restQuery } = req.query;
+    parseCollectionQuery(restQuery, SORT, fieldError);
+    res.json(page({ query: restQuery }, await service.list(req.params.name, host ? { host } : {}), repositoryView));
   }));
 
   router.get('/api/projects/:name/repository-candidates', route(async (req, res) => {
-    parseCollectionQuery(req.query, SORT, fieldError);
-    res.json(page(req, await service.candidates(req.params.name), candidateView));
+    const { host, ...restQuery } = req.query;
+    parseCollectionQuery(restQuery, SORT, fieldError);
+    res.json(page({ query: restQuery }, await service.candidates(req.params.name, host ? { host } : {}), candidateView));
   }));
 
   router.post('/api/projects/:name/repositories', route(async (req, res) => {
@@ -73,11 +74,18 @@ export function createProjectRepositoriesRouter({ service } = {}) {
   // A terminal in the own checkout of one of the project's repositories, so every repository is reached from the project.
   router.post('/api/projects/:name/terminals', route(async (req, res) => {
     const opened = await service.openTerminal(req.params.name, req.body);
-    res.status(201).json({ sessionId: opened.sessionId, project: opened.project, repository: opened.repository, path: opened.path });
+    res.status(201).json({
+      sessionId: opened.sessionId,
+      project: opened.project,
+      host: opened.host ?? 'local',
+      repository: opened.repository,
+      path: opened.path,
+      ...(opened.sync ? { sync: opened.sync } : {}),
+    });
   }));
 
   router.delete('/api/projects/:name/repositories/:repository', route(async (req, res) => {
-    await service.remove(req.params.name, req.params.repository);
+    await service.remove(req.params.name, req.params.repository, req.query.host ? { host: req.query.host } : {});
     res.status(204).end();
   }));
 
@@ -99,6 +107,7 @@ export function createProjectRepositoriesRouter({ service } = {}) {
       type: 'about:blank', title, status, detail: message, error: title, message,
       timestamp: new Date().toISOString(), path: req.originalUrl.split('?')[0], traceId,
       ...(errors ? { errors } : {}),
+      ...(error instanceof RepositoryError && error.extra ? error.extra : {}),
     });
   });
 

@@ -41,6 +41,7 @@ export function createHostsRouter(deps = {}) {
     saveProjects,
     createRunner = createCommandRunner,
     getReachability,
+    onHostRenamed,
     now = () => Date.now(),
   } = deps;
 
@@ -64,7 +65,7 @@ export function createHostsRouter(deps = {}) {
   // Create.
   router.post('/api/hosts', (req, res) => {
     const result = addHost(
-      { name: req.body?.name, sshTarget: req.body?.sshTarget },
+      { name: req.body?.name, sshTarget: req.body?.sshTarget, defaultRoot: req.body?.defaultRoot },
       loadHosts()
     );
     if (result.error) return res.status(result.status).json({ error: result.error });
@@ -72,12 +73,12 @@ export function createHostsRouter(deps = {}) {
     res.status(201).json(result.data.host);
   });
 
-  // Rename and/or change sshTarget. A rename rewrites referencing projects in
-  // the same operation so hosts and projects never drift apart.
+  // Rename and/or change sshTarget or defaultRoot. A rename rewrites referencing
+  // projects in the same operation so hosts and projects never drift apart.
   router.put('/api/hosts/:name', (req, res) => {
     const result = updateHost(
       req.params.name,
-      { name: req.body?.name, sshTarget: req.body?.sshTarget },
+      { name: req.body?.name, sshTarget: req.body?.sshTarget, defaultRoot: req.body?.defaultRoot },
       loadHosts()
     );
     if (result.error) return res.status(result.status).json({ error: result.error });
@@ -88,6 +89,7 @@ export function createHostsRouter(deps = {}) {
         loadProjects(), result.data.previousName, result.data.host.name
       );
       saveHostsAndProjects(result.data.hosts, nextProjects);
+      onHostRenamed?.(result.data.previousName, result.data.host.name);
     } else {
       saveHosts(result.data.hosts);
     }

@@ -10,6 +10,7 @@ import { Button, Dialog, Field, Note, SegmentedControl, Select, TextArea, TextIn
 import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
 import WorktreeCandidatePicker from '../tasks/WorktreeCandidatePicker.jsx';
 import WorkflowAttachments from './WorkflowAttachments';
+import SyncConflictDialog from '../SyncConflictDialog.jsx';
 
 function newRequestId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -55,8 +56,11 @@ function requireStarted(run) {
  * a new task works from can say this itself in its Repositories line; what it says is filled in
  * for the owner to change, and nothing starts before Start.
  */
-export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, initialInput = '', initialRequestId, planDelay = PLAN_DELAY_MS, onClose, onStart }) {
+export default function RunWorkflowDialog({ projectName, host = 'local', locations = [], repositories = [], tasks = [], defaultTaskId = null, initialInput = '', initialRequestId, planDelay = PLAN_DELAY_MS, onClose, onStart }) {
   const { showToast } = useToast();
+  const [selectedHost, setSelectedHost] = useState(host || 'local');
+  const [syncConflict, setSyncConflict] = useState(null);
+  const [syncProceeding, setSyncProceeding] = useState(false);
   const [workflows, setWorkflows] = useState([]);
   const [teams, setTeams] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -112,7 +116,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
       try {
         const [nextWorkflows, preflightResponse, nextTeams, nextAgents] = await Promise.all([
           listWorkflows(),
-          preflightProject(projectName), listTeams(), listAgents(),
+          preflightProject(projectName, { host: selectedHost }), listTeams(), listAgents(),
         ]);
         const nextPreflight = parsePreflight(preflightResponse);
         // Worktrees exist only for a local git project; a missing setup agent does not change that.
@@ -137,7 +141,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
       }
     })();
     return () => { cancelled = true; };
-  }, [projectName, repositories.length]);
+  }, [projectName, selectedHost, repositories.length]);
 
   const projectTasks = [...tasks.filter(task => task.project === projectName), ...(adoptedTask ? [adoptedTask] : [])];
   const candidate = candidates.find(entry => entry.path === candidatePath && entry.selectable) ?? candidates.find(entry => entry.selectable) ?? null;
@@ -245,8 +249,10 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
         }
           : where === OPEN_TASK ? { taskId: chosenTask.id, ...(start ? { startIn: start.name } : {}) }
             : { worktreePath: chosenWorktree.path }),
+        ...(selectedHost && selectedHost !== 'local' ? { host: selectedHost } : {}),
       },
       extras: extraRuns.map(entry => ({ ...assignment, requestId: newRequestId(), workflowId, input: entry.input,
+        ...(selectedHost && selectedHost !== 'local' ? { host: selectedHost } : {}),
         newTask: { repositories: [entry.repository] }, startIn: entry.repository })),
     };
   }
@@ -277,6 +283,13 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
         try {
           requireStarted(await onStart(attempt.primary));
         } catch (failure) {
+          if (failure?.status === 409 && failure?.code === 'sync_blocked' && !attempt.primary.skipSync) {
+            setSyncConflict({
+              conflict: { host: failure.host || selectedHost, message: failure.message, results: failure.results },
+              attempt,
+            });
+            return;
+          }
           const reserved = failure?.reservation;
           const failedReservation = reserved?.requestId === attempt.primary.requestId && reserved.provisioningState === 'failed'
             && typeof reserved.runId === 'string' && reserved.runId.length > 0;
@@ -353,6 +366,15 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
 
       {ready && (
         <fieldset className="workflow-launch-fields" disabled={locked} aria-busy={starting} aria-label="Workflow launch settings">
+          {locations.length > 1 && (
+            <Field label="Host" hint="Which host runs this workflow and holds its worktree.">
+              <Select label="Host" value={selectedHost} onChange={setSelectedHost}>
+                {locations.map(loc => (
+                  <option key={loc.host} value={loc.host}>{loc.host} — {loc.path}</option>
+                ))}
+              </Select>
+            </Field>
+          )}
           <Field label="Workflow"
             action={<Button variant="link" onClick={() => { onClose(); openWorkflowBuilder(); }}>Edit workflows…</Button>}
             hint={selectedWorkflow?.description || null}>
@@ -463,6 +485,29 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
             </Note>
           )}
         </fieldset>
+      )}
+      {syncConflict && (
+        <SyncConflictDialog
+          conflict={syncConflict.conflict}
+          actionLabel="start this workflow"
+          busy={syncProceeding}
+          onCancel={() => setSyncConflict(null)}
+          onProceed={async () => {
+            const pendingAttempt = syncConflict.attempt;
+            setSyncProceeding(true);
+            try {
+              const retried = { ...pendingAttempt.primary, requestId: newRequestId(), skipSync: true };
+              setSyncConflict(null);
+              requireStarted(await onStart(retried));
+              onClose();
+            } catch (failure) {
+              setStartFailure(failureText(failure));
+              showToast({ type: 'error', message: failureText(failure) });
+            } finally {
+              setSyncProceeding(false);
+            }
+          }}
+        />
       )}
     </Dialog>
   );

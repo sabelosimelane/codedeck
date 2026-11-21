@@ -203,7 +203,7 @@ describe('task service', () => {
   it('opens a terminal in the task worktree', async () => {
     const { service, start } = setup();
     const task = await service.create({ project: 'Demo', title: 'Terminal' });
-    expect(await service.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo', worktreeId: task.worktrees[0].id });
+    expect(await service.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo', host: 'local', worktreeId: task.worktrees[0].id });
     expect(start).toHaveBeenCalledWith('Demo', { cwd: task.worktreePath });
   });
 

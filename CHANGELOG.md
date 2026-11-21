@@ -1,5 +1,26 @@
 # Changelog
 
+## [2026-11-21] - Cross-host Git sync, multi-repo project workspaces, and Hosts & sync input fix
+
+### Executive Summary
+* Projects can now span multiple hosts and multiple related repositories (`backend`, `frontend`, `mobile-app`, `mcp`, etc.) with automatic `git pull --ff-only` syncing, auto-detected Git remotes, parent workspace-folder auto-discovery, and one-click multi-repo cloning onto remote hosts. Also fixed a bug where the **Hosts & sync** dialog inputs ignored typing because their `onChange` handlers expected DOM events instead of string values.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/project-config.js` — evolved project normalization to multi-host `locations[]` with `defaultHost`, `gitUrl`, `autoSync`, `workspaceMode` (`repo` | `folder`), and a project-level `repoManifest` (`upsertManifestRepo`, `removeManifestRepo`).
+  * `server/git-sync-service.js`, `server/host-exec.js`, `server/host-fs.js`, `server/host-tools.js`, `server/terminal-session-host-store.js` — added cross-host Git sync (`git pull --ff-only` across all bound repos), remote clone, SSH exec/fs adapters, and per-session host routing.
+  * `server/routes/projects.js`, `server/routes/hosts.js`, `server/host-service.js`, `server/host-runtime-resolver.js` — added cross-host location bind/clone/remove/sync endpoints, `POST /api/projects/:name/discover-remotes`, multi-repo `locations/clone`, `locations/:host/clone-missing`, and child Git repo auto-discovery for workspace-folder projects.
+  * `server/project-repositories.js`, `server/routes/project-repositories.js`, `server/tasks/task-service.js`, `server/tasks/task-store.js`, `server/tasks/task-landing.js`, `server/routes/tasks.js`, `server/routes/pipelines.js`, `server/pipelines/run-store.js`, `server/pipelines/run-worktree.js`, `shared/pipeline-definitions.mjs` — extended repositories, tasks, and workflow runs to support multi-host execution and workspace-folder projects.
+  * `client/src/components/ProjectLocationsDialog.jsx`, `client/src/components/SyncConflictDialog.jsx`, `client/src/components/HostsSection.jsx`, `client/src/components/ProjectRepositoriesDialog.jsx`, `client/src/components/Sidebar.jsx`, `client/src/components/TerminalArea.jsx`, `client/src/components/DirectoryBrowser.jsx`, `client/src/components/tasks/NewTaskDialog.jsx`, `client/src/components/pipelines/RunWorkflowDialog.jsx`, `client/src/App.jsx`, `client/src/utils/tasksApi.js`, `client/src/utils/pipelinesApi.js` — added Hosts & sync dialog with auto-discovered multi-repo remotes, selective multi-repo cloning, `Clone missing`, sync conflict handling, and cross-host task/workflow controls.
+* **🐛 Bug Fix:**
+  * **Problem:** Typing in the Git repository URL / Destination path inputs or changing Target host in `ProjectLocationsDialog.jsx` threw `TypeError: Cannot read properties of undefined (reading 'value')` because `TextInput` and `Select` pass string values directly to `onChange`.
+  * **Solution:** Updated all three handlers in `client/src/components/ProjectLocationsDialog.jsx` to accept string values directly (`onChange={setGitUrl}`, `onChange={setSelectedHost}`, `onChange={setTargetPath}`).
+* **🛠️ Codebase:**
+  * `server/index.js`, `server/mobile-session-start.js`, `server/project-deletion-service.js`, `server/routes/terminal-delete.js`, `server/terminal-session-worktree-start.js` — wired host-aware session startup, sync hooks, and cleanup across local and remote locations.
+* **🧪 Tests:**
+  * `server/__tests__/multi-repo-projects.test.js`, `server/__tests__/cross-host-sync.test.js`, `client/src/components/__tests__/ProjectLocationsDialog.test.jsx`, `client/src/components/__tests__/SyncConflictDialog.test.jsx` — added unit and API tests covering cross-host sync, workspace-folder auto-discovery, `discover-remotes`, multi-repo clone, `clone-missing`, and dialog input/multi-repo interactions.
+  * `client/src/components/__tests__/Sidebar.test.jsx`, `server/__tests__/mobile-session-start.test.js`, `server/__tests__/project-repositories.test.js`, `server/__tests__/task-service.test.js`, `server/__tests__/task-store.test.js` — updated existing tests for cross-host project locations.
+
 ## [2026-11-21] - Live CLI and UI sync across backend restarts and mid-pass exits
 
 ### Executive Summary

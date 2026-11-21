@@ -132,6 +132,7 @@ function hydrate(row, worktreeRows) {
   return {
     id,
     project: row.project,
+    host: row.host || 'local',
     title: row.title,
     titleSource: row.title_source,
     state: row.state,
@@ -180,7 +181,8 @@ const SCHEMA = `
     updated_at TEXT NOT NULL,
     finished_at TEXT,
     title_source TEXT NOT NULL DEFAULT 'owner',
-    task_folder TEXT
+    task_folder TEXT,
+    host TEXT NOT NULL DEFAULT 'local'
   );
 `;
 // `worktree_path`, `branch`, `base_branch`, `base_commit` and `pr_url` of `tasks` are what the
@@ -222,6 +224,7 @@ function prepareSchema(db, { findProject, newId }) {
     // Titles stored before their source was recorded are kept as the owner's: none is replaced.
     if (!columns.includes('title_source')) db.exec("ALTER TABLE tasks ADD COLUMN title_source TEXT NOT NULL DEFAULT 'owner'");
     if (!columns.includes('task_folder')) db.exec('ALTER TABLE tasks ADD COLUMN task_folder TEXT');
+    if (!columns.includes('host')) db.exec("ALTER TABLE tasks ADD COLUMN host TEXT NOT NULL DEFAULT 'local'");
     db.exec(WORKTREE_SCHEMA);
     // Worktrees merged before their commit was kept have none.
     if (!db.prepare('PRAGMA table_info(task_worktrees)').all().some(column => column.name === 'merged_commit')) db.exec('ALTER TABLE task_worktrees ADD COLUMN merged_commit TEXT');
@@ -267,8 +270,8 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
   const readAllWorktrees = db.prepare('SELECT * FROM task_worktrees ORDER BY is_first DESC, rowid');
   const readOpenByPath = db.prepare(`SELECT task_id FROM task_worktrees WHERE worktree_path = ? AND state IN (${OPEN_STATES.map(() => '?').join(', ')})`);
   const insert = db.prepare(`
-    INSERT INTO tasks (id, project, title, worktree_path, branch, base_branch, base_commit, state, pr_url, revision, created_at, updated_at, finished_at, title_source, task_folder)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, 1, ?, ?, NULL, ?, ?)
+    INSERT INTO tasks (id, project, title, worktree_path, branch, base_branch, base_commit, state, pr_url, revision, created_at, updated_at, finished_at, title_source, task_folder, host)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, 1, ?, ?, NULL, ?, ?, ?)
   `);
   const insertWorktree = db.prepare(`
     INSERT INTO task_worktrees (id, task_id, is_first, repository, repository_path, worktree_path, branch, base_branch, base_commit, state, pr_url, created_at, updated_at, finished_at)
@@ -283,6 +286,7 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
   const removeInitial = db.prepare("DELETE FROM tasks WHERE id = ? AND state = 'active' AND revision = 1");
   const removeWorktreesOf = db.prepare('DELETE FROM task_worktrees WHERE task_id = ?');
   const removeAddedWorktree = db.prepare("DELETE FROM task_worktrees WHERE id = ? AND task_id = ? AND is_first = 0 AND state = 'active'");
+  const rewriteHostStmt = db.prepare('UPDATE tasks SET host = ? WHERE lower(host) = lower(?)');
 
   const get = id => {
     if (!isUuid(id)) inputError('id', 'must be a UUID');
@@ -310,7 +314,7 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
   };
 
   const createNow = db.transaction((input, others, stamp) => {
-    insert.run(input.id, input.project, input.title.trim(), input.worktreePath, input.branch, input.baseBranch, input.baseCommit, stamp, stamp, input.titleSource, input.folder);
+    insert.run(input.id, input.project, input.title.trim(), input.worktreePath, input.branch, input.baseBranch, input.baseCommit, stamp, stamp, input.titleSource, input.folder, input.host ?? 'local');
     insertWorktree.run(newWorktreeId(), input.id, 1, input.repository, input.repositoryPath, input.worktreePath, input.branch, input.baseBranch, input.baseCommit, stamp, stamp);
     for (const other of others) {
       insertWorktree.run(newWorktreeId(), input.id, 0, other.repository, other.repositoryPath, other.worktreePath, other.branch, other.baseBranch, other.baseCommit, stamp, stamp);
@@ -446,6 +450,10 @@ export function createTaskStore(db, { now = () => new Date().toISOString(), newI
       if (FINISHED_STATES.includes(worktree.state)) throw new Error(`task_worktrees row ${worktreeId}: already finished`);
       setWorktreeStateNow(task, worktree, state, prUrl ?? worktree.prUrl, mergedCommit ?? null, now());
       return get(id);
+    },
+    rewriteHost(previousName, nextName) {
+      if (previousName === nextName) return;
+      rewriteHostStmt.run(nextName, previousName);
     },
   };
 }

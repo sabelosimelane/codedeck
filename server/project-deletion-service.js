@@ -1,7 +1,8 @@
 import { isTransportFailure } from './command-runner.js';
 import { sessionIdForTmuxName } from './mobile-integration.js';
+import { listProjectHosts } from './project-config.js';
 
-const hostOf = project => project.host || 'local';
+const hostsOf = project => listProjectHosts(project);
 const safeName = name => name.replace(/[^a-zA-Z0-9_-]/g, '_');
 const belongsTo = (id, name) => id.startsWith(`${name}-`) && /^\d+$/.test(id.slice(name.length + 1));
 
@@ -17,7 +18,10 @@ export function createProjectDeletionService({ loadProjects, saveProjects, sessi
     if (!Array.isArray(projects)) throw new Error('projects array required');
     const project = projects.find(item => item.name === name);
     if (!project) return { status: 404, title: 'Project Not Found', detail: `Project ${name} was not found.` };
-    const hostProjects = projects.filter(item => hostOf(item) === hostOf(project));
+    const projectHosts = new Set(hostsOf(project).map(h => h.toLowerCase()));
+    const hostProjects = projects.filter(item =>
+      hostsOf(item).some(h => projectHosts.has(h.toLowerCase()))
+    );
     let listed;
     try { listed = await listSessionIds(project); }
     catch (error) {

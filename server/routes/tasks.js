@@ -50,6 +50,7 @@ function taskView(task) {
   return {
     id: task.id,
     project: task.project,
+    host: task.host ?? 'local',
     title: task.title,
     state: task.state,
     worktreePath: task.worktreePath,
@@ -169,7 +170,9 @@ export function createTasksRouter({ service, taskStore, landing, changes } = {})
 
   router.post(BASE, route(async (req, res) => {
     // `repositories` names the project's repositories the task includes, the one it starts in first; left out, its own only.
-    const body = requireBody(req.body, ['project', 'title', 'repositories', 'worktreePath']);
+    const body = requireBody(req.body, ['project', 'title', 'repositories', 'worktreePath', 'host', 'skipSync']);
+    if (body.host !== undefined && (typeof body.host !== 'string' || !body.host.trim())) throw fieldError('host', 'Use a host name');
+    if (body.skipSync !== undefined && typeof body.skipSync !== 'boolean') throw fieldError('skipSync', 'Use true or false');
     if (Object.hasOwn(body, 'worktreePath')) {
       if (Object.hasOwn(body, 'repositories')) throw new TaskError('One or more fields failed validation.', 400,
         [{ field: 'worktreePath', message: 'Choose either worktreePath or repositories' }, { field: 'repositories', message: 'Choose either repositories or worktreePath' }]);
@@ -180,7 +183,13 @@ export function createTasksRouter({ service, taskStore, landing, changes } = {})
       return;
     }
     if (Object.prototype.hasOwnProperty.call(body, 'repositories') && !Array.isArray(body.repositories)) throw fieldError('repositories', 'Use a list of repository names');
-    res.status(201).json(taskView(await service.create({ project: body.project, title: body.title, repositories: body.repositories })));
+    res.status(201).json(taskView(await service.create({
+      project: body.project,
+      title: body.title,
+      repositories: body.repositories,
+      ...(body.host !== undefined ? { host: body.host } : {}),
+      ...(body.skipSync !== undefined ? { skipSync: body.skipSync } : {}),
+    })));
   }));
 
   router.get(`${BASE}/worktree-candidates`, route(async (req, res) => {

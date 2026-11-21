@@ -6,11 +6,13 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
+import { isTransportFailure } from '../command-runner.js';
 
 const GIT_TIMEOUT_MS = 30_000;
 
 const REASON_MESSAGES = {
   project_remote: 'Workflows can only run on local projects.',
+  host_unreachable: 'The project host is unreachable.',
   not_git_toplevel: 'The project path must be the top level of a git working tree.',
   setup_agent_missing: 'Choose a setup agent in Settings → Workflows.',
 };
@@ -152,13 +154,14 @@ async function resolveRealpath(realpath, target) {
 export async function preflight({
   projectPath,
   projectHost,
+  allowRemote = false,
   setupAgentId,
   execFile,
   realpath,
 } = {}) {
   const reasons = [];
 
-  if (!isLocalHost(projectHost)) {
+  if (!isLocalHost(projectHost) && !allowRemote) {
     reasons.push(reason('project_remote'));
     if (!hasSetupAgent(setupAgentId)) reasons.push(reason('setup_agent_missing'));
     return { eligible: false, reasons, branch: null, head: null, dirty: null };
@@ -190,8 +193,12 @@ export async function preflight({
       head = headRaw.trim();
       dirty = statusRaw.length > 0;
     }
-  } catch {
-    reasons.push(reason('not_git_toplevel'));
+  } catch (err) {
+    if (isTransportFailure(err)) {
+      reasons.push(reason('host_unreachable'));
+    } else {
+      reasons.push(reason('not_git_toplevel'));
+    }
   }
 
   if (!hasSetupAgent(setupAgentId)) {

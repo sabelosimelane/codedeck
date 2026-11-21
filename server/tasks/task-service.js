@@ -12,12 +12,15 @@ import { create as createWorktree, listWorktrees, planNames, planTaskFolder, pre
 import { readStoredRepositories } from '../project-repositories.js';
 import { holdsWorktree } from '../pipelines/run-worktree-hold.js';
 import { isTaskTitle, TASK_TITLE_MAX } from './task-store.js';
+import { getProjectLocation, LOCAL_HOST, normalizeHostName, normalizeProject } from '../project-config.js';
+import { syncProjectLocation } from '../git-sync-service.js';
 
 export class TaskError extends Error {
   constructor(message, status, errors, options) {
     super(message, options);
     this.status = status;
     this.errors = errors;
+    if (options?.extra) this.extra = options.extra;
   }
 }
 
@@ -39,6 +42,8 @@ export function createTaskService({
   listRuns,
   reservedWorktreePaths,
   rmdir = target => fs.promises.rmdir(target),
+  resolveHostTools = null,
+  syncLocation = syncProjectLocation,
 } = {}) {
   for (const method of ['create', 'remove', 'addWorktree', 'removeWorktree']) {
     if (typeof taskStore?.[method] !== 'function') throw new TypeError('taskStore with create, remove, addWorktree and removeWorktree is required');
@@ -47,30 +52,66 @@ export function createTaskService({
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
 
-  async function resolveProject(projectName) {
-    const project = await findProject(projectName);
-    if (project === null || project === undefined) throw new TaskError('Project not found', 404);
-    if (typeof project.name !== 'string' || project.name.length === 0) throw new Error('Stored project name is invalid');
-    if (typeof project.path !== 'string' || !path.isAbsolute(project.path)) throw new Error('Stored project path is invalid');
-    if (project.host !== undefined && project.host !== null && typeof project.host !== 'string') throw new Error('Stored project host is invalid');
-    if (project.host && project.host !== 'local') throw new TaskError('Tasks are only available for local projects.', 409);
-    return project;
+  function toolsFor(hostName) {
+    const normalized = normalizeHostName(hostName);
+    if (typeof resolveHostTools === 'function') {
+      try {
+        return resolveHostTools(normalized);
+      } catch (err) {
+        throw new TaskError(err.message || 'Host unavailable', err.status || 503, undefined, { cause: err });
+      }
+    }
+    return {
+      host: LOCAL_HOST,
+      runner: null,
+      execFile,
+      pathExists,
+      realpath,
+      mkdir: (dir, opts) => fs.promises.mkdir(dir, opts),
+      rmdir,
+    };
+  }
+
+  async function resolveProject(projectName, requestedHost) {
+    const raw = await findProject(projectName);
+    if (raw === null || raw === undefined) throw new TaskError('Project not found', 404);
+    if (typeof raw.name !== 'string' || raw.name.length === 0) throw new Error('Stored project name is invalid');
+    if (typeof raw.path !== 'string' || !path.isAbsolute(raw.path)) throw new Error('Stored project path is invalid');
+    if (raw.host !== undefined && raw.host !== null && typeof raw.host !== 'string') throw new Error('Stored project host is invalid');
+    if (!resolveHostTools && raw.host && raw.host !== 'local') throw new TaskError('Tasks are only available for local projects.', 409);
+
+    const project = normalizeProject(raw);
+    const targetHost = requestedHost ? normalizeHostName(requestedHost) : project.defaultHost;
+    const location = getProjectLocation(project, targetHost);
+    if (!location) {
+      throw new TaskError(`Project "${project.name}" has no checkout configured on host "${targetHost}".`, 404);
+    }
+    return { project, host: location.host, location, tools: toolsFor(location.host) };
   }
 
   /** The branch a checkout is on, for starting a task from it. Refuses, naming the repository when one is given, if Git cannot use the checkout. */
-  async function checkCheckout(checkout, label) {
-    const eligibility = await preflight({ projectPath: checkout, projectHost: undefined, setupAgentId: undefined, execFile, realpath });
+  async function checkCheckout(checkout, label, tools) {
+    const t = tools ?? toolsFor(LOCAL_HOST);
+    const eligibility = await preflight({
+      projectPath: checkout,
+      projectHost: t.host,
+      allowRemote: Boolean(resolveHostTools),
+      setupAgentId: undefined,
+      execFile: t.execFile,
+      realpath: t.realpath,
+    });
     if (!Array.isArray(eligibility?.reasons)) throw new Error('Git preflight reasons are invalid');
     for (const reason of eligibility.reasons) {
       if (typeof reason?.code !== 'string' || typeof reason?.message !== 'string') throw new Error('Git preflight reason is invalid');
-      if (reason.code !== 'setup_agent_missing') throw new TaskError(label ? `${label}: ${reason.message}` : reason.message, 409);
+      if (reason.code !== 'setup_agent_missing') throw new TaskError(label ? `${label}: ${reason.message}` : reason.message, reason.code === 'host_unreachable' ? 503 : 409);
     }
     if (eligibility.branch !== null && typeof eligibility.branch !== 'string') throw new Error('Git preflight branch is invalid');
     return eligibility.branch;
   }
 
-  async function homeOf(checkout) {
-    const home = await resolveHomeRepoPath({ projectPath: checkout, execFile });
+  async function homeOf(checkout, tools) {
+    const t = tools ?? toolsFor(LOCAL_HOST);
+    const home = await resolveHomeRepoPath({ projectPath: checkout, execFile: t.execFile });
     if (typeof home !== 'string' || !path.isAbsolute(home) || home === path.parse(home).root) throw new Error('Git home repository path is invalid');
     return home;
   }
@@ -80,7 +121,7 @@ export function createTaskService({
    * `repositories` names the repositories the task includes, the one it starts in first;
    * left out, the task includes the project's own repository only.
    */
-  async function plan({ project: projectName, title, titleSource, repositories } = {}) {
+  async function plan({ project: projectName, title, titleSource, repositories, host: requestedHost } = {}) {
     // The caller says whether the owner gave the title or it was made from a run's input.
     if (titleSource !== 'owner' && titleSource !== 'input') throw new Error('Task title source must be owner or input');
     if (typeof projectName !== 'string' || projectName.length === 0) throw invalid('project', 'A project name is required');
@@ -88,15 +129,28 @@ export function createTaskService({
     if (repositories !== undefined && (!Array.isArray(repositories) || repositories.some(name => typeof name !== 'string' || name.length === 0))) {
       throw invalid('repositories', 'Use a list of repository names');
     }
-    const project = await resolveProject(projectName);
-    const others = readStoredRepositories(project);
+    const { project, host, location, tools } = await resolveProject(projectName, requestedHost);
+    const others = readStoredRepositories({ name: project.name, repositories: location.repositories });
 
-    // The project's own repository is checked first, as it always was: it names the task's place on disk.
-    const ownBranch = await checkCheckout(project.path, null);
-    const ownHome = await homeOf(project.path);
-    const ownName = path.basename(ownHome);
-    const available = new Map([[ownName, { repositoryPath: null, checkoutPath: project.path, homePath: ownHome, baseBranch: ownBranch }]]);
-    for (const entry of others) available.set(entry.name, { repositoryPath: entry.path, checkoutPath: entry.path });
+    const available = new Map();
+    let ownName = null;
+    let anchorHome = null;
+
+    if (project.workspaceMode === 'folder') {
+      if (others.length === 0) {
+        throw new TaskError('This workspace project has no repositories yet. Add a repository first.', 409);
+      }
+      for (const entry of others) available.set(entry.name, { repositoryPath: entry.path, checkoutPath: entry.path });
+      ownName = others[0].name;
+    } else {
+      // The project's own repository is checked first, as it always was: it names the task's place on disk.
+      const ownBranch = await checkCheckout(location.path, null, tools);
+      const ownHome = await homeOf(location.path, tools);
+      ownName = path.basename(ownHome);
+      anchorHome = ownHome;
+      available.set(ownName, { repositoryPath: null, checkoutPath: location.path, homePath: ownHome, baseBranch: ownBranch });
+      for (const entry of others) available.set(entry.name, { repositoryPath: entry.path, checkoutPath: entry.path });
+    }
 
     const names = repositories ?? [ownName];
     if (names.length === 0) throw invalid('repositories', 'Choose at least one repository');
@@ -113,8 +167,8 @@ export function createTaskService({
     for (const name of names) {
       const repository = available.get(name);
       if (repository.repositoryPath !== null) {
-        repository.baseBranch = await checkCheckout(repository.checkoutPath, name);
-        repository.homePath = await homeOf(repository.checkoutPath);
+        repository.baseBranch = await checkCheckout(repository.checkoutPath, name, tools);
+        repository.homePath = await homeOf(repository.checkoutPath, tools);
       }
       chosen.push({ repository: name, ...repository });
     }
@@ -123,12 +177,13 @@ export function createTaskService({
     // under their repositories' names. A lone repository's task is named as it always was.
     let folder = null;
     let places;
-    if (others.length > 0) {
-      const planned = planTaskFolder({ taskId: id, title, ownHomePath: ownHome, repositories: names });
+    const effectiveAnchor = anchorHome ?? chosen[0].homePath;
+    if (project.workspaceMode === 'folder' || others.length > 0) {
+      const planned = planTaskFolder({ taskId: id, title, ownHomePath: effectiveAnchor, repositories: names });
       folder = planned.folder;
       places = planned.worktrees.map(entry => ({ worktreePath: entry.worktreePath, branch: planned.branch }));
     } else {
-      const named = planNames({ runId: id, workflowName: title, homeRepoPath: ownHome, branchPrefix: 'task' });
+      const named = planNames({ runId: id, workflowName: title, homeRepoPath: effectiveAnchor, branchPrefix: 'task' });
       places = [{ worktreePath: named.worktreePath, branch: named.branch }];
     }
     const worktrees = chosen.map((entry, index) => ({ ...entry, ...places[index] }));
@@ -136,7 +191,8 @@ export function createTaskService({
     return {
       id,
       project: project.name,
-      projectPath: project.path,
+      host,
+      projectPath: location.path,
       title: title.trim(),
       titleSource,
       folder,
@@ -167,11 +223,12 @@ export function createTaskService({
   }
 
   /** Takes back a worktree this task has just created: it is new and clean, so nothing is forced. Says whether it is gone. */
-  async function undo(worktree) {
-    const removed = await removeWorktree({ homePath: worktree.homePath, worktreePath: worktree.worktreePath, execFile });
+  async function undo(worktree, tools) {
+    const t = tools ?? toolsFor(LOCAL_HOST);
+    const removed = await removeWorktree({ homePath: worktree.homePath, worktreePath: worktree.worktreePath, execFile: t.execFile });
     if (!removed.ok) return false;
     try {
-      await runGit(execFile, ['-C', worktree.homePath, 'branch', '-d', worktree.branch]);
+      await runGit(t.execFile, ['-C', worktree.homePath, 'branch', '-d', worktree.branch]);
     } catch (error) {
       console.warn(`[tasks] new branch kept after an undone task repository=${worktree.repository}: ${firstLine(error?.stderr || error?.message)}`);
     }
@@ -184,13 +241,15 @@ export function createTaskService({
   });
 
   /** The commit a checkout is on now; a worktree is created at the commit recorded for it. */
-  async function headOf(checkout) {
-    const { stdout } = await runGit(execFile, ['-C', checkout, 'rev-parse', 'HEAD']);
+  async function headOf(checkout, tools) {
+    const t = tools ?? toolsFor(LOCAL_HOST);
+    const { stdout } = await runGit(t.execFile, ['-C', checkout, 'rev-parse', 'HEAD']);
     return stdout.trim();
   }
 
-  async function onDisk(target) {
-    const there = await pathExists(target);
+  async function onDisk(target, tools) {
+    const t = tools ?? toolsFor(LOCAL_HOST);
+    const there = await t.pathExists(target);
     if (typeof there !== 'boolean') throw new Error('pathExists must return a boolean');
     return there;
   }
@@ -204,22 +263,22 @@ export function createTaskService({
   };
   const commitId = /^[0-9a-f]{40}$/;
 
-  async function candidateRecords(projectName) {
+  async function candidateRecords(projectName, requestedHost) {
     if (typeof projectName !== 'string' || !projectName) throw invalid('project', 'A project name is required');
     if (typeof listRuns !== 'function') throw new TypeError('listRuns is required for worktree candidates');
     if (typeof reservedWorktreePaths !== 'function') throw new TypeError('reservedWorktreePaths is required for worktree candidates');
     if (typeof taskStore.findOpenByWorktreePath !== 'function') throw new TypeError('taskStore.findOpenByWorktreePath is required');
-    const project = await resolveProject(projectName);
-    const repositories = [{ name: path.basename(project.path), checkout: project.path, own: true, repositoryPath: null },
-      ...readStoredRepositories(project).map(entry => ({ name: entry.name, checkout: entry.path, own: false, repositoryPath: entry.path }))];
+    const { project, host, location, tools } = await resolveProject(projectName, requestedHost);
+    const repositories = [{ name: path.basename(location.path), checkout: location.path, own: true, repositoryPath: null },
+      ...readStoredRepositories({ name: project.name, repositories: location.repositories }).map(entry => ({ name: entry.name, checkout: entry.path, own: false, repositoryPath: entry.path }))];
     const runs = listRuns();
     const reserved = reservedWorktreePaths();
     if (!Array.isArray(runs)) throw new Error('Run list is invalid');
     if (!(reserved instanceof Set)) throw new Error('Reserved worktree paths are invalid');
     const candidates = [];
     for (const repo of repositories) {
-      const listed = await listWorktrees({ projectPath: repo.checkout, execFile });
-      const base = (await runGit(execFile, ['-C', repo.checkout, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+      const listed = await listWorktrees({ projectPath: repo.checkout, execFile: tools.execFile });
+      const base = (await runGit(tools.execFile, ['-C', repo.checkout, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
       if (!base) throw new Error(`Git base branch is invalid for ${repo.name}`);
       for (const [index, worktree] of listed.entries()) {
         for (const field of ['path', 'head']) if (typeof worktree[field] !== 'string' || !worktree[field]) throw new Error(`Git worktree ${field} is invalid`);
@@ -233,7 +292,7 @@ export function createTaskService({
         if (!worktree.missing) {
           let changes;
           try {
-            changes = await readWorktreeChanges({ worktreePath: worktree.path, execFile });
+            changes = await readWorktreeChanges({ worktreePath: worktree.path, execFile: tools.execFile });
           } catch (error) {
             console.warn(`[task-worktree] Git status failed for ${worktree.path}:`, error?.message ?? String(error));
             unreadable = true;
@@ -245,7 +304,7 @@ export function createTaskService({
           }
           if (!unreadable) {
             let status;
-            try { status = await runGit(execFile, ['-C', worktree.path, 'status', '--porcelain=v1', '--untracked-files=all']); }
+            try { status = await runGit(tools.execFile, ['-C', worktree.path, 'status', '--porcelain=v1', '--untracked-files=all']); }
             catch (error) {
               console.warn(`[task-worktree] Git status failed for ${worktree.path}:`, error?.message ?? String(error));
               unreadable = true;
@@ -262,23 +321,24 @@ export function createTaskService({
         candidates.push({ path: worktree.path, name: path.basename(worktree.path), repository: repo.name,
           own: repo.own, branch: worktree.branch, head: worktree.head, uncommittedCount,
           selectable: code === null, reason: code === null ? null : { code, message: candidateReasons[code] },
-          repositoryPath: repo.repositoryPath, checkout: repo.checkout, baseBranch: base });
+          repositoryPath: repo.repositoryPath, checkout: repo.checkout, baseBranch: base, host });
       }
     }
     return candidates;
   }
 
-  async function adoptWorktreeNow({ project, worktreePath, title } = {}) {
+  async function adoptWorktreeNow({ project, worktreePath, title, host: requestedHost } = {}) {
     if (typeof project !== 'string' || !project) throw invalid('project', 'A project name is required');
     if (typeof worktreePath !== 'string' || !path.isAbsolute(worktreePath) || worktreePath.includes('\0')) throw invalid('worktreePath', 'Use an absolute worktree path');
     if (title !== undefined && !isTaskTitle(title)) throw invalid('title', TITLE_RULE);
-    const records = await candidateRecords(project);
+    const records = await candidateRecords(project, requestedHost);
     if (taskStore.findOpenByWorktreePath(worktreePath)) throw new TaskError('This worktree already belongs to a task.', 409);
     const candidate = records.find(entry => entry.path === worktreePath);
     if (!candidate) throw new TaskError('Worktree not found', 404);
     if (!candidate.selectable) throw new TaskError(candidate.reason.message, 409);
+    const tools = toolsFor(candidate.host);
     let baseCommit;
-    try { baseCommit = (await runGit(execFile, ['-C', candidate.checkout, 'merge-base', candidate.baseBranch, candidate.branch])).stdout.trim(); }
+    try { baseCommit = (await runGit(tools.execFile, ['-C', candidate.checkout, 'merge-base', candidate.baseBranch, candidate.branch])).stdout.trim(); }
     catch (error) { if (error?.code === 1) throw new TaskError('The worktree branch has no common base with the checkout.', 409); throw error; }
     if (!commitId.test(baseCommit)) throw new TaskError('The worktree branch has no common base with the checkout.', 409);
     const derived = candidate.branch.split('/').at(-1).replace(/[-_]/g, ' ').trim().slice(0, TASK_TITLE_MAX).trim();
@@ -287,7 +347,7 @@ export function createTaskService({
     if (!isUuid(id)) throw new Error('Task id is invalid');
     let task;
     try {
-      task = taskStore.create({ id, project, title: title === undefined ? derived : title.trim(),
+      task = taskStore.create({ id, project, host: candidate.host, title: title === undefined ? derived : title.trim(),
         titleSource: title === undefined ? 'input' : 'owner', folder: null, repository: candidate.repository,
         repositoryPath: candidate.repositoryPath, worktreePath, branch: candidate.branch,
         baseBranch: candidate.baseBranch, baseCommit, others: [] });
@@ -304,33 +364,34 @@ export function createTaskService({
    */
   async function createPlannedNow(planned) {
     requirePlan(planned);
-    if (await onDisk(planned.folder ?? planned.worktrees[0].worktreePath)) throw new TaskError('A folder for this task already exists. Try again.', 409);
+    const tools = toolsFor(planned.host);
+    if (await onDisk(planned.folder ?? planned.worktrees[0].worktreePath, tools)) throw new TaskError('A folder for this task already exists. Try again.', 409);
 
     const worktrees = [];
-    for (const worktree of planned.worktrees) worktrees.push({ ...worktree, baseCommit: await headOf(worktree.checkoutPath) });
+    for (const worktree of planned.worktrees) worktrees.push({ ...worktree, baseCommit: await headOf(worktree.checkoutPath, tools) });
     const [first, ...rest] = worktrees;
     const task = taskStore.create({
-      id: planned.id, project: planned.project, title: planned.title, titleSource: planned.titleSource, folder: planned.folder,
+      id: planned.id, project: planned.project, host: planned.host ?? LOCAL_HOST, title: planned.title, titleSource: planned.titleSource, folder: planned.folder,
       ...row(first), others: rest.map(row),
     });
 
     const created = [];
     for (const worktree of worktrees) {
       try {
-        await createWorktree({ homePath: worktree.homePath, worktreePath: worktree.worktreePath, branch: worktree.branch, baseCommit: worktree.baseCommit, execFile });
+        await createWorktree({ homePath: worktree.homePath, worktreePath: worktree.worktreePath, branch: worktree.branch, baseCommit: worktree.baseCommit, execFile: tools.execFile, mkdir: tools.mkdir });
         created.push(worktree);
       } catch (error) {
         // The worktrees already made for this task are taken back; what then is still on disk decides whether the task stays.
-        for (const earlier of [...created].reverse()) await undo(earlier);
+        for (const earlier of [...created].reverse()) await undo(earlier, tools);
         const remaining = [];
         for (const candidate of worktrees) {
-          if (await onDisk(candidate.worktreePath)) remaining.push(candidate);
+          if (await onDisk(candidate.worktreePath, tools)) remaining.push(candidate);
         }
         if (remaining.length === 0) {
           taskStore.remove(planned.id);
           // The task's folder goes with its last worktree; a folder that holds something else stays.
           if (planned.folder !== null) {
-            await rmdir(planned.folder).catch((failure) => { if (failure?.code !== 'ENOENT' && failure?.code !== 'ENOTEMPTY') throw failure; });
+            await tools.rmdir(planned.folder).catch((failure) => { if (failure?.code !== 'ENOENT' && failure?.code !== 'ENOTEMPTY') throw failure; });
           }
         } else {
           // The task stays for the copies still on disk. A repository whose copy is not there leaves the task again;
@@ -376,31 +437,31 @@ export function createTaskService({
         ? `${name} is already part of this task.`
         : `${name} was already merged or closed in this task and cannot be added again.`, 409);
     }
-    const project = await resolveProject(task.project);
-    const ownHome = await homeOf(project.path);
-    const listed = readStoredRepositories(project).find(entry => entry.name === name);
-    const checkoutPath = name === path.basename(ownHome) ? project.path : listed?.path;
+    const { project, location, tools } = await resolveProject(task.project, task.host);
+    const ownHome = await homeOf(location.path, tools);
+    const listed = readStoredRepositories({ name: project.name, repositories: location.repositories }).find(entry => entry.name === name);
+    const checkoutPath = name === path.basename(ownHome) ? location.path : listed?.path;
     if (checkoutPath === undefined) throw wrongName;
     // A run that is working may be writing in the task; the repository is added when it pauses or finishes.
     if (isRunWorking(task.id) === true) throw new TaskError('A workflow run is working in this task. Add the repository when it pauses or finishes.', 409);
 
-    const baseBranch = await checkCheckout(checkoutPath, name);
-    const homePath = checkoutPath === project.path ? ownHome : await homeOf(checkoutPath);
+    const baseBranch = await checkCheckout(checkoutPath, name, tools);
+    const homePath = checkoutPath === location.path ? ownHome : await homeOf(checkoutPath, tools);
     // Beside the task's other worktrees when it has a folder of its own; else named as its own worktree is.
     const branch = task.branch.startsWith('task/') ? task.branch : `task/${task.id.slice(0, 8)}`;
     const worktreePath = task.folder !== null
       ? path.join(task.folder, name)
       : path.join(path.dirname(homePath), 'worktrees', `${path.basename(homePath)}-${branch.slice('task/'.length)}`);
-    if (await onDisk(worktreePath)) throw new TaskError(`A folder for ${name} in this task already exists.`, 409);
+    if (await onDisk(worktreePath, tools)) throw new TaskError(`A folder for ${name} in this task already exists.`, 409);
 
     // Recorded before Git is asked, at the commit the repository is on now.
-    const baseCommit = await headOf(checkoutPath);
-    const recorded = taskStore.addWorktree(task.id, { repository: name, repositoryPath: checkoutPath === project.path ? null : checkoutPath, worktreePath, branch, baseBranch, baseCommit });
+    const baseCommit = await headOf(checkoutPath, tools);
+    const recorded = taskStore.addWorktree(task.id, { repository: name, repositoryPath: checkoutPath === location.path ? null : checkoutPath, worktreePath, branch, baseBranch, baseCommit });
     try {
-      await createWorktree({ homePath, worktreePath, branch, baseCommit, execFile });
+      await createWorktree({ homePath, worktreePath, branch, baseCommit, execFile: tools.execFile, mkdir: tools.mkdir });
     } catch (error) {
       // No folder was made: the repository never became part of the task.
-      if (!(await onDisk(worktreePath))) taskStore.removeWorktree(task.id, recorded.worktrees.find(worktree => worktree.worktreePath === worktreePath).id);
+      if (!(await onDisk(worktreePath, tools))) taskStore.removeWorktree(task.id, recorded.worktrees.find(worktree => worktree.worktreePath === worktreePath).id);
       throw new TaskError(`The copy of ${name} could not be created: ${gitReason(error?.message).replace(/\.$/, '')}.`, 409, undefined, { cause: error });
     }
     return recorded;
@@ -423,9 +484,24 @@ export function createTaskService({
       queue = run.then(() => undefined, () => undefined);
       return run;
     },
-    /** A task made by hand: its title is the owner's. */
+    /** A task made by hand: its title is the owner's. Runs auto-sync on target host unless skipped. */
     create(input) {
-      const run = queue.then(async () => createPlannedNow(await plan({ ...input, titleSource: 'owner' })));
+      const run = queue.then(async () => {
+        const planned = await plan({ ...input, titleSource: 'owner' });
+        if (resolveHostTools && !input?.skipSync) {
+          const { project, host, tools } = await resolveProject(planned.project, planned.host);
+          if (project.autoSync !== false) {
+            const repoPaths = planned.worktrees.map(w => ({ repository: w.repository, repoPath: w.checkoutPath }));
+            const outcome = await syncLocation({ project, host, repoPaths, runner: tools.runner });
+            if (!outcome.ok) {
+              throw new TaskError(outcome.message, outcome.status, undefined, {
+                extra: { code: outcome.code, host: outcome.host, results: outcome.results },
+              });
+            }
+          }
+        }
+        return createPlannedNow(planned);
+      });
       queue = run.then(() => undefined, () => undefined);
       return run;
     },
@@ -460,17 +536,21 @@ export function createTaskService({
         if (!OPEN_STATES.includes(worktree.state)) throw new TaskError('This repository of the task is finished.', 409);
       }
       if (!worktree) throw new Error(`Open task ${task.id} has no open worktree`);
-      const exists = await pathExists(worktree.worktreePath);
+      const tools = toolsFor(task.host);
+      const exists = await tools.pathExists(worktree.worktreePath);
       if (typeof exists !== 'boolean') throw new Error('pathExists must return a boolean');
       if (!exists) throw new TaskError("This task's files are no longer on disk.", 409);
       let started;
       try {
-        started = await startSession(task.project, { cwd: worktree.worktreePath });
+        const startOpts = task.host && task.host !== LOCAL_HOST
+          ? { cwd: worktree.worktreePath, host: task.host, skipSync: true }
+          : { cwd: worktree.worktreePath };
+        started = await startSession(task.project, startOpts);
         if (typeof started?.id !== 'string' || started.id.length === 0) throw new Error('Terminal session ID is invalid');
       } catch (error) {
         throw new TaskError('The terminal could not be opened.', error?.status === 503 ? 503 : 500, undefined, { cause: error });
       }
-      return { sessionId: started.id, taskId: task.id, project: task.project, worktreeId: worktree.id };
+      return { sessionId: started.id, taskId: task.id, project: task.project, host: task.host ?? LOCAL_HOST, worktreeId: worktree.id };
     },
   };
 }

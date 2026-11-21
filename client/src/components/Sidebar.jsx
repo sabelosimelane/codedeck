@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { FolderOpen, Plus, Trash2, FolderTree, History, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard, Hourglass, Play, Copy, MoreVertical, Sun, Moon, Monitor } from 'lucide-react';
+import { FolderOpen, Plus, Trash2, FolderTree, History, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard, Hourglass, Play, Copy, MoreVertical, Sun, Moon, Monitor, Server } from 'lucide-react';
 import { getThemeMode, cycleThemeMode } from '../theme';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import ProjectRepositoriesDialog from './ProjectRepositoriesDialog.jsx';
+import ProjectLocationsDialog from './ProjectLocationsDialog.jsx';
 import ChangesDialog from './tasks/ChangesDialog.jsx';
 import { useToast } from './ToastContext';
 import BrandMark from './BrandMark';
@@ -174,6 +175,7 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [repositoriesProject, setRepositoriesProject] = useState(null);
+  const [locationsProject, setLocationsProject] = useState(null);
   const [changesProject, setChangesProject] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [shelfExpanded, setShelfExpanded] = useState(() => {
@@ -494,17 +496,20 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
     </div>
   );
 
-  // A project's other repositories are kept for local projects only, as tasks are.
-  const repositoriesMenuItems = (project) => (!project.host || project.host === 'local' ? [{
+  // Cross-host project management: Hosts & sync, Repositories, and Changes work on any project.
+  const repositoriesMenuItems = (project) => [{
+    label: 'Hosts & sync…',
+    icon: <Server size={13} />,
+    onClick: () => { setLocationsProject(project); setOpenProjectMenu(null); },
+  }, {
     label: 'Repositories…',
     icon: <FolderTree size={13} />,
     onClick: () => { setRepositoriesProject(project); setOpenProjectMenu(null); },
   }, {
-    // What was merged in the project: tasks are local, so their changes are too.
     label: 'Changes…',
     icon: <History size={13} />,
     onClick: () => { setChangesProject(project.name); setOpenProjectMenu(null); },
-  }] : []);
+  }];
 
   const removeMenuItem = (project) => (
     confirmDelete === project.name
@@ -1233,6 +1238,17 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
           project={repositoriesProject}
           onClose={() => setRepositoriesProject(null)}
           onChanged={onRepositoriesChanged}
+        />
+      )}
+
+      {locationsProject && (
+        <ProjectLocationsDialog
+          project={locationsProject}
+          onUpdated={(updated) => {
+            setLocationsProject(updated);
+            onRepositoriesChanged();
+          }}
+          onClose={() => setLocationsProject(null)}
         />
       )}
 

@@ -70,7 +70,12 @@ import { pruneTerminalSessions, pruneRemoteTerminalSessions } from './session-gc
 import { readTree } from './file-tree.js';
 import { readFilePreview } from './file-preview.js';
 import { resolveEditorCommand } from './editor-command.js';
-import { normalizeProjects } from './project-config.js';
+import { normalizeProjects, getProjectLocation, listProjectHosts, LOCAL_HOST, normalizeHostName } from './project-config.js';
+import { createTerminalSessionHostStore } from './terminal-session-host-store.js';
+import { syncProjectLocation } from './git-sync-service.js';
+import { createHostExecFile } from './host-exec.js';
+import { createHostFs } from './host-fs.js';
+import { createHostToolsResolver } from './host-tools.js';
 import { createHostsRouter } from './routes/hosts.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createProjectRepositoriesRouter, REPOSITORIES_PATH } from './routes/project-repositories.js';
@@ -186,6 +191,15 @@ function createReachabilityAwareRunner(host) {
   return hostReachability.wrapRunner(host, createCommandRunner(host));
 }
 
+const resolveHostTools = createHostToolsResolver({
+  loadHosts,
+  createRunner: createReachabilityAwareRunner,
+  getReachability: hostReachability.getReachability,
+  localExecFile: execFile,
+});
+
+const terminalSessionHostStore = createTerminalSessionHostStore(db);
+
 const {
   getHostRuntime,
   resolveHostRuntime,
@@ -193,6 +207,7 @@ const {
 } = createHostRuntimeResolver({
   loadProjects,
   loadHosts,
+  sessionHostStore: terminalSessionHostStore,
   getReachability: hostReachability.getReachability,
   createRuntime: (host) => createHostTerminalRuntime(createReachabilityAwareRunner(host), host.name),
 });
@@ -217,6 +232,11 @@ app.use(createHostsRouter({
   saveHostsAndProjects,
   createRunner: createReachabilityAwareRunner,
   getReachability: hostReachability.getReachability,
+  onHostRenamed: (previousName, nextName) => {
+    terminalSessionHostStore.rewriteHost(previousName, nextName);
+    taskStore?.rewriteHost?.(previousName, nextName);
+    pipelineRunStore?.rewriteHost?.(previousName, nextName);
+  },
 }));
 
 // -------------------------------------------------------------------
@@ -227,6 +247,7 @@ app.use(createProjectsRouter({
   loadProjects,
   saveProjects,
   loadHosts,
+  getLocalDefaultRoot: () => getConfig('defaultPath'),
   createRunner: createReachabilityAwareRunner,
   getReachability: hostReachability.getReachability,
   deleteProject: name => deleteProject(name),
@@ -236,6 +257,7 @@ app.use(createProjectRepositoriesRouter({ service: createProjectRepositories({
   loadProjects,
   saveProjects,
   execFile,
+  resolveHostTools,
   // The session starter is set up further down; it is read when a terminal is asked for.
   startSession: (project, options) => startSessionWithWorktree(project, options),
 }) }));
@@ -578,24 +600,39 @@ app.post('/api/terminal', async (req, res) => {
     return res.status(400).json({ error: 'projectName required' });
   }
 
-  const outcome = await reserveTerminalSession(projectName);
+  const host = typeof req.body?.host === 'string' && req.body.host.trim()
+    ? req.body.host.trim()
+    : undefined;
+  const skipSync = req.body?.skipSync === true;
+
+  const outcome = await reserveTerminalSession(projectName, { host, skipSync });
   res.status(outcome.status).json(outcome.body);
 });
 
 /**
- * Reserve the next `${project}-N` id. Shared by the desktop (which then opens
- * a WebSocket) and the phone (which creates the session detached first), so
- * both draw from one allocator and can never hand out the same id.
+ * Reserve the next `${project}-N` id on the requested host (defaulting to the
+ * project's `defaultHost`). Runs automatic `git pull --ff-only` when `autoSync`
+ * is enabled and `skipSync` is not set.
  */
-async function reserveTerminalSession(projectName) {
-  const project = loadProjects().find(candidate => candidate.name === projectName);
+async function reserveTerminalSession(projectName, { host: requestedHost, skipSync = false } = {}) {
+  const project = normalizeProjects(loadProjects()).find(candidate => candidate.name === projectName);
   if (!project) {
     return { status: 404, body: { error: 'project not found' } };
   }
 
-  const projectHost = project.host && project.host !== 'local'
-    ? findHostByName(loadHosts(), project.host)
+  const targetHostName = normalizeHostName(requestedHost || project.defaultHost);
+  const location = getProjectLocation(project, targetHostName);
+  if (!location) {
+    return { status: 404, body: { error: `project "${projectName}" has no location on host "${targetHostName}"`, host: targetHostName } };
+  }
+
+  const projectHost = location.host !== LOCAL_HOST
+    ? findHostByName(loadHosts(), location.host)
     : null;
+  if (location.host !== LOCAL_HOST && !projectHost) {
+    return { status: 404, body: { error: `unknown host "${location.host}"`, host: location.host } };
+  }
+
   const projectReachability = projectHost
     ? hostReachability.getReachability(projectHost.name)
     : null;
@@ -607,7 +644,7 @@ async function reserveTerminalSession(projectName) {
     } };
   }
 
-  // The local tmux gate only applies to local projects — a remote project's
+  // The local tmux gate only applies to local sessions — a remote host's
   // tmux requirement is checked per host at attach time (Spec §8.3).
   if (!projectHost) {
     const runtimeStatus = getTerminalRuntimeStatus(terminalRuntime);
@@ -619,13 +656,23 @@ async function reserveTerminalSession(projectName) {
     }
   }
 
+  // Automatic `git pull --ff-only` before opening a Main terminal.
+  let syncOutcome = null;
+  if (project.autoSync !== false && !skipSync) {
+    const runner = createReachabilityAwareRunner(projectHost);
+    const outcome = await syncProjectLocation({ project, host: location.host, runner });
+    if (!outcome.ok) {
+      return { status: outcome.status, body: outcome };
+    }
+    syncOutcome = outcome;
+  }
+
   try {
-    // Hidden durable sessions live on the project's host — enumerate there,
-    // strictly: an unreachable host fails fast instead of risking an id
-    // collision with sessions we cannot see (Spec §8.1/§8.2).
-    let recoverableSessionIds;
+    // Enumerate recoverable sessions across all hosts bound to this project
+    // (strictly on the target host) so `${projectName}-N` never collides across hosts.
+    let targetRecoverable;
     try {
-      recoverableSessionIds = projectHost
+      targetRecoverable = projectHost
         ? await getHostRuntime(projectHost).listSessionIdsAsync({ strict: true })
         : terminalRuntime.listSessionIds?.() || [];
     } catch (err) {
@@ -638,6 +685,16 @@ async function reserveTerminalSession(projectName) {
       }
       throw err;
     }
+
+    const otherHosts = listProjectHosts(project).filter(h => h.toLowerCase() !== location.host.toLowerCase());
+    const otherLists = await Promise.all(otherHosts.map(async h => {
+      if (h === LOCAL_HOST) return terminalRuntime.listSessionIds?.() || [];
+      const hostObj = findHostByName(loadHosts(), h);
+      if (!hostObj || hostReachability.getReachability(hostObj.name)?.reachability === 'unreachable') return [];
+      try { return await getHostRuntime(hostObj).listSessionIdsAsync(); } catch { return []; }
+    }));
+    const recordedIds = terminalSessionHostStore.listByProject(projectName).map(r => r.sessionId);
+    const recoverableSessionIds = [...new Set([...targetRecoverable, ...otherLists.flat(), ...recordedIds])];
 
     const allocation = allocateTerminalSessionId({
       projectName,
@@ -653,7 +710,20 @@ async function reserveTerminalSession(projectName) {
 
     reservedSessionIds.add(allocation.data.sessionId);
     terminalSessionWorktreeStore.clear(allocation.data.sessionId);
-    return { status: 201, body: allocation.data };
+    terminalSessionHostStore.set({
+      sessionId: allocation.data.sessionId,
+      project: projectName,
+      host: location.host,
+    });
+    return {
+      status: 201,
+      body: {
+        ...allocation.data,
+        host: location.host,
+        path: location.path,
+        ...(syncOutcome ? { sync: syncOutcome } : {}),
+      },
+    };
   } catch (error) {
     return { status: 500, body: { error: 'Failed to allocate terminal', detail: error.message } };
   }
@@ -837,6 +907,7 @@ const terminalDeleteDeps = {
   sessions, deletedSessionIds, reservedSessionIds, terminalRuntime,
   resolveHostRuntime, namingService, waitingStore: terminalWaitingStore,
   worktreeStore: terminalSessionWorktreeStore,
+  sessionHostStore: terminalSessionHostStore,
   sessionAttention, mobileStore, statusCache: terminalStatusCache,
   onSessionDeleted: (sessionId) => {
     pipelineRunEngineRef.current?.notifySessionClosed?.(sessionId);
@@ -845,11 +916,15 @@ const terminalDeleteDeps = {
 const deleteTerminalSession = createTerminalSessionDeleter(terminalDeleteDeps);
 deleteProject = createProjectDeletionService({
   loadProjects, saveProjects, sessions, deleteTerminalSession,
-  listSessionIds: project => {
-    if (!project.host || project.host === 'local') return terminalRuntime.listSessionIdsAsync({ strict: true });
-    const host = findHostByName(loadHosts(), project.host);
-    if (!host) throw new Error(`Host ${project.host} for project ${project.name} is unavailable`);
-    return getHostRuntime(host).listSessionIdsAsync({ strict: true });
+  listSessionIds: async project => {
+    const hosts = listProjectHosts(project);
+    const lists = await Promise.all(hosts.map(hostName => {
+      if (hostName === LOCAL_HOST) return terminalRuntime.listSessionIdsAsync({ strict: true });
+      const host = findHostByName(loadHosts(), hostName);
+      if (!host) throw new Error(`Host ${hostName} for project ${project.name} is unavailable`);
+      return getHostRuntime(host).listSessionIdsAsync({ strict: true });
+    }));
+    return [...new Set(lists.flat())];
   },
 });
 terminalStatusCache.refreshSessionList();
@@ -878,15 +953,19 @@ const mobileNotifications = createMobileNotifications({
 });
 const mobileSessionStarter = createMobileSessionStarter({
   loadProjects, saveProjects, resolveHostRuntime, localRuntime: terminalRuntime, store: mobileStore, now: Date.now,
-  reserveSessionId: async projectName => {
-    const outcome = await reserveTerminalSession(projectName);
+  reserveSessionId: async (projectName, opts) => {
+    // Task/workflow/mobile session starters pass skipSync: true when the caller
+    // already synced (or is opening inside a task worktree).
+    const outcome = await reserveTerminalSession(projectName, { host: opts?.host, skipSync: opts?.skipSync ?? true });
     if (outcome.status === 201) return outcome.body;
     if (outcome.status === 404) throw new MobileError('Project not found', 404);
     if (outcome.status === 503 && outcome.body.host) throw new MobileError(`Host ${outcome.body.host} is unreachable`, 503);
     if (outcome.status === 503) throw new MobileError(outcome.body.error, 503);
     throw new Error(`Session reservation failed with status ${outcome.status}`);
   },
-  releaseReservation: sessionId => reservedSessionIds.delete(sessionId),
+  releaseReservation: sessionId => {
+    reservedSessionIds.delete(sessionId);
+  },
 });
 const startSessionWithWorktree = createWorktreeSessionStarter({
   start: (project, options) => mobileSessionStarter.start(project, options),
@@ -918,6 +997,7 @@ const taskService = createTaskService({
   taskStore,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   execFile,
+  resolveHostTools,
   startSession: startSessionWithWorktree,
   pathExists: worktreePathExists,
 });
@@ -926,6 +1006,7 @@ const taskLanding = createTaskLanding({
   taskStore,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,
   execFile,
+  resolveHostTools,
   pathExists: worktreePathExists,
   // Read when asked: the run store is created below, after the routes are mounted.
   hasActiveRun: taskId => pipelineRunStore.list().some(run => run.taskId === taskId && RUN_STILL_WORKING.has(run.status)),
@@ -1010,22 +1091,22 @@ const taskNaming = createTaskNaming({
   generate: (settings, context) => namingCli.generate(settings, context),
   warn: message => console.warn(message),
 });
+const runtimeForSession = sessionId => sessions.get(sessionId)?.hostRuntime ?? resolveHostRuntime(sessionId)?.hostRuntime ?? terminalRuntime;
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
   onNoteWritten: note => {
     taskNaming.noteWritten(note).catch(error => console.warn(`[task-naming] run=${note.runId} error=${error?.message || error}`));
   },
   setTerminalMuted: (sessionId, muted) => setObservedTerminalMuted(sessionAttention, sessionId, muted),
-  // Pipeline runs use local projects only, so their terminals are on the local tmux server.
-  restartAgentTerminal: (sessionId, cwd) => terminalRuntime.respawnMainPaneAsync(sessionId, cwd),
-  typeIntoTerminal: (sessionId, text) => terminalRuntime.typeLineAsync(sessionId, text),
-  terminalInFolder: createTerminalInFolder(sessionId => terminalRuntime.inspectPaneAsync(sessionId)),
+  restartAgentTerminal: (sessionId, cwd) => runtimeForSession(sessionId).respawnMainPaneAsync(sessionId, cwd),
+  typeIntoTerminal: (sessionId, text) => runtimeForSession(sessionId).typeLineAsync(sessionId, text),
+  terminalInFolder: createTerminalInFolder(sessionId => runtimeForSession(sessionId).inspectPaneAsync(sessionId)),
   // The pane, and how CodeDeck's own attachment to it stands: input written through a browser's
   // or a run's tmux client goes wherever that client is.
   inspectTerminal: async (sessionId) => {
     const entry = sessions.get(sessionId);
     return {
-      pane: await terminalRuntime.inspectPaneAsync(sessionId),
+      pane: await runtimeForSession(sessionId).inspectPaneAsync(sessionId),
       attachment: entry ? {
         alive: entry.alive, wsAttached: entry.wsAttached, clientDetached: entry.clientDetached ?? false,
         backgroundHolds: entry.backgroundHolds ?? 0, controllerId: entry.controllerId ?? null,
@@ -1033,7 +1114,9 @@ const pipelineRunEngine = createRunEngine({
     };
   },
   readProgressCount: async run => {
-    const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: pipelineProgressReader });
+    const tools = resolveHostTools(run.host);
+    const reader = run.host && run.host !== LOCAL_HOST ? createRunProgressReader({ fs: tools.fs }) : pipelineProgressReader;
+    const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: reader });
     return progress?.phaseCount > 0 && ['in_progress', 'all_done'].includes(progress.status)
       ? { tasksDone: progress.tasksDone, tasksTotal: progress.tasksTotal } : null;
   },
@@ -1042,51 +1125,60 @@ const pipelineRunEngine = createRunEngine({
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
   createWorktree: async (run) => {
-    const project = loadProjects().find(candidate => candidate.name === run.project);
-    if (!project?.path) throw new Error(`Project ${run.project} not found for worktree create`);
+    const project = normalizeProjects(loadProjects()).find(candidate => candidate.name === run.project);
+    const location = project ? getProjectLocation(project, run.host) : null;
+    if (!location?.path) throw new Error(`Project ${run.project} not found on host ${run.host || 'local'} for worktree create`);
+    const tools = resolveHostTools(run.host);
     return createPipelineWorktree({
       homePath: run.homePath,
       worktreePath: run.worktreePath,
       branch: run.worktreeBranch,
-      projectPath: project.path,
-      execFile,
+      projectPath: location.path,
+      execFile: tools.execFile,
+      mkdir: tools.mkdir,
     });
   },
-  removeWorktree: async (run) => removePipelineWorktree({
-    homePath: run.homePath,
-    worktreePath: run.worktreePath,
-    execFile,
-  }),
-  listDirtyPaths: async ({ worktreePath }) => listPipelineDirtyPaths({ worktreePath, execFile }),
+  removeWorktree: async (run) => {
+    const tools = resolveHostTools(run.host);
+    return removePipelineWorktree({
+      homePath: run.homePath,
+      worktreePath: run.worktreePath,
+      execFile: tools.execFile,
+    });
+  },
+  listDirtyPaths: async ({ worktreePath, host }) => {
+    const tools = resolveHostTools(host);
+    return listPipelineDirtyPaths({ worktreePath, execFile: tools.execFile });
+  },
   // Where a run may work and read: the worktrees of its task and the project's other repositories, as they are when a step starts.
   listRunPlaces: createRunPlaces({ taskStore, findProject: name => loadProjects().find(project => project.name === name) ?? null, execFile }),
   canReclaimReleasedTaskWorktree: run => canReclaimReleasedTaskRun({ run, taskStore, runStore: pipelineRunStore }),
-  pathExists: async (target) => {
+  pathExists: async (target, host) => {
     try {
-      await fs.access(target);
-      return true;
+      return await resolveHostTools(host).pathExists(target);
     } catch {
       return false;
     }
   },
-  startSession: async ({ project, cwd }) => {
-    const started = await startSessionWithWorktree(project, { cwd });
+  startSession: async ({ project, cwd, host }) => {
+    const started = await startSessionWithWorktree(project, { cwd, ...(host && host !== LOCAL_HOST ? { host, skipSync: true } : {}) });
     return started.id;
   },
   attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSession(
-    sessionId, sessions, terminalRuntime, deletedSessionIds,
+    sessionId, sessions, runtimeForSession(sessionId), deletedSessionIds,
     { cwd, onSessionEnded: endedId => { mobileStore.retireSession(endedId); terminalSessionWorktreeStore.clear(endedId); } },
   ),
   // Resume returns a step to its own terminal while that terminal can still be attached to.
   terminalAvailable: (sessionId) => backgroundSessionAvailable(
-    sessionId, sessions, terminalRuntime, deletedSessionIds,
+    sessionId, sessions, runtimeForSession(sessionId), deletedSessionIds,
   ),
   createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
   classifyReadiness: classifyAgentReadiness,
-  // The end of the terminal's screen and scrollback, where an agent prints what it needs
-  // before a NEEDS_INPUT signal. Pipeline runs use local projects only.
   readScreen: async (sessionId) => {
-    const snapshot = terminalRuntime.captureAgentScreen(sessionId, PIPELINE_QUESTION_SCREEN_LINES);
+    const rt = runtimeForSession(sessionId);
+    const snapshot = typeof rt.captureAgentScreenAsync === 'function'
+      ? await rt.captureAgentScreenAsync(sessionId, PIPELINE_QUESTION_SCREEN_LINES)
+      : rt.captureAgentScreen(sessionId, PIPELINE_QUESTION_SCREEN_LINES);
     if (snapshot.historyGuaranteed !== true || typeof snapshot.data !== 'string') {
       throw new Error(`The terminal screen of ${sessionId} could not be read.`);
     }
@@ -1188,6 +1280,7 @@ app.use(createPipelinesRouter({
     deleteSession: deleteTerminalSession,
   }),
   execFile,
+  resolveHostTools,
 }));
 
 const agentHistory = createAgentHistory({ home: os.homedir(), fs: fsSync, Database: db.constructor });

@@ -16,6 +16,7 @@ import path from 'node:path';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
 import { listDirtyPaths, remove as removeWorktree, resolveHomeRepoPath } from '../pipelines/run-worktree.js';
 import { TaskError } from './task-service.js';
+import { getProjectLocation, LOCAL_HOST, normalizeHostName, normalizeProject } from '../project-config.js';
 
 const GIT_TIMEOUT_MS = 30_000;
 // Pushing and opening a pull request talk to a remote host; they get a longer, explicit limit.
@@ -106,6 +107,7 @@ export function createTaskLanding({
   rmdir = removeDirectory,
   // Runs that published attachments into a worktree: only their verified copies are disposable.
   listRunAttachmentsForWorktree = async () => [],
+  resolveHostTools = null,
 } = {}) {
   if (typeof taskStore?.get !== 'function' || typeof taskStore?.setWorktreeState !== 'function') throw new TypeError('taskStore is required');
   if (typeof listRunAttachmentsForWorktree !== 'function') throw new TypeError('listRunAttachmentsForWorktree must be a function');
@@ -113,13 +115,37 @@ export function createTaskLanding({
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
 
+  function toolsFor(hostName) {
+    const normalized = normalizeHostName(hostName);
+    if (typeof resolveHostTools === 'function') {
+      try {
+        const t = resolveHostTools(normalized);
+        return {
+          host: t.host,
+          execFile: t.execFile,
+          pathExists: t.pathExists,
+          lstat: p => t.fs.lstat(p),
+          readdir: (p, opts) => t.fs.readdir(p, opts),
+          rmdir: p => t.fs.rmdir(p),
+          digest: p => t.sha256(p),
+        };
+      } catch (err) {
+        throw new TaskError(err.message || 'Host unavailable', err.status || 503, undefined, { cause: err });
+      }
+    }
+    return { host: LOCAL_HOST, execFile, pathExists, lstat, readdir, rmdir, digest };
+  }
+
   async function load(id) {
     if (!isUuid(id)) throw new TaskError('Task not found', 404);
     const task = taskStore.get(id);
     if (!task) throw new TaskError('Task not found', 404);
-    const project = await findProject(task.project);
-    if (!project || typeof project.path !== 'string' || !path.isAbsolute(project.path)) throw new TaskError('The project of this task no longer exists.', 409);
-    return { task, project };
+    const raw = await findProject(task.project);
+    if (!raw || typeof raw.path !== 'string' || !path.isAbsolute(raw.path)) throw new TaskError('The project of this task no longer exists.', 409);
+    const project = normalizeProject(raw);
+    const location = getProjectLocation(project, task.host);
+    const resolvedProject = location ? { ...project, path: location.path, repositories: location.repositories } : project;
+    return { task, project: resolvedProject, tools: toolsFor(task.host) };
   }
 
   /** The worktree an action is about: the one named, or the one the task started in. */

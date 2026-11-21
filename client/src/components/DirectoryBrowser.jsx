@@ -13,7 +13,7 @@ import {
   Server,
 } from 'lucide-react';
 
-export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
+export default function DirectoryBrowser({ onSelect, onCancel, initialPath, initialHost, host }) {
   const [current, setCurrent] = useState('');
   const [parent, setParent] = useState(null);
   const [entries, setEntries] = useState([]);
@@ -23,7 +23,7 @@ export default function DirectoryBrowser({ onSelect, onCancel, initialPath }) {
   const [hoveredEntry, setHoveredEntry] = useState(null);
   
   const [hosts, setHosts] = useState([]);
-  const [selectedHost, setSelectedHost] = useState('local');
+  const [selectedHost, setSelectedHost] = useState(initialHost || host || 'local');
   const [isChangingHost, setIsChangingHost] = useState(false);
 
   const debounceRef = useRef(null);

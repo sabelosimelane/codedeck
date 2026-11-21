@@ -23,7 +23,7 @@ export function isReservedHostName(name) {
  * Validate a host create/update payload. Returns trimmed `{ data }` on success
  * or `{ error, status: 400 }` on the first violation.
  */
-export function validateHostInput({ name, sshTarget } = {}) {
+export function validateHostInput({ name, sshTarget, defaultRoot } = {}) {
   const trimmedName = typeof name === 'string' ? name.trim() : '';
   if (!trimmedName) return { error: 'name required', status: 400 };
   if (trimmedName.length > HOST_NAME_MAX_LENGTH) {
@@ -48,7 +48,21 @@ export function validateHostInput({ name, sshTarget } = {}) {
     };
   }
 
-  return { data: { name: trimmedName, sshTarget: trimmedTarget } };
+  let normalizedRoot;
+  if (defaultRoot !== undefined && defaultRoot !== null && String(defaultRoot).trim() !== '') {
+    if (typeof defaultRoot !== 'string') {
+      return { error: 'defaultRoot must be an absolute path', status: 400 };
+    }
+    const trimmedRoot = defaultRoot.trim();
+    if (!trimmedRoot.startsWith('/') || /[\x00-\x1f\x7f]/.test(trimmedRoot)) {
+      return { error: 'defaultRoot must be an absolute path without control characters', status: 400 };
+    }
+    normalizedRoot = trimmedRoot.replace(/\/+$/, '') || '/';
+  }
+
+  const data = { name: trimmedName, sshTarget: trimmedTarget };
+  if (normalizedRoot !== undefined) data.defaultRoot = normalizedRoot;
+  return { data };
 }
 
 /** Find a stored host by name, case-insensitively. */
@@ -65,16 +79,16 @@ export function findHostByName(hosts = [], name) {
 export function addHost(input, existingHosts = []) {
   const validation = validateHostInput(input);
   if (validation.error) return validation;
-  const { name, sshTarget } = validation.data;
+  const { name, sshTarget, defaultRoot } = validation.data;
   if (findHostByName(existingHosts, name)) {
     return { error: 'host name already exists', status: 409 };
   }
-  const host = { name, sshTarget };
+  const host = defaultRoot !== undefined ? { name, sshTarget, defaultRoot } : { name, sshTarget };
   return { data: { host, hosts: [...existingHosts, host] } };
 }
 
 /**
- * Update a host's name and/or sshTarget. Returns
+ * Update a host's name, sshTarget, and/or defaultRoot. Returns
  * `{ data: { host, previousName, hosts } }` so the caller can rewrite
  * referencing projects when the name changed, or `{ error, status }`.
  */
@@ -90,19 +104,31 @@ export function updateHost(currentName, input = {}, existingHosts = []) {
   const existing = existingHosts[idx];
   const nextName = input.name ?? existing.name;
   const nextTarget = input.sshTarget ?? existing.sshTarget;
+  const nextRoot = input.defaultRoot !== undefined ? input.defaultRoot : existing.defaultRoot;
 
-  const validation = validateHostInput({ name: nextName, sshTarget: nextTarget });
+  const validation = validateHostInput({ name: nextName, sshTarget: nextTarget, defaultRoot: nextRoot });
   if (validation.error) return validation;
-  const { name, sshTarget } = validation.data;
+  const { name, sshTarget, defaultRoot } = validation.data;
 
   const collides = existingHosts.some(
     (h, i) => i !== idx && h.name.toLowerCase() === name.toLowerCase()
   );
   if (collides) return { error: 'host name already exists', status: 409 };
 
-  const host = { name, sshTarget };
+  const host = defaultRoot !== undefined ? { name, sshTarget, defaultRoot } : { name, sshTarget };
   const hosts = existingHosts.map((h, i) => (i === idx ? host : h));
   return { data: { host, previousName: existing.name, hosts } };
+}
+
+function projectReferencesHost(project, lowerHostName) {
+  if (typeof project?.host === 'string' && project.host.toLowerCase() === lowerHostName) return true;
+  if (typeof project?.defaultHost === 'string' && project.defaultHost.toLowerCase() === lowerHostName) return true;
+  if (Array.isArray(project?.locations)) {
+    return project.locations.some(
+      loc => typeof loc?.host === 'string' && loc.host.toLowerCase() === lowerHostName
+    );
+  }
+  return false;
 }
 
 /**
@@ -119,9 +145,8 @@ export function deleteHost(name, existingHosts = [], projects = []) {
   if (idx === -1) return { error: 'host not found', status: 404 };
 
   const host = existingHosts[idx];
-  const referenced = projects.some(
-    p => typeof p.host === 'string' && p.host.toLowerCase() === host.name.toLowerCase()
-  );
+  const lowerHost = host.name.toLowerCase();
+  const referenced = projects.some(p => projectReferencesHost(p, lowerHost));
   if (referenced) {
     return { error: 'host is referenced by one or more projects', status: 409 };
   }
@@ -130,18 +155,31 @@ export function deleteHost(name, existingHosts = [], projects = []) {
 }
 
 /**
- * Rewrite the `host` field on every project referencing `previousName` to
- * `nextName` (case-insensitive match). Returns the original array unchanged
- * when the name did not change.
+ * Rewrite host references (`host`, `defaultHost`, and `locations[].host`) on
+ * every project referencing `previousName` to `nextName` (case-insensitive).
+ * Returns the original array unchanged when the name did not change.
  */
 export function rewriteProjectHost(projects = [], previousName, nextName) {
   if (previousName === nextName) return projects;
   const lowerPrev = String(previousName).toLowerCase();
-  return projects.map(p =>
-    typeof p.host === 'string' && p.host.toLowerCase() === lowerPrev
-      ? { ...p, host: nextName }
-      : p
-  );
+  return projects.map(p => {
+    if (!projectReferencesHost(p, lowerPrev)) return p;
+    const updated = { ...p };
+    if (typeof updated.host === 'string' && updated.host.toLowerCase() === lowerPrev) {
+      updated.host = nextName;
+    }
+    if (typeof updated.defaultHost === 'string' && updated.defaultHost.toLowerCase() === lowerPrev) {
+      updated.defaultHost = nextName;
+    }
+    if (Array.isArray(updated.locations)) {
+      updated.locations = updated.locations.map(loc =>
+        typeof loc?.host === 'string' && loc.host.toLowerCase() === lowerPrev
+          ? { ...loc, host: nextName }
+          : loc
+      );
+    }
+    return updated;
+  });
 }
 
 /**
@@ -163,6 +201,7 @@ export function listHostsWithLocal(storedHosts = [], getReachability) {
     return {
       name: h.name,
       sshTarget: h.sshTarget,
+      ...(h.defaultRoot ? { defaultRoot: h.defaultRoot } : {}),
       builtIn: false,
       reachability: live?.reachability ?? 'unknown',
       ...(live?.lastError != null ? { lastError: live.lastError } : {}),

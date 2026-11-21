@@ -3,12 +3,15 @@ import { teamScoreResponse } from '../../../shared/team-score-responses.mjs';
 const BASE = '/api/pipelines';
 
 export class PipelineApiError extends Error {
-  constructor(message, { status = 0, errors = [], reservation = null } = {}) {
+  constructor(message, { status = 0, errors = [], reservation = null, code = null, host = null, results = null } = {}) {
     super(message);
     this.name = 'PipelineApiError';
     this.status = status;
     this.errors = Array.isArray(errors) ? errors : [];
     this.reservation = reservation;
+    if (code) this.code = code;
+    if (host) this.host = host;
+    if (results) this.results = results;
   }
 }
 
@@ -34,7 +37,14 @@ async function request(path, options = {}) {
   if (!response.ok) {
     throw new PipelineApiError(
       body.message || body.error || `Pipelines request failed (${response.status})`,
-      { status: response.status, errors: body.errors, reservation: body.reservation },
+      {
+        status: response.status,
+        errors: body.errors,
+        reservation: body.reservation,
+        code: body.code,
+        host: body.host,
+        results: body.results,
+      },
     );
   }
   return body;
@@ -157,8 +167,8 @@ export function updatePipelineSettings({ setupAgentId, revision }, { signal } = 
   return request('/settings', { method: 'PUT', body: { setupAgentId, revision }, signal });
 }
 
-export function preflightProject(project, { signal } = {}) {
-  const params = new URLSearchParams({ project });
+export function preflightProject(project, { host, signal } = {}) {
+  const params = new URLSearchParams({ project, ...(host ? { host } : {}) });
   return request(`/preflight?${params}`, { signal });
 }
 
@@ -183,7 +193,7 @@ export function getRun(runId, { signal } = {}) {
  * task) or `worktreePath` (an existing working tree, such as Main). `startIn` names the repository
  * of the task the run starts in, for a project with several.
  */
-export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, files = [] }, { signal } = {}) {
+export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, host, skipSync, files = [] }, { signal } = {}) {
   if (!Array.isArray(files)) throw new TypeError('Workflow files must be an array');
   const fields = {
     requestId, workflowId, project, input, teamId, stepOverrides,
@@ -191,6 +201,8 @@ export function startRun({ requestId, workflowId, project, input, worktreePath, 
     ...(taskId === undefined ? {} : { taskId }),
     ...(newTask === undefined ? {} : { newTask }),
     ...(startIn === undefined ? {} : { startIn }),
+    ...(host === undefined ? {} : { host }),
+    ...(skipSync === undefined ? {} : { skipSync }),
   };
   if (files.length === 0) return request('/runs', { method: 'POST', body: fields, signal });
   const body = new FormData();

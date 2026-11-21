@@ -19,6 +19,7 @@ function escapeRegExp(value) {
 export function createHostRuntimeResolver({
   loadProjects,
   loadHosts,
+  sessionHostStore = null,
   createRuntime = (host) => createHostTerminalRuntime(createCommandRunner(host), host.name),
   getReachability = null,
 } = {}) {
@@ -45,14 +46,24 @@ export function createHostRuntimeResolver({
   }
 
   /**
-   * Resolve the host runtime for a session's owning project. Returns null for
-   * local projects, unknown projects, or projects on since-deleted hosts — all
-   * of which fall back to the local runtime path.
+   * Resolve the host runtime for a session. Checks the persisted session-to-host
+   * registry first (required for cross-host projects with simultaneous sessions
+   * across hosts), then falls back to the owning project's default/legacy host.
+   * Returns null for local sessions, unknown projects, or deleted hosts.
    */
   function resolveHostRuntime(sessionId) {
+    const recorded = sessionHostStore?.get?.(sessionId);
+    if (recorded) {
+      if (!recorded.host || recorded.host === 'local') return null;
+      const host = findHostByName(loadHosts(), recorded.host);
+      if (!host) return null;
+      return { host: host.name, hostRuntime: getHostRuntime(host) };
+    }
+
     const project = findSessionProject(sessionId);
-    if (!project?.host || project.host === 'local') return null;
-    const host = findHostByName(loadHosts(), project.host);
+    const projectHost = project?.defaultHost || project?.host;
+    if (!projectHost || projectHost === 'local') return null;
+    const host = findHostByName(loadHosts(), projectHost);
     if (!host) return null;
     return { host: host.name, hostRuntime: getHostRuntime(host) };
   }

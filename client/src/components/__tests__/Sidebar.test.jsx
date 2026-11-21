@@ -35,8 +35,15 @@ vi.mock('lucide-react', () => {
     Sun: Icon,
     Moon: Icon,
     Monitor: Icon,
+    Server: Icon,
   };
 });
+
+vi.mock('../ProjectLocationsDialog.jsx', () => ({
+  default: ({ project, onClose }) => (
+    <div role="dialog" aria-label={`Hosts and sync for ${project.name}`}><button type="button" onClick={onClose}>Done</button></div>
+  ),
+}));
 
 vi.mock('../DirectoryBrowser', () => ({
   default: () => null,
@@ -114,11 +121,12 @@ describe('Sidebar', () => {
     expect(view.getByRole('dialog', { name: 'Repositories of Beta' })).toBeTruthy();
   });
 
-  it('opens a local project\'s changes from its menu, and offers none for a project on another host', async () => {
+  it('opens a project\'s changes from its menu, including projects on remote hosts', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [], page: { currentPage: 0, size: 20, totalElements: 0, totalPages: 0, hasNextPage: false } }) })));
     const view = renderSidebar({ activeProjects: [{ name: 'Alpha', path: '/tmp/group/alpha' }, { name: 'Remote', path: '/srv/app', host: 'devbox' }] });
     fireEvent.click(view.getByLabelText('Project actions for Remote'));
-    expect(view.queryByText('Changes…')).toBeNull();
+    expect(view.getByText('Changes…')).toBeTruthy();
+    expect(view.getByText('Hosts & sync…')).toBeTruthy();
     fireEvent.click(view.getByLabelText('Project actions for Alpha'));
     fireEvent.click(view.getByText('Changes…'));
     expect(view.getByRole('dialog', { name: 'Changes in Alpha' })).toBeTruthy();
@@ -130,11 +138,12 @@ describe('Sidebar', () => {
     vi.unstubAllGlobals();
   });
 
-  it('offers no repositories for a project on another host', () => {
+  it('offers repositories and hosts & sync for both local and remote projects', () => {
     const view = renderSidebar({ activeProjects: [{ name: 'Remote', path: '/srv/app', host: 'devbox' }, { name: 'Here', path: '/tmp/here', host: 'local' }] });
     fireEvent.click(view.getByLabelText('Project actions for Remote'));
     expect(view.getByText('Rename project')).toBeTruthy();
-    expect(view.queryByText('Repositories…')).toBeNull();
+    expect(view.getByText('Repositories…')).toBeTruthy();
+    expect(view.getByText('Hosts & sync…')).toBeTruthy();
     fireEvent.click(view.getByLabelText('Project actions for Here'));
     expect(view.getByText('Repositories…')).toBeTruthy();
   });

@@ -63,6 +63,8 @@ import { parseCollectionQuery as parseQuery, paginate } from './collection-query
 import { provisionalTaskTitle } from '../tasks/task-naming.js';
 import { canReclaimReleasedTaskRun } from '../pipelines/released-task-run.js';
 import { holdsWorktree, isOpenRun } from '../pipelines/run-worktree-hold.js';
+import { getProjectLocation, LOCAL_HOST, normalizeHostName, normalizeProject } from '../project-config.js';
+import { syncProjectLocation } from '../git-sync-service.js';
 
 const BASE = '/api/pipelines';
 const WORKTREE_SORT = ['path'];
@@ -137,6 +139,7 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
     team: run.definition.team ?? null,
     progress,
     project: run.project,
+    host: run.host ?? 'local',
     input: run.input,
     attachments: publicAttachments(run.attachments),
     status: run.status,
@@ -415,6 +418,8 @@ export function createPipelinesRouter(deps) {
     planNames = defaultPlanNames,
     resolveHomeRepoPath = defaultResolveHomeRepoPath,
     listWorktrees = defaultListWorktrees,
+    resolveHostTools = null,
+    syncLocation = syncProjectLocation,
     readWorktreeChanges = defaultReadWorktreeChanges,
     execFile = defaultExecFile,
     realpath,
@@ -724,20 +729,27 @@ export function createPipelinesRouter(deps) {
   // --- Preflight ---
 
   router.get(`${BASE}/preflight`, route(async (req, res) => {
-    rejectUnknownQuery(req.query, ['project']);
+    rejectUnknownQuery(req.query, ['project', 'host']);
     if (!isText(req.query.project)) throw fieldError('project', 'A project name is required');
-    const project = findProject(req.query.project);
-    if (!project) throw new PipelineError('Project not found', 404);
+    const rawProject = findProject(req.query.project);
+    if (!rawProject) throw new PipelineError('Project not found', 404);
+    const project = normalizeProject(rawProject);
+    const targetHost = isText(req.query.host) ? normalizeHostName(req.query.host) : project.defaultHost;
+    const location = getProjectLocation(project, targetHost);
+    if (!location) throw new PipelineError(`Project "${project.name}" has no checkout on host "${targetHost}".`, 404);
+    const tools = typeof resolveHostTools === 'function' ? resolveHostTools(location.host) : null;
     const settings = settingsStore.get();
     const result = await preflight({
-      projectPath: project.path,
-      projectHost: project.host,
+      projectPath: location.path,
+      projectHost: location.host,
+      allowRemote: Boolean(tools),
       setupAgentId: settings.setupAgentId,
-      execFile,
-      realpath,
+      execFile: tools ? tools.execFile : execFile,
+      realpath: tools ? tools.realpath : realpath,
     });
     res.json({
       project: project.name,
+      host: location.host,
       eligible: result.eligible,
       reasons: result.reasons,
       branch: result.branch,
@@ -749,25 +761,32 @@ export function createPipelinesRouter(deps) {
   // --- Worktrees ---
 
   /** Preflight for a project, refusing with 409 unless the only thing missing is `ignoredCode`. */
-  async function requireRunnableProject(project, ignoredCode) {
+  async function requireRunnableProject(project, ignoredCode, { host: requestedHost } = {}) {
+    const norm = normalizeProject(project);
+    const targetHost = requestedHost ? normalizeHostName(requestedHost) : norm.defaultHost;
+    const location = getProjectLocation(norm, targetHost);
+    if (!location) throw new PipelineError(`Project "${norm.name}" has no checkout on host "${targetHost}".`, 404);
+    const tools = typeof resolveHostTools === 'function' ? resolveHostTools(location.host) : null;
     const settings = settingsStore.get();
     const check = await preflight({
-      projectPath: project.path,
-      projectHost: project.host,
+      projectPath: location.path,
+      projectHost: location.host,
+      allowRemote: Boolean(tools),
       setupAgentId: settings.setupAgentId,
-      execFile,
-      realpath,
+      execFile: tools ? tools.execFile : execFile,
+      realpath: tools ? tools.realpath : realpath,
     });
     const blocking = check.reasons.filter(reason => reason.code !== ignoredCode);
     if (blocking.length > 0) {
+      const unreachable = blocking.some(r => r.code === 'host_unreachable');
       throw new PipelineError(
         blocking[0]?.message || 'Run start preconditions failed',
-        409,
+        unreachable ? 503 : 409,
         undefined,
-        { reasons: blocking },
+        { reasons: blocking, host: location.host },
       );
     }
-    return settings;
+    return { settings, location, tools };
   }
 
   /**
@@ -985,8 +1004,9 @@ export function createPipelinesRouter(deps) {
     const inputError = validateRunInputField(body.input, { mode: inputMode });
     if (inputError) throw fieldError('input', inputError);
 
-    const project = findProject(body.project);
-    if (!project) throw new PipelineError('Project not found', 404);
+    const rawProject = findProject(body.project);
+    if (!rawProject) throw new PipelineError('Project not found', 404);
+    const project = normalizeProject(rawProject);
 
     const team = body.teamId === undefined ? null : teamStore.get(body.teamId);
     if (body.teamId !== undefined && !team) throw fieldError('teamId', 'Choose an existing team');
@@ -994,28 +1014,7 @@ export function createPipelinesRouter(deps) {
       throw fieldError('stepOverrides', 'An overridden step no longer exists in this workflow');
     }
 
-    // A new worktree is prepared by the Setup step, so only that case needs a setup agent.
-    const settings = await requireRunnableProject(project, useExisting ? SETUP_AGENT_MISSING : null);
-
-    // The project's repositories: its own, at its path, and the others it lists.
-    const ownHome = await resolveHomeRepoPath({ projectPath: project.path, execFile });
-    const ownName = path.basename(ownHome);
-    const otherRepositories = readStoredRepositories(project);
-    const checkouts = [{ repository: ownName, path: project.path }, ...otherRepositories.map(entry => ({ repository: entry.name, path: entry.path }))];
-    const several = otherRepositories.length > 0;
-
-    // Where the run works: `checkoutPath` is the checkout of the repository it starts in, `homePath` that repository's home.
-    let homePath = ownHome;
-    let checkoutPath = project.path;
-    let startRepository = ownName;
-    // Prefer the durable identity reserved for this request so retries keep the same run id.
-    const runId = reservation.runId ?? randomUUID();
-    let names;
-    let worktree = null;
     let task = null;
-    let taskPlan = null;
-    // What a step is told about where it may work and read, for the instructions' length check.
-    let places;
     if (inTask) {
       task = taskStore.get(body.taskId);
       if (!task) throw new PipelineError('Task not found', 404);
@@ -1024,6 +1023,56 @@ export function createPipelinesRouter(deps) {
       task = taskStore.get(reservation.taskId);
     }
     if (task && !OPEN_TASK.has(task.state)) throw new PipelineError('This task is finished.', 409);
+
+    const requestedHost = task?.host ?? body.host ?? project.defaultHost;
+    // A new worktree is prepared by the Setup step, so only that case needs a setup agent.
+    const { settings, location, tools } = await requireRunnableProject(project, useExisting ? SETUP_AGENT_MISSING : null, { host: requestedHost });
+    const runHost = location.host;
+    const runExecFile = tools ? tools.execFile : execFile;
+    const runFs = tools ? tools.fs : fs.promises;
+
+    // The project's repositories on this host: its own, at its location path, and the others it lists.
+    const ownHome = await resolveHomeRepoPath({ projectPath: location.path, execFile: runExecFile });
+    const ownName = path.basename(ownHome);
+    const otherRepositories = readStoredRepositories({ name: project.name, repositories: location.repositories });
+    const checkouts = [{ repository: ownName, path: location.path }, ...otherRepositories.map(entry => ({ repository: entry.name, path: entry.path }))];
+    const several = otherRepositories.length > 0;
+
+    // Automatic `git pull --ff-only` before starting a workflow run (unless skipped or targeting an existing task).
+    if (tools && project.autoSync !== false && !body.skipSync && !inTask) {
+      let targetRepoPaths = [{ repository: ownName, repoPath: location.path }];
+      if (forNewTask) {
+        const askedRepos = body.newTask.repositories;
+        const repoNames = body.startIn === undefined
+          ? (askedRepos ?? [ownName])
+          : [body.startIn, ...(askedRepos ?? []).filter(name => name !== body.startIn)];
+        const byName = new Map(checkouts.map(c => [c.repository, c.path]));
+        targetRepoPaths = repoNames.filter(n => byName.has(n)).map(n => ({ repository: n, repoPath: byName.get(n) }));
+      } else if (body.worktreePath !== undefined) {
+        const matched = checkouts.find(c => c.path === body.worktreePath);
+        if (matched) targetRepoPaths = [{ repository: matched.repository, repoPath: matched.path }];
+      }
+      const syncOutcome = await syncLocation({ project, host: runHost, repoPaths: targetRepoPaths, runner: tools.runner });
+      if (!syncOutcome.ok) {
+        throw new PipelineError(syncOutcome.message, syncOutcome.status, undefined, {
+          code: syncOutcome.code,
+          host: syncOutcome.host,
+          results: syncOutcome.results,
+        });
+      }
+    }
+
+    // Where the run works: `checkoutPath` is the checkout of the repository it starts in, `homePath` that repository's home.
+    let homePath = ownHome;
+    let checkoutPath = location.path;
+    let startRepository = ownName;
+    // Prefer the durable identity reserved for this request so retries keep the same run id.
+    const runId = reservation.runId ?? randomUUID();
+    let names;
+    let worktree = null;
+    let taskPlan = null;
+    // What a step is told about where it may work and read, for the instructions' length check.
+    let places;
     // Setup prepares every worktree of a task created for the run, the one it works in first.
     let setupPairs = null;
     // The repository the run starts in is the one a new task starts in: its worktree comes first.
@@ -1038,6 +1087,7 @@ export function createPipelinesRouter(deps) {
         }
         taskPlan = await taskService.plan({
           project: project.name,
+          host: runHost,
           title: typed ? body.newTask.title : provisionalTaskTitle(body.input, workflow.name),
           titleSource: typed ? 'owner' : 'input',
           ...(repositories === undefined ? {} : { repositories }),
@@ -1273,6 +1323,7 @@ export function createPipelinesRouter(deps) {
         requestId: body.requestId,
         workflowId: workflow.id,
         project: project.name,
+        host: runHost,
         input,
         status: 'pending',
         stopReason: null,

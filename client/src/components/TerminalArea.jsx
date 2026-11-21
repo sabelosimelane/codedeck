@@ -3,8 +3,9 @@ import Terminal from './Terminal';
 import TerminalTabBar from './TerminalTabBar';
 import PaneDivider from './PaneDivider';
 import { removeSessionsFromLayout } from '../utils/closedSessions.js';
-import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play } from 'lucide-react';
+import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play, Server } from 'lucide-react';
 import NewTaskDialog from './tasks/NewTaskDialog.jsx';
+import SyncConflictDialog from './SyncConflictDialog.jsx';
 import { createTask, openTaskTerminal } from '../utils/tasksApi.js';
 import TerminalInspector from './TerminalInspector';
 import TaskView from './tasks/TaskView.jsx';
@@ -422,8 +423,20 @@ export default function TerminalArea({
   const visibleRun = pipelineRuns
     .filter(run => !worktreeGroups || (groupKeyOfPath(run.worktree.path) ?? 'main') === visibleGroup)
     .reduce((newest, run) => (!newest || String(run.createdAt ?? '') > String(newest.createdAt ?? '') ? run : newest), null);
-  // Tasks need a local Git project; the backend says so if this one is not a repository.
-  const canStartTask = !project.host || project.host === 'local';
+  // Cross-host projects can start tasks and workflows on any bound host.
+  const canStartTask = true;
+  const projectLocations = Array.isArray(project.locations) && project.locations.length > 0
+    ? project.locations
+    : [{ host: project.defaultHost || project.host || 'local', path: project.path, repositories: project.repositories || [] }];
+  const defaultProjectHost = project.defaultHost || project.host || projectLocations[0]?.host || 'local';
+  const [activeHost, setActiveHost] = useState(defaultProjectHost);
+  useEffect(() => {
+    setActiveHost(defaultProjectHost);
+  }, [project.name, defaultProjectHost]);
+  const activeLocation = projectLocations.find(loc => loc.host === activeHost) ?? projectLocations[0];
+  const createdSessionHostsRef = useRef(new Map());
+  const [syncConflict, setSyncConflict] = useState(null);
+  const [syncProceeding, setSyncProceeding] = useState(false);
   const visibleTask = groups.find(group => group.key === visibleGroup)?.task ?? null;
   const lastActiveByGroupRef = useRef(new Map());
   // Opening a terminal reads where the owner is now, without re-creating the callbacks on every poll.
@@ -759,30 +772,79 @@ export default function TerminalArea({
     }
 
     try {
-      const res = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectName: project.name }),
-      });
+      const targetHost = activeHost || defaultProjectHost;
+      const runAllocate = async (skipSync = false) => {
+        const res = await fetch('/api/terminal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectName: project.name,
+            host: targetHost,
+            ...(skipSync ? { skipSync: true } : {}),
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        return { ok: res.ok, status: res.status, body };
+      };
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        showToast({ type: 'error', message: err.error || 'Failed to create terminal' });
+      const first = await runAllocate(false);
+      if (!first.ok) {
+        if (first.status === 409 && first.body?.code === 'sync_blocked') {
+          return await new Promise((resolve) => {
+            setSyncConflict({
+              conflict: first.body,
+              actionLabel: 'open a terminal',
+              onCancel: () => {
+                setSyncConflict(null);
+                resolve(null);
+              },
+              onProceed: async () => {
+                setSyncProceeding(true);
+                try {
+                  const retry = await runAllocate(true);
+                  setSyncConflict(null);
+                  if (!retry.ok) {
+                    showToast({ type: 'error', message: retry.body?.error || 'Failed to create terminal' });
+                    resolve(null);
+                    return;
+                  }
+                  const retryData = retry.body;
+                  createdSessionHostsRef.current.set(`${project.name}:${retryData.sessionId}`, retryData.host || targetHost);
+                  const num = getSessionNumber(project.name, retryData.sessionId);
+                  if (num !== null) sessionCounter = Math.max(sessionCounter, num);
+                  showToast({ type: 'success', message: successMessage || `Opened ${retryData.sessionId}` });
+                  resolve(retryData.sessionId);
+                } catch {
+                  setSyncConflict(null);
+                  showToast({ type: 'error', message: 'Server unreachable' });
+                  resolve(null);
+                } finally {
+                  setSyncProceeding(false);
+                }
+              },
+            });
+          });
+        }
+        showToast({ type: 'error', message: first.body?.error || 'Failed to create terminal' });
         return null;
       }
 
-      const data = await res.json();
+      const data = first.body;
+      createdSessionHostsRef.current.set(`${project.name}:${data.sessionId}`, data.host || targetHost);
       const sessionNumber = getSessionNumber(project.name, data.sessionId);
       if (sessionNumber !== null) {
         sessionCounter = Math.max(sessionCounter, sessionNumber);
       }
-      showToast({ type: 'success', message: successMessage || `Opened ${data.sessionId}` });
+      const syncNote = data.sync?.updated
+        ? ` (synced ${data.sync.commitsPulled} commit${data.sync.commitsPulled === 1 ? '' : 's'} on ${data.host || targetHost})`
+        : '';
+      showToast({ type: 'success', message: `${successMessage || `Opened ${data.sessionId}`}${syncNote}` });
       return data.sessionId;
     } catch {
       showToast({ type: 'error', message: 'Server unreachable' });
       return null;
     }
-  }, [project.name, showToast, isTerminalRuntimeBlocked, terminalRuntimeBlockedMessage]);
+  }, [project.name, activeHost, defaultProjectHost, showToast, isTerminalRuntimeBlocked, terminalRuntimeBlockedMessage]);
 
   // Split right — add pane to active tab, redistribute widths equally
   const splitRight = useCallback(async () => {
@@ -824,15 +886,23 @@ export default function TerminalArea({
   }, [requestTerminalSessionId, updateTerminalState, onSelectWorktree]);
 
   // New task: its own place to work is created, and a first terminal opens inside it.
-  const createTaskTab = useCallback(async ({ project: projectName, title, repositories, adoptedTask }) => {
+  const createTaskTab = useCallback(async ({ project: projectName, host, title, repositories, adoptedTask, skipSync }) => {
     try {
       // In a project with several repositories the owner says which ones the task includes.
-      const task = adoptedTask ?? await createTask({ project: projectName, title, ...(repositories === undefined ? {} : { repositories }) });
+      const targetHost = host || activeHost || defaultProjectHost;
+      const task = adoptedTask ?? await createTask({
+        project: projectName,
+        host: targetHost,
+        title,
+        ...(repositories === undefined ? {} : { repositories }),
+        ...(skipSync ? { skipSync: true } : {}),
+      });
       createdTasksRef.current.set(task.worktreePath, task);
       onTasksChanged();
       const opened = await openTaskTerminal(task.id);
       const sessionId = opened.sessionId;
       createdWorktreePathsRef.current.set(`${project.name}:${sessionId}`, task.worktreePath);
+      createdSessionHostsRef.current.set(`${project.name}:${sessionId}`, task.host || targetHost);
       chooseWorktree(task.worktreePath);
       const number = getSessionNumber(project.name, sessionId);
       if (number !== null) sessionCounter = Math.max(sessionCounter, number);
@@ -844,11 +914,34 @@ export default function TerminalArea({
       showToast({ type: 'success', message: `Started task ${task.title}` });
       return task;
     } catch (error) {
+      if (error?.status === 409 && error?.code === 'sync_blocked' && !skipSync) {
+        return await new Promise((resolve, reject) => {
+          setSyncConflict({
+            conflict: { host: error.host || host || activeHost, message: error.message, results: error.results },
+            actionLabel: 'create this task',
+            onCancel: () => {
+              setSyncConflict(null);
+              reject(error);
+            },
+            onProceed: async () => {
+              setSyncProceeding(true);
+              try {
+                setSyncConflict(null);
+                resolve(await createTaskTab({ project: projectName, host, title, repositories, adoptedTask, skipSync: true }));
+              } catch (retryErr) {
+                reject(retryErr);
+              } finally {
+                setSyncProceeding(false);
+              }
+            },
+          });
+        });
+      }
       const message = error instanceof Error ? error.message : 'Something went wrong. Please try again.';
       showToast({ type: 'error', message });
       throw error;
     }
-  }, [project.name, showToast, updateTerminalState, onSelectWorktree, onTasksChanged]);
+  }, [project.name, activeHost, defaultProjectHost, showToast, updateTerminalState, onSelectWorktree, onTasksChanged]);
 
   // Backend-confirmed sessions (session search resume + pipeline step tabs)
   // reuse the attach path without calling /api/terminal for a second session ID.
@@ -1240,9 +1333,38 @@ export default function TerminalArea({
           const waiting = runState?.needsOwner === true;
           return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{runState && <span className="worktree-switcher-state" data-tone={runState.tone}>{runState.label.toLowerCase()}</span>}{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
         })}
-        {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked} title={isTerminalRuntimeBlocked ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
+        {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked && activeHost === 'local'} title={isTerminalRuntimeBlocked && activeHost === 'local' ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
         {/* A run works in a task or in Main, so it is started here, beside them, and not among a tab's own actions. */}
-        {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={onOpenRunWorkflow} title="Run a workflow in a new task, an open task or Main"><Play size={11} /><span className="worktree-switcher-title">Run workflow</span></button>}
+        {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => onOpenRunWorkflow?.(activeHost)} title="Run a workflow in a new task, an open task or Main"><Play size={11} /><span className="worktree-switcher-title">Run workflow</span></button>}
+        {projectLocations.length > 1 && (
+          <label
+            className="worktree-switcher-button"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 'auto' }}
+            title={`Active host for new terminals, tasks, and workflows (${activeLocation?.path || ''})`}
+          >
+            <Server size={11} />
+            <select
+              aria-label="Target host"
+              value={activeHost}
+              onChange={(e) => setActiveHost(e.target.value)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'inherit',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 11,
+                cursor: 'pointer',
+                outline: 'none',
+              }}
+            >
+              {projectLocations.map(loc => (
+                <option key={loc.host} value={loc.host} style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)' }}>
+                  {loc.host}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>}
       {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged}
         canAddRepository={Array.isArray(project.repositories) && project.repositories.length > 0} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
@@ -1727,17 +1849,25 @@ export default function TerminalArea({
                     </div>
 
                     <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-                      <Terminal
-                        key={pane.sessionId}
-                        ref={(instance) => registerTerminalRef(pane.id, instance)}
-                        sessionId={pane.sessionId}
-                        claimOnOpen={intentionalOpenIds.current.has(pane.sessionId)}
-                        cwd={project.path}
-                        host={project.host}
-                        isVisible={isActive}
-                        isActivePane={isActive && paneIsActive}
-                        runtimeType={sessionLookup.get(pane.sessionId)?.runtimeType ?? 'pty'}
-                      />
+                      {(() => {
+                        const paneHost = sessionLookup.get(pane.sessionId)?.host
+                          ?? createdSessionHostsRef.current.get(`${project.name}:${pane.sessionId}`)
+                          ?? activeHost;
+                        const paneLocation = projectLocations.find(loc => loc.host === paneHost) ?? activeLocation;
+                        return (
+                          <Terminal
+                            key={pane.sessionId}
+                            ref={(instance) => registerTerminalRef(pane.id, instance)}
+                            sessionId={pane.sessionId}
+                            claimOnOpen={intentionalOpenIds.current.has(pane.sessionId)}
+                            cwd={sessionPathOf(pane.sessionId) ?? paneLocation?.path ?? project.path}
+                            host={paneHost}
+                            isVisible={isActive}
+                            isActivePane={isActive && paneIsActive}
+                            runtimeType={sessionLookup.get(pane.sessionId)?.runtimeType ?? 'pty'}
+                          />
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -1750,7 +1880,17 @@ export default function TerminalArea({
 
       </TaskFrame>
 
-      {showWorktreeDialog && <NewTaskDialog projectName={project.name} withRepositories={Array.isArray(project.repositories) && project.repositories.length > 0} onCreate={createTaskTab} onClose={() => setShowWorktreeDialog(false)} />}
+      {showWorktreeDialog && <NewTaskDialog projectName={project.name} host={activeHost} withRepositories={Array.isArray(activeLocation?.repositories) && activeLocation.repositories.length > 0} onCreate={createTaskTab} onClose={() => setShowWorktreeDialog(false)} />}
+
+      {syncConflict && (
+        <SyncConflictDialog
+          conflict={syncConflict.conflict}
+          actionLabel={syncConflict.actionLabel}
+          busy={syncProceeding}
+          onProceed={syncConflict.onProceed}
+          onCancel={syncConflict.onCancel}
+        />
+      )}
 
       {inspectingSessionId && (
         <TerminalInspector

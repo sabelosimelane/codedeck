@@ -1,24 +1,40 @@
 import path from 'node:path';
 import { MobileError } from './mobile-store.js';
-import { normalizeProjects } from './project-config.js';
+import { getProjectLocation, normalizeProjects } from './project-config.js';
 
 // Same initial geometry the desktop uses before its first resize; the phone
 // resizes the pane as soon as it attaches.
 export const INITIAL_COLS = 120;
 export const INITIAL_ROWS = 32;
 
-function resolveStartCwd(projectPath, options) {
-  if (options === undefined || options === null) return projectPath;
+const ALLOWED_START_FIELDS = new Set(['cwd', 'host', 'skipSync']);
+
+function resolveStartOptions(project, options) {
+  if (options === undefined || options === null) {
+    return { cwd: project.path, host: undefined, skipSync: undefined };
+  }
   if (typeof options !== 'object' || Array.isArray(options)) throw new Error('Session start options must be an object.');
   for (const field of Object.keys(options)) {
-    if (field !== 'cwd') throw new Error('Session start options contain an unknown field.');
+    if (!ALLOWED_START_FIELDS.has(field)) throw new Error('Session start options contain an unknown field.');
   }
-  if (!Object.prototype.hasOwnProperty.call(options, 'cwd')) return projectPath;
+  const host = options.host;
+  if (host !== undefined && (typeof host !== 'string' || host.trim().length === 0)) {
+    throw new Error('Session start host must be a nonempty string.');
+  }
+  const skipSync = options.skipSync;
+  if (skipSync !== undefined && typeof skipSync !== 'boolean') {
+    throw new Error('Session start skipSync must be a boolean.');
+  }
+  const location = host ? getProjectLocation(project, host) : null;
+  const fallbackPath = location?.path ?? project.path;
+  if (!Object.prototype.hasOwnProperty.call(options, 'cwd') || options.cwd === undefined) {
+    return { cwd: fallbackPath, host, skipSync };
+  }
   const { cwd } = options;
   if (typeof cwd !== 'string' || cwd.length === 0 || !path.isAbsolute(cwd) || cwd.includes('\0')) {
     throw new Error('Session start cwd must be a nonempty absolute path.');
   }
-  return cwd;
+  return { cwd, host, skipSync };
 }
 
 /**
@@ -42,9 +58,11 @@ export function createMobileSessionStarter({ loadProjects, saveProjects, reserve
     const project = projects[index];
     if (typeof project.path !== 'string' || project.path.trim().length === 0) throw new Error(`Stored project ${project.name} has no path`);
     if (typeof project.shelved !== 'boolean') throw new Error(`Stored project ${project.name} has a non-boolean shelved flag`);
-    const cwd = resolveStartCwd(project.path, options);
+    const { cwd, host, skipSync } = resolveStartOptions(project, options);
 
-    const reservation = await reserveSessionId(project.name);
+    const reservation = host !== undefined || skipSync !== undefined
+      ? await reserveSessionId(project.name, { host, skipSync })
+      : await reserveSessionId(project.name);
     const sessionId = reservation?.sessionId;
     if (typeof sessionId !== 'string' || !new RegExp(`^${project.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d+$`).test(sessionId)) {
       throw new Error(`Reserved sessionId does not belong to project ${project.name}`);

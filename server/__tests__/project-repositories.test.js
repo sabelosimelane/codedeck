@@ -236,7 +236,7 @@ describe('a project\'s repositories', () => {
       const { service, mobile, frontendMain, backend, starts } = groupFixture();
       await service.add('Demo', { path: mobile });
       await service.add('Demo', { path: frontendMain });
-      expect(await service.openTerminal('Demo', { repository: 'mobile-app' })).toEqual({ sessionId: 'Demo-1', project: 'Demo', repository: 'mobile-app', path: mobile });
+      expect(await service.openTerminal('Demo', { repository: 'mobile-app' })).toEqual({ sessionId: 'Demo-1', project: 'Demo', host: 'local', repository: 'mobile-app', path: mobile });
       expect(await service.openTerminal('Demo', { repository: 'frontend' })).toMatchObject({ repository: 'frontend', path: frontendMain });
       expect(await service.openTerminal('Demo', { repository: 'backend' })).toMatchObject({ repository: 'backend', path: backend });
       expect(starts).toEqual([['Demo', { cwd: mobile }], ['Demo', { cwd: frontendMain }], ['Demo', { cwd: backend }]]);

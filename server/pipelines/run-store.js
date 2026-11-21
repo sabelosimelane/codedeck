@@ -404,6 +404,7 @@ function validateRunRecord(id, record) {
     requestId: record.requestId,
     workflowId: record.workflowId,
     project: record.project,
+    host: typeof record.host === 'string' && record.host.trim() ? record.host.trim() : 'local',
     input: record.input,
     status: record.status,
     stopReason,
@@ -473,6 +474,7 @@ function rowToRecord(row) {
     requestId: row.request_id,
     workflowId: row.workflow_id,
     project: row.project,
+    host: row.host ?? 'local',
     input: row.input,
     status: row.status,
     stopReason: row.stop_reason,
@@ -522,6 +524,7 @@ function persistValues(record) {
     record.taskId,
     JSON.stringify(record.attachments),
     record.workflowState === null ? null : JSON.stringify(record.workflowState),
+    record.host ?? 'local',
   ];
 }
 
@@ -556,7 +559,8 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
       input_request TEXT,
       task_id TEXT,
       attachments TEXT NOT NULL DEFAULT '[]',
-      workflow_state TEXT
+      workflow_state TEXT,
+      host TEXT NOT NULL DEFAULT 'local'
     );
   `);
   // Databases created before input requests have no such column; their runs were not waiting on one.
@@ -574,6 +578,10 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
   // Runs stored before live restart recovery existed have no persisted workflow pass state.
   if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'workflow_state')) {
     db.exec('ALTER TABLE pipeline_runs ADD COLUMN workflow_state TEXT');
+  }
+  // Runs stored before cross-host workflows existed ran on the local host.
+  if (!db.prepare('PRAGMA table_info(pipeline_runs)').all().some(column => column.name === 'host')) {
+    db.exec("ALTER TABLE pipeline_runs ADD COLUMN host TEXT NOT NULL DEFAULT 'local'");
   }
 
   // Runs stored before step loops and agent decisions existed: the owner decided, and no loop
@@ -653,8 +661,8 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
       id, request_id, workflow_id, project, input, status, stop_reason, current_step_index,
       error, definition, steps, home_path, worktree_path, worktree_branch, base_commit,
       worktree_state, worktree_detail, created_at, updated_at, finished_at, input_request, task_id,
-      attachments, workflow_state
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      attachments, workflow_state, host
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_runs SET
@@ -662,9 +670,10 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
       current_step_index = ?, error = ?, definition = ?, steps = ?, home_path = ?,
       worktree_path = ?, worktree_branch = ?, base_commit = ?, worktree_state = ?,
       worktree_detail = ?, created_at = ?, updated_at = ?, finished_at = ?, input_request = ?, task_id = ?,
-      attachments = ?, workflow_state = ?
+      attachments = ?, workflow_state = ?, host = ?
     WHERE id = ?
   `);
+  const rewriteHostStmt = db.prepare('UPDATE pipeline_runs SET host = ? WHERE lower(host) = lower(?)');
 
   const get = id => {
     if (!isUuid(id)) throw new Error('pipeline_runs: id must be a UUID');
@@ -771,6 +780,10 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
         return write(next);
       })();
       return write(next);
+    },
+    rewriteHost(previousName, nextName) {
+      if (previousName === nextName) return;
+      rewriteHostStmt.run(nextName, previousName);
     },
   };
 }

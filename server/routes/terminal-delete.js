@@ -6,7 +6,7 @@ export function createTerminalSessionDeleter({
   sessions, deletedSessionIds, reservedSessionIds, terminalRuntime,
   resolveHostRuntime, namingService, waitingStore, sessionAttention,
   mobileStore, statusCache, onSessionDeleted,
-  worktreeStore,
+  worktreeStore, sessionHostStore,
 }) {
   return async id => {
     const entry = sessions.get(id);
@@ -28,6 +28,7 @@ export function createTerminalSessionDeleter({
     namingService.remove(id);
     waitingStore.clear(id);
     worktreeStore?.clear(id);
+    sessionHostStore?.remove(id);
     sessionAttention.forget(id);
     mobileStore.retireSession(id);
     for (const attachment of entry?.attachments?.values() ?? []) {

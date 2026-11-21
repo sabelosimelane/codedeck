@@ -70,6 +70,7 @@ function AppContent() {
   const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
   const [showSessionSearch, setShowSessionSearch] = useState(false);
   const [showRunWorkflow, setShowRunWorkflow] = useState(false);
+  const [runWorkflowHost, setRunWorkflowHost] = useState(null);
   const [showWorkflowBuilder, setShowWorkflowBuilder] = useState(false);
   useEffect(() => onOpenWorkflowBuilder(() => setShowWorkflowBuilder(true)), []);
   const [resumedSession, setResumedSession] = useState(null);
@@ -565,7 +566,10 @@ function AppContent() {
             waitingSessionIds={waitingSessionIds}
             onToggleWaiting={toggleWaiting}
             onOpenSessionSearch={() => setShowSessionSearch(true)}
-            onOpenRunWorkflow={() => setShowRunWorkflow(true)}
+            onOpenRunWorkflow={(targetHost) => {
+              setRunWorkflowHost(typeof targetHost === 'string' && targetHost ? targetHost : null);
+              setShowRunWorkflow(true);
+            }}
             adoptSessions={adoptSessions}
             onSessionsAdopted={(sessionIds) => {
               setAdoptedSessionIds((current) => {
@@ -631,10 +635,12 @@ function AppContent() {
       {showRunWorkflow && activeProject && (
         <RunWorkflowDialog
           projectName={activeProject.name}
+          host={runWorkflowHost || activeProject.defaultHost || activeProject.host || 'local'}
+          locations={activeProject.locations || []}
           repositories={activeProject.repositories}
           tasks={openTasks}
           defaultTaskId={worktreeGroupsByProject.get(activeProject.name)?.find(group => group.key === selectedWorktreeByProject[activeProject.name])?.task?.id ?? null}
-          onClose={() => setShowRunWorkflow(false)}
+          onClose={() => { setShowRunWorkflow(false); setRunWorkflowHost(null); }}
           onStart={async (request, { follow = true } = {}) => {
             const projectName = activeProject.name;
             const started = await startRun(request, { throwOnFailure: true });
