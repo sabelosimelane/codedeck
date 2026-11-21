@@ -207,10 +207,26 @@ export default function TeamImprovements({ switcher }) {
             )}
             <section>
               <h3>Recommendations and trials</h3>
-              {!data[1].length && <p>No recommendations yet. Trials need three comparable team runs.</p>}
-              {data[1].map((trial) => (
-                <Trial key={trial.id} trial={trial} open={setRunId} refresh={refresh} />
-              ))}
+              {(() => {
+                const active = data[1].filter((t) => t.status !== 'superseded');
+                const superseded = data[1].filter((t) => t.status === 'superseded');
+                return (
+                  <>
+                    {!active.length && <p>No recommendations yet. Trials need three comparable team runs.</p>}
+                    {active.map((trial) => (
+                      <Trial key={trial.id} trial={trial} open={setRunId} refresh={refresh} />
+                    ))}
+                    {superseded.length > 0 && (
+                      <details>
+                        <summary>Superseded recommendations ({superseded.length})</summary>
+                        {superseded.map((trial) => (
+                          <Trial key={trial.id} trial={trial} open={setRunId} refresh={refresh} />
+                        ))}
+                      </details>
+                    )}
+                  </>
+                );
+              })()}
             </section>
           </>
         )}

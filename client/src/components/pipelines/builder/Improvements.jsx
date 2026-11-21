@@ -434,7 +434,9 @@ function WorkflowImprovements({ workflows, projects = [], onChanged, switcher })
         (a, b) =>
           Number(b.draft.citations.some((id) => gaps.some((r) => r.id === id))) -
           Number(a.draft.citations.some((id) => gaps.some((r) => r.id === id))),
-      );
+      ),
+    decided = proposals.filter((p) => p.status !== 'pending' && p.status !== 'superseded'),
+    superseded = proposals.filter((p) => p.status === 'superseded');
   const cards = [
     [
       'Finished runs',
@@ -581,10 +583,16 @@ function WorkflowImprovements({ workflows, projects = [], onChanged, switcher })
             </section>
             <section>
               <h3>Did it help?</h3>
-              {proposals.some((p) => p.status !== 'pending') ? (
-                proposals.filter((p) => p.status !== 'pending').map(renderProposal)
+              {decided.length ? (
+                decided.map(renderProposal)
               ) : (
                 <p>Approved changes and their measured outcomes appear here.</p>
+              )}
+              {superseded.length > 0 && (
+                <details>
+                  <summary>Superseded proposals ({superseded.length})</summary>
+                  {superseded.map(renderProposal)}
+                </details>
               )}
             </section>
             <section>
@@ -594,6 +602,7 @@ function WorkflowImprovements({ workflows, projects = [], onChanged, switcher })
                   ['Pending', pending.length],
                   ['Accepted', proposals.filter((p) => ['approved', 'applied'].includes(p.status)).length],
                   ['Dismissed', proposals.filter((p) => p.status === 'dismissed').length],
+                  ['Superseded', superseded.length],
                   ['Helped', proposals.filter((p) => p.result?.verdict === 'helped').length],
                   ['Model calls', data.calls.length],
                   ['Failed calls', data.calls.filter((c) => c.status === 'failed').length],

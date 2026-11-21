@@ -377,4 +377,13 @@ describe('bounded team role trials', () => {
       expect(f.teams.get(f.team.id)).toEqual(f.team);
     }
   });
+  it('auto-supersedes stale pending recommendations on refresh', () => {
+    const f = fixture(),
+      p = f.propose();
+    expect(p.status).toBe('pending');
+    f.workflow.revision++;
+    f.trials.refresh();
+    const [updated] = f.trials.list();
+    expect(updated).toMatchObject({ id: p.id, status: 'superseded', stale: false });
+  });
 });

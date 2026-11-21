@@ -6,7 +6,7 @@ import { compareTeamTrial, scoreTeam, TEAM_POLICY_VERSION, TEAM_TRIAL_SIZE } fro
 
 const LIMIT = TEAM_TRIAL_SIZE;
 const terminal = new Set(['complete', 'stopped', 'interrupted', 'error']);
-const closed = new Set(['stopped', 'dismissed', 'adopted']);
+const closed = new Set(['stopped', 'dismissed', 'adopted', 'superseded']);
 const revision = (n) => Number.isSafeInteger(n) && n > 0;
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const workloadKey = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -63,7 +63,7 @@ function readDraft(row) {
   const { id, at, state, version } = row;
   requireField(isUuid(id) && iso(at), 'identity/date', id);
   requireField(
-    revision(version) && ['pending', 'running', 'dismissed', 'stopped', 'adopted'].includes(state),
+    revision(version) && ['pending', 'running', 'dismissed', 'stopped', 'adopted', 'superseded'].includes(state),
     'state/version',
     id,
   );
@@ -371,6 +371,16 @@ export function createTeamTrials({
     const all = observations();
     const records = byId(all);
     const history = listRows.all().map((row) => ({ row, draft: readDraft(row) }));
+    const supersede = db.prepare(
+      "UPDATE team_trials SET state='superseded', version=version+1 WHERE id=? AND state='pending'",
+    );
+    for (const { row, draft } of history) {
+      if (row.state === 'pending' && staleReason(draft)) {
+        supersede.run(row.id);
+        row.state = 'superseded';
+        row.version += 1;
+      }
+    }
     for (const r of all) {
       if (!r.teamId || r.mixed || r.trialId || !r.workload || !terminal.has(r.status)) continue;
       const key = JSON.stringify([

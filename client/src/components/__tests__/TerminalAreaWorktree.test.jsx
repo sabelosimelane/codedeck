@@ -221,4 +221,49 @@ describe('TerminalArea new task', () => {
     render(<TerminalArea project={{ name: 'Other', path: '/tmp/other' }} sessionStatus={[]} />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'New task' }).disabled).toBe(true));
   });
+
+  it('shows the remote host in Target host when viewing a remote task', async () => {
+    const remoteTask = {
+      ...TASK,
+      id: '7a000000-0000-4000-8000-000000000099',
+      host: 'devbox.ts.net',
+      title: 'remote workflow task',
+      worktreePath: '/home/dev/worktrees/demo-remote',
+      worktrees: [{ ...TASK.worktrees[0], worktreePath: '/home/dev/worktrees/demo-remote' }],
+    };
+    const project = {
+      name: 'Demo',
+      path: '/tmp/demo',
+      defaultHost: 'local',
+      locations: [
+        { host: 'local', path: '/tmp/demo' },
+        { host: 'devbox.ts.net', path: '/home/dev/demo' },
+      ],
+    };
+    const worktreeGroups = [
+      { key: 'main', path: '/tmp/demo', isMain: true, task: null, run: null },
+      { key: remoteTask.worktreePath, path: remoteTask.worktreePath, isMain: false, task: remoteTask, run: null },
+    ];
+    const { rerender } = render(
+      <TerminalArea
+        project={project}
+        worktreeGroups={worktreeGroups}
+        selectedWorktree="main"
+        sessionStatus={[]}
+      />,
+    );
+    expect(screen.getByRole('combobox', { name: 'Target host' }).value).toBe('local');
+
+    rerender(
+      <TerminalArea
+        project={project}
+        worktreeGroups={worktreeGroups}
+        selectedWorktree={remoteTask.worktreePath}
+        sessionStatus={[]}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: 'Target host' }).value).toBe('devbox.ts.net');
+    });
+  });
 });

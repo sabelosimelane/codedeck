@@ -146,7 +146,7 @@ export function validateProposal(v) {
   check(v && isUuid(v.id) && isUuid(v.workflowId), 'proposal identity');
   for (const key of ['revision', 'reviewerRevision']) check(count(v[key]) && v[key] > 0, key);
   check(iso(v.at), 'proposal date');
-  check(['pending', 'approved', 'dismissed', 'applied'].includes(v.status), 'proposal status');
+  check(['pending', 'approved', 'dismissed', 'applied', 'superseded'].includes(v.status), 'proposal status');
   validateDraft(v.draft, v.draft?.citations ?? []);
   check(nullableText(v.reason), 'dismissal reason');
   check(v.effectiveAt === null || iso(v.effectiveAt), 'effectiveAt');

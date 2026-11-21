@@ -238,7 +238,7 @@ const comparison = fields({
 const trial = fields({
   id: isUuid,
   revision: positive,
-  status: choice('pending', 'running', 'measured', 'adopted', 'stopped', 'dismissed'),
+  status: choice('pending', 'running', 'measured', 'adopted', 'stopped', 'dismissed', 'superseded'),
   at: date,
   teamName: text,
   teamId: isUuid,

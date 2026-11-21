@@ -112,7 +112,7 @@ export function createImprovements(deps) {
       'proposal.reviewerRevision',
     );
     check(isStamp(row.created), 'proposal.created');
-    check(['pending', 'approved', 'applied', 'dismissed'].includes(row.status), 'proposal.status');
+    check(['pending', 'approved', 'applied', 'dismissed', 'superseded'].includes(row.status), 'proposal.status');
     check(row.reason === null || typeof row.reason === 'string', 'proposal.reason');
     check(row.effective_at === null || isStamp(row.effective_at), 'proposal.effectiveAt');
     check(
@@ -156,11 +156,32 @@ export function createImprovements(deps) {
           : null,
     });
   }
-  const proposals = (outcomes = outcomesWithFindings()) =>
-    db
+  function supersedeStale() {
+    const pending = db
+      .prepare(
+        "SELECT id, workflow, revision, draft, reviewer_revision FROM improvement_proposals WHERE status='pending'",
+      )
+      .all();
+    const mark = db.prepare("UPDATE improvement_proposals SET status='superseded' WHERE id=? AND status='pending'");
+    const rev = current().revision;
+    for (const row of pending) {
+      const kind = JSON.parse(row.draft).kind;
+      const obsolete =
+        kind === 'workflow'
+          ? workflows.get(row.workflow)?.revision !== row.revision
+          : kind === 'reviewer'
+            ? rev !== row.reviewer_revision
+            : false;
+      if (obsolete) mark.run(row.id);
+    }
+  }
+  const proposals = (outcomes = outcomesWithFindings()) => {
+    supersedeStale();
+    return db
       .prepare('SELECT * FROM improvement_proposals ORDER BY created DESC,id')
       .all()
       .map((r) => proposal(r, outcomes));
+  };
   function schedule(outcomes) {
     const held = new Set(holdouts().map((h) => h.run)),
       groups = new Map();
@@ -301,7 +322,7 @@ export function createImprovements(deps) {
           .map(validateOutcome)
           .filter((r) => !held.has(r.id));
         const feedback = proposals(outcomes.map(includeFinding))
-          .filter((p) => !p.draft.citations.some((id) => held.has(id)))
+          .filter((p) => p.status !== 'superseded' && !p.draft.citations.some((id) => held.has(id)))
           .slice(0, 12)
           .map((p) => ({
             title: p.draft.title,
@@ -506,13 +527,15 @@ export function createImprovements(deps) {
     if (action === 'activate' ? p.status !== 'approved' || p.draft.kind !== 'runner' : p.status !== 'pending')
       throw conflict('Proposal already decided');
     let status = 'dismissed',
-      effectiveRevision = null;
+      effectiveRevision = null,
+      effectiveAt = null,
+      nextBaseline = null;
     if (action !== 'dismiss') {
       const w = workflows.get(p.workflowId);
-      if (!w || w.revision !== p.revision)
-        throw conflict('Workflow revision changed. Review fresh evidence.');
       status = 'applied';
       if (p.draft.kind === 'workflow') {
+        if (!w || w.revision !== p.revision)
+          throw conflict('Workflow revision changed. Review fresh evidence.');
         const matches = w.nodes.filter((n) => n.name === p.draft.step);
         if (matches.length !== 1) throw conflict('Reviewed workflow step changed');
         const { name, description, kind, progressFile, agentsDecide, revision } = w;
@@ -525,18 +548,39 @@ export function createImprovements(deps) {
           revision,
           nodes: w.nodes.map((n) => (n.name === p.draft.step ? { ...n, prompt: p.draft.change } : n)),
         }).revision;
+        effectiveAt = now();
       } else if (p.draft.kind === 'reviewer') {
         const key = benchmarkKey(candidateCases(id), readModel());
         if (current().revision !== p.reviewerRevision || !p.evaluation?.passed || p.evaluation.key !== key)
           throw conflict('Candidate needs a passing current benchmark');
         db.prepare('INSERT INTO improvement_rubrics VALUES(?,?)').run(p.reviewerRevision + 1, p.draft.change);
         effectiveRevision = p.reviewerRevision + 1;
-      } else if (action === 'approve') status = 'approved';
-      else effectiveRevision = w.revision;
+        effectiveAt = now();
+      } else if (action === 'approve') {
+        status = 'approved';
+      } else {
+        if (!w) throw conflict('Workflow not found');
+        effectiveRevision = w.revision;
+        effectiveAt = now();
+        if (w.revision !== p.revision) {
+          nextBaseline = JSON.stringify(
+            outcomesWithFindings()
+              .filter((r) => r.workflowId === p.workflowId && r.revision === w.revision && r.at <= effectiveAt)
+              .sort(stampOrder)
+              .slice(-5),
+          );
+        }
+      }
     }
-    db.prepare(
-      'UPDATE improvement_proposals SET status=?,reason=?,effective_at=?,effective_revision=? WHERE id=?',
-    ).run(status, reason ?? null, status === 'applied' ? now() : null, effectiveRevision, id);
+    if (nextBaseline !== null) {
+      db.prepare(
+        'UPDATE improvement_proposals SET status=?,reason=?,effective_at=?,effective_revision=?,baseline=? WHERE id=?',
+      ).run(status, reason ?? null, effectiveAt, effectiveRevision, nextBaseline, id);
+    } else {
+      db.prepare(
+        'UPDATE improvement_proposals SET status=?,reason=?,effective_at=?,effective_revision=? WHERE id=?',
+      ).run(status, reason ?? null, effectiveAt, effectiveRevision, id);
+    }
     return get(id);
   });
   return {

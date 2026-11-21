@@ -86,15 +86,15 @@ it('saves a dedicated reviewer model through the revision-fenced API', async () 
   ).toBe(true);
 });
 
-function renderPendingProposal(currentRevision) {
+function renderPendingProposal(currentRevision, kind = 'workflow') {
   const workflowId = '88c09e87-e36c-4e50-9f39-461b9b15783a';
   const proposal = {
     id: '6d079853-3e6a-474e-a094-2ff23cf81ea3', workflowId, revision: 2,
     reviewerRevision: 1, at: new Date().toISOString(), status: 'pending',
     reason: null, effectiveAt: null, effectiveRevision: null, evaluation: null, result: null,
     draft: {
-      kind: 'workflow', title: 'Update Clarify', reason: 'Check the spec', citations: [workflowId],
-      change: 'Read the spec first', step: 'Clarify', test: 'Replay the run',
+      kind, title: 'Update Clarify', reason: 'Check the spec', citations: [workflowId],
+      change: 'Read the spec first', step: kind === 'workflow' ? 'Clarify' : null, test: 'Replay the run',
       counterevidence: 'The owner clarified', metric: 'loops', safeguard: 'proofGaps',
     },
   };
@@ -117,6 +117,12 @@ it('explains a stale revision beside the disabled approval and allows dismissal'
   expect(approve.closest('article').textContent).toMatch(/revision 3/i);
   fireEvent.change(screen.getByRole('textbox', { name: 'Dismissal reason' }), { target: { value: 'Superseded' } });
   expect(screen.getByRole('button', { name: 'Dismiss' }).disabled).toBe(false);
+});
+
+it('keeps runner proposals enabled even when the workflow has moved to a newer revision', async () => {
+  renderPendingProposal(4, 'runner');
+  const approve = await screen.findByRole('button', { name: 'Approve proposal' });
+  expect(approve.disabled).toBe(false);
 });
 
 it('shows a server rejection on the proposal when the workflow changes after loading', async () => {

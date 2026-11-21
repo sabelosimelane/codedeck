@@ -14,7 +14,7 @@ export default function ImprovementProposal({ proposal: p, workflow, action, act
     [destination, setDestination] = useState('');
   const d = p.draft,
     result = p.result;
-  const stale = workflow && workflow.revision > p.revision;
+  const stale = d.kind === 'workflow' && workflow && workflow.revision > p.revision;
   const references = (ids, label) => (
     <div className="imp-refs">
       <span>{label}</span>

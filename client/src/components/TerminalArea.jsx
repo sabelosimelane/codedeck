@@ -438,6 +438,12 @@ export default function TerminalArea({
   const [syncConflict, setSyncConflict] = useState(null);
   const [syncProceeding, setSyncProceeding] = useState(false);
   const visibleTask = groups.find(group => group.key === visibleGroup)?.task ?? null;
+  const viewedHost = visibleTask?.host || visibleRun?.host || null;
+  useEffect(() => {
+    if (viewedHost && projectLocations.some(loc => loc.host === viewedHost)) {
+      setActiveHost(viewedHost);
+    }
+  }, [project.name, visibleGroup, viewedHost]);
   const lastActiveByGroupRef = useRef(new Map());
   // Opening a terminal reads where the owner is now, without re-creating the callbacks on every poll.
   const groupsRef = useRef(groups);
@@ -744,6 +750,7 @@ export default function TerminalArea({
         // In a task with several repositories the terminal opens in the one named; otherwise where the task started.
         const opened = place ? await openTaskTerminal(task.id, place.id) : await openTaskTerminal(task.id);
         createdWorktreePathsRef.current.set(`${project.name}:${opened.sessionId}`, place ? place.path : groupKey);
+        if (task.host) createdSessionHostsRef.current.set(`${project.name}:${opened.sessionId}`, task.host);
         const number = getSessionNumber(project.name, opened.sessionId);
         if (number !== null) sessionCounter = Math.max(sessionCounter, number);
         unmarkDeletedSessionIds(project.name, [opened.sessionId]);

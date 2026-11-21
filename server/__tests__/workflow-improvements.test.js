@@ -388,3 +388,76 @@ it('drops queued jobs for obsolete workflow revisions and ignores transient inte
   expect(db.prepare('SELECT count(*) n FROM improvement_jobs WHERE revision=1').get().n).toBe(0);
   expect(generate).toHaveBeenCalledTimes(1);
 });
+
+it('auto-supersedes stale workflow proposals and excludes them from reviewer feedback', async () => {
+  const records = Array.from({ length: 5 }, () => run());
+  const generate = vi.fn(async () => ({ proposal: proposed([records[0].id]), cost: null }));
+  const { service, workflow, db } = setup(records, generate);
+  await service.tick();
+  expect(service.proposals()[0].status).toBe('pending');
+  workflow.revision = 3;
+  expect(service.proposals()[0]).toMatchObject({ status: 'superseded', reason: null });
+  // New runs on revision 3 should not receive superseded proposals in feedback.
+  const rev3 = Array.from({ length: 5 }, () =>
+    run({
+      definition: {
+        workflowRevision: 3,
+        workflowName: 'Bug fix',
+        steps: [{ name: 'Verify', kind: 'node', prompt: 'Check it' }],
+      },
+    }),
+  );
+  for (const r of rev3) {
+    records.push(r);
+    db.prepare('INSERT INTO pipeline_runs(id,status,updated_at,current_step_index) VALUES(?,?,?,0)').run(
+      r.id,
+      r.status,
+      r.updatedAt,
+    );
+  }
+  generate.mockResolvedValueOnce({ proposal: null, cost: null });
+  await service.tick();
+  expect(generate).toHaveBeenCalledTimes(2);
+  expect(generate.mock.calls[1][1].feedback).toEqual([]);
+});
+
+it('keeps runner proposals approvable after workflow revision bumps and re-baselines on activation', async () => {
+  const records = Array.from({ length: 5 }, () => run());
+  const runnerDraft = {
+    ...proposed([records[0].id]),
+    kind: 'runner',
+    step: null,
+    change: 'Persist Commit attempt ID with terminal outcome.',
+  };
+  const { service, workflow, db } = setup(records, async () => ({ proposal: runnerDraft, cost: null }));
+  await service.tick();
+  workflow.revision = 4;
+  // Runner proposal stays pending (not superseded) and can be approved.
+  const [p] = service.proposals();
+  expect(p.status).toBe('pending');
+  const approved = service.decide(p.id, { action: 'approve' });
+  expect(approved.status).toBe('approved');
+  // Add runs on revision 4 before activation so activation re-baselines against rev 4.
+  const rev4 = Array.from({ length: 3 }, () =>
+    run({
+      definition: {
+        workflowRevision: 4,
+        workflowName: 'Bug fix',
+        steps: [{ name: 'Verify', kind: 'node', prompt: 'Check it' }],
+      },
+    }),
+  );
+  for (const r of rev4) {
+    records.push(r);
+    db.prepare('INSERT INTO pipeline_runs(id,status,updated_at,current_step_index) VALUES(?,?,?,0)').run(
+      r.id,
+      r.status,
+      r.updatedAt,
+    );
+  }
+  await service.tick();
+  const activated = service.decide(p.id, { action: 'activate' });
+  expect(activated).toMatchObject({ status: 'applied', effectiveRevision: 4 });
+  expect(activated.result.beforeIds).toEqual(expect.arrayContaining(rev4.map((r) => r.id)));
+  expect(activated.result.beforeIds).toHaveLength(3);
+});
