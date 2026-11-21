@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import React from 'react';
 import TerminalArea from '../TerminalArea.jsx';
 
-const mocks = vi.hoisted(() => ({ showToast: vi.fn(), create: vi.fn(), open: vi.fn() }));
+const mocks = vi.hoisted(() => ({ showToast: vi.fn(), create: vi.fn(), open: vi.fn(), candidates: vi.fn(), adopt: vi.fn() }));
 const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'new', state: 'active', worktreePath: '/tmp/worktrees/demo-new', branch: 'task/new-7a000000', createdAt: '2026-11-18T10:00:00.000Z',
   // A task as the backend sends it: with the folder of its worktrees and one entry per repository.
   folder: null, worktrees: [{ id: '7b000000-0000-4000-8000-000000000001', repository: 'demo', own: true, first: true, worktreePath: '/tmp/worktrees/demo-new', branch: 'task/new-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null }] };
@@ -12,7 +12,7 @@ vi.mock('../PaneDivider', () => ({ default: () => null }));
 vi.mock('../tasks/TaskLandingBar.jsx', () => ({ default: ({ task }) => <span data-testid="landing-bar">{task.title}</span> }));
 vi.mock('../TerminalInspector', () => ({ default: () => null }));
 vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: mocks.showToast }) }));
-vi.mock('../../utils/tasksApi.js', () => ({ createTask: mocks.create, openTaskTerminal: mocks.open }));
+vi.mock('../../utils/tasksApi.js', () => ({ createTask: mocks.create, openTaskTerminal: mocks.open, listWorktreeCandidates: mocks.candidates, makeTaskFromWorktree: mocks.adopt }));
 
 const originalFetch = global.fetch;
 beforeEach(() => {
@@ -20,12 +20,27 @@ beforeEach(() => {
   mocks.showToast.mockReset();
   mocks.create.mockReset();
   mocks.open.mockReset();
+  mocks.candidates.mockReset().mockResolvedValue([]);
+  mocks.adopt.mockReset();
   mocks.open.mockResolvedValue({ sessionId: 'Demo-1', taskId: TASK.id, project: 'Demo' });
   global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : [] }));
 });
 afterEach(() => { cleanup(); global.fetch = originalFetch; });
 
 describe('TerminalArea new task', () => {
+  it('opens an adopted task terminal without creating another worktree', async () => {
+    const candidate = { path: TASK.worktreePath, name: 'demo-new', repository: 'demo', own: true,
+      branch: TASK.branch, head: 'a'.repeat(40), uncommittedCount: 1, selectable: true, reason: null };
+    mocks.candidates.mockResolvedValue([candidate]);
+    mocks.adopt.mockResolvedValue(TASK);
+    render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo' }} sessionStatus={[]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+    fireEvent.click(await screen.findByRole('radio', { name: 'Use an existing worktree' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make task' }));
+    await waitFor(() => expect(mocks.open).toHaveBeenCalledWith(TASK.id));
+    expect(mocks.create).not.toHaveBeenCalled();
+    expect(screen.getByText(`cwd: ${TASK.worktreePath}`)).toBeTruthy();
+  });
   it('offers a terminal on the empty card and New task in the strip of Main and tasks', () => {
     render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo' }} sessionStatus={[]} />);
     expect(screen.getByText('No terminals open')).toBeTruthy();

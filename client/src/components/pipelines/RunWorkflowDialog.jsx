@@ -1,11 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { cleanupRun, listTeams, listAgents, listWorkflows, listWorktrees, planRun, preflightProject } from '../../utils/pipelinesApi';
 import { listProjectRepositories } from '../../utils/projectRepositoriesApi.js';
+import { listWorktreeCandidates, makeTaskFromWorktree } from '../../utils/tasksApi.js';
+import { useToast } from '../ToastContext';
 import { parseTeam, parseAgent, parseWorkflow, parsePreflight, parseRunPlan, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
 import { assignedAgentId, composePrompt, isProgressFilePath, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { Button, Dialog, Field, Note, SegmentedControl, Select, TextArea, TextInput } from '../ui/index.jsx';
 import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
+import WorktreeCandidatePicker from '../tasks/WorktreeCandidatePicker.jsx';
 import WorkflowAttachments from './WorkflowAttachments';
 
 function newRequestId() {
@@ -18,6 +21,7 @@ function newRequestId() {
 // Where a run works: a task created for it, an open task, or directly in Main.
 const NEW_TASK = 'new';
 const OPEN_TASK = 'task';
+const EXISTING_WORKTREE = 'existing-worktree';
 const MAIN = 'main';
 // Setup prepares the copy of the project a new task gets, so only a new task needs a setup agent.
 const SETUP_AGENT_MISSING = 'setup_agent_missing';
@@ -52,6 +56,7 @@ function requireStarted(run) {
  * for the owner to change, and nothing starts before Start.
  */
 export default function RunWorkflowDialog({ projectName, repositories = [], tasks = [], defaultTaskId = null, initialInput = '', initialRequestId, planDelay = PLAN_DELAY_MS, onClose, onStart }) {
+  const { showToast } = useToast();
   const [workflows, setWorkflows] = useState([]);
   const [teams, setTeams] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -61,6 +66,9 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const [input, setInput] = useState(initialInput);
   const [preflight, setPreflight] = useState(null);
   const [worktrees, setWorktrees] = useState([]);
+  const [candidates, setCandidates] = useState([]);
+  const [candidatePath, setCandidatePath] = useState(null);
+  const [adoptedTask, setAdoptedTask] = useState(null);
   // Where the owner chose to work and in which task; null until they choose, and the dialog then
   // opens on the task they are looking at when it can take a run, or on a new task.
   const [place, setPlace] = useState(null);
@@ -110,7 +118,9 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
         // Worktrees exist only for a local git project; a missing setup agent does not change that.
         const listable = nextPreflight.reasons.every(reason => reason.code === SETUP_AGENT_MISSING);
         const nextWorktrees = listable ? (await listWorktrees(projectName)).map(parseWorktree) : [];
-        const nextRepositories = listable && repositories.length > 0 ? await listProjectRepositories(projectName) : [];
+        const [nextRepositories, nextCandidates] = listable ? await Promise.all([
+          repositories.length > 0 ? listProjectRepositories(projectName) : [], listWorktreeCandidates(projectName),
+        ]) : [[], []];
         if (cancelled) return;
         setWorkflows(nextWorkflows.map(parseWorkflow));
         setTeams(nextTeams.map(parseTeam));
@@ -118,6 +128,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
         setPreflight(nextPreflight);
         setWorktrees(nextWorktrees);
         setProjectRepositories(nextRepositories);
+        setCandidates(nextCandidates);
         if (nextWorkflows.length > 0) setWorkflowId(nextWorkflows[0].id);
       } catch (failure) {
         if (!cancelled) setError(failure.message || 'Failed to load workflows');
@@ -128,14 +139,17 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
     return () => { cancelled = true; };
   }, [projectName, repositories.length]);
 
-  const projectTasks = tasks.filter(task => task.project === projectName);
+  const projectTasks = [...tasks.filter(task => task.project === projectName), ...(adoptedTask ? [adoptedTask] : [])];
+  const candidate = candidates.find(entry => entry.path === candidatePath && entry.selectable) ?? candidates.find(entry => entry.selectable) ?? null;
   const home = worktrees.find(worktree => worktree.current) ?? null;
   const several = projectRepositories.length > 1;
   const ownRepository = projectRepositories.find(entry => entry.own) ?? null;
   // The worktrees this dialog knows are those of the project's own repository. A task that started in
   // another repository is not among them: the backend says whether it can take a run.
   const startsElsewhere = task => task.worktrees.find(worktree => worktree.first).own === false;
-  const worktreeOf = task => (startsElsewhere(task)
+  const worktreeOf = task => (task.id === adoptedTask?.id
+    ? { path: task.worktreePath, dirty: candidate?.uncommittedCount > 0, selectable: true, reason: null }
+    : startsElsewhere(task)
     ? { path: task.worktreePath, dirty: false, selectable: true, reason: null }
     : worktrees.find(worktree => worktree.path === task.worktreePath) ?? null);
   const takesRun = task => worktreeOf(task)?.selectable === true;
@@ -150,7 +164,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const openParts = where === OPEN_TASK ? chosenTask.worktrees.filter(worktree => OPEN_STATES.includes(worktree.state)) : [];
   const startOptions = where === OPEN_TASK
     ? (openParts.length > 1 ? openParts.map(worktree => ({ name: worktree.repository, usable: true, label: worktree.repository })) : [])
-    : several ? projectRepositories.map(entry => ({
+    : where === EXISTING_WORKTREE ? [] : several ? projectRepositories.map(entry => ({
       name: entry.name, usable: entry.usable, path: entry.path, own: entry.own,
       // Where a new task's copy starts from is said in its list of repositories, below.
       label: entry.usable ? entry.name : `${entry.name} — ${entry.reason.message}`,
@@ -162,7 +176,8 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   // In Main a run works in the own checkout of the repository chosen; the project's own is what Main always was.
   const mainElsewhere = where === MAIN && start !== null && !start.own;
   const chosenWorktree = where === OPEN_TASK ? worktreeOf(chosenTask)
-    : where === MAIN ? (mainElsewhere ? { path: start.path, dirty: false, selectable: true, reason: null } : home) : null;
+    : where === EXISTING_WORKTREE ? candidate
+      : where === MAIN ? (mainElsewhere ? { path: start.path, dirty: false, selectable: true, reason: null } : home) : null;
   const alsoIncluded = where === NEW_TASK && start ? projectRepositories.filter(entry => entry.name !== start.name && entry.usable && included.has(entry.name)).map(entry => entry.name) : [];
   // A title is sent only when the owner typed one. Without it the backend calls the task after
   // the input and names it from the run's work, with the CLI chosen for session naming.
@@ -224,7 +239,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
         workflowId,
         input,
         ...(attachments.length > 0 ? { files: attachments.map(entry => entry.file) } : {}),
-        ...(where === NEW_TASK ? {
+        ...(where === EXISTING_WORKTREE ? {} : where === NEW_TASK ? {
           newTask: { ...(typedTitle ? { title: typedTitle } : {}), ...(start ? { repositories: [start.name, ...alsoIncluded] } : {}) },
           ...(start ? { startIn: start.name } : {}),
         }
@@ -239,10 +254,25 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
   const handleStart = async () => {
     if (!canStart || busy.current) return;
     busy.current = true;
-    const attempt = submission ?? draftSubmission();
+    let attempt = submission ?? draftSubmission();
     setStarting(true);
     setStartFailure(null);
     try {
+      if (where === EXISTING_WORKTREE && submission === null) {
+        try {
+          const made = await makeTaskFromWorktree({ project: projectName, worktreePath: candidate.path,
+            ...(typedTitle ? { title: typedTitle } : {}) });
+          setAdoptedTask(made);
+          showToast({ type: 'success', message: `Task “${made.title}” made from ${candidate.name}` });
+          attempt = { ...attempt, primary: { ...attempt.primary, taskId: made.id,
+            ...(several ? { startIn: candidate.repository } : {}) } };
+        } catch (failure) {
+          const message = failureText(failure);
+          setStartFailure(message);
+          showToast({ type: 'error', message });
+          return;
+        }
+      }
       if (attempt.primary) {
         try {
           requireStarted(await onStart(attempt.primary));
@@ -254,6 +284,12 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
           const definitive = failure?.status >= 400 && failure.status < 500 && failure.status !== 408 && !failedReservation;
           setSubmission(definitive ? null : attempt);
           setStartFailure(failureText(failure));
+          // The worktree is a task now: a retry or a corrected draft goes to that open task, never makes it again.
+          if ((attempt.primary.taskId && adoptedTask?.id === attempt.primary.taskId) || where === EXISTING_WORKTREE) {
+            setPlace(OPEN_TASK);
+            setTaskId(attempt.primary.taskId);
+          }
+          showToast({ type: 'error', message: failureText(failure) });
           return;
         }
         setReservation(null);
@@ -365,9 +401,14 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
               <SegmentedControl label="Where to work" value={where} onChange={setPlace} options={[
                 { value: NEW_TASK, label: 'A new task' },
                 { value: OPEN_TASK, label: 'An open task', disabled: projectTasks.length === 0, title: projectTasks.length === 0 ? 'This project has no open tasks' : undefined },
+                ...(candidates.length > 0 ? [{ value: EXISTING_WORKTREE, label: 'An existing worktree' }] : []),
                 { value: MAIN, label: 'Main', disabled: !home?.selectable && !several, title: home?.reason?.message },
               ]} />
               {where === NEW_TASK && <TaskTitleInput value={title} onChange={setTitle} optional />}
+              {where === EXISTING_WORKTREE && <>
+                <WorktreeCandidatePicker candidates={candidates} value={candidate?.path ?? ''} onChange={setCandidatePath} />
+                <TaskTitleInput value={title} onChange={setTitle} optional placeholder={candidate?.branch ? candidate.branch.split('/').at(-1).replace(/[-_]/g, ' ').slice(0, TASK_TITLE_MAX) : 'Task title'} />
+              </>}
               {where === OPEN_TASK && (
                 <Select label="Task" value={chosenTask.id} onChange={(next) => { setTaskId(next); setStartChoice(null); }}>
                   {projectTasks.map(task => (
@@ -406,6 +447,7 @@ export default function RunWorkflowDialog({ projectName, repositories = [], task
                 {where === NEW_TASK && !several && <span>The task gets its own copy of the project{preflight?.branch ? ` from ${preflight.branch}` : ''}, prepared by a Setup step, so other work can carry on beside it.</span>}
                 {where === NEW_TASK && several && <span>A Setup step prepares each copy, and the run starts in the repository chosen under Start in.</span>}
                 {where === OPEN_TASK && <span>Runs in this task as it is, with no Setup step.</span>}
+                {where === EXISTING_WORKTREE && <span>Makes this worktree a task, keeping its uncommitted files, then runs in it with no Setup step.</span>}
                 {where === MAIN && !mainElsewhere && <span>Runs directly in Main, with no copy of its own and no Setup step.</span>}
                 {mainElsewhere && <span>{`Runs directly in the checkout of ${start.name}, with no copy of its own and no Setup step. It changes that repository only.`}</span>}
               </Note>

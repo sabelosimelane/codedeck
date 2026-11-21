@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('../../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
 
 vi.mock('lucide-react', () => {
   const Icon = () => null;
@@ -29,13 +31,14 @@ const worktree = (patch = {}) => ({
 const HOME = worktree({ path: '/git/demo', name: 'demo', branch: 'main', current: true });
 const SETUP_MISSING = { code: 'setup_agent_missing', message: 'Choose a setup agent in Settings → Workflows.' };
 
-function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()] } = {}) {
+function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()], candidates = [] } = {}) {
   global.fetch = vi.fn(async (url) => {
     const target = String(url);
     const json = body => ({ ok: true, status: 200, json: async () => body });
     if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
     if (target.includes('/workflows')) return json({ data: workflows, page: { hasNextPage: false } });
     if (target.includes('/preflight')) return json(preflight);
+    if (target.includes('/tasks/worktree-candidates')) return json({ data: candidates, page: { currentPage: 0, size: 100, totalElements: candidates.length, totalPages: candidates.length ? 1 : 0, hasNextPage: false } });
     if (target.includes('/worktrees')) return json({ data: worktrees, page: { hasNextPage: false } });
     throw new Error(`unexpected request ${target}`);
   });
@@ -65,9 +68,82 @@ const requestedWorktrees = () => global.fetch.mock.calls.some(([url]) => String(
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  toast.mockReset();
 });
 
 describe('RunWorkflowDialog', () => {
+  it('makes a task from a selected worktree and starts in its repository', async () => {
+    const candidate = { path: '/git/worktrees/mobile-spec', name: 'mobile-spec', repository: 'mobile-app', own: false,
+      branch: 'feature/spec', head: HEAD, uncommittedCount: 1, selectable: true, reason: null };
+    const disabled = { ...candidate, path: '/git/worktrees/mobile-busy', name: 'mobile-busy', selectable: false,
+      reason: { code: 'in_use', message: 'An open workflow run is already using it.' } };
+    mockApi({ candidates: [candidate, disabled] });
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async (url, options) => String(url) === '/api/tasks' && options?.method === 'POST'
+      ? { ok: true, status: 201, json: async () => ({ ...TASK, title: 'Spec work', worktreePath: candidate.path,
+        state: 'active', branch: candidate.branch, baseBranch: 'main', baseCommit: HEAD, prUrl: null, revision: 1,
+        createdAt: stamp.createdAt, updatedAt: stamp.updatedAt, finishedAt: null, folder: null,
+        worktrees: [part('7b000000-0000-4000-8000-000000000003', 'mobile-app', candidate.path, { own: false, branch: candidate.branch })] }) }
+      : originalFetch(url, options));
+    const { onStart } = await renderDialog({ tasks: [] });
+    fireEvent.click(where('An existing worktree'));
+    expect(screen.getByRole('option', { name: /mobile-busy/ }).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'docs/todo.md' } });
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ taskId: TASK.id })));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringContaining('Spec work') }));
+  });
+
+  it('keeps an adopted task and switches to it when starting the run fails', async () => {
+    const candidate = { path: '/git/worktrees/demo-spec', name: 'demo-spec', repository: 'demo', own: true,
+      branch: 'feature/spec', head: HEAD, uncommittedCount: 1, selectable: true, reason: null };
+    mockApi({ candidates: [candidate] });
+    const originalFetch = global.fetch;
+    const made = { ...TASK, title: 'Spec', worktreePath: candidate.path, state: 'active', branch: candidate.branch,
+      baseBranch: 'main', baseCommit: HEAD, prUrl: null, revision: 1, createdAt: stamp.createdAt,
+      updatedAt: stamp.updatedAt, finishedAt: null, folder: null,
+      worktrees: [part('7b000000-0000-4000-8000-000000000003', 'demo', candidate.path, { branch: candidate.branch })] };
+    global.fetch = vi.fn(async (url, options) => String(url) === '/api/tasks' && options?.method === 'POST'
+      ? { ok: true, status: 201, json: async () => made } : originalFetch(url, options));
+    const onStart = vi.fn().mockRejectedValueOnce(new Error('Cannot start run')).mockResolvedValueOnce({ id: 'r2' });
+    const { onClose } = await renderDialog({ tasks: [], onStart });
+    fireEvent.click(where('An existing worktree'));
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'work' } });
+    fireEvent.click(startButton());
+    await waitFor(() => expect(where('An open task').getAttribute('aria-checked')).toBe('true'));
+    expect(screen.getByRole('combobox', { name: 'Task' }).value).toBe(TASK.id);
+    expect(screen.getByRole('combobox', { name: 'Task' }).selectedOptions[0].disabled).toBe(false);
+    expect(screen.getByRole('alert').textContent).toContain('Cannot start run');
+    expect(toast).toHaveBeenCalledWith({ type: 'error', message: 'Cannot start run' });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry start' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(global.fetch.mock.calls.filter(([url, options]) => String(url) === '/api/tasks' && options?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('sends the corrected input to the adopted task after the backend refused the first one', async () => {
+    const candidate = { path: '/git/worktrees/demo-spec', name: 'demo-spec', repository: 'demo', own: true,
+      branch: 'feature/spec', head: HEAD, uncommittedCount: 1, selectable: true, reason: null };
+    mockApi({ candidates: [candidate] });
+    const originalFetch = global.fetch;
+    const made = { ...TASK, title: 'Spec', worktreePath: candidate.path, state: 'active', branch: candidate.branch,
+      baseBranch: 'main', baseCommit: HEAD, prUrl: null, revision: 1, createdAt: stamp.createdAt,
+      updatedAt: stamp.updatedAt, finishedAt: null, folder: null,
+      worktrees: [part('7b000000-0000-4000-8000-000000000003', 'demo', candidate.path, { branch: candidate.branch })] };
+    global.fetch = vi.fn(async (url, options) => String(url) === '/api/tasks' && options?.method === 'POST'
+      ? { ok: true, status: 201, json: async () => made } : originalFetch(url, options));
+    const refused = Object.assign(new Error('docs/wrong.md is not in the chosen worktree.'), { status: 400 });
+    const onStart = vi.fn().mockRejectedValueOnce(refused).mockResolvedValueOnce({ id: 'r2' });
+    await renderDialog({ tasks: [], onStart });
+    fireEvent.click(where('An existing worktree'));
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'docs/wrong.md' } });
+    fireEvent.click(startButton());
+    await waitFor(() => expect(where('An open task').getAttribute('aria-checked')).toBe('true'));
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'docs/right.md' } });
+    fireEvent.click(screen.getByRole('button', { name: /^(Start|Retry start)$/ }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(2));
+    expect(onStart.mock.calls[1][0]).toMatchObject({ taskId: TASK.id, input: 'docs/right.md' });
+    expect(global.fetch.mock.calls.filter(([url, options]) => String(url) === '/api/tasks' && options?.method === 'POST')).toHaveLength(1);
+  });
   it('keeps dictated paragraphs and selected files in order, then sends the remaining files', async () => {
     mockApi();
     const { onStart } = await renderDialog();
@@ -411,12 +487,12 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
     part('7b000000-0000-4000-8000-000000000005', 'frontend', '/git/worktrees/across/frontend', { own: false, first: false, state: 'merged' }),
   ] };
 
-  function mockRepositories() {
-    mockApi();
+  function mockRepositories(candidates = []) {
+    mockApi({ candidates });
     const base = global.fetch;
-    global.fetch = vi.fn(async (url) => {
+    global.fetch = vi.fn(async (url, options) => {
       if (String(url).includes('/repositories')) return { ok: true, status: 200, json: async () => ({ data: REPOSITORIES, page: { hasNextPage: false, totalElements: REPOSITORIES.length } }) };
-      return base(url);
+      return base(url, options);
     });
   }
   async function renderAcross(props = {}) {
@@ -429,6 +505,27 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
   const options = select => [...select.options].map(option => ({ label: option.textContent, disabled: option.disabled }));
   const type = value => fireEvent.change(screen.getByRole('textbox', { name: 'Input' }), { target: { value } });
   const sent = onStart => { const { requestId, ...rest } = onStart.mock.calls[0][0]; expect(requestId).toEqual(expect.any(String)); return rest; };
+
+  it('starts an adopted worktree in its repository without including other repositories', async () => {
+    const candidate = { path: '/git/worktrees/mobile-spec', name: 'mobile-spec', repository: 'mobile-app', own: false,
+      branch: 'feature/spec', head: HEAD, uncommittedCount: 1, selectable: true, reason: null };
+    mockRepositories([candidate]);
+    const base = global.fetch;
+    global.fetch = vi.fn(async (url, options) => String(url) === '/api/tasks' && options?.method === 'POST'
+      ? { ok: true, status: 201, json: async () => ({ ...TASK, title: 'Spec', state: 'active', worktreePath: candidate.path,
+        branch: candidate.branch, baseBranch: 'develop', baseCommit: HEAD, prUrl: null, revision: 1,
+        createdAt: stamp.createdAt, updatedAt: stamp.updatedAt, finishedAt: null, folder: null,
+        worktrees: [part('7b000000-0000-4000-8000-000000000003', 'mobile-app', candidate.path,
+          { own: false, branch: candidate.branch, baseBranch: 'develop' })] }) }
+      : base(url, options));
+    const { onStart } = await renderAcross({ tasks: [] });
+    fireEvent.click(where('An existing worktree'));
+    type('docs/todo.md');
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalled());
+    expect(sent(onStart)).toMatchObject({ taskId: TASK.id, startIn: 'mobile-app' });
+    expect(sent(onStart)).not.toHaveProperty('newTask');
+  });
 
   it('asks which repository a new task starts in and which others it includes', async () => {
     mockRepositories();
@@ -542,6 +639,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
       if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return json({ data: TEMPLATED, page: { hasNextPage: false } });
       if (target.includes('/preflight')) return json(eligible());
+      if (target.includes('/tasks/worktree-candidates')) return json({ data: [], page: { currentPage: 0, size: 100, totalElements: 0, totalPages: 0, hasNextPage: false } });
       if (target.includes('/worktrees')) return json({ data: [HOME], page: { hasNextPage: false } });
       if (target.includes('/repositories')) return json({ data: REPOSITORIES, page: { hasNextPage: false, totalElements: REPOSITORIES.length } });
       throw new Error(`unexpected request ${target}`);

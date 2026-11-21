@@ -62,9 +62,9 @@ import { GUIDANCE_MAX } from '../terminal-workflow.js';
 import { parseCollectionQuery as parseQuery, paginate } from './collection-query.js';
 import { provisionalTaskTitle } from '../tasks/task-naming.js';
 import { canReclaimReleasedTaskRun } from '../pipelines/released-task-run.js';
+import { holdsWorktree, isOpenRun } from '../pipelines/run-worktree-hold.js';
 
 const BASE = '/api/pipelines';
-const OPEN_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', 'external']);
 const WORKTREE_SORT = ['path'];
 const SETUP_AGENT_MISSING = 'setup_agent_missing';
 const OPEN_TASK = new Set(['active', 'pr_open']);
@@ -118,15 +118,6 @@ function rejectUnknownQuery(query, allowed) {
 }
 
 const parseCollectionQuery = (query, spec) => parseQuery(query, spec, fieldError);
-
-/**
- * An open run is one the owner still has in front of them. A complete run is open while its own
- * worktree could not be removed, or while it sits finished in a task or Main waiting to be closed.
- */
-function isOpenRun(run) {
-  if (run.status === 'complete') return run.worktreeState === 'removal_blocked' || run.worktreeState === 'external';
-  return OPEN_WORKTREE.has(run.worktreeState);
-}
 
 /** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
 function buildRunView(run, decisionCount, progress, latestNotes) {
@@ -237,7 +228,7 @@ function worktreeRefusal(worktree, changes, runs, reservedPaths = new Set()) {
     : !changes.readable ? 'unreadable'
       : worktree.branch === null ? 'detached'
         // A finished run is still shown there but no longer holds the place.
-        : runs.some(run => run.worktreePath === worktree.path && run.status !== 'complete' && isOpenRun(run)) || reservedPaths.has(worktree.path) ? 'in_use'
+        : runs.some(run => holdsWorktree(run, worktree.path)) || reservedPaths.has(worktree.path) ? 'in_use'
           : null;
   return code === null ? null : { code, message: WORKTREE_REASONS[code] };
 }

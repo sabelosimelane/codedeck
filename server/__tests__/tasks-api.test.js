@@ -29,7 +29,8 @@ async function setup({ openTerminal, landing, changes = [] } = {}) {
       if (project === 'Remote') throw new TaskError('Tasks are only available for local projects.', 409);
       return [1, 2, 3].map(number => ({ path: `/tmp/worktrees/external-${number}`, name: `external-${number}`,
         repository: 'demo', own: true, branch: `feature/thing-${number}`, head: 'a'.repeat(40),
-        uncommittedCount: number, selectable: number !== 3, reason: number === 3 ? { code: 'detached', message: 'No branch is checked out.' } : null }));
+        uncommittedCount: number, selectable: number !== 3, reason: number === 3 ? { code: 'detached', message: 'No branch is checked out.' } : null,
+        repositoryPath: '/internal/repository', checkout: '/internal/checkout', baseBranch: 'main' }));
     }),
     adoptWorktree: vi.fn(async ({ project, worktreePath, title }) => {
       if (project === 'Nope') throw new TaskError('Project not found', 404);
@@ -118,7 +119,8 @@ describe('tasks API', () => {
     const { server } = await setup();
     const response = await request(server).get(`${base}/worktree-candidates?project=Demo&size=1&page=1&sort=path,desc`);
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ data: [expect.objectContaining({ path: '/tmp/worktrees/external-2', selectable: true, uncommittedCount: 2 })],
+    expect(response.body).toEqual({ data: [{ path: '/tmp/worktrees/external-2', name: 'external-2', repository: 'demo', own: true,
+      branch: 'feature/thing-2', head: 'a'.repeat(40), uncommittedCount: 2, selectable: true, reason: null }],
       page: { currentPage: 1, size: 1, totalElements: 3, totalPages: 3, hasNextPage: true } });
   });
 

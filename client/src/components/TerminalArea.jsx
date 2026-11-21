@@ -824,10 +824,10 @@ export default function TerminalArea({
   }, [requestTerminalSessionId, updateTerminalState, onSelectWorktree]);
 
   // New task: its own place to work is created, and a first terminal opens inside it.
-  const createTaskTab = useCallback(async ({ project: projectName, title, repositories }) => {
+  const createTaskTab = useCallback(async ({ project: projectName, title, repositories, adoptedTask }) => {
     try {
       // In a project with several repositories the owner says which ones the task includes.
-      const task = await createTask({ project: projectName, title, ...(repositories === undefined ? {} : { repositories }) });
+      const task = adoptedTask ?? await createTask({ project: projectName, title, ...(repositories === undefined ? {} : { repositories }) });
       createdTasksRef.current.set(task.worktreePath, task);
       onTasksChanged();
       const opened = await openTaskTerminal(task.id);

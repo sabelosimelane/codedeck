@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
-const api = vi.hoisted(() => ({ listProjectRepositories: vi.fn() }));
-vi.mock('../../../utils/projectRepositoriesApi.js', () => api);
+const api = vi.hoisted(() => ({ listProjectRepositories: vi.fn(), listWorktreeCandidates: vi.fn(), makeTaskFromWorktree: vi.fn() }));
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('../../../utils/projectRepositoriesApi.js', () => ({ listProjectRepositories: api.listProjectRepositories }));
+vi.mock('../../../utils/tasksApi.js', () => ({ listWorktreeCandidates: api.listWorktreeCandidates, makeTaskFromWorktree: api.makeTaskFromWorktree }));
+vi.mock('../../ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
 import NewTaskDialog from '../NewTaskDialog.jsx';
 
 const repo = (name, overrides = {}) => ({ name, path: `/group/${name}`, own: false, branch: 'main', head: 'a'.repeat(40), dirty: false, usable: true, reason: null, ...overrides });
@@ -11,10 +14,61 @@ const REPOSITORIES = [repo('backend', { own: true }), repo('mobile-app', { branc
 const type = value => fireEvent.change(screen.getByLabelText('Task title'), { target: { value } });
 const create = () => fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
 
-beforeEach(() => api.listProjectRepositories.mockReset());
+beforeEach(() => { api.listProjectRepositories.mockReset(); api.listWorktreeCandidates.mockReset().mockResolvedValue([]); api.makeTaskFromWorktree.mockReset(); toast.mockReset(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('NewTaskDialog', () => {
+  it('makes a task from a selected worktree and opens it through the task callback', async () => {
+    const candidate = { path: '/tmp/worktrees/handmade', name: 'handmade', repository: 'demo', own: true,
+      branch: 'feature/spec', head: 'a'.repeat(40), uncommittedCount: 1, selectable: true, reason: null };
+    api.listWorktreeCandidates.mockResolvedValue([candidate, { ...candidate, path: '/tmp/worktrees/busy', name: 'busy',
+      selectable: false, reason: { code: 'in_use', message: 'Already in use.' } }]);
+    const task = { id: 'task-1', title: 'Spec', worktreePath: candidate.path };
+    api.makeTaskFromWorktree.mockResolvedValue(task);
+    const onCreate = vi.fn(async () => {});
+    const onClose = vi.fn();
+    render(<NewTaskDialog projectName="Demo" onCreate={onCreate} onClose={onClose} />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Use an existing worktree' }));
+    expect(screen.getByRole('option', { name: /busy/ }).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Spec' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make task' }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ adoptedTask: task }));
+    expect(api.makeTaskFromWorktree).toHaveBeenCalledWith({ project: 'Demo', worktreePath: candidate.path, title: 'Spec' });
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the worktree choice open and toasts a failed make-task request', async () => {
+    const candidate = { path: '/tmp/worktrees/handmade', name: 'handmade', repository: 'demo', own: true,
+      branch: 'feature/spec', head: 'a'.repeat(40), uncommittedCount: 0, selectable: true, reason: null };
+    api.listWorktreeCandidates.mockResolvedValue([candidate]);
+    api.makeTaskFromWorktree.mockRejectedValue(new Error('Worktree is in use'));
+    const onCreate = vi.fn();
+    render(<NewTaskDialog projectName="Demo" onCreate={onCreate} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Use an existing worktree' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make task' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Worktree is in use'));
+    expect(toast).toHaveBeenCalledWith({ type: 'error', message: 'Worktree is in use' });
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
+  it('retries opening the already made task without posting adoption again', async () => {
+    const candidate = { path: '/tmp/worktrees/handmade', name: 'handmade', repository: 'demo', own: true,
+      branch: 'feature/spec', head: 'a'.repeat(40), uncommittedCount: 0, selectable: true, reason: null };
+    api.listWorktreeCandidates.mockResolvedValue([candidate]);
+    const task = { id: 'task-1', title: 'Spec', worktreePath: candidate.path };
+    api.makeTaskFromWorktree.mockResolvedValue(task);
+    const onCreate = vi.fn().mockRejectedValueOnce(new Error('Terminal unavailable')).mockResolvedValueOnce(task);
+    const onClose = vi.fn();
+    render(<NewTaskDialog projectName="Demo" onCreate={onCreate} onClose={onClose} />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Use an existing worktree' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make task' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Terminal unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open task' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(api.makeTaskFromWorktree).toHaveBeenCalledTimes(1);
+    expect(onCreate).toHaveBeenCalledTimes(2);
+  });
   it('asks only for a title in a project with one repository', async () => {
     const onCreate = vi.fn(async () => {});
     const onClose = vi.fn();

@@ -80,6 +80,20 @@ function taskView(task) {
 
 const reasonView = reason => ({ code: reason.code, message: reason.message });
 
+function candidateView(candidate) {
+  return {
+    path: candidate.path,
+    name: candidate.name,
+    repository: candidate.repository,
+    own: candidate.own,
+    branch: candidate.branch,
+    head: candidate.head,
+    uncommittedCount: candidate.uncommittedCount,
+    selectable: candidate.selectable,
+    reason: candidate.reason === null ? null : reasonView(candidate.reason),
+  };
+}
+
 /** How one repository of a task stands; spelled out for the same reason as a task. */
 function worktreeLandingView(view) {
   return {
@@ -173,7 +187,7 @@ export function createTasksRouter({ service, taskStore, landing, changes } = {})
     const query = parseCollectionQuery(req.query, { sortFields: ['path'], defaultSort: 'path,asc', filters: [FILTERS[0]] }, fieldError);
     if (query.filters.project === undefined) throw fieldError('project', 'A project name is required');
     const page = paginate(await service.listWorktreeCandidates(query.filters.project), query);
-    res.json({ data: page.data, page: page.page });
+    res.json({ data: page.data.map(candidateView), page: page.page });
   }));
 
   // What has been merged, newest first. Registered before `/:id`: a task id is a UUID, never this word.

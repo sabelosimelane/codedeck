@@ -8,8 +8,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
-import { create as createWorktree, listWorktrees, planNames, planTaskFolder, preflight, remove as removeWorktree, resolveHomeRepoPath, runGit } from '../pipelines/run-worktree.js';
+import { create as createWorktree, listWorktrees, planNames, planTaskFolder, preflight, readWorktreeChanges, remove as removeWorktree, resolveHomeRepoPath, runGit } from '../pipelines/run-worktree.js';
 import { readStoredRepositories } from '../project-repositories.js';
+import { holdsWorktree } from '../pipelines/run-worktree-hold.js';
 import { isTaskTitle, TASK_TITLE_MAX } from './task-store.js';
 
 export class TaskError extends Error {
@@ -230,15 +231,33 @@ export function createTaskService({
         let uncommittedCount = null;
         let unreadable = false;
         if (!worktree.missing) {
+          let changes;
           try {
-            const { stdout } = await runGit(execFile, ['-C', worktree.path, 'status', '--porcelain=v1', '--untracked-files=all']);
-            if (typeof stdout !== 'string') throw new Error('Git status output is invalid');
-            uncommittedCount = stdout.split('\n').filter(Boolean).length;
-          } catch (error) { unreadable = true; }
+            changes = await readWorktreeChanges({ worktreePath: worktree.path, execFile });
+          } catch (error) {
+            console.warn(`[task-worktree] Git status failed for ${worktree.path}:`, error?.message ?? String(error));
+            unreadable = true;
+          }
+          if (!unreadable) {
+            if (typeof changes?.readable !== 'boolean') throw new Error('Git worktree readability is invalid');
+            if (changes.readable && typeof changes.dirty !== 'boolean') throw new Error('Git worktree dirty state is invalid');
+            unreadable = !changes.readable;
+          }
+          if (!unreadable) {
+            let status;
+            try { status = await runGit(execFile, ['-C', worktree.path, 'status', '--porcelain=v1', '--untracked-files=all']); }
+            catch (error) {
+              console.warn(`[task-worktree] Git status failed for ${worktree.path}:`, error?.message ?? String(error));
+              unreadable = true;
+            }
+            if (!unreadable) {
+              if (typeof status?.stdout !== 'string') throw new Error('Git status output is invalid');
+              uncommittedCount = status.stdout.split('\n').filter(Boolean).length;
+            }
+          }
         }
         const code = worktree.missing ? 'missing' : worktree.branch === null ? 'detached' : unreadable ? 'unreadable'
-          : runs.some(run => run?.taskId === null && run.worktreePath === worktree.path && run.status !== 'complete'
-            && run.worktreeState === 'external') || reserved.has(worktree.path) ? 'in_use'
+          : runs.some(run => holdsWorktree(run, worktree.path)) || reserved.has(worktree.path) ? 'in_use'
             : base === 'HEAD' ? 'base_unknown' : null;
         candidates.push({ path: worktree.path, name: path.basename(worktree.path), repository: repo.name,
           own: repo.own, branch: worktree.branch, head: worktree.head, uncommittedCount,

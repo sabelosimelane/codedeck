@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFile as gitExecFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -54,6 +54,14 @@ describe('adopting a Git worktree', () => {
     ]);
   });
 
+  it('counts each untracked file inside a directory', async () => {
+    const { service, ownTree } = fixture();
+    fs.mkdirSync(path.join(ownTree, 'specs'));
+    fs.writeFileSync(path.join(ownTree, 'specs', 'one.md'), 'one');
+    fs.writeFileSync(path.join(ownTree, 'specs', 'two.md'), 'two');
+    expect((await service.listWorktreeCandidates('Demo')).find(entry => entry.path === ownTree).uncommittedCount).toBe(3);
+  });
+
   it('records the merge base and derived title without changing untracked files', async () => {
     const { service, store, own, ownTree } = fixture();
     const before = fs.readFileSync(path.join(ownTree, 'draft.md'), 'utf8');
@@ -96,6 +104,31 @@ describe('adopting a Git worktree', () => {
     unreadablePath = ownTree;
     expect((await service.listWorktreeCandidates('Demo')).find(entry => entry.path === ownTree)).toMatchObject({
       selectable: false, reason: { code: 'unreadable' }, uncommittedCount: null,
+    });
+  });
+
+  it('reports the worktree path and Git error when status cannot be read', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let unreadablePath;
+      const execFile = (file, args, options, callback) => {
+        if (args.includes('status') && args[1] === unreadablePath) return callback(Object.assign(new Error('status denied'), { stderr: 'status denied' }));
+        return gitExecFile(file, args, options, callback);
+      };
+      const { service, ownTree } = fixture({ execFile });
+      unreadablePath = ownTree;
+      await service.listWorktreeCandidates('Demo');
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(ownTree), expect.stringContaining('status denied'));
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('uses the pipeline run hold rule for an unfinished run in a present worktree', async () => {
+    const { service, ownTree, runs } = fixture();
+    runs.push({ worktreePath: ownTree, taskId: null, status: 'running', worktreeState: 'present' });
+    expect((await service.listWorktreeCandidates('Demo')).find(entry => entry.path === ownTree)).toMatchObject({
+      selectable: false, reason: { code: 'in_use' },
     });
   });
 
