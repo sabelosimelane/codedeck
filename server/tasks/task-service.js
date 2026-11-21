@@ -8,7 +8,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
-import { create as createWorktree, planNames, planTaskFolder, preflight, remove as removeWorktree, resolveHomeRepoPath, runGit } from '../pipelines/run-worktree.js';
+import { create as createWorktree, listWorktrees, planNames, planTaskFolder, preflight, remove as removeWorktree, resolveHomeRepoPath, runGit } from '../pipelines/run-worktree.js';
 import { readStoredRepositories } from '../project-repositories.js';
 import { isTaskTitle, TASK_TITLE_MAX } from './task-store.js';
 
@@ -35,6 +35,8 @@ export function createTaskService({
   taskStore, findProject, execFile, startSession, pathExists, realpath, newId = randomUUID,
   // Whether a workflow run is working in a task right now: a repository is not added under it.
   isRunWorking,
+  listRuns,
+  reservedWorktreePaths,
   rmdir = target => fs.promises.rmdir(target),
 } = {}) {
   for (const method of ['create', 'remove', 'addWorktree', 'removeWorktree']) {
@@ -192,6 +194,91 @@ export function createTaskService({
     return there;
   }
 
+  const candidateReasons = {
+    missing: 'The worktree directory is missing.',
+    detached: 'No branch is checked out in this worktree.',
+    unreadable: 'Git cannot read this worktree.',
+    in_use: 'An open workflow run is already using it.',
+    base_unknown: 'No base branch is checked out in the repository.',
+  };
+  const commitId = /^[0-9a-f]{40}$/;
+
+  async function candidateRecords(projectName) {
+    if (typeof projectName !== 'string' || !projectName) throw invalid('project', 'A project name is required');
+    if (typeof listRuns !== 'function') throw new TypeError('listRuns is required for worktree candidates');
+    if (typeof reservedWorktreePaths !== 'function') throw new TypeError('reservedWorktreePaths is required for worktree candidates');
+    if (typeof taskStore.findOpenByWorktreePath !== 'function') throw new TypeError('taskStore.findOpenByWorktreePath is required');
+    const project = await resolveProject(projectName);
+    const repositories = [{ name: path.basename(project.path), checkout: project.path, own: true, repositoryPath: null },
+      ...readStoredRepositories(project).map(entry => ({ name: entry.name, checkout: entry.path, own: false, repositoryPath: entry.path }))];
+    const runs = listRuns();
+    const reserved = reservedWorktreePaths();
+    if (!Array.isArray(runs)) throw new Error('Run list is invalid');
+    if (!(reserved instanceof Set)) throw new Error('Reserved worktree paths are invalid');
+    const candidates = [];
+    for (const repo of repositories) {
+      const listed = await listWorktrees({ projectPath: repo.checkout, execFile });
+      const base = (await runGit(execFile, ['-C', repo.checkout, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+      if (!base) throw new Error(`Git base branch is invalid for ${repo.name}`);
+      for (const [index, worktree] of listed.entries()) {
+        for (const field of ['path', 'head']) if (typeof worktree[field] !== 'string' || !worktree[field]) throw new Error(`Git worktree ${field} is invalid`);
+        if (!path.isAbsolute(worktree.path) || worktree.path.includes('\0')) throw new Error('Git worktree path is invalid');
+        if (!commitId.test(worktree.head)) throw new Error('Git worktree head is invalid');
+        if (worktree.branch !== null && (typeof worktree.branch !== 'string' || !worktree.branch)) throw new Error('Git worktree branch is invalid');
+        if (typeof worktree.missing !== 'boolean') throw new Error('Git worktree missing is invalid');
+        if (index === 0 || repositories.some(entry => entry.checkout === worktree.path) || taskStore.findOpenByWorktreePath(worktree.path)) continue;
+        let uncommittedCount = null;
+        let unreadable = false;
+        if (!worktree.missing) {
+          try {
+            const { stdout } = await runGit(execFile, ['-C', worktree.path, 'status', '--porcelain=v1', '--untracked-files=all']);
+            if (typeof stdout !== 'string') throw new Error('Git status output is invalid');
+            uncommittedCount = stdout.split('\n').filter(Boolean).length;
+          } catch (error) { unreadable = true; }
+        }
+        const code = worktree.missing ? 'missing' : worktree.branch === null ? 'detached' : unreadable ? 'unreadable'
+          : runs.some(run => run?.taskId === null && run.worktreePath === worktree.path && run.status !== 'complete'
+            && run.worktreeState === 'external') || reserved.has(worktree.path) ? 'in_use'
+            : base === 'HEAD' ? 'base_unknown' : null;
+        candidates.push({ path: worktree.path, name: path.basename(worktree.path), repository: repo.name,
+          own: repo.own, branch: worktree.branch, head: worktree.head, uncommittedCount,
+          selectable: code === null, reason: code === null ? null : { code, message: candidateReasons[code] },
+          repositoryPath: repo.repositoryPath, checkout: repo.checkout, baseBranch: base });
+      }
+    }
+    return candidates;
+  }
+
+  async function adoptWorktreeNow({ project, worktreePath, title } = {}) {
+    if (typeof project !== 'string' || !project) throw invalid('project', 'A project name is required');
+    if (typeof worktreePath !== 'string' || !path.isAbsolute(worktreePath) || worktreePath.includes('\0')) throw invalid('worktreePath', 'Use an absolute worktree path');
+    if (title !== undefined && !isTaskTitle(title)) throw invalid('title', TITLE_RULE);
+    const records = await candidateRecords(project);
+    if (taskStore.findOpenByWorktreePath(worktreePath)) throw new TaskError('This worktree already belongs to a task.', 409);
+    const candidate = records.find(entry => entry.path === worktreePath);
+    if (!candidate) throw new TaskError('Worktree not found', 404);
+    if (!candidate.selectable) throw new TaskError(candidate.reason.message, 409);
+    let baseCommit;
+    try { baseCommit = (await runGit(execFile, ['-C', candidate.checkout, 'merge-base', candidate.baseBranch, candidate.branch])).stdout.trim(); }
+    catch (error) { if (error?.code === 1) throw new TaskError('The worktree branch has no common base with the checkout.', 409); throw error; }
+    if (!commitId.test(baseCommit)) throw new TaskError('The worktree branch has no common base with the checkout.', 409);
+    const derived = candidate.branch.split('/').at(-1).replace(/[-_]/g, ' ').trim().slice(0, TASK_TITLE_MAX).trim();
+    if (title === undefined && !isTaskTitle(derived)) throw new TaskError('The branch cannot provide a task title. Enter one.', 409);
+    const id = newId();
+    if (!isUuid(id)) throw new Error('Task id is invalid');
+    let task;
+    try {
+      task = taskStore.create({ id, project, title: title === undefined ? derived : title.trim(),
+        titleSource: title === undefined ? 'input' : 'owner', folder: null, repository: candidate.repository,
+        repositoryPath: candidate.repositoryPath, worktreePath, branch: candidate.branch,
+        baseBranch: candidate.baseBranch, baseCommit, others: [] });
+    } catch (error) {
+      if (taskStore.findOpenByWorktreePath(worktreePath)) throw new TaskError('This worktree already belongs to a task.', 409);
+      throw error;
+    }
+    return task;
+  }
+
   /**
    * Records the task with all its worktrees before Git is asked for any of them, then creates
    * each at the commit recorded for it: all of them, or none.
@@ -304,6 +391,14 @@ export function createTaskService({
   let queue = Promise.resolve();
   return {
     plan,
+    async listWorktreeCandidates(projectName) {
+      return (await candidateRecords(projectName)).map(({ repositoryPath, checkout, baseBranch, ...publicCandidate }) => publicCandidate);
+    },
+    adoptWorktree(input) {
+      const run = queue.then(() => adoptWorktreeNow(input));
+      queue = run.then(() => undefined, () => undefined);
+      return run;
+    },
     createPlanned(planned) {
       const run = queue.then(() => createPlannedNow(planned));
       queue = run.then(() => undefined, () => undefined);

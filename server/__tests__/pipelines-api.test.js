@@ -214,7 +214,8 @@ async function setup(overrides = {}) {
   const taskStore = createTaskStore(db);
   let plannedTasks = 0;
   const taskService = overrides.repo
-    ? createTaskService({ taskStore, findProject, execFile, pathExists: async target => existsSync(target), startSession: vi.fn(), isRunWorking: () => false })
+    ? createTaskService({ taskStore, findProject, execFile, pathExists: async target => existsSync(target), startSession: vi.fn(), isRunWorking: () => false,
+      listRuns: () => runStore.list(), reservedWorktreePaths: () => new Set() })
     : overrides.taskService ?? {
     plan: vi.fn(async ({ project, title, titleSource }) => {
       plannedTasks += 1;
@@ -464,6 +465,32 @@ describe('pipelines API — progress file start boundary', () => {
     const body = { requestId: 'progress-boundary', workflowId: workflow.id, project: 'Demo', input: 'feature' };
     return { ctx, workflow, body };
   }
+
+  it('starts in an adopted task whose progress file is only untracked', async () => {
+    const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'cd-adopt-run-')));
+    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const home = path.join(root, 'backend');
+    const tree = path.join(root, 'worktrees', 'backend-spec');
+    mkdirSync(home);
+    const git = (...args) => execFileSync('git', ['-C', home, ...args], { encoding: 'utf8' });
+    git('init', '-b', 'main');
+    git('config', 'user.email', 'test@example.test');
+    git('config', 'user.name', 'Test');
+    writeFileSync(path.join(home, 'README.md'), 'base');
+    git('add', 'README.md');
+    git('commit', '-m', 'base');
+    mkdirSync(path.dirname(tree));
+    git('worktree', 'add', '-b', 'feature/spec', tree);
+    mkdirSync(path.join(tree, 'docs'));
+    writeFileSync(path.join(tree, 'docs/todo.md'), '# untracked');
+    const { ctx, body } = await ready({ repo: home });
+    const task = await ctx.taskService.adoptWorktree({ project: 'Demo', worktreePath: tree });
+    const response = await request(ctx.app).post(`${base}/runs`).send({ ...body, taskId: task.id });
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({ taskId: task.id });
+    expect(ctx.runStore.get(response.body.id).worktreePath).toBe(tree);
+    expect(readFileSync(path.join(tree, 'docs/todo.md'), 'utf8')).toBe('# untracked');
+  });
 
   it.each([
     ['/Users/me/git/demo/docs/todos/plan.md', 'docs//Users/me/git/demo/docs/todos/plan.md'],

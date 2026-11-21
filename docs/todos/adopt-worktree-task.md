@@ -1,9 +1,9 @@
 # Make an existing worktree a task
 
 **Spec**: `docs/specifications/adopt-worktree-task-spec.md`
-**Status**: Not started
+**Status**: In progress
 **Created**: 2026-11-21
-**Last completed**: none
+**Last completed**: Phase 1
 
 > Strict TDD: every task starts with its red test. Every field crossing an edge (request body,
 > query, Git output, API response read by the client) gets its own guard and a rejecting test.
@@ -12,24 +12,24 @@
 
 ## Phase 1: Backend — list candidates and make a task from one
 
-- [ ] Service: `listWorktreeCandidates(projectName)` in the task service (or a new
+- [x] Service: `listWorktreeCandidates(projectName)` in the task service (or a new
       `server/tasks/task-worktree-candidates.js` injected into it), per spec rules 1–3:
       exclusions, reasons, fields. Uses `listWorktrees` / `readWorktreeChanges` from
       `server/pipelines/run-worktree.js`; "in use" reuses the same meaning as `worktreeRefusal`.
-- [ ] Service: `adoptWorktree({ project, worktreePath, title })` per rules 4–7: re-checks the
+- [x] Service: `adoptWorktree({ project, worktreePath, title })` per rules 4–7: re-checks the
       candidate, base branch, merge-base, derived or owner title, `taskStore.create` with no
       others. No Git write.
-- [ ] Route `GET /api/tasks/worktree-candidates` (paginated, `project` required, sort `path`),
+- [x] Route `GET /api/tasks/worktree-candidates` (paginated, `project` required, sort `path`),
       registered before `GET /api/tasks/:id`.
-- [ ] Route `POST /api/tasks` accepts `worktreePath` (+ optional `title`), exclusive with
+- [x] Route `POST /api/tasks` accepts `worktreePath` (+ optional `title`), exclusive with
       `repositories`.
-- [ ] Tests: service unit tests over real temporary Git repositories (own repository, a listed
+- [x] Tests: service unit tests over real temporary Git repositories (own repository, a listed
       other repository, home worktree excluded, project checkouts excluded, open-task worktree
       excluded, each not-selectable reason, merge-base, derived title, untracked files kept).
       Route tests across the api-design §4 dimensions (happy path with full envelope, 400 field
       errors incl. both forms given, boundaries on size/title, null/empty, fuzzed path strings,
       404/409).
-- [ ] An adopted task takes a run: route-level test that `POST /api/pipelines/runs` with its
+- [x] An adopted task takes a run: route-level test that `POST /api/pipelines/runs` with its
       `taskId` and a progress file that is only untracked in the worktree starts.
 
 ## Phase 2: Frontend and docs
@@ -47,3 +47,5 @@
 - [ ] Full server and client suites pass; `cd client && npx vite build` succeeds.
 
 ## Session notes
+
+- 2026-11-21 Phase 1: Added read-only Git candidate discovery, guarded adoption into the task store, paginated task route and real Git/API/run-start tests. Focused server run: 463 passed across `task-adopt-worktree`, `tasks-api`, and `pipelines-api`. Phase 2 remains.
