@@ -68,6 +68,106 @@ afterEach(() => {
 });
 
 describe('RunWorkflowDialog', () => {
+  it('keeps dictated paragraphs and selected files in order, then sends the remaining files', async () => {
+    mockApi();
+    const { onStart } = await renderDialog();
+    const input = screen.getByLabelText('Input');
+    expect(input.tagName).toBe('TEXTAREA');
+    expect(input.rows).toBeGreaterThanOrEqual(6);
+    const draft = 'First paragraph.\n\nSecond paragraph.';
+    fireEvent.change(input, { target: { value: draft } });
+    const first = new File(['first'], 'reference.txt');
+    const second = new File(['second'], 'reference.txt');
+    const empty = new File([], 'empty.txt');
+    const picker = screen.getByLabelText('Attach files');
+    expect(picker.multiple).toBe(true);
+    fireEvent.change(picker, { target: { files: [first, second] } });
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Remove reference.txt' })).toHaveLength(2));
+    fireEvent.drop(screen.getByRole('group', { name: 'Drop workflow attachments' }), { dataTransfer: { files: [empty] } });
+    await screen.findByRole('button', { name: 'Remove empty.txt' });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove reference.txt' })[0]);
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ input: draft, files: [second, empty] })));
+  });
+
+  it('keeps a multiline draft editable in path mode until it fits on one line', async () => {
+    mockApi();
+    workflows[1].progressFile = 'docs/{input}';
+    try {
+      await renderDialog();
+      fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'First\nSecond' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Workflow' }), { target: { value: workflows[1].id } });
+      expect(screen.getByLabelText('Input').value).toBe('First\nSecond');
+      expect(startButton().disabled).toBe(true);
+      fireEvent.change(screen.getByLabelText('Input'), { target: { value: '/tmp/todo.md' } });
+      expect(startButton().disabled).toBe(true);
+      fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'todo.md' } });
+      expect(screen.getByLabelText('Input').tagName).toBe('INPUT');
+      expect(startButton().disabled).toBe(false);
+    } finally {
+      workflows[1].progressFile = null;
+    }
+  });
+
+  it('retries an unconfirmed start with the original file objects and request ID', async () => {
+    mockApi();
+    const onStart = vi.fn().mockRejectedValueOnce(new TypeError('Connection lost')).mockResolvedValueOnce({ id: 'r1' });
+    const { onClose } = await renderDialog({ onStart });
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'My draft' } });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [new File(['x'], 'ref.txt')] } });
+    await screen.findByRole('button', { name: 'Remove ref.txt' });
+    fireEvent.click(startButton());
+    const retry = await screen.findByRole('button', { name: 'Retry start' });
+    expect(screen.getByLabelText('Input').disabled).toBe(true);
+    fireEvent.click(retry);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(onStart.mock.calls[1][0]).toBe(onStart.mock.calls[0][0]);
+  });
+
+  it('closes a failed reservation before allowing an edited draft to use a fresh ID', async () => {
+    mockApi();
+    const runId = 'b00c698b-8a04-41dc-a8df-104b1527faaf';
+    const originalFetch = global.fetch;
+    let firstId;
+    global.fetch = vi.fn(async (url, options) => url.endsWith(`/runs/${runId}/cleanup`)
+      ? { ok: true, status: 200, json: async () => ({ runId, provisioningState: 'closed', terminalsClosed: [], terminalsNotClosed: [] }) }
+      : originalFetch(url, options));
+    const onStart = vi.fn().mockImplementationOnce(async ({ requestId }) => {
+      firstId = requestId;
+      throw Object.assign(new Error('Could not copy the file'), {
+        status: 500, reservation: { requestId, runId, provisioningState: 'failed' },
+      });
+    }).mockResolvedValueOnce({ id: 'next' });
+    await renderDialog({ onStart });
+    const file = new File(['x'], 'ref.txt');
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'Keep this draft' } });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [file] } });
+    await screen.findByRole('button', { name: 'Remove ref.txt' });
+    fireEvent.click(startButton());
+    fireEvent.click(await screen.findByRole('button', { name: 'Close failed start' }));
+    await waitFor(() => expect(screen.getByLabelText('Input').disabled).toBe(false));
+    expect(screen.getByLabelText('Input').value).toBe('Keep this draft');
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'Edited\n\ndraft' } });
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(2));
+    expect(onStart.mock.calls[1][0]).toMatchObject({ input: 'Edited\n\ndraft', files: [file] });
+    expect(onStart.mock.calls[1][0].requestId).not.toBe(firstId);
+  });
+
+  it('keeps valid files from a mixed selection and never uploads on cancel', async () => {
+    mockApi();
+    const { onStart, onClose } = await renderDialog();
+    const tooBig = new File([], 'oversize.txt');
+    Object.defineProperty(tooBig, 'size', { value: 20 * 1024 * 1024 + 1 });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [tooBig, new File([], 'valid.txt')] } });
+    await screen.findByRole('button', { name: 'Remove valid.txt' });
+    expect(screen.getByRole('alert').textContent).toContain('oversize.txt');
+    expect(startButton().disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
   it('explains the input and path requirement only for a selected templated Progress file', async () => {
     mockApi();
     workflows[0].progressFile = 'docs/{input}';
@@ -503,7 +603,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     expect(screen.getByText('docs/todos/tag-phone.md is in mobile-app.')).toBeTruthy();
     expect(screen.queryByText(/From the Repositories line/)).toBeNull();
     fireEvent.change(startIn(), { target: { value: 'frontend' } });
-    type('todos/tag-phone.md ');
+    type('todos/tag-tablet.md');
     await waitFor(() => expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/run-plans')).length).toBeGreaterThan(1));
     expect(startIn().value).toBe('frontend');
   });
@@ -558,9 +658,28 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     type('todos/tag.md');
     await waitFor(() => expect(box('Also start a run in mobile-app with docs/todos/tag-phone.md').checked).toBe(true));
     fireEvent.click(startButton());
-    await waitFor(() => expect(startButton().disabled).toBe(false));
+    await screen.findByRole('button', { name: 'Retry start' });
     expect(onStart).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('sends files only to the primary run and retries a failed extra independently', async () => {
+    mockPlans({ 'todos/tag.md': plan() });
+    const onStart = vi.fn().mockResolvedValueOnce({ id: 'primary' }).mockRejectedValueOnce(new TypeError('Offline')).mockResolvedValueOnce({ id: 'extra' });
+    const { onClose } = await renderPlanned({ onStart });
+    type('todos/tag.md');
+    await screen.findByText('Attachments go to the primary run only.');
+    const file = new File(['x'], 'ref.txt');
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [file] } });
+    await screen.findByRole('button', { name: 'Remove ref.txt' });
+    fireEvent.click(startButton());
+    const retry = await screen.findByRole('button', { name: 'Retry remaining runs' });
+    expect(onStart.mock.calls[0][0].files).toEqual([file]);
+    expect(onStart.mock.calls[1][0]).toMatchObject({ input: 'todos/tag-phone.md', startIn: 'mobile-app' });
+    expect(onStart.mock.calls[1][0]).not.toHaveProperty('files');
+    fireEvent.click(retry);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(onStart.mock.calls[2][0]).toBe(onStart.mock.calls[1][0]);
   });
 
   it('asks only for a new task of a workflow that reads a Progress file', async () => {

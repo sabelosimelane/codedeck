@@ -145,7 +145,9 @@ describe('naming a task from the work of its run', () => {
 describe('what a task is called until it is named', () => {
   it.each([
     ['The call says the full name', 'Bug fix', 'The call says the full name'],
-    ['  \n\n  Second line is the first with words \nmore', 'Bug fix', 'Second line is the first with words'],
+    ['  \n\n  Second line is the first with words \nmore', 'Bug fix', 'Second line is the first with words more'],
+    ['Paragraph one.\n\nParagraph two.', 'Bug fix', 'Paragraph one. Paragraph two.'],
+    ['First\u00a0\u2009paragraph.\n\nSecond paragraph.', 'Bug fix', 'First paragraph. Second paragraph.'],
     ['"/tmp/drops/screenshot.png"', 'Bug fix', '"/tmp/drops/screenshot.png"'],
     ['x'.repeat(200), 'Bug fix', 'x'.repeat(80)],
     [`${'y'.repeat(79)} z`, 'Bug fix', 'y'.repeat(79)],

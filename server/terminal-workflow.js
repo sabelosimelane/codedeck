@@ -58,6 +58,8 @@ export function createTerminalWorkflow({ write, notify }) {
   let pass = 0;
   let limitReached = false;
   let quietTimer;
+  // Checked before every repeat pass (a run's attachment copies); not part of the replayed request.
+  let beforePass = null;
   let resetTimer;
   let enterTimer;
   const requests = new Map();
@@ -136,8 +138,13 @@ export function createTerminalWorkflow({ write, notify }) {
     snapshot,
     /** The identifier the agent copies into its signal for the pass in progress, or null. */
     signalIdentifier: () => identifier,
-    start(input) {
+    start(input, options = {}) {
       validateStart(input);
+      if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Workflow start options must be an object.');
+      for (const field of Object.keys(options)) {
+        if (field !== 'beforePass') throw new Error('Workflow start contains an unknown option.');
+      }
+      if (options.beforePass !== undefined && typeof options.beforePass !== 'function') throw new Error('Workflow beforePass must be a function.');
       const previous = requests.get(input.requestId);
       if (previous) {
         if (
@@ -154,6 +161,7 @@ export function createTerminalWorkflow({ write, notify }) {
       // Bound retained idempotency keys for this session; never silently evict one.
       if (requests.size >= 1000) throw new Error('Workflow request limit reached. Open a new terminal to start another workflow.');
       request = { ...input };
+      beforePass = options.beforePass ?? null;
       requests.set(request.requestId, request);
       error = null;
       limitReached = false;
@@ -209,6 +217,7 @@ export function createTerminalWorkflow({ write, notify }) {
     output(data) {
       if (typeof data !== 'string') throw new Error('Workflow output must be a string.');
       if (!ACTIVE.has(status) || !data) return;
+      if (phase === 'checking') return;
       if (phase === 'before_reset') {
         scheduleQuiet(reset);
         return;
@@ -244,9 +253,24 @@ export function createTerminalWorkflow({ write, notify }) {
       } else {
         identifier = null;
         status = 'resetting';
-        phase = 'before_reset';
         publish();
-        scheduleQuiet(reset);
+        if (beforePass === null) {
+          phase = 'before_reset';
+          scheduleQuiet(reset);
+          return;
+        }
+        // Nothing reaches the agent until the check passes; a Stop or new start meanwhile wins.
+        phase = 'checking';
+        const checking = request;
+        const current = () => request === checking && status === 'resetting' && phase === 'checking';
+        Promise.resolve().then(() => beforePass()).then(() => {
+          if (!current()) return;
+          phase = 'before_reset';
+          scheduleQuiet(reset);
+        }, (err) => {
+          if (!current()) return;
+          finish('error', String(err?.message || err || 'The check before the next pass failed.').slice(0, 2000));
+        });
       }
     },
   };

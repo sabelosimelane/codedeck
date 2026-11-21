@@ -18,7 +18,7 @@ const write = (dir, file, text) => writeFileSync(path.join(dir, file), text);
 const commitAll = (dir, message) => { git(dir, ['add', '--all']); git(dir, ['commit', '-m', message]); };
 
 /** A real repository with one task; `exec` lets a test stand in for the hosting CLI. */
-async function setup({ exec = execFile, activeRun = false } = {}) {
+async function setup({ exec = execFile, activeRun = false, listRunAttachmentsForWorktree } = {}) {
   const base = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'codedeck-landing-')));
   const repo = path.join(base, 'repo');
   mkdirSync(repo);
@@ -38,7 +38,17 @@ async function setup({ exec = execFile, activeRun = false } = {}) {
   const state = { activeRun, terminals: { closed: [], notClosed: [] } };
   const onTaskFinished = vi.fn();
   const closeTerminals = vi.fn(async () => state.terminals);
-  const landing = createTaskLanding({ taskStore, findProject, execFile: exec, pathExists, hasActiveRun: () => state.activeRun, onTaskFinished, onWorktreeFinished: vi.fn(), closeTerminals });
+  const landing = createTaskLanding({
+    taskStore,
+    findProject,
+    execFile: exec,
+    pathExists,
+    hasActiveRun: () => state.activeRun,
+    onTaskFinished,
+    onWorktreeFinished: vi.fn(),
+    closeTerminals,
+    ...(listRunAttachmentsForWorktree ? { listRunAttachmentsForWorktree } : {}),
+  });
   const task = await service.create({ project: 'Demo', title: 'Replies' });
   return { base, repo, taskStore, service, landing, task, wt: task.worktreePath, state, onTaskFinished, closeTerminals };
 }
@@ -632,5 +642,123 @@ describe('task landing — work that ordinary status does not show', () => {
     expect({ refused: closed.refused, status: closed.status, taskState: taskStore.get(ID).state, worktreeRemoved: ran(trace, 'worktree remove'), checkoutExists: existsSync(wt) })
       .toEqual({ refused: true, status: 409, taskState: 'active', worktreeRemoved: false, checkoutExists: true });
     expect(closed.reasons.map(item => item.code)).toEqual(['branch_switched']);
+  });
+});
+
+describe('task landing — run attachment cleanup', () => {
+  it('blocks Close when attachment bytes changed or are unknown, and allows verified run-owned copies', async () => {
+    const { createHash } = await import('node:crypto');
+    const digestOf = text => createHash('sha256').update(text).digest('hex');
+    const NOTES = '.codedeck/runs/abcdef12';
+    const relative = `${NOTES}/attachments/01-notes.txt`;
+    const bytes = 'fixture bytes\n';
+    const attachment = {
+      name: 'notes.txt',
+      path: relative,
+      sizeBytes: Buffer.byteLength(bytes),
+      digest: digestOf(bytes),
+    };
+
+    // Unknown copy (no matching run manifest) keeps the cleanup blocker.
+    {
+      const { wt, landing } = await setup();
+      write(wt, '.gitignore', '.codedeck/\n');
+      commitAll(wt, 'ignore notes');
+      mkdirSync(path.join(wt, NOTES, 'attachments'), { recursive: true });
+      write(path.join(wt, NOTES, 'attachments'), '01-notes.txt', bytes);
+      expect(codes((await landing.status(ID)).blockers.close)).toEqual(['ignored_files']);
+      expect(await rejection(landing.close(ID, { deleteIgnored: false }))).toMatchObject({ status: 409 });
+      expect(existsSync(path.join(wt, relative))).toBe(true);
+    }
+
+    // Changed bytes for a recorded path keep the blocker.
+    {
+      const { wt, landing } = await setup({
+        listRunAttachmentsForWorktree: async () => [{ notesDir: NOTES, attachments: [attachment] }],
+      });
+      write(wt, '.gitignore', '.codedeck/\n');
+      commitAll(wt, 'ignore notes');
+      mkdirSync(path.join(wt, NOTES, 'attachments'), { recursive: true });
+      write(path.join(wt, NOTES, 'attachments'), '01-notes.txt', 'changed\n');
+      expect(codes((await landing.status(ID)).blockers.close)).toEqual(['ignored_files']);
+    }
+
+    // Exact recorded bytes are disposable with the owned checkout.
+    {
+      const { wt, landing } = await setup({
+        listRunAttachmentsForWorktree: async () => [{ notesDir: NOTES, attachments: [attachment] }],
+      });
+      write(wt, '.gitignore', '.codedeck/\n');
+      commitAll(wt, 'ignore notes');
+      mkdirSync(path.join(wt, NOTES, 'attachments'), { recursive: true });
+      write(path.join(wt, NOTES, 'attachments'), '01-notes.txt', bytes);
+      write(path.join(wt, NOTES), 'README.md', '# run\n');
+      expect((await landing.status(ID)).blockers.close).toEqual([]);
+      expect((await landing.close(ID)).task.state).toBe('closed');
+      expect(existsSync(wt)).toBe(false);
+    }
+  });
+
+  it('blocks Close for a symlinked attachment copy and keeps the checkout', async () => {
+    const { createHash } = await import('node:crypto');
+    const NOTES = '.codedeck/runs/abcdef12';
+    const relative = `${NOTES}/attachments/01-notes.txt`;
+    const bytes = 'fixture bytes\n';
+    const attachment = {
+      name: 'notes.txt',
+      path: relative,
+      sizeBytes: Buffer.byteLength(bytes),
+      digest: createHash('sha256').update(bytes).digest('hex'),
+    };
+    const { base, wt, landing } = await setup({
+      listRunAttachmentsForWorktree: async () => [{ notesDir: NOTES, attachments: [attachment] }],
+    });
+    write(wt, '.gitignore', '.codedeck/\n');
+    commitAll(wt, 'ignore notes');
+    mkdirSync(path.join(wt, NOTES, 'attachments'), { recursive: true });
+    const outside = path.join(base, 'outside.txt');
+    writeFileSync(outside, bytes);
+    symlinkSync(outside, path.join(wt, relative));
+    expect(codes((await landing.status(ID)).blockers.close)).toContain('ignored_files');
+    expect(await rejection(landing.close(ID, { deleteIgnored: false }))).toMatchObject({ status: 409 });
+    expect(existsSync(wt)).toBe(true);
+    expect(existsSync(path.join(wt, relative))).toBe(true);
+  });
+
+  it('lets a later run in the same checkout keep only its own verified attachments disposable', async () => {
+    const { createHash } = await import('node:crypto');
+    const digestOf = text => createHash('sha256').update(text).digest('hex');
+    const FIRST = '.codedeck/runs/abcdef12';
+    const SECOND = '.codedeck/runs/fedcba98';
+    const firstBytes = 'first run\n';
+    const secondBytes = 'second run\n';
+    const first = {
+      name: 'a.txt',
+      path: `${FIRST}/attachments/01-a.txt`,
+      sizeBytes: Buffer.byteLength(firstBytes),
+      digest: digestOf(firstBytes),
+    };
+    const second = {
+      name: 'b.txt',
+      path: `${SECOND}/attachments/01-b.txt`,
+      sizeBytes: Buffer.byteLength(secondBytes),
+      digest: digestOf(secondBytes),
+    };
+    const { wt, landing } = await setup({
+      // Only the later run's manifest is still associated with this checkout.
+      listRunAttachmentsForWorktree: async () => [{ notesDir: SECOND, attachments: [second] }],
+    });
+    write(wt, '.gitignore', '.codedeck/\n');
+    commitAll(wt, 'ignore notes');
+    mkdirSync(path.join(wt, FIRST, 'attachments'), { recursive: true });
+    mkdirSync(path.join(wt, SECOND, 'attachments'), { recursive: true });
+    write(path.join(wt, FIRST, 'attachments'), '01-a.txt', firstBytes);
+    write(path.join(wt, SECOND, 'attachments'), '01-b.txt', secondBytes);
+    write(path.join(wt, SECOND), 'README.md', '# later\n');
+    // Prior-run leftovers are unknown to the current manifests and keep the blocker.
+    expect(codes((await landing.status(ID)).blockers.close)).toEqual(['ignored_files']);
+    expect(await rejection(landing.close(ID, { deleteIgnored: false }))).toMatchObject({ status: 409 });
+    expect(existsSync(path.join(wt, first.path))).toBe(true);
+    expect(existsSync(path.join(wt, second.path))).toBe(true);
   });
 });

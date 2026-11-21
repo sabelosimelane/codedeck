@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026-11-20] - Attach files in the Run workflow dialog
+
+### Executive Summary
+* Pick or drop several reference files before starting a workflow so the agent can open them in its run checkout. The larger description field lets you review dictated or pasted paragraphs before submitting.
+
+### Technical Details
+* **✨ New Feature:**
+  * `RunWorkflowDialog.jsx`, `RunWorkflowDialog.css` and `WorkflowAttachments.jsx` provide the resizable input, file picker, drop area, removal controls and retry actions.
+* **🛠️ Codebase:**
+  * `pipelinesApi.js`, `usePipelineRuns.js`, `App.jsx` and `Improvements.jsx` send files through both launch paths and preserve the submission on retry.
+  * `workflow-attachments.mjs` and `attachments.js` share filename and batch limits across the dialog and server.
+* **🧪 Tests:**
+  * `RunWorkflowDialog.test.jsx` and `pipelinesApi.test.js` cover file selection, multiline input, retry, cancellation and multipart serialization.
+
+## [2026-11-20] - Workflow start attachment and multiline input support
+
+### Executive Summary
+* The workflow API accepts reference files and multiline descriptions. Agents can read the files from the run checkout and receive the description with its paragraph breaks intact. The Run workflow dialog still needs the file picker and multiline editor.
+
+### Technical Details
+* **🔌 API/Interface:**
+  * The run start endpoint accepts multipart uploads, keeps JSON starts compatible, and returns the published attachment names, paths and sizes.
+* **🛠️ Codebase:**
+  * Run storage, notes and agent guidance carry the attachment manifest and multiline description. Attachments are checked before agent attempts, and cleanup preserves unsafe or changed attachment paths.
+  * The verifier rejects named pipes without waiting for a writer. Checkout cleanup protects a dangling attachment-folder symlink.
+
 ## [2026-11-20] - Team scoring, measured model trials and workflow approval feedback
 
 ### Executive Summary

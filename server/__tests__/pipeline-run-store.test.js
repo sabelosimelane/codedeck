@@ -116,6 +116,27 @@ describe('pipeline run store', () => {
     expect(reopened.get(stoppedAtLimit.id).steps[0].status).toBe('limit_reached');
   });
 
+  it('stores descriptive multiline input exactly, including blank lines and trailing spaces', () => {
+    const { store } = setup();
+    const input = 'First paragraph.\n\nSecond paragraph with trailing spaces.  \n';
+    const created = store.create(validRun({ requestId: 'multiline', input, definition: { ...definition(), inputMode: 'descriptive' } }));
+    expect(created.input).toBe(input);
+    expect(store.get(created.id).input).toBe(input);
+  });
+
+  it('refuses a line break in the input of a path-mode run, and of an older row without inputMode', () => {
+    const { store } = setup();
+    expect(() => store.create(validRun({ input: 'a\nb', definition: { ...definition(), inputMode: 'path' } }))).toThrow(/field input/);
+    expect(() => store.create(validRun({ input: 'a\nb' }))).toThrow(/field input/);
+  });
+
+  it('refuses run input with unsafe controls or more than 4096 characters', () => {
+    const { store } = setup();
+    expect(() => store.create(validRun({ input: 'a\0b' }))).toThrow(/field input/);
+    expect(() => store.create(validRun({ input: 'a\tb' }))).toThrow(/field input/);
+    expect(() => store.create(validRun({ input: 'x'.repeat(4097) }))).toThrow(/field input/);
+  });
+
   it('keeps the task a run belongs to, and null for a run outside any task', () => {
     const { store } = setup();
     const taskId = '7a000000-0000-4000-8000-000000000001';
@@ -142,6 +163,95 @@ describe('pipeline run store', () => {
     expect(() => db.prepare("UPDATE pipeline_runs SET task_id = 'bogus'").run()).not.toThrow();
     expect(() => store.list()).toThrow(/field task_id/);
     db.close();
+  });
+
+  it('defaults missing attachments to an empty manifest and persists digests internally', () => {
+    const { store } = setup();
+    const notesDir = '.codedeck/runs/abcdef12';
+    const created = store.create(validRun({ requestId: 'no-attach' }));
+    expect(created.attachments).toEqual([]);
+    const digest = 'ab'.repeat(32);
+    const attachments = [{
+      name: 'brief.txt',
+      path: `${notesDir}/attachments/01-brief.txt`,
+      sizeBytes: 4,
+      digest,
+    }];
+    const withFiles = store.create(validRun({
+      requestId: 'with-attach',
+      definition: { ...definition(), notesDir },
+      attachments,
+    }));
+    expect(withFiles.attachments).toEqual(attachments);
+    expect(store.get(withFiles.id).attachments).toEqual(attachments);
+  });
+
+  it('migrates rows stored before attachments existed to an empty manifest', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE pipeline_runs (
+      id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, workflow_id TEXT NOT NULL, project TEXT NOT NULL,
+      input TEXT NOT NULL, status TEXT NOT NULL, stop_reason TEXT, current_step_index INTEGER NOT NULL, error TEXT,
+      definition TEXT NOT NULL, steps TEXT NOT NULL, home_path TEXT NOT NULL, worktree_path TEXT NOT NULL,
+      worktree_branch TEXT NOT NULL, base_commit TEXT, worktree_state TEXT NOT NULL, worktree_detail TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT, input_request TEXT, task_id TEXT)`);
+    const run = validRun({ requestId: 'legacy-attach' });
+    const stamp = '2026-11-13T12:00:00.000Z';
+    db.prepare(`INSERT INTO pipeline_runs (
+      id, request_id, workflow_id, project, input, status, stop_reason, current_step_index, error,
+      definition, steps, home_path, worktree_path, worktree_branch, base_commit, worktree_state,
+      worktree_detail, created_at, updated_at, finished_at, input_request, task_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      '11111111-1111-4111-8111-111111111111', run.requestId, run.workflowId, run.project, run.input,
+      run.status, run.stopReason, run.currentStepIndex, run.error, JSON.stringify(run.definition),
+      JSON.stringify(run.steps), run.homePath, run.worktreePath, run.worktreeBranch, run.baseCommit,
+      run.worktreeState, run.worktreeDetail, stamp, stamp, run.finishedAt, null, null,
+    );
+    const store = createRunStore(db);
+    expect(store.get('11111111-1111-4111-8111-111111111111').attachments).toEqual([]);
+    db.close();
+  });
+
+  it('rejects a malformed persisted attachments column on hydration', () => {
+    const { store, db } = setup();
+    const run = store.create(validRun({ requestId: 'bad-attach' }));
+    db.prepare('UPDATE pipeline_runs SET attachments = ? WHERE id = ?').run('{"nope":true}', run.id);
+    expect(() => store.get(run.id)).toThrow(/attachments/);
+  });
+
+  it('rejects a persisted JSON null attachment manifest', () => {
+    const { db, store } = setup();
+    const run = store.create(validRun());
+    db.prepare('UPDATE pipeline_runs SET attachments = ? WHERE id = ?').run('null', run.id);
+    expect(() => store.get(run.id)).toThrow(/attachments/);
+  });
+
+  it.each(['creation', 'hydration'])('rejects a malformed Unicode attachment name during %s', (edge) => {
+    const { db, store } = setup();
+    const notesDir = '.codedeck/runs/abcdef12';
+    const manifest = [{
+      name: '\uD800notes.txt',
+      path: `${notesDir}/attachments/01-notes.txt`,
+      sizeBytes: 4,
+      digest: 'ab'.repeat(32),
+    }];
+    const input = validRun({ definition: { ...definition(), notesDir } });
+    if (edge === 'creation') {
+      expect(() => store.create({ ...input, attachments: manifest })).toThrow(/attachments\[0\]\.name/);
+    } else {
+      const run = store.create(input);
+      db.prepare('UPDATE pipeline_runs SET attachments = ? WHERE id = ?').run(JSON.stringify(manifest), run.id);
+      expect(() => store.get(run.id)).toThrow(/attachments\[0\]\.name/);
+    }
+  });
+
+  it('defaults an omitted manifest but rejects an explicit null on creation and update', () => {
+    const { store } = setup();
+    const run = store.create(validRun());
+    expect(run.attachments).toEqual([]);
+    expect.soft(() => store.create(validRun({ requestId: 'null-manifest', attachments: null })))
+      .toThrow(/attachments/);
+    expect.soft(() => store.update(run.id, { attachments: null })).toThrow(/attachments/);
+    expect(store.get(run.id).attachments).toEqual([]);
   });
 
   it('leaves an approval wait untouched while interrupting a running run on the same restart', () => {

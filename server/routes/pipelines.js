@@ -20,6 +20,9 @@ import {
   validateRunAnswerBody,
   validateRunApproveBody,
   validateRunSendBackBody,
+  validateRunInputField,
+  normalizeRunInput,
+  runInputMode,
   composePrompt,
   inputFromProgressFilePath,
   isProgressFilePath,
@@ -27,7 +30,16 @@ import {
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
 import { computeActions, progressForAgent } from '../pipelines/run-machine.js';
-import { serializeStartParams } from '../pipelines/request-store.js';
+import { publicAttachments } from '../pipelines/attachments.js';
+import { cleanupAttempt, parsePipelineStartMultipart } from '../pipelines/multipart-start.js';
+import { PROVISIONING_STATES, reservedAttachmentIdentities, serializeStartParams } from '../pipelines/request-store.js';
+import {
+  AttachmentPublishError,
+  attachmentManifest,
+  publishAttachmentBatch as defaultPublishAttachments,
+  removeUnpublishedAttachments as defaultRemoveManagedAttachments,
+} from '../pipelines/attachment-publisher.js';
+import os from 'node:os';
 import { createRunProgressReader, readRunProgress, isProgressFileInWorktree } from '../pipelines/run-progress.js';
 import { notePath, feedbackPath } from '../pipelines/run-notes.js';
 import { buildStepGuidance } from '../pipelines/step-guidance.js';
@@ -38,6 +50,8 @@ import {
   resolveHomeRepoPath as defaultResolveHomeRepoPath,
   listWorktrees as defaultListWorktrees,
   readWorktreeChanges as defaultReadWorktreeChanges,
+  create as defaultCreateWorktree,
+  remove as defaultRemoveWorktree,
   hasCommittedFile,
   readCommittedFile,
   buildSetupPromptForRepositories,
@@ -133,6 +147,7 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
     progress,
     project: run.project,
     input: run.input,
+    attachments: publicAttachments(run.attachments),
     status: run.status,
     approvalRequest: run.status === 'awaiting_approval' ? { stepIndex: run.currentStepIndex, stepName: run.definition.steps[run.currentStepIndex].name, note: approvalNote } : null,
     stopReason: run.stopReason,
@@ -215,13 +230,14 @@ function decisionView(decision) {
 /**
  * Why a worktree cannot take a run, or null when it can. The first reason that applies is reported.
  * `changes` is what git read in the worktree, or null for a missing one, which is never read.
+ * `reservedPaths` are checkouts held by attached starts that have not published yet.
  */
-function worktreeRefusal(worktree, changes, runs) {
+function worktreeRefusal(worktree, changes, runs, reservedPaths = new Set()) {
   const code = worktree.missing ? 'missing'
     : !changes.readable ? 'unreadable'
       : worktree.branch === null ? 'detached'
         // A finished run is still shown there but no longer holds the place.
-        : runs.some(run => run.worktreePath === worktree.path && run.status !== 'complete' && isOpenRun(run)) ? 'in_use'
+        : runs.some(run => run.worktreePath === worktree.path && run.status !== 'complete' && isOpenRun(run)) || reservedPaths.has(worktree.path) ? 'in_use'
           : null;
   return code === null ? null : { code, message: WORKTREE_REASONS[code] };
 }
@@ -346,6 +362,7 @@ function buildDefinitionSnapshot({
     workflowRevision: workflow.revision,
     agentsDecide: workflow.agentsDecide,
     progressFile,
+    inputMode: runInputMode(workflow.progressFile),
     // Labelled with the team only when the team supplied the agent of at least one step.
     team: team && nodeSteps.some(step => step.agent.assignment?.source === 'team') ? { name: team.name, changed: false } : null,
     steps: [...setupSteps, ...nodeSteps],
@@ -381,6 +398,11 @@ function mapEngineActionError(err) {
  * @param {typeof defaultExecFile} [deps.execFile]
  * @param {(path: string) => Promise<string>} [deps.realpath]
  * @param {(fn: Function) => void} [deps.scheduleStart] — defaults to setImmediate
+ * @param {string} [deps.attachmentStagingRoot] — private directory for multipart attachment staging
+ * @param {typeof defaultPublishAttachments} [deps.publishAttachments]
+ * @param {typeof defaultRemoveManagedAttachments} [deps.removeManagedAttachments]
+ * @param {typeof defaultCreateWorktree} [deps.createWorktree] — creates an attached selector-free run's checkout
+ * @param {typeof defaultRemoveWorktree} [deps.removeWorktree] — removes that checkout when its reservation is closed
  */
 export function createPipelinesRouter(deps) {
   const {
@@ -410,6 +432,11 @@ export function createPipelinesRouter(deps) {
     realpath,
     scheduleStart = setImmediate,
     progressReader = createRunProgressReader(),
+    attachmentStagingRoot = path.join(os.tmpdir(), 'codedeck-pipeline-attachments'),
+    publishAttachments = defaultPublishAttachments,
+    removeManagedAttachments = defaultRemoveManagedAttachments,
+    createWorktree = defaultCreateWorktree,
+    removeWorktree = defaultRemoveWorktree,
   } = deps ?? {};
 
   if (!agentStore) throw new Error('pipelines router: agentStore is required');
@@ -431,7 +458,7 @@ export function createPipelinesRouter(deps) {
   if (typeof teamStore?.list !== 'function') throw new Error('pipelines router: teamStore is required');
   if (typeof taskStore?.get !== 'function') throw new Error('pipelines router: taskStore is required');
   if (typeof taskService?.plan !== 'function' || typeof taskService?.createPlanned !== 'function') throw new Error('pipelines router: taskService is required');
-  if (['get', 'reserve', 'setTaskId', 'release'].some(method => typeof requestStore?.[method] !== 'function')) {
+  if (['get', 'reserve', 'setTaskId', 'release', 'assertMatchingParams', 'assignRunId', 'setPlacement', 'transition', 'getByRunId', 'listUnpublished'].some(method => typeof requestStore?.[method] !== 'function')) {
     throw new Error('pipelines router: requestStore is required');
   }
   if (typeof closeRunTerminals !== 'function') throw new Error('pipelines router: closeRunTerminals must be a function');
@@ -764,8 +791,10 @@ export function createPipelinesRouter(deps) {
     const errors = Object.keys(body).filter(field => !['workflowId', 'project', 'input'].includes(field)).map(field => ({ field, message: 'Unknown field' }));
     if (!isUuid(body.workflowId)) errors.push({ field: 'workflowId', message: 'Use a workflow UUID' });
     if (!isText(body.project) || body.project.length > 200) errors.push({ field: 'project', message: 'Use the name of a project' });
-    if (typeof body.input !== 'string' || body.input.length < 1 || body.input.length > 4096 || /[\x00-\x1f\x7f]/.test(body.input)) {
-      errors.push({ field: 'input', message: 'Use 1–4096 characters on one line without control characters' });
+    // Nonempty string first so empty input is named with other field errors; line breaks
+    // and controls wait for the workflow's input mode below.
+    if (typeof body.input !== 'string' || body.input.length < 1) {
+      errors.push({ field: 'input', message: 'Use 1–4096 characters' });
     }
     if (errors.length) throw fieldErrors(errors);
 
@@ -774,12 +803,17 @@ export function createPipelinesRouter(deps) {
     const project = findProject(body.project);
     if (!project) throw new PipelineError('Project not found', 404);
 
-    const nothing = { progressFile: null, input: body.input, foundIn: null, problem: null, repositories: null };
+    const inputMode = runInputMode(workflow.progressFile);
+    const input = normalizeRunInput(body.input);
+    const inputError = validateRunInputField(input, { mode: inputMode });
+    if (inputError) throw fieldError('input', inputError);
+
+    const nothing = { progressFile: null, input, foundIn: null, problem: null, repositories: null };
     const template = workflow.progressFile;
     if (template === null) return res.json(nothing);
     // The two ways an input names the progress file: as the part that replaces {input}, or as the file's whole path.
-    const part = inputFromProgressFilePath(template, body.input);
-    const readings = [{ file: composePrompt(template, body.input), input: body.input }, ...(part === null ? [] : [{ file: body.input, input: part }])]
+    const part = inputFromProgressFilePath(template, input);
+    const readings = [{ file: composePrompt(template, input), input }, ...(part === null ? [] : [{ file: input, input: part }])]
       .filter(reading => isProgressFilePath(reading.file, 512));
     if (readings.length === 0) return res.json(nothing);
 
@@ -837,10 +871,11 @@ export function createPipelinesRouter(deps) {
     const worktrees = await listWorktrees({ projectPath: project.path, execFile });
     const projectPath = await (realpath ?? fs.promises.realpath)(project.path);
     const runs = runStore.list();
+    const reserved = reservedElsewhere(null).paths;
     const page = paginate(worktrees.map(worktree => ({ ...worktree, id: worktree.path })), query);
     const data = await Promise.all(page.data.map(async (worktree) => {
       const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
-      const reason = worktreeRefusal(worktree, changes, runs);
+      const reason = worktreeRefusal(worktree, changes, runs, reserved);
       return {
         path: worktree.path,
         name: path.basename(worktree.path),
@@ -920,7 +955,34 @@ export function createPipelinesRouter(deps) {
   const startsInFlight = new Map();
   const reusedRequest = () => new PipelineError('This requestId was already used with a different body', 409);
 
-  async function provisionRun(body, reservation) {
+  /** Checkouts and tasks held by other attached starts that have recorded a placement but not published. */
+  function reservedElsewhere(requestId) {
+    const paths = new Set();
+    const taskIds = new Set();
+    for (const record of requestStore.listUnpublished()) {
+      if (record.requestId === requestId || record.placement === null) continue;
+      paths.add(record.placement.worktreePath);
+      const { place } = JSON.parse(record.params);
+      if (place.kind === 'task') taskIds.add(place.taskId);
+      if (record.taskId !== null) taskIds.add(record.taskId);
+    }
+    return { paths, taskIds };
+  }
+
+  /** The selector-free checkout of an attached start: created once, and found again on a retry. */
+  async function ensureRunCheckout({ homePath, names, projectPath }) {
+    const existing = (await listWorktrees({ projectPath: homePath, execFile })).find(candidate => candidate.path === names.worktreePath);
+    if (existing) return existing.head;
+    const { baseCommit } = await createWorktree({ homePath, worktreePath: names.worktreePath, branch: names.branch, projectPath, execFile });
+    return baseCommit;
+  }
+
+  /**
+   * `publication`, for an attached start, is the staged batch. Its checkout is recorded on the
+   * reservation and made ready, and the batch is published there before the run is recorded with
+   * its manifest; no run exists until then.
+   */
+  async function provisionRun(body, reservation, publication = null) {
     // A run works in a new worktree of its own, in a worktree named by path, in an existing
     // task, or in a task created for it. Only a worktree CodeDeck has just created gets Setup.
     const inTask = body.taskId !== undefined;
@@ -928,6 +990,10 @@ export function createPipelinesRouter(deps) {
     const useExisting = body.worktreePath !== undefined || inTask;
     const workflow = workflowStore.get(body.workflowId);
     if (!workflow) throw new PipelineError('Workflow not found', 404);
+
+    const inputMode = runInputMode(workflow.progressFile);
+    const inputError = validateRunInputField(body.input, { mode: inputMode });
+    if (inputError) throw fieldError('input', inputError);
 
     const project = findProject(body.project);
     if (!project) throw new PipelineError('Project not found', 404);
@@ -952,7 +1018,8 @@ export function createPipelinesRouter(deps) {
     let homePath = ownHome;
     let checkoutPath = project.path;
     let startRepository = ownName;
-    const runId = randomUUID();
+    // Prefer the durable identity reserved for this request so retries keep the same run id.
+    const runId = reservation.runId ?? randomUUID();
     let names;
     let worktree = null;
     let task = null;
@@ -975,6 +1042,10 @@ export function createPipelinesRouter(deps) {
       const repositories = body.startIn === undefined ? asked : [body.startIn, ...(asked ?? []).filter(name => name !== body.startIn)];
       try {
         const typed = body.newTask.title !== undefined;
+        // Untitled new tasks need nonblank input; whitespace alone is blank for this rule.
+        if (!typed && !String(body.input ?? '').trim()) {
+          throw fieldError('input', 'Provide a title or nonblank input for a new task');
+        }
         taskPlan = await taskService.plan({
           project: project.name,
           title: typed ? body.newTask.title : provisionalTaskTitle(body.input, workflow.name),
@@ -1044,10 +1115,11 @@ export function createPipelinesRouter(deps) {
         if (!directory?.isDirectory()) throw taskFilesMissing();
       }
       const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
-      const refusal = worktreeRefusal(worktree, changes, runStore.list());
+      const reserved = reservedElsewhere(body.requestId);
+      const refusal = worktreeRefusal(worktree, changes, runStore.list(), reserved.paths);
       if (refusal) throw new PipelineError(refusal.message, 409, undefined, { reasons: [refusal] });
       // A task takes one unfinished run at a time: two could change the same worktrees.
-      if (inTask && runStore.list().some(run => run.taskId === task.id && run.status !== 'complete' && isOpenRun(run))) {
+      if (inTask && (reserved.taskIds.has(task.id) || runStore.list().some(run => run.taskId === task.id && run.status !== 'complete' && isOpenRun(run)))) {
         const busy = { code: 'task_in_use', message: 'An open workflow run is working in another repository of this task. Stop it or let it finish first.' };
         throw new PipelineError(busy.message, 409, undefined, { reasons: [busy] });
       }
@@ -1063,6 +1135,10 @@ export function createPipelinesRouter(deps) {
     }
 
     // The definition a run with this input would have; refuses what cannot be told to its steps.
+    // Attachment guidance is counted here against GUIDANCE_MAX using the projected managed paths.
+    const projectedAttachments = publication?.files?.length
+      ? attachmentManifest({ notesDir: `.codedeck/runs/${runId.slice(0, 8)}`, files: publication.files })
+      : [];
     const snapshot = (forInput) => {
       const built = buildDefinitionSnapshot({
         workflow,
@@ -1077,8 +1153,12 @@ export function createPipelinesRouter(deps) {
       });
       built.notesDir = `.codedeck/runs/${runId.slice(0, 8)}`;
       for (let index = 0; index < built.steps.length; index++) {
-        const guidance = buildStepGuidance(built, index, { worktreePath: names.worktreePath, places,
-          ...(built.steps[index].approval ? { feedbackPath: feedbackPath(built, index) } : {}) });
+        const guidance = buildStepGuidance(built, index, {
+          worktreePath: names.worktreePath,
+          places,
+          ...(built.steps[index].approval ? { feedbackPath: feedbackPath(built, index) } : {}),
+          ...(projectedAttachments.length ? { attachments: projectedAttachments } : {}),
+        });
         if (guidance !== undefined && guidance.length > GUIDANCE_MAX) {
           throw fieldError('project', places.worktrees.length + places.readOnly.length > 1
             ? `The paths of this project's repositories are too long for the step instructions: ${[...places.worktrees, ...places.readOnly].map(entry => entry.repository).join(', ')}`
@@ -1116,7 +1196,13 @@ export function createPipelinesRouter(deps) {
       }
     }
 
-    // Everything that can refuse the run has been checked; only now is the task's worktree created.
+    // Everything that can refuse the run has been checked. An attached start records where it will
+    // publish first, so the place is held against other starts and is found again after a failure.
+    if (publication) {
+      reservation.placement = requestStore.setPlacement(body.requestId, { worktreePath: names.worktreePath, homePath, startRepository },
+        { from: PROVISIONING_STATES.RESERVED }).placement;
+    }
+    // Only now is the task's worktree created.
     if (taskPlan) {
       requestStore.setTaskId(body.requestId, taskPlan.id);
       reservation.taskId = taskPlan.id;
@@ -1128,11 +1214,66 @@ export function createPipelinesRouter(deps) {
       }
     }
 
-    // The checks above awaited, so another start may have taken this worktree since. This check and
-    // the insert below are synchronous, so no other request can run between them.
-    if (worktree) {
-      const taken = worktreeRefusal(worktree, { readable: true }, runStore.list());
+    let worktreeState = taskPlan || worktree ? 'external' : 'not_created';
+    // A task owns its worktree, so to the run it is one that already existed: never removed by the run.
+    let baseCommit = forNewTask ? task.baseCommit : worktree ? worktree.head : null;
+    let attachments = [];
+    if (publication) {
+      // The engine creates a selector-free run's checkout when it starts; an attached run needs it before publication.
+      if (worktreeState === 'not_created') {
+        baseCommit = await ensureRunCheckout({ homePath, names, projectPath: project.path });
+        worktreeState = 'present';
+      }
+      ({ attachments } = await publishAttachments({
+        checkoutPath: names.worktreePath, notesDir: definition.notesDir, attemptId: publication.attemptId, files: publication.files, execFile,
+      }));
+    }
+    const discardBatch = async () => {
+      if (attachments.length) {
+        await removeManagedAttachments({
+          checkoutPath: names.worktreePath,
+          notesDir: definition.notesDir,
+          files: attachments.map(({ name, sizeBytes, digest }) => ({ name, sizeBytes, digest })),
+        });
+      }
+    };
+
+    // The checks above awaited, so another start may have taken this worktree since. The refusal and
+    // the insert stay together so no other request runs between them. An attached start also
+    // awaited its publication, so it refreshes the listing and Git readability first; an
+    // attachment-free start keeps its original timing (no further Git reads).
+    if (worktree && !publication) {
+      const taken = worktreeRefusal(worktree, { readable: true }, runStore.list(), reservedElsewhere(body.requestId).paths);
       if (taken) throw new PipelineError(taken.message, 409, undefined, { reasons: [taken] });
+    }
+    if (worktree && publication) {
+      const refreshed = (await listWorktrees({ projectPath: checkoutPath, execFile }))
+        .find(candidate => candidate.path === worktree.path) ?? null;
+      if (!refreshed || refreshed.missing) {
+        await discardBatch();
+        throw new PipelineError(
+          refreshed?.missing ? "This task's files are no longer on disk." : 'Worktree not found for this project',
+          refreshed?.missing ? 409 : 404,
+        );
+      }
+      let changes;
+      try {
+        changes = await readWorktreeChanges({ worktreePath: refreshed.path, execFile });
+      } catch (error) {
+        // A checkout Git can no longer open (corrupt index, for example) is refused as unreadable
+        // at publication, not left to 500 after the batch was already written.
+        console.error(`[pipelines] could not re-read worktree after attachment publication path=${refreshed.path}`, error);
+        changes = { readable: false };
+      }
+      const taken = worktreeRefusal(refreshed, changes, runStore.list(), reservedElsewhere(body.requestId).paths);
+      if (taken) {
+        await discardBatch();
+        throw new PipelineError(taken.message, 409, undefined, { reasons: [taken] });
+      }
+    }
+    if (publication && requestStore.get(body.requestId)?.provisioningState !== PROVISIONING_STATES.RESERVED) {
+      await discardBatch();
+      throw new PipelineError('This start was closed before its files were published.', 409);
     }
 
     let run;
@@ -1152,12 +1293,12 @@ export function createPipelinesRouter(deps) {
         homePath,
         worktreePath: names.worktreePath,
         worktreeBranch: names.branch,
-        // A task owns its worktree, so to the run it is one that already existed: never removed by the run.
-        baseCommit: forNewTask ? task.baseCommit : worktree ? worktree.head : null,
-        worktreeState: taskPlan || worktree ? 'external' : 'not_created',
+        baseCommit,
+        worktreeState,
         worktreeDetail: null,
         inputRequest: null,
         taskId: task ? task.id : null,
+        attachments,
         finishedAt: null,
       }, {
         team,
@@ -1170,8 +1311,10 @@ export function createPipelinesRouter(deps) {
         const raced = runStore.getByRequestId(body.requestId);
         if (raced) return { run: raced, status: 200 };
       }
+      await discardBatch();
       throw err;
     }
+    requestStore.transition(body.requestId, { from: PROVISIONING_STATES.RESERVED, to: PROVISIONING_STATES.PUBLISHED });
 
     // The new run takes the place of a finished one that was still shown there.
     for (const other of runStore.list()) {
@@ -1184,51 +1327,128 @@ export function createPipelinesRouter(deps) {
   }
 
   router.post(`${BASE}/runs`, route(async (req, res) => {
-    const body = req.body;
-    const errors = validateRunStartBody(body);
-    if (errors.length) throw fieldErrors(errors);
-
-    const { requestId } = body;
-    const params = serializeStartParams(body);
-    let reservation = requestStore.get(requestId);
-    const existing = runStore.getByRequestId(requestId);
-    if (!reservation && existing) throw reusedRequest();
-    if (!reservation) reservation = requestStore.reserve(requestId, params);
-    if (reservation.params !== params) throw reusedRequest();
-
-    const pending = startsInFlight.get(requestId);
-    if (pending) {
-      const { view } = await pending;
-      return res.status(200).json(view);
-    }
-    if (existing) return res.status(200).json(await asRunView(existing));
-
-    const start = Promise.resolve().then(async () => {
+    let staged = null;
+    const contentType = req.headers['content-type'] ?? '';
+    if (/multipart\/form-data/i.test(contentType)) {
       try {
-        const { run, status } = await provisionRun(body, reservation);
-        return { run, status, view: await asRunView(run) };
-      } catch (error) {
-        const taskExists = reservation.taskId !== null && taskStore.get(reservation.taskId);
-        if (!taskExists && !runStore.getByRequestId(requestId)) requestStore.release(requestId);
-        throw error;
-      } finally {
-        startsInFlight.delete(requestId);
+        fs.mkdirSync(attachmentStagingRoot, { recursive: true, mode: 0o700 });
+        staged = await parsePipelineStartMultipart(req, { stagingRoot: attachmentStagingRoot });
+        req.body = staged.run;
+      } catch (err) {
+        if (err?.code === 'pipeline_multipart') {
+          throw new PipelineError(err.message || 'Multipart start failed.', err.status || 400, err.errors);
+        }
+        throw err;
       }
-    });
-    startsInFlight.set(requestId, start);
-    const { run, status, view } = await start;
-    res.status(status).json(view);
+    }
 
-    if (status === 201 && engine && typeof engine.start === 'function') {
+    // The start publishes from staging, so this attempt's staging is removed once the start has
+    // ended, before it is answered: published, replayed, or failed and recorded on its reservation.
+    let outcome;
+    try {
+      outcome = await startRun(req, staged);
+    } finally {
+      if (staged) await cleanupAttempt(attachmentStagingRoot, staged.attemptId);
+    }
+    res.status(outcome.status).json(outcome.view);
+
+    if (outcome.status === 201 && engine && typeof engine.start === 'function') {
+      const runId = outcome.run.id;
       scheduleStart(() => {
-        Promise.resolve(engine.start(run.id)).catch(err => {
+        Promise.resolve(engine.start(runId)).catch(err => {
           console.warn(
-            `[pipelines] engine.start failed runId=${run.id} traceId=${req.pipelinesTraceId} error=${err?.message || err}`,
+            `[pipelines] engine.start failed runId=${runId} traceId=${req.pipelinesTraceId} error=${err?.message || err}`,
           );
         });
       });
     }
   }));
+
+  /**
+   * What a failed start leaves behind. A definitive rejection before anything was provisioned
+   * releases the reservation, so the same ID and body can be sent again. An attached start that
+   * had recorded its checkout or created its task is kept as `failed`, and its problem names the
+   * reservation, so the owner can retry it with the same ID or close it.
+   */
+  function settleFailedStart(requestId, error, attached) {
+    const current = requestStore.get(requestId);
+    if (!current || runStore.getByRequestId(requestId)) return error;
+    const taskExists = current.taskId !== null && Boolean(taskStore.get(current.taskId));
+    if (!taskExists && current.placement === null) {
+      requestStore.release(requestId);
+      return error;
+    }
+    if (!attached) return error;
+    const failed = requestStore.transition(requestId, { from: PROVISIONING_STATES.RESERVED, to: PROVISIONING_STATES.FAILED }) ?? current;
+    const reservation = { requestId, runId: failed.runId, taskId: failed.taskId, provisioningState: failed.provisioningState };
+    if (error instanceof PipelineError) {
+      error.extra = { ...error.extra, reservation };
+      return error;
+    }
+    if (error instanceof AttachmentPublishError) return new PipelineError(error.message, error.status, error.errors, { reservation });
+    return Object.assign(new PipelineError('The attached start could not be provisioned. Retry it to resume.', 500, undefined, { reservation }), { cause: error });
+  }
+
+  /** @returns {Promise<{ run: object, status: 200 | 201, view: object }>} */
+  async function startRun(req, staged) {
+    const body = req.body;
+    if (typeof body?.input === 'string') body.input = normalizeRunInput(body.input);
+    const errors = validateRunStartBody(body);
+    if (errors.length) throw fieldErrors(errors);
+
+    const { requestId } = body;
+    const attachmentIdentities = staged?.files?.length
+      ? staged.files.map(file => ({ name: file.name, sizeBytes: file.sizeBytes, digest: file.digest }))
+      : undefined;
+    const params = serializeStartParams({ ...body, attachments: attachmentIdentities });
+    let reservation = requestStore.get(requestId);
+    const existing = runStore.getByRequestId(requestId);
+    if (!reservation && existing) throw reusedRequest();
+    if (!reservation) reservation = requestStore.reserve(requestId, params);
+    else {
+      try {
+        reservation = requestStore.assertMatchingParams(requestId, params);
+      } catch (err) {
+        if (err?.code === 'request_conflict') throw reusedRequest();
+        throw err;
+      }
+    }
+    if (reservation.provisioningState === PROVISIONING_STATES.CLOSED) {
+      throw new PipelineError('This requestId was closed and cannot be reused', 409);
+    }
+
+    const pending = startsInFlight.get(requestId);
+    if (pending) {
+      const { run, view } = await pending;
+      return { run, status: 200, view };
+    }
+    // A run is recorded only once its batch is published, so a recorded run answers a matching replay.
+    if (existing) return { run: existing, status: 200, view: await asRunView(existing) };
+
+    if (reservation.runId === null) {
+      reservation = requestStore.assignRunId(requestId, randomUUID());
+    }
+    // A failed attached start is retried under the same reservation, task and checkout.
+    if (reservation.provisioningState === PROVISIONING_STATES.FAILED) {
+      const reopened = requestStore.transition(requestId, { from: PROVISIONING_STATES.FAILED, to: PROVISIONING_STATES.RESERVED });
+      if (!reopened) throw new PipelineError('This start changed while it was being retried. Try again.', 409);
+      reservation = reopened;
+    }
+    const publication = attachmentIdentities ? { attemptId: staged.attemptId, files: staged.files } : null;
+
+    const start = Promise.resolve().then(async () => {
+      try {
+        const { run, status } = await provisionRun(body, reservation, publication);
+        return { run, status, view: await asRunView(run) };
+      } catch (error) {
+        throw settleFailedStart(requestId, error, publication !== null);
+      } finally {
+        startsInFlight.delete(requestId);
+      }
+    });
+    startsInFlight.set(requestId, start);
+    return start;
+  }
 
   router.get(`${BASE}/runs/:id`, route(async (req, res) => {
     if (!isUuid(req.params.id)) throw new PipelineError('Run not found', 404);
@@ -1345,9 +1565,46 @@ export function createPipelinesRouter(deps) {
     await runOwnerAction(req, res, 'sendBack', req.body.comment);
   }));
 
+  /**
+   * Close run for an attached start that never published. The reservation is fenced first, so
+   * neither a replay nor an attempt still finishing can publish under it. Then only the files
+   * CodeDeck manages are cleared. A checkout the start created for itself is removed as a run's
+   * own worktree is, and kept when Git refuses; a task's or Main's checkout is left as it is.
+   */
+  async function closeReservation(reservation) {
+    const { requestId } = reservation;
+    if (startsInFlight.has(requestId)) throw new PipelineError('This start is still being provisioned. Wait for it to finish.', 409);
+    const closed = requestStore.transition(requestId, { from: reservation.provisioningState, to: PROVISIONING_STATES.CLOSED });
+    if (!closed) throw new PipelineError('This start changed while it was being closed. Try again.', 409);
+    const view = { requestId, runId: closed.runId, taskId: closed.taskId, provisioningState: closed.provisioningState, worktree: null, terminalsClosed: [], terminalsNotClosed: [] };
+    const { placement } = closed;
+    if (placement === null) return view;
+    const { worktreePath, homePath } = placement;
+    await removeManagedAttachments({
+      checkoutPath: worktreePath,
+      notesDir: `.codedeck/runs/${closed.runId.slice(0, 8)}`,
+      files: reservedAttachmentIdentities(closed.params),
+    });
+    view.worktree = { path: worktreePath, state: 'external', detail: null };
+    if (JSON.parse(closed.params).place.kind !== 'new') return view;
+    const owned = (await listWorktrees({ projectPath: homePath, execFile })).some(candidate => candidate.path === worktreePath);
+    if (!owned) return { ...view, worktree: { ...view.worktree, state: 'not_created' } };
+    const removed = await removeWorktree({ homePath, worktreePath, execFile });
+    view.worktree = removed?.ok
+      ? { path: worktreePath, state: 'removed', detail: null }
+      : { path: worktreePath, state: 'removal_blocked', detail: String(removed?.detail || 'git worktree remove failed').slice(0, 2000) };
+    return view;
+  }
+
   // Close run. Only this, the owner's own action, closes the terminals the run used: a run closed because
   // another one started in its place, or because its task was finished, is not closed here.
   router.post(`${BASE}/runs/:id/cleanup`, route(async (req, res) => {
+    if (isUuid(req.params.id) && !runStore.get(req.params.id)) {
+      const reservation = requestStore.getByRunId(req.params.id);
+      if (reservation && [PROVISIONING_STATES.RESERVED, PROVISIONING_STATES.FAILED].includes(reservation.provisioningState)) {
+        return res.json(await closeReservation(reservation));
+      }
+    }
     const closed = await performOwnerAction(req, 'cleanup');
     // A run whose own worktree could not be removed is still on screen, and keeps its terminals.
     const terminals = isOpenRun(closed) ? { closed: [], notClosed: [] }
@@ -1444,22 +1701,28 @@ export function createPipelinesRouter(deps) {
         : status === 413 ? 'Request body too large'
           : 'Pipelines request failed';
     const traceId = req.pipelinesTraceId ?? randomUUID();
+    // Echo only a safe field already present on the problem errors (never raw part names).
+    const safeField = typeof error.errors?.[0]?.field === 'string' ? error.errors[0].field : '';
+    const fieldSuffix = safeField ? ` field=${safeField}` : '';
     if (status >= 500) {
-      console.error(`[pipelines] request failed status=${status} traceId=${traceId}`, error);
+      console.error(`[pipelines] request failed status=${status} traceId=${traceId}${fieldSuffix}`, error);
     } else {
-      console.warn(`[pipelines] request failed status=${status} traceId=${traceId}`);
+      console.warn(`[pipelines] request failed status=${status} traceId=${traceId}${fieldSuffix}`);
     }
+    const fieldErrorsList = error.errors?.length
+      ? error.errors
+      : (isValidation ? [{ field: 'body', message }] : undefined);
     res.status(status).type('application/problem+json').json({
       type: 'about:blank',
-      title: isValidation ? 'Validation Error' : 'Pipelines Error',
+      title: isValidation ? 'Validation Error' : status === 413 ? 'Payload Too Large' : 'Pipelines Error',
       status,
       detail: message,
-      error: isValidation ? 'Validation Error' : 'Pipelines Error',
+      error: isValidation ? 'Validation Error' : status === 413 ? 'Payload Too Large' : 'Pipelines Error',
       message,
       timestamp: new Date().toISOString(),
       path: req.originalUrl.split('?')[0],
       traceId,
-      ...(isValidation ? { errors: error.errors?.length ? error.errors : [{ field: 'body', message }] } : {}),
+      ...(fieldErrorsList ? { errors: fieldErrorsList } : {}),
       ...(error instanceof PipelineError && error.extra ? error.extra : {}),
     });
   });

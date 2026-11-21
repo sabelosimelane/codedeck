@@ -3,11 +3,12 @@ import { teamScoreResponse } from '../../../shared/team-score-responses.mjs';
 const BASE = '/api/pipelines';
 
 export class PipelineApiError extends Error {
-  constructor(message, { status = 0, errors = [] } = {}) {
+  constructor(message, { status = 0, errors = [], reservation = null } = {}) {
     super(message);
     this.name = 'PipelineApiError';
     this.status = status;
     this.errors = Array.isArray(errors) ? errors : [];
+    this.reservation = reservation;
   }
 }
 
@@ -22,7 +23,7 @@ async function readBody(response) {
 async function request(path, options = {}) {
   const response = await fetch(`${BASE}${path}`, {
     ...options,
-    ...(options.body !== undefined
+    ...(options.body !== undefined && !(options.body instanceof FormData)
       ? {
           headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
           body: typeof options.body === 'string' ? options.body : JSON.stringify(options.body),
@@ -33,7 +34,7 @@ async function request(path, options = {}) {
   if (!response.ok) {
     throw new PipelineApiError(
       body.message || body.error || `Pipelines request failed (${response.status})`,
-      { status: response.status, errors: body.errors },
+      { status: response.status, errors: body.errors, reservation: body.reservation },
     );
   }
   return body;
@@ -182,18 +183,23 @@ export function getRun(runId, { signal } = {}) {
  * task) or `worktreePath` (an existing working tree, such as Main). `startIn` names the repository
  * of the task the run starts in, for a project with several.
  */
-export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides }, { signal } = {}) {
-  return request('/runs', {
-    method: 'POST',
-    body: {
-      requestId, workflowId, project, input, teamId, stepOverrides,
-      ...(worktreePath === undefined ? {} : { worktreePath }),
-      ...(taskId === undefined ? {} : { taskId }),
-      ...(newTask === undefined ? {} : { newTask }),
-      ...(startIn === undefined ? {} : { startIn }),
-    },
-    signal,
-  });
+export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, files = [] }, { signal } = {}) {
+  if (!Array.isArray(files)) throw new TypeError('Workflow files must be an array');
+  const fields = {
+    requestId, workflowId, project, input, teamId, stepOverrides,
+    ...(worktreePath === undefined ? {} : { worktreePath }),
+    ...(taskId === undefined ? {} : { taskId }),
+    ...(newTask === undefined ? {} : { newTask }),
+    ...(startIn === undefined ? {} : { startIn }),
+  };
+  if (files.length === 0) return request('/runs', { method: 'POST', body: fields, signal });
+  const body = new FormData();
+  body.append('run', JSON.stringify(fields));
+  for (const file of files) {
+    if (!(file instanceof File)) throw new TypeError('Workflow attachment must be a File');
+    body.append('files', file);
+  }
+  return request('/runs', { method: 'POST', body, signal });
 }
 
 function postAction(runId, action, { signal } = {}) {

@@ -100,6 +100,18 @@ describe('pipelinesApi', () => {
     expect(global.fetch).toHaveBeenCalledWith('/api/pipelines/runs/r1', expect.anything());
   });
 
+  it('sends ordered file parts and multiline metadata with a browser-generated boundary', async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ id: 'r1' }, { status: 201 }));
+    const fields = { requestId: 'req-1', workflowId: 'w1', project: 'Demo', input: 'a\n\nb' };
+    const files = [new File(['a'], 'ref.txt'), new File(['bc'], 'ref.txt')];
+    await startRun({ ...fields, files });
+    const [, options] = global.fetch.mock.calls[0];
+    expect(options.headers).toBeUndefined();
+    expect(options.body).toBeInstanceOf(FormData);
+    expect(JSON.parse(options.body.get('run'))).toEqual(fields);
+    expect(options.body.getAll('files')).toEqual(files);
+  });
+
   it('starts a run and returns the run view', async () => {
     const run = { id: 'r1', status: 'pending', actions: { stop: true } };
     global.fetch = vi.fn(async () => jsonResponse(run, { status: 201 }));

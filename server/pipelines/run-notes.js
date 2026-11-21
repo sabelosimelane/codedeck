@@ -69,11 +69,86 @@ export function briefPath(definition) {
   return definition.notesDir === null ? null : `${definition.notesDir}/brief.md`;
 }
 
+/** Fence long enough that submitted backticks cannot close the literal block. */
+export function literalInputFence(text) {
+  if (typeof text !== 'string') throw new TypeError('text must be a string');
+  let longest = 2;
+  for (const match of text.matchAll(/`+/g)) longest = Math.max(longest, match[0].length);
+  return '`'.repeat(longest + 1);
+}
+
+/**
+ * Wrap a label so Markdown treats it as inert data (a code span).
+ * Uses a fence longer than any backtick run in the text, with padding when the
+ * text itself begins or ends with a backtick or space.
+ */
+export function inertMarkdownLabel(text) {
+  if (typeof text !== 'string') throw new TypeError('text must be a string');
+  let longest = 0;
+  for (const match of text.matchAll(/`+/g)) longest = Math.max(longest, match[0].length);
+  const fence = '`'.repeat(longest + 1);
+  // Pad when the label holds backticks or edge spaces so the span cannot be misread.
+  const pad = longest > 0 || text.startsWith(' ') || text.endsWith(' ');
+  return pad ? `${fence} ${text} ${fence}` : `${fence}${text}${fence}`;
+}
+
+/**
+ * Server-generated Attachments section for README and brief.
+ * Original names are inert labels; paths are the checkout-relative managed copies.
+ */
+export function formatAttachmentsSection(attachments) {
+  if (attachments === undefined || attachments === null) return null;
+  if (!Array.isArray(attachments)) throw new TypeError('attachments must be an array');
+  if (attachments.length === 0) return null;
+  const lines = [
+    '## Attachments',
+    '',
+    "The owner attached these reference files for this run. Read each file at its checkout-relative path. The original name is a label only.",
+    '',
+  ];
+  for (const entry of attachments) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new TypeError('attachment entry must be an object');
+    if (typeof entry.name !== 'string' || typeof entry.path !== 'string') {
+      throw new TypeError('attachment entry must have name and path strings');
+    }
+    if (!Number.isInteger(entry.sizeBytes) || entry.sizeBytes < 0) {
+      throw new TypeError('attachment entry.sizeBytes must be a non-negative integer');
+    }
+    lines.push(`- ${inertMarkdownLabel(entry.name)} — ${inertMarkdownLabel(entry.path)} (${entry.sizeBytes} bytes)`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+function requireInputMode(inputMode) {
+  if (inputMode !== 'descriptive' && inputMode !== 'path') {
+    throw new TypeError('inputMode must be descriptive or path');
+  }
+  return inputMode;
+}
+
+/** Path input stays one plain line; descriptive input is a literal fenced block. */
+export function formatRunInputForNotes(input, inputMode = 'path') {
+  requireInputMode(inputMode);
+  if (typeof input !== 'string') throw new TypeError('input must be a string');
+  if (inputMode === 'path' && /[\r\n]/.test(input)) throw new TypeError('input must be a one-line string');
+  // Descriptive whitespace is kept as submitted; only a truly empty string is "none".
+  if (inputMode === 'descriptive') {
+    if (input === '') return null;
+    const fence = literalInputFence(input);
+    return `${fence}\n${input}\n${fence}`;
+  }
+  if (!input.trim()) return null;
+  return input;
+}
+
 /** `entries`: `{ by: 'owner' | 'agent', stepName, pass, questions, answer, createdAt }`, oldest first. */
-export function buildBrief(input, entries) {
-  if (typeof input !== 'string' || /[\r\n]/.test(input)) throw new TypeError('input must be a one-line string');
+export function buildBrief(input, entries, { inputMode = 'path', attachments } = {}) {
+  const formatted = formatRunInputForNotes(input, inputMode);
   if (!Array.isArray(entries)) throw new TypeError('entries must be an array');
-  const lines = ['# Brief', '', 'What the owner asked for, and every question answered since. Read this before you start; it is the same for every step.', '', '## Request', '', input.trim() ? input : 'No input was given when this run started.', ''];
+  const lines = ['# Brief', '', 'What the owner asked for, and every question answered since. Read this before you start; it is the same for every step.', '', '## Request', '', formatted ?? 'No input was given when this run started.', ''];
+  const attachmentSection = formatAttachmentsSection(attachments);
+  if (attachmentSection) lines.push(attachmentSection);
   if (entries.length > 0) lines.push('## Questions and answers', '');
   for (const entry of entries) {
     if (!entry || (entry.by !== 'owner' && entry.by !== 'agent')) throw new TypeError('entry.by must be owner or agent');
@@ -89,26 +164,38 @@ export function buildBrief(input, entries) {
 }
 
 /** Writes the brief into the run notes folder. Returns its path, or null for a run without notes. */
-export async function writeBrief({ worktreePath, definition, input, entries, fs = defaultFs } = {}) {
+export async function writeBrief({ worktreePath, definition, input, entries, attachments, fs = defaultFs } = {}) {
   requireWorktree(worktreePath);
   requireFs(fs, ['realpath', 'lstat', 'open', 'writeFile', 'rename', 'rm']);
   const relative = briefPath(definition);
   if (relative === null) return null;
-  const content = buildBrief(input, entries);
+  const inputMode = definition.inputMode ?? 'path';
+  const content = buildBrief(input, entries, { inputMode, attachments });
   const folder = await verifiedRunFolder(fs, worktreePath, definition.notesDir);
   await replaceFile(fs, folder, 'brief.md', content);
   return relative;
 }
 
 /** `places`: where the run may work and read, as given to the step guidance; left out for a run that has only its worktree. */
-export function buildReadme(definition, input, places) {
+export function buildReadme(definition, input, places, attachments) {
   requireDefinition(definition);
   if (places !== undefined && (places === null || typeof places !== 'object' || !Array.isArray(places.worktrees) || !Array.isArray(places.readOnly) || typeof places.current !== 'string')) {
     throw new TypeError('places must hold the worktrees, the read-only repositories and the current repository');
   }
   if (typeof definition.workflowName !== 'string' || !definition.workflowName.trim()) throw new TypeError('definition.workflowName must be a non-empty string');
-  if (typeof input !== 'string' || /[\r\n]/.test(input)) throw new TypeError('input must be a one-line string');
-  const lines = ['# Run notes', '', `Workflow: ${definition.workflowName}`, input ? `Input: ${input}` : 'Input: none', '', '## Steps'];
+  const inputMode = definition.inputMode ?? 'path';
+  const formatted = formatRunInputForNotes(input, inputMode);
+  const inputLines = formatted === null
+    ? ['Input: none']
+    : inputMode === 'descriptive'
+      ? ['Input:', '', formatted]
+      : [`Input: ${formatted}`];
+  const lines = ['# Run notes', '', `Workflow: ${definition.workflowName}`, ...inputLines, ''];
+  const attachmentSection = formatAttachmentsSection(attachments);
+  if (attachmentSection) {
+    lines.push(attachmentSection);
+  }
+  lines.push('## Steps');
   definition.steps.forEach((step, index) => {
     const file = notePath(definition, index);
     lines.push(`${String(index).padStart(2, '0')}. ${step.name} — ${step.agent.name} — ${file ?? 'no note'}`);
@@ -140,9 +227,13 @@ function requireFs(fs, methods) {
   if (!fs || methods.some(method => typeof fs[method] !== 'function')) throw new TypeError(`fs must support ${methods.join(', ')}`);
 }
 
-async function verifiedRunFolder(fs, worktreePath, notesDir, { create = false, onDotDirectory } = {}) {
+/**
+ * The run's notes folder, each level a real directory inside the worktree. With `missingOk`, a
+ * missing level answers null instead of refusing; any other mismatch throws `unsafe_location`.
+ */
+export async function verifiedRunFolder(fs, worktreePath, notesDir, { create = false, onDotDirectory, missingOk = false } = {}) {
   const realRoot = await fs.realpath(worktreePath);
-  const leavesWorktree = () => new Error(`Run notes folder ${notesDir} leaves the worktree`);
+  const leavesWorktree = () => Object.assign(new Error(`Run notes folder ${notesDir} leaves the worktree`), { code: 'unsafe_location' });
   let folder;
   for (const relative of ['.codedeck', '.codedeck/runs', notesDir]) {
     folder = path.join(worktreePath, relative);
@@ -153,7 +244,10 @@ async function verifiedRunFolder(fs, worktreePath, notesDir, { create = false, o
     let stat;
     let real;
     try { stat = await fs.lstat(folder); real = await fs.realpath(folder); }
-    catch { throw leavesWorktree(); }
+    catch (error) {
+      if (missingOk && error?.code === 'ENOENT') return null;
+      throw leavesWorktree();
+    }
     if (!stat.isDirectory() || real !== path.join(realRoot, relative)) throw leavesWorktree();
     if (relative === '.codedeck' && onDotDirectory) await onDotDirectory(folder, leavesWorktree);
   }
@@ -183,17 +277,9 @@ async function replaceFile(fs, folder, name, content) {
   }
 }
 
-export async function prepare({ worktreePath, definition, input, places, fs = defaultFs, execFile = defaultExecFile } = {}) {
-  requireWorktree(worktreePath);
-  requireDefinition(definition);
-  requireFs(fs, ['mkdir', 'writeFile', 'realpath', 'lstat', 'open', 'rename', 'rm']);
-  if (typeof execFile !== 'function') throw new TypeError('execFile must be a function');
-  const readme = buildReadme(definition, input, places);
-  if (definition.notesDir === null) return;
-  const unignored = () => new Error(`Run notes folder ${definition.notesDir} is not ignored by git in this worktree`);
-  const tracked = await runGit(execFile, ['-C', worktreePath, 'ls-files', '--', '.codedeck']);
-  if (tracked.stdout.trim()) throw unignored();
-  const folder = await verifiedRunFolder(fs, worktreePath, definition.notesDir, {
+/** Creates the run's notes folder, and a `.codedeck/.gitignore` that ignores it when none exists. */
+export async function ensureRunNotesFolder({ worktreePath, notesDir, fs = defaultFs } = {}) {
+  return verifiedRunFolder(fs, worktreePath, notesDir, {
     create: true,
     onDotDirectory: async (dotPath, leavesWorktree) => {
       const ignore = path.join(dotPath, '.gitignore');
@@ -205,6 +291,19 @@ export async function prepare({ worktreePath, definition, input, places, fs = de
       }
     },
   });
+}
+
+export async function prepare({ worktreePath, definition, input, places, attachments, fs = defaultFs, execFile = defaultExecFile } = {}) {
+  requireWorktree(worktreePath);
+  requireDefinition(definition);
+  requireFs(fs, ['mkdir', 'writeFile', 'realpath', 'lstat', 'open', 'rename', 'rm']);
+  if (typeof execFile !== 'function') throw new TypeError('execFile must be a function');
+  const readme = buildReadme(definition, input, places, attachments);
+  if (definition.notesDir === null) return;
+  const unignored = () => new Error(`Run notes folder ${definition.notesDir} is not ignored by git in this worktree`);
+  const tracked = await runGit(execFile, ['-C', worktreePath, 'ls-files', '--', '.codedeck']);
+  if (tracked.stdout.trim()) throw unignored();
+  const folder = await ensureRunNotesFolder({ worktreePath, notesDir: definition.notesDir, fs });
   await replaceFile(fs, folder, 'README.md', readme);
   try {
     await runGit(execFile, ['-C', worktreePath, 'check-ignore', '-q', `${definition.notesDir}/README.md`]);

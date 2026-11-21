@@ -1,0 +1,25 @@
+.workflow-launch-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.workflow-attachment-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.workflow-attachment-drop[data-over='true'] { border-color: var(--accent); }
+.workflow-attachment-drop input { max-width: 100%; color: var(--text-primary); }
+.workflow-attachment-list { list-style: none; margin: 0; padding: 0; }
+.workflow-attachment-list li { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.workflow-attachment-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }

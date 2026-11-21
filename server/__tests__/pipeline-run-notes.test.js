@@ -306,6 +306,41 @@ describe('the run brief', () => {
     expect(brief).not.toContain('## Questions and answers');
   });
 
+  it('renders descriptive input as a literal fence longer than any fence in the text', () => {
+    const input = 'First paragraph.\n\n```md\nnot a closer\n```\n\nTrailing spaces.  \n';
+    const brief = buildBrief(input, [], { inputMode: 'descriptive' });
+    expect(brief).toContain('## Request\n\n````\nFirst paragraph.\n\n```md\nnot a closer\n```\n\nTrailing spaces.  \n\n````');
+    const readme = buildReadme({ ...definition, inputMode: 'descriptive' }, input);
+    expect(readme).toContain('Input:\n\n````\nFirst paragraph.\n\n```md\nnot a closer\n```\n\nTrailing spaces.  \n\n````');
+    expect(readme).toMatch(/^# Run notes\n\nWorkflow: General workflow\nInput:\n\n````/m);
+  });
+
+  it('writes the exact descriptive paragraphs to both run notes in a Git checkout', async () => {
+    const root = await repo();
+    const definitionWithMode = { ...definition, inputMode: 'descriptive' };
+    const input = 'First paragraph.\n\n````text\nNested fence\n````\n\nFinal line.  \n';
+    const block = `\`\`\`\`\`\n${input}\n\`\`\`\`\``;
+    await prepare({ worktreePath: root, definition: definitionWithMode, input });
+    const brief = await writeBrief({ worktreePath: root, definition: definitionWithMode, input, entries: [] });
+    expect(await fs.readFile(readmePath(root), 'utf8')).toContain(`Input:\n\n${block}\n\n## Steps`);
+    expect(await fs.readFile(path.join(root, brief), 'utf8')).toContain(`## Request\n\n${block}\n`);
+  });
+
+  it('preserves supplied whitespace in the literal notes for an optional descriptive input', () => {
+    const input = '  \n\n   ';
+    const block = '```\n  \n\n   \n```';
+    const definitionWithMode = { ...definition, inputMode: 'descriptive' };
+    expect(buildReadme(definitionWithMode, input)).toContain(`Input:\n\n${block}`);
+    expect(buildBrief(input, [], { inputMode: 'descriptive' })).toContain(`## Request\n\n${block}`);
+  });
+
+  it('keeps path input on one line in the notes', () => {
+    expect(buildBrief('docs/todos/x.md', [], { inputMode: 'path' })).toContain('## Request\n\ndocs/todos/x.md');
+    expect(buildReadme({ ...definition, inputMode: 'path' }, 'docs/todos/x.md')).toContain('Input: docs/todos/x.md');
+    expect(() => buildBrief('a\nb', [], { inputMode: 'path' })).toThrow(/input/);
+    expect(() => buildReadme({ ...definition, inputMode: 'path' }, 'a\nb')).toThrow(/input/);
+  });
+
   it.each([
     [['a\nb', []], /input/], [[12, []], /input/], [['x', null], /entries/],
     [['x', [{ ...entries[0], by: 'someone' }]], /entry.by/], [['x', [{ ...entries[0], stepName: '' }]], /stepName/],
@@ -342,6 +377,57 @@ describe('the run brief', () => {
 
   it('tells every step to read the brief', () => {
     expect(buildReadme(definition, 'x')).toContain("read this file, .codedeck/runs/abcdef12/brief.md (the owner's request and every question answered so far) and every earlier step note");
+  });
+});
+
+
+describe('attachment references in run notes', () => {
+  const attachments = [
+    {
+      name: '**inject** [click](https://evil.test) `boom`.md',
+      path: '.codedeck/runs/abcdef12/attachments/01-inject-click-https-evil-test-boom.md',
+      sizeBytes: 12,
+      digest: 'a'.repeat(64),
+    },
+    {
+      name: 'plain.txt',
+      path: '.codedeck/runs/abcdef12/attachments/02-plain.txt',
+      sizeBytes: 0,
+      digest: 'b'.repeat(64),
+    },
+  ];
+
+  it('adds a separate Attachments section with inert labels and checkout-relative paths', () => {
+    const readme = buildReadme(definition, 'do a thing', undefined, attachments);
+    expect(readme).toContain('## Attachments');
+    expect(readme.indexOf('## Attachments')).toBeLessThan(readme.indexOf('## Steps'));
+    expect(readme).toContain('.codedeck/runs/abcdef12/attachments/01-inject-click-https-evil-test-boom.md');
+    expect(readme).toContain('.codedeck/runs/abcdef12/attachments/02-plain.txt');
+    // Hostile Markdown in the original name stays inside a code span, not as structure.
+    expect(readme).toMatch(/`` \*\*inject\*\* \[click\]\(https:\/\/evil\.test\) `boom`\.md ``/);
+    expect(readme.split('## Attachments')[1].split('## Steps')[0]).toMatch(/``[^`]*`boom`[^`]*``/);
+    const brief = buildBrief('do a thing', [], { attachments });
+    expect(brief).toContain('## Attachments');
+    expect(brief.indexOf('## Attachments')).toBeGreaterThan(brief.indexOf('## Request'));
+    expect(brief).toContain('.codedeck/runs/abcdef12/attachments/02-plain.txt');
+  });
+
+  it('omits the Attachments section for attachment-free and older empty manifests', () => {
+    expect(buildReadme(definition, 'x')).not.toContain('## Attachments');
+    expect(buildReadme(definition, 'x', undefined, [])).not.toContain('## Attachments');
+    expect(buildBrief('x', [], { attachments: [] })).not.toContain('## Attachments');
+  });
+
+  it('writes the attachment section into prepared notes without making the worktree dirty', async () => {
+    const root = await repo();
+    await prepare({ worktreePath: root, definition, input: 'do a thing', attachments });
+    await writeBrief({ worktreePath: root, definition, input: 'do a thing', entries: [], attachments });
+    const readme = await fs.readFile(readmePath(root), 'utf8');
+    const brief = await fs.readFile(path.join(root, briefPath(definition)), 'utf8');
+    expect(readme).toContain('## Attachments');
+    expect(brief).toContain('## Attachments');
+    expect(readme).toContain(attachments[0].path);
+    expect(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' })).toBe('');
   });
 });
 

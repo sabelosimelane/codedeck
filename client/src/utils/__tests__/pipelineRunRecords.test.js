@@ -300,6 +300,33 @@ describe('parseAnswerPage', () => {
   });
 });
 
+it('accepts a run whose descriptive input holds paragraphs', () => {
+  const run = validRun(); run.input = 'First paragraph.\n\nSecond paragraph.\n';
+  expect(parseRun(run).input).toBe('First paragraph.\n\nSecond paragraph.\n');
+});
+
+it('accepts ordered public attachments and rejects digests', () => {
+  const run = validRun();
+  run.notesDir = '.codedeck/runs/abcdef12';
+  run.attachments = [
+    { name: 'a.txt', path: `${run.notesDir}/attachments/01-a.txt`, sizeBytes: 1 },
+    { name: 'b.txt', path: `${run.notesDir}/attachments/02-b.txt`, sizeBytes: 2 },
+  ];
+  expect(parseRun(run).attachments).toEqual(run.attachments);
+  expect(() => parseRun({ ...run, attachments: [{ ...run.attachments[0], digest: 'a'.repeat(64) }] })).toThrow('digest');
+});
+
+it.each([
+  ['a carriage return', 'one\rtwo'],
+  ['a tab', 'one\ttwo'],
+  ['an escape', 'one\x1btwo'],
+  ['a NUL', 'one\x00two'],
+  ['more than 4096 characters', 'x'.repeat(4097)],
+])('rejects run input with %s', (_label, input) => {
+  const run = validRun(); run.input = input;
+  expect(() => parseRun(run)).toThrow('input');
+});
+
 it('reads the team a run is labelled with, and accepts a backend that sends none', () => {
   const team = { name: 'Gemini team', changed: true };
   expect(parseRun({ ...validRun(), team }).team).toEqual(team);

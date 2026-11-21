@@ -64,6 +64,29 @@ describe('terminal workflow', () => {
     expect(workflow.snapshot()).toMatchObject({ status: 'running', active: true });
   });
 
+  it('pastes a multiline command as one submission and keeps the same text on the next pass', () => {
+    const { workflow, write } = setup();
+    const command = 'Implement First paragraph.\n\nSecond paragraph with trailing.  \n';
+    workflow.start({ ...request, command, maxIterations: 2 });
+    expect(write).toHaveBeenCalledTimes(1);
+    const firstPaste = write.mock.calls[0][0];
+    expect(firstPaste.startsWith(`\x1b[200~${command}\n`)).toBe(true);
+    expect(firstPaste.endsWith('\x1b[201~')).toBe(true);
+    const first = token(write);
+    workflow.output(signal(first, 'CONTINUE'));
+    workflow.output('finishing');
+    vi.advanceTimersByTime(1000);
+    expect(write).toHaveBeenLastCalledWith('\x1b[200~/clear\x1b[201~');
+    vi.advanceTimersByTime(5000);
+    expect(write).toHaveBeenLastCalledWith('\r');
+    workflow.output('new conversation\r\n> ');
+    vi.advanceTimersByTime(1000);
+    const secondPaste = write.mock.calls.at(-1)[0];
+    expect(secondPaste.startsWith(`\x1b[200~${command}\n`)).toBe(true);
+    expect(secondPaste.endsWith('\x1b[201~')).toBe(true);
+    expect(token(write)).not.toBe(first);
+  });
+
   it('resets once after quiet, then requires reset output and quiet before the next fresh iteration', () => {
     const { workflow, write } = setup();
     workflow.start(request);
@@ -558,6 +581,63 @@ describe('terminal workflow — guidance for the pass', () => {
     workflow.start({ ...request, guidance: GUIDANCE });
     expect(() => workflow.start({ ...request, guidance: 'Something else.' })).toThrow(/requestId/);
     expect(() => workflow.start(request)).toThrow(/requestId/);
+  });
+
+  describe('beforePass gate (attachments are checked before every repeat)', () => {
+    it('checks before the reset of a repeat and fails with its message, sending nothing more', async () => {
+      const { workflow, write } = setup();
+      const beforePass = vi.fn(async () => { throw new Error('Attachment attachments[0] (notes.txt) does not match the recorded size or digest.'); });
+      workflow.start({ ...request, maxIterations: 3 }, { beforePass });
+      expect(beforePass).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(100);
+      expect(write).toHaveBeenCalledTimes(2);
+      workflow.output(signal(token({ mock: { calls: [write.mock.calls[0]] } }), 'CONTINUE'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(beforePass).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(workflow.snapshot()).toMatchObject({
+        status: 'error',
+        active: false,
+        error: 'Attachment attachments[0] (notes.txt) does not match the recorded size or digest.',
+      });
+      expect(write).toHaveBeenCalledTimes(2);
+    });
+
+    it('resets and starts the next pass once the check passes', async () => {
+      const { workflow, write } = setup();
+      const beforePass = vi.fn(async () => {});
+      workflow.start(request, { beforePass });
+      const first = token(write);
+      workflow.output(signal(first, 'CONTINUE'));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(write).toHaveBeenLastCalledWith('\x1b[200~/clear\x1b[201~');
+      await vi.advanceTimersByTimeAsync(100);
+      workflow.output('new conversation\r\n> ');
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(token(write)).not.toBe(first);
+      expect(beforePass).toHaveBeenCalledOnce();
+    });
+
+    it('does nothing after a Stop that arrives while the check is pending', async () => {
+      const { workflow, write } = setup();
+      let release;
+      const beforePass = vi.fn(() => new Promise(resolve => { release = resolve; }));
+      workflow.start(request, { beforePass });
+      vi.advanceTimersByTime(100);
+      workflow.output(signal(token({ mock: { calls: [write.mock.calls[0]] } }), 'CONTINUE'));
+      await vi.advanceTimersByTimeAsync(0);
+      workflow.stop();
+      release();
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(workflow.snapshot().status).toBe('stopped');
+      expect(write).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects a beforePass that is not a function', () => {
+      const { workflow } = setup();
+      expect(() => workflow.start(request, { beforePass: 'yes' })).toThrow(/beforePass/);
+      expect(() => workflow.start(request, { other: true })).toThrow(/unknown option/);
+    });
   });
 
   it('pastes the prompt of the pass in progress again, with its identifier, and submits it', () => {

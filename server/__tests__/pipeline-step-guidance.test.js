@@ -105,6 +105,43 @@ describe('buildStepGuidance', () => {
   });
 });
 
+
+describe('buildStepGuidance attachment instructions', () => {
+  const NOTES = '.codedeck/runs/abcdef12';
+  const attachments = [
+    { name: 'a.txt', path: `${NOTES}/attachments/01-a.txt`, sizeBytes: 1, digest: 'a'.repeat(64) },
+  ];
+  const POINT = `Attachments for this run are listed under Attachments in ${NOTES}/README.md and ${NOTES}/brief.md; open each checkout-relative path under ${NOTES}/attachments/.`;
+
+  it('points Setup and every node at the attachment manifest when the run has files', () => {
+    const def = { ...definition(true, step('Setup', { mode: 'once' }, 'setup'), step('Build')), notesDir: NOTES };
+    expect(buildStepGuidance(def, 0, { ...OPTIONS, attachments })).toBe(POINT);
+    expect(buildStepGuidance(def, 1, { ...OPTIONS, attachments })).toContain(POINT);
+    expect(buildStepGuidance(def, 1, { ...OPTIONS, attachments })).toContain(BOUNDARY);
+  });
+
+  it('leaves Setup silent and omits the instruction for attachment-free runs', () => {
+    const def = { ...definition(true, step('Setup', { mode: 'once' }, 'setup'), step('Build')), notesDir: NOTES };
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBeUndefined();
+    expect(buildStepGuidance(def, 0, { ...OPTIONS, attachments: [] })).toBeUndefined();
+    expect(buildStepGuidance(def, 1, OPTIONS)).not.toContain('Attachments for this run');
+    expect(buildStepGuidance(def, 1, { ...OPTIONS, attachments: [] })).not.toContain('Attachments for this run');
+  });
+
+  it('counts the attachment instruction inside the existing guidance bound', () => {
+    const def = { ...definition(true, { ...step('Analyse'), readOnly: true, approval: true }), notesDir: NOTES };
+    const withAttachments = buildStepGuidance(def, 0, {
+      ...OPTIONS,
+      feedbackPath: `${NOTES}/00-analyse.feedback.md`,
+      attachments,
+    });
+    expect(withAttachments).toContain(POINT);
+    expect(withAttachments.length).toBeLessThanOrEqual(4000);
+    expect(withAttachments).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(withAttachments.split('\n')).toHaveLength(1);
+  });
+});
+
 describe('buildStepGuidance for a task or a project with several repositories', () => {
   const FOLDER = '/group/worktrees/replies-7a000000';
   const places = {
