@@ -4091,3 +4091,50 @@ describe('CLI and UI sync — restart recovery & mid-pass exit detection', () =>
     expect(failed.error).toMatch(/exited during step Develop/i);
   });
 });
+
+describe('createRunEngine cross-host forwarding', () => {
+  it('forwards run.host to startSession, notes, dirty check, and resume pathExists for remote runs', async () => {
+    const startSession = vi.fn(async () => 'Demo-99');
+    const prepareNotes = vi.fn(async () => {});
+    const writeBrief = vi.fn(async () => '.codedeck/runs/abcd1234/brief.md');
+    const readNote = vi.fn(async () => ({ status: 'missing', content: null }));
+    const pathExists = vi.fn(async () => true);
+    const createWorkflow = vi.fn(() => ({
+      start() {},
+      stop() {},
+      snapshot: () => ({ status: 'running', active: true, error: null, requestId: 'req-1', iteration: 1, limitReached: false }),
+    }));
+    const ctx = setupEngine({
+      startSession,
+      writeBrief,
+      pathExists,
+      createWorkflow,
+      engineExtras: { prepareNotes, readNote },
+    });
+    const run = ctx.runStore.create(validRun({
+      host: 'devbox',
+      homePath: '/home/dev/git/demo',
+      worktreePath: '/home/dev/git/worktrees/demo-abcd1234',
+      worktreeState: 'external',
+      baseCommit: BASE_COMMIT,
+      definition: definition({ notesDir: '.codedeck/runs/abcd1234' }),
+    }));
+
+    const running = ctx.engine.start(run.id);
+    await vi.waitFor(() => expect(startSession).toHaveBeenCalled());
+    expect(startSession).toHaveBeenCalledWith({
+      project: 'Demo',
+      cwd: '/home/dev/git/worktrees/demo-abcd1234',
+      host: 'devbox',
+    });
+    expect(prepareNotes).toHaveBeenCalledWith(expect.objectContaining({ host: 'devbox' }));
+    expect(writeBrief).toHaveBeenCalledWith(expect.objectContaining({ host: 'devbox' }));
+
+    await ctx.engine.stop(run.id);
+    await running;
+
+    await ctx.engine.resume(run.id);
+    expect(pathExists).toHaveBeenCalledWith('/home/dev/git/worktrees/demo-abcd1234', 'devbox');
+    await ctx.engine.stop(run.id);
+  });
+});

@@ -91,3 +91,48 @@ it('resolves recorded branches, repository checkouts and base revisions for veri
   expect(standalone.worktrees).toEqual([work.worktrees[0]]);
   await expect(places({ ...run, taskId: '7a000000-0000-4000-8000-000000000002' }, { includeGit: true })).rejects.toThrow(/task.*no longer exists/);
 });
+
+it('uses the run host location and host execFile for remote workflow runs', async () => {
+  const db = new Database(':memory:');
+  databases.push(db);
+  const taskStore = createTaskStore(db);
+  const remoteExecCalls = [];
+  const remoteExecFile = (cmd, args, optsOrCb, maybeCb) => {
+    const cb = typeof optsOrCb === 'function' ? optsOrCb : maybeCb;
+    remoteExecCalls.push({ cmd, args });
+    if (args.includes('--git-common-dir')) {
+      cb(null, '/home/dev/git/demo/backend/.git\n', '');
+      return;
+    }
+    cb(null, '', '');
+  };
+  const project = {
+    name: 'Demo',
+    path: '/Users/local/git/demo/backend',
+    defaultHost: 'local',
+    locations: [
+      { host: 'local', path: '/Users/local/git/demo/backend', repositories: [{ name: 'frontend', path: '/Users/local/git/demo/frontend' }] },
+      { host: 'devbox', path: '/home/dev/git/demo/backend', repositories: [{ name: 'frontend', path: '/home/dev/git/demo/frontend' }] },
+    ],
+  };
+  const places = createRunPlaces({
+    taskStore,
+    findProject: () => project,
+    execFile: () => { throw new Error('local execFile should not be called for remote run'); },
+    resolveHostTools: host => ({ host, execFile: remoteExecFile }),
+  });
+
+  const resolved = await places({
+    project: 'Demo',
+    host: 'devbox',
+    taskId: null,
+    worktreePath: '/home/dev/git/demo/worktrees/bugfix/backend',
+  });
+
+  expect(remoteExecCalls.length).toBeGreaterThan(0);
+  expect(resolved).toEqual({
+    current: 'backend',
+    worktrees: [{ repository: 'backend', path: '/home/dev/git/demo/worktrees/bugfix/backend' }],
+    readOnly: [{ repository: 'frontend', path: '/home/dev/git/demo/frontend' }],
+  });
+});

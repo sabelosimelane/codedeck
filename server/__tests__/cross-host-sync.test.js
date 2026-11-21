@@ -330,3 +330,35 @@ describe('cross-host project location & sync endpoints', () => {
     expect(delRes.body.locations.map(l => l.host)).toEqual(['local', 'devbox']);
   });
 });
+
+describe('remote host-fs compatibility with pipeline run notes', () => {
+  it('supports stat().nlink, open().readFile(), and mkdir EEXIST on remote hosts', async () => {
+    const runner = {
+      kind: 'ssh',
+      host: 'devbox',
+      run: vi.fn(async (cmd, args) => {
+        if (cmd === 'sh' && args[1]?.includes('base64 <')) {
+          return { stdout: Buffer.from('# Note\nhello', 'utf8').toString('base64') + '\n', stderr: '' };
+        }
+        if (cmd === 'sh' && args[1]?.includes('stat -c')) {
+          return { stdout: 'f\t12\t1700000000\t1\n', stderr: '' };
+        }
+        if (cmd === 'mkdir') {
+          const err = new Error('mkdir: cannot create directory: File exists');
+          err.stderr = 'mkdir: cannot create directory ‘/home/dev/app/.codedeck’: File exists';
+          throw err;
+        }
+        return { stdout: '', stderr: '' };
+      }),
+    };
+    const hostFs = createHostFs(runner);
+    const handle = await hostFs.open('/home/dev/app/.codedeck/runs/12345678/README.md');
+    const stat = await handle.stat();
+    expect(stat.isFile()).toBe(true);
+    expect(stat.nlink).toBe(1);
+    expect(await handle.readFile('utf8')).toBe('# Note\nhello');
+    await handle.close();
+
+    await expect(hostFs.mkdir('/home/dev/app/.codedeck')).rejects.toMatchObject({ code: 'EEXIST' });
+  });
+});

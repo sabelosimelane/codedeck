@@ -9,10 +9,11 @@
 import path from 'node:path';
 import { resolveHomeRepoPath as defaultResolveHomeRepoPath } from './run-worktree.js';
 import { readStoredRepositories } from '../project-repositories.js';
+import { getProjectLocation, normalizeProject } from '../project-config.js';
 
 const OPEN_STATES = ['active', 'pr_open'];
 
-export function createRunPlaces({ taskStore, findProject, execFile, resolveHomeRepoPath = defaultResolveHomeRepoPath } = {}) {
+export function createRunPlaces({ taskStore, findProject, execFile, resolveHostTools, resolveHomeRepoPath = defaultResolveHomeRepoPath } = {}) {
   if (typeof taskStore?.get !== 'function') throw new TypeError('taskStore is required');
   // `execFile` is only handed on to Git; the Git helper checks it.
   for (const [name, value] of Object.entries({ findProject, resolveHomeRepoPath })) {
@@ -28,9 +29,16 @@ export function createRunPlaces({ taskStore, findProject, execFile, resolveHomeR
     if (run.taskId !== null && typeof run.taskId !== 'string') throw new TypeError('run.taskId must be a task id or null');
     const project = await findProject(run.project);
     if (!project) throw new Error(`Project ${run.project} of this run no longer exists`);
-    if (typeof project.path !== 'string' || !path.isAbsolute(project.path)) throw new Error(`Stored project ${run.project} has no absolute path`);
-    const ownName = path.basename(await resolveHomeRepoPath({ projectPath: project.path, execFile }));
-    const repositories = [{ repository: ownName, path: project.path }, ...readStoredRepositories(project).map(entry => ({ repository: entry.name, path: entry.path }))];
+    const normalized = normalizeProject(project);
+    const location = run.host ? getProjectLocation(normalized, run.host) : null;
+    const projectPath = location?.path ?? project.path;
+    const storedRepositories = location
+      ? readStoredRepositories({ name: project.name, repositories: location.repositories })
+      : readStoredRepositories(project);
+    const runExecFile = typeof resolveHostTools === 'function' ? resolveHostTools(run.host).execFile : execFile;
+    if (typeof projectPath !== 'string' || !path.isAbsolute(projectPath)) throw new Error(`Stored project ${run.project} has no absolute path`);
+    const ownName = path.basename(await resolveHomeRepoPath({ projectPath, execFile: runExecFile }));
+    const repositories = [{ repository: ownName, path: projectPath }, ...storedRepositories.map(entry => ({ repository: entry.name, path: entry.path }))];
 
     const task = run.taskId === null ? null : taskStore.get(run.taskId);
     if (includeGit && run.taskId !== null && !task) throw new Error(`Run task ${run.taskId} no longer exists`);
@@ -41,7 +49,7 @@ export function createRunPlaces({ taskStore, findProject, execFile, resolveHomeR
       const worktrees = task.worktrees.filter(worktree => worktree.id === current.id || OPEN_STATES.includes(worktree.state))
         .map(worktree => ({
           repository: worktree.repository, path: worktree.worktreePath,
-          ...(includeGit ? { branch: worktree.branch, baseCommit: worktree.baseCommit, repositoryPath: worktree.own ? project.path : worktree.repositoryPath } : {}),
+          ...(includeGit ? { branch: worktree.branch, baseCommit: worktree.baseCommit, repositoryPath: worktree.own ? projectPath : worktree.repositoryPath } : {}),
         }));
       const inTask = new Set(worktrees.map(worktree => worktree.repository));
       return { current: current.repository, worktrees, readOnly: repositories.filter(entry => !inTask.has(entry.repository)) };

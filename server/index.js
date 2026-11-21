@@ -41,7 +41,16 @@ import {
   remove as removePipelineWorktree,
   listDirtyPaths as listPipelineDirtyPaths,
   listWorktrees as listPipelineWorktrees,
+  inspectCommitWorktree as inspectPipelineCommitWorktree,
 } from './pipelines/run-worktree.js';
+import {
+  prepare as preparePipelineNotes,
+  readNote as readPipelineNote,
+  writeFeedback as writePipelineFeedback,
+  writeBrief as writePipelineBrief,
+  writeCommitNote as writePipelineCommitNote,
+} from './pipelines/run-notes.js';
+import { verifyAttachmentCopies as verifyPipelineAttachments } from './pipelines/attachment-verify.js';
 import { createRunEngine } from './pipelines/run-engine.js';
 import { createTerminalInFolder } from './pipelines/terminal-folder.js';
 import { canReclaimReleasedTaskRun } from './pipelines/released-task-run.js';
@@ -1100,7 +1109,10 @@ const pipelineRunEngine = createRunEngine({
   setTerminalMuted: (sessionId, muted) => setObservedTerminalMuted(sessionAttention, sessionId, muted),
   restartAgentTerminal: (sessionId, cwd) => runtimeForSession(sessionId).respawnMainPaneAsync(sessionId, cwd),
   typeIntoTerminal: (sessionId, text) => runtimeForSession(sessionId).typeLineAsync(sessionId, text),
-  terminalInFolder: createTerminalInFolder(sessionId => runtimeForSession(sessionId).inspectPaneAsync(sessionId)),
+  terminalInFolder: createTerminalInFolder(
+    sessionId => runtimeForSession(sessionId).inspectPaneAsync(sessionId),
+    { resolveRealpath: (sessionId, target) => resolveHostTools(resolveHostRuntime(sessionId)?.hostName ?? LOCAL_HOST).realpath(target) },
+  ),
   // The pane, and how CodeDeck's own attachment to it stands: input written through a browser's
   // or a run's tmux client goes wherever that client is.
   inspectTerminal: async (sessionId) => {
@@ -1151,7 +1163,22 @@ const pipelineRunEngine = createRunEngine({
     return listPipelineDirtyPaths({ worktreePath, execFile: tools.execFile });
   },
   // Where a run may work and read: the worktrees of its task and the project's other repositories, as they are when a step starts.
-  listRunPlaces: createRunPlaces({ taskStore, findProject: name => loadProjects().find(project => project.name === name) ?? null, execFile }),
+  listRunPlaces: createRunPlaces({
+    taskStore,
+    findProject: name => loadProjects().find(project => project.name === name) ?? null,
+    execFile,
+    resolveHostTools,
+  }),
+  prepareNotes: ({ host, ...opts }) => {
+    const tools = resolveHostTools(host);
+    return preparePipelineNotes({ ...opts, fs: tools.fs, execFile: tools.execFile });
+  },
+  readNote: ({ host, ...opts }) => readPipelineNote({ ...opts, fs: resolveHostTools(host).fs }),
+  writeFeedback: ({ host, ...opts }) => writePipelineFeedback({ ...opts, fs: resolveHostTools(host).fs }),
+  writeBrief: ({ host, ...opts }) => writePipelineBrief({ ...opts, fs: resolveHostTools(host).fs }),
+  writeCommitNote: (run, content) => writePipelineCommitNote(run, content, { fs: resolveHostTools(run.host).fs }),
+  verifyAttachments: ({ host, ...opts }) => verifyPipelineAttachments({ ...opts, fs: resolveHostTools(host).fs }),
+  inspectCommitWorktree: (tree, host) => inspectPipelineCommitWorktree(tree, resolveHostTools(host).execFile),
   canReclaimReleasedTaskWorktree: run => canReclaimReleasedTaskRun({ run, taskStore, runStore: pipelineRunStore }),
   pathExists: async (target, host) => {
     try {

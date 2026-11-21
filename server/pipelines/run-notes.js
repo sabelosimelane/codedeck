@@ -313,14 +313,14 @@ export async function prepare({ worktreePath, definition, input, places, attachm
   }
 }
 
-export async function writeCommitNote(run, content) {
+export async function writeCommitNote(run, content, { fs = defaultFs } = {}) {
   requireWorktree(run.worktreePath);
   const relative = notePath(run.definition, run.currentStepIndex);
   if (!relative || typeof content !== 'string' || !content.trim() || Buffer.byteLength(content) > LIMIT) {
     throw new Error('Commit requires a writable final note within the run note size limit');
   }
-  const folder = await verifiedRunFolder(defaultFs, run.worktreePath, run.definition.notesDir);
-  await replaceFile(defaultFs, folder, path.basename(relative), content);
+  const folder = await verifiedRunFolder(fs, run.worktreePath, run.definition.notesDir);
+  await replaceFile(fs, folder, path.basename(relative), content);
 }
 
 export async function readNote({ worktreePath, definition, stepIndex, fs = defaultFs } = {}) {

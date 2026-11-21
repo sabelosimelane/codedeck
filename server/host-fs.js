@@ -31,12 +31,14 @@ function localSha256(filePath) {
 }
 
 function parseStatLine(line) {
-  const [kind, sizeRaw, mtimeRaw] = String(line ?? '').trim().split('\t');
+  const [kind, sizeRaw, mtimeRaw, nlinkRaw] = String(line ?? '').trim().split('\t');
   const size = Number(sizeRaw) || 0;
   const mtimeMs = (Number(mtimeRaw) || 0) * 1000;
+  const nlink = nlinkRaw !== undefined && nlinkRaw !== '' ? Number(nlinkRaw) : 1;
   return {
     size,
     mtimeMs,
+    nlink: Number.isFinite(nlink) ? nlink : 1,
     isFile: () => kind === 'f',
     isDirectory: () => kind === 'd',
     isSymbolicLink: () => kind === 'l',
@@ -73,7 +75,7 @@ export function createHostFs(runner) {
     const elifPrefix = followSymlinks ? 'if' : 'elif';
     const script = [
       `${checkLink}${elifPrefix} [ -d ${q} ]; then k=d; elif [ -f ${q} ]; then k=f; else echo "__ENOENT__"; exit 0; fi`,
-      `s=$(stat -c '%s\t%Y' ${q} 2>/dev/null || stat -f '%z\t%m' ${q} 2>/dev/null || echo "0\t0")`,
+      `s=$(stat -c '%s\t%Y\t%h' ${q} 2>/dev/null || stat -f '%z\t%m\t%l' ${q} 2>/dev/null || echo "0\t0\t1")`,
       `printf '%s\t%s\n' "$k" "$s"`,
     ].join('; ');
     const { stdout } = await runner.run('sh', ['-c', script]);
@@ -116,7 +118,15 @@ export function createHostFs(runner) {
 
     async mkdir(target, opts = {}) {
       const args = opts?.recursive ? ['-p', '--', target] : ['--', target];
-      await runner.run('mkdir', args);
+      try {
+        await runner.run('mkdir', args);
+      } catch (err) {
+        const detail = `${err?.stderr || ''}\n${err?.message || ''}`;
+        if (!opts?.recursive && /file exists/i.test(detail)) {
+          throw makeFsError('EEXIST', `EEXIST: file already exists, mkdir '${target}'`);
+        }
+        throw err;
+      }
     },
 
     async readdir(target, opts = {}) {
@@ -193,6 +203,11 @@ export function createHostFs(runner) {
           const bytesRead = Math.max(0, end - start);
           if (bytesRead > 0) buf.copy(buffer, offset, start, end);
           return { bytesRead, buffer };
+        },
+        async readFile(encoding) {
+          return encoding
+            ? buf.toString(typeof encoding === 'string' ? encoding : encoding.encoding || 'utf8')
+            : Buffer.from(buf);
         },
         async close() {},
       };

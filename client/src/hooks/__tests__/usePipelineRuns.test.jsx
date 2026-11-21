@@ -416,6 +416,38 @@ describe('usePipelineRuns', () => {
     });
   });
 
+  it('forwards host and skipSync when starting a workflow run on a remote host', async () => {
+    const created = { id: 'r10', workflowName: 'Build', status: 'pending', project: 'Demo', host: 'devbox' };
+    global.fetch = vi.fn(async (url, options) => {
+      if (options?.method === 'POST' && String(url).endsWith('/runs')) return okRun(created, 201);
+      return okList([]);
+    });
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+
+    await act(async () => {
+      await result.current.startRun({
+        requestId: 'req-10',
+        workflowId: 'w1',
+        input: 'x',
+        newTask: {},
+        host: 'devbox',
+        skipSync: true,
+      });
+    });
+
+    const post = global.fetch.mock.calls.find(([, options]) => options?.method === 'POST');
+    expect(JSON.parse(post[1].body)).toEqual({
+      requestId: 'req-10',
+      workflowId: 'w1',
+      project: 'Demo',
+      input: 'x',
+      newTask: {},
+      host: 'devbox',
+      skipSync: true,
+    });
+  });
+
   it('says the run was closed and how many terminals went with it, not that a worktree was cleaned up, when an existing worktree is released', async () => {
     const stopped = runView({
       status: 'stopped',

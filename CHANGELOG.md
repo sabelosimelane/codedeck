@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-21] - Fix remote-host workflow runs executing locally
+
+### Executive Summary
+* Starting a workflow on a remote host now actually creates the task and executes every step on that remote host instead of silently falling back to `local`. Both the client request hook and the server's pipeline run engine now preserve and forward the selected host end-to-end across session creation, run notes, worktree checks, and remote filesystem calls.
+
+### Technical Details
+* **🐛 Bug Fix:**
+  * **Problem:** Starting a workflow from `RunWorkflowDialog` with a remote host selected silently ran on `local` because `usePipelineRuns.startRun` dropped `host` and `skipSync` before calling `POST /api/pipelines/runs`. Downstream, `createRunEngine`, `createRunPlaces`, `createTerminalInFolder`, and `host-fs.js` also lacked remote-host forwarding/support for step sessions, run notes, path checks, and `stat().nlink`/`open().readFile()`/`mkdir` `EEXIST`.
+  * **Solution:** Forwarded `host` and `skipSync` in `usePipelineRuns.startRun`, propagated `run.host` through `createRunEngine` and its host-scoped helpers in `server/index.js`, made `createRunPlaces` and `createTerminalInFolder` host-aware, and added `nlink`, `open().readFile()`, and `EEXIST` support to remote `createHostFs`.
+* **🛠️ Codebase:**
+  * `client/src/hooks/usePipelineRuns.js` — destructured and forwarded `host` and `skipSync` in `startRun` to `apiStartRun`.
+  * `server/pipelines/run-engine.js` — forwarded `run.host` to `startSession`, `prepareNotes`, `writeBrief`, `readNote`, `writeFeedback`, `verifyAttachments`, `listDirtyPaths`, `inspectCommitWorktree`, and `pathExists`, and allowed injecting `writeCommitNote`.
+  * `server/pipelines/run-notes.js` — added optional `{ fs }` parameter to `writeCommitNote`.
+  * `server/pipelines/run-places.js` — resolved the run host's location path/repositories via `getProjectLocation` and executed Git through `resolveHostTools(run.host).execFile`.
+  * `server/pipelines/terminal-folder.js` — accepted an optional host-aware `resolveRealpath(sessionId, target)` resolver.
+  * `server/host-fs.js` — included `nlink` in remote `stat()`, added `readFile()` to remote `open()` handles, and mapped non-recursive `mkdir` `File exists` failures to `EEXIST`.
+  * `server/index.js` — wired `terminalInFolder`, `listRunPlaces`, `prepareNotes`, `readNote`, `writeFeedback`, `writeBrief`, `writeCommitNote`, `verifyAttachments`, and `inspectCommitWorktree` through `resolveHostTools`.
+* **🧪 Tests:**
+  * `client/src/hooks/__tests__/usePipelineRuns.test.jsx` — added regression test verifying `host` and `skipSync` are forwarded to `POST /api/pipelines/runs`.
+  * `server/__tests__/pipeline-run-engine.test.js` — added regression test verifying `run.host` is forwarded to `startSession`, notes, and resume `pathExists`.
+  * `server/__tests__/pipeline-run-places.test.js` — added regression test verifying `createRunPlaces` resolves remote host locations and uses `resolveHostTools(run.host).execFile`.
+  * `server/__tests__/cross-host-sync.test.js` — added regression test verifying remote `createHostFs` supports `stat().nlink`, `open().readFile()`, and `mkdir` `EEXIST`.
+
 ## [2026-11-21] - Cross-host Git sync, multi-repo project workspaces, and Hosts & sync input fix
 
 ### Executive Summary

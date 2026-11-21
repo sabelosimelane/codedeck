@@ -13,7 +13,7 @@ import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
 import { planRunTerminalMuting } from './run-terminal-muting.js';
-import { writeCommitNote, prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
+import { writeCommitNote as defaultWriteCommitNote, prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
 import { listAttachmentCopiesAtRisk as defaultListAttachmentsAtRisk, verifyAttachmentCopies as defaultVerifyAttachments } from './attachment-verify.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
@@ -96,6 +96,7 @@ export function createRunEngine({
   readNote = defaultReadNote,
   writeFeedback = defaultWriteFeedback,
   writeBrief = defaultWriteBrief,
+  writeCommitNote = defaultWriteCommitNote,
   verifyAttachments = defaultVerifyAttachments,
   listAttachmentsAtRisk = defaultListAttachmentsAtRisk,
   answerStore,
@@ -198,7 +199,8 @@ export function createRunEngine({
     if (run.definition.notesDir === null || run.definition.steps[stepIndex]?.kind !== 'node') return;
     try {
       if (!sweep && noteStore.hasPass(run.id, stepIndex, run.steps[stepIndex].attempt, pass)) return;
-      const result = await readNote({ worktreePath: run.worktreePath, definition: run.definition, stepIndex });
+      const remoteHost = run.host && run.host !== 'local' ? { host: run.host } : {};
+      const result = await readNote({ worktreePath: run.worktreePath, definition: run.definition, stepIndex, ...remoteHost });
       if (!result || !['present', 'missing', 'unreadable', 'too_large'].includes(result.status)) throw new Error('invalid note read result');
       const last = noteStore.lastContent(run.id, stepIndex);
       const changed = result.status === 'present' && result.content !== last;
@@ -308,6 +310,7 @@ export function createRunEngine({
         input: run.input,
         entries,
         attachments: run.attachments,
+        ...(run.host && run.host !== 'local' ? { host: run.host } : {}),
       });
     } catch (err) {
       console.error(`[pipeline-run] brief could not be written for ${runId}:`, err);
@@ -324,7 +327,8 @@ export function createRunEngine({
       const places = await listRunPlaces(run);
       checked = places === undefined ? [{ repository: null, path: run.worktreePath }]
         : places.worktrees.map(entry => ({ repository: places.worktrees.length > 1 ? entry.repository : null, path: entry.path }));
-      for (const entry of checked) entry.dirty = await listDirtyPaths({ worktreePath: entry.path });
+      const remoteHost = run.host && run.host !== 'local' ? { host: run.host } : {};
+      for (const entry of checked) entry.dirty = await listDirtyPaths({ worktreePath: entry.path, ...remoteHost });
     } catch (err) {
       failRun(run.id, String(err?.message || err || 'git status failed').slice(0, 2000));
       return true;
@@ -891,13 +895,14 @@ export function createRunEngine({
 
       const places = await listRunPlaces(run, { includeGit: defStep.inspectCleanCommit === true || verificationPrompts.has(defStep.prompt) });
       const inspected = [];
+      const remoteHost = run.host && run.host !== 'local' ? { host: run.host } : {};
       if (defStep.inspectCleanCommit) {
         if (!places?.worktrees?.length || !places.worktrees.some(entry => entry.path === run.worktreePath && entry.branch === run.worktreeBranch)) {
           throw new Error(`Commit inspection: missing recorded worktree or branch for ${run.worktreePath}`);
         }
         for (const tree of places.worktrees) {
           if (handle.stopped) return;
-          inspected.push(await inspectCommitWorktree(tree));
+          inspected.push(await (remoteHost.host ? inspectCommitWorktree(tree, remoteHost.host) : inspectCommitWorktree(tree)));
         }
       }
       if (handle.stopped) return;
@@ -907,6 +912,7 @@ export function createRunEngine({
           worktreePath: run.worktreePath,
           attachments: run.attachments,
           notesDir: run.definition.notesDir,
+          ...remoteHost,
         });
       } catch (error) {
         failRun(runId, String(error?.message || error).slice(0, 2000));
@@ -920,12 +926,13 @@ export function createRunEngine({
           input: run.input,
           attachments: run.attachments,
           ...(places === undefined ? {} : { places }),
+          ...remoteHost,
         });
         await refreshBrief(runId);
       }
       if (handle.stopped) return;
       const feedback = reviewStore.listSentBack(run.id, stepIndex);
-      const feedbackFile = feedback.length ? await writeFeedback({ worktreePath: run.worktreePath, definition: run.definition, stepIndex, reviews: feedback }) : undefined;
+      const feedbackFile = feedback.length ? await writeFeedback({ worktreePath: run.worktreePath, definition: run.definition, stepIndex, reviews: feedback, ...remoteHost }) : undefined;
       const agent = defStep.agent;
       if (handle.stopped) return;
 
@@ -964,6 +971,7 @@ export function createRunEngine({
         sessionId = await startSession({
           project: run.project,
           cwd: run.worktreePath,
+          ...remoteHost,
         });
         if (handle.stopped) return;
       }
@@ -1362,7 +1370,7 @@ export function createRunEngine({
             err.code = 'ACTION_REFUSED';
             throw err;
           }
-          if (!await pathExists(run.worktreePath)) {
+          if (!await (run.host && run.host !== 'local' ? pathExists(run.worktreePath, run.host) : pathExists(run.worktreePath))) {
             const err = new Error('The task worktree directory is missing');
             err.code = 'WORKTREE_MISSING';
             throw err;
@@ -1371,7 +1379,7 @@ export function createRunEngine({
         }
         run = loadActionRun(runId, 'resume');
         if (['present', 'external'].includes(run.worktreeState)) {
-          const exists = await pathExists(run.worktreePath);
+          const exists = await (run.host && run.host !== 'local' ? pathExists(run.worktreePath, run.host) : pathExists(run.worktreePath));
           if (!exists) {
             const err = new Error('The worktree directory is missing');
             err.code = 'WORKTREE_MISSING';
