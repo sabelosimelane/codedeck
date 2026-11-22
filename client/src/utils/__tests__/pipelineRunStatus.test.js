@@ -178,3 +178,15 @@ describe('describeRunDuration', () => {
     expect(() => describeRunDuration(value, time)).toThrow(message);
   });
 });
+
+it('totals recorded intervals per attempt, with owner, handoff and unobserved time separate', async () => {
+  const { describeAuditIntervals } = await import('../pipelineRunStatus');
+  const events = ['step_running','prompt_submitted','work_observed','observation_unavailable',
+    'observation_restored','needs_input','input_received','work_observed','disposition_requested','signal_accepted','step_complete']
+    .map((kind,index)=>({kind,attempt:1,createdAt:new Date(1000 * index).toISOString()}));
+  events.push({kind:'step_running',attempt:2,createdAt:new Date(60000).toISOString()});
+  expect(describeAuditIntervals(events)).toEqual([
+    {attempt:1,words:'Launch 1s · Work observed 2s · Owner wait 1s · Handoff 2s · Unclassified 4s'},
+    {attempt:2,words:'No closed interval yet'},
+  ]);
+});

@@ -11,7 +11,7 @@ const DIALOG_HINT = /^Use Up\/Down\b/;
 const LIVE_STATUS = new RegExp(String.raw`^\S .*\(${ELAPSED} · esc to interrupt\)`, 'u');
 
 export function matches({ foregroundCommand, lines }) {
-  if (foregroundCommand === 'muse') return true;
+  if (foregroundCommand === 'muse' || /^muse-bin-\d+(?:\.\d+)*(?:-R\d+(?:\.\d+)*)?$/.test(foregroundCommand)) return true;
   const text = screenLines(lines);
   return text.some(line => /^Muse Code\b|^── Voice input/.test(line))
     || (text.some(line => DIALOG_OPTION.test(line)) && text.some(line => DIALOG_HINT.test(line)));

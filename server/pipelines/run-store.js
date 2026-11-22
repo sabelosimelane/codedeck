@@ -1,3 +1,4 @@
+import { createRunAudit } from './run-audit.js';
 import { checkedAssignment, createTeamAttribution } from './team-attribution.js';
 import { randomUUID } from 'node:crypto';
 import { isUuid, isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
@@ -692,6 +693,7 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
     return get(record.id);
   };
 
+  const audit = createRunAudit(db);
   const markInterruptedRow = (row, stamp) => {
     if (!INTERRUPTIBLE.has(row.status)) return false;
     let steps;
@@ -703,6 +705,7 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
     if (!Array.isArray(steps) || row.current_step_index < 0 || row.current_step_index >= steps.length) {
       fieldError(row.id, 'current_step_index', 'out of range');
     }
+    audit.append(get(row.id), {kind:'interrupted',detail:'Controller could not reattach'}, stamp);
     const nextSteps = steps.map((step, index) => (
       index === row.current_step_index ? { ...step, status: 'interrupted' } : step
     ));
@@ -744,12 +747,16 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
       if (isUniqueConflict(err)) throw new Error('pipeline_runs: requestId already exists');
       throw err;
     }
+    audit.append(record, {kind:'created',detail:null}, stamp);
     if (origin) attribution.save(id, origin);
     return get(id);
   });
   return {
     get,
     markInterrupted,
+    auditPage: audit.page,
+    lastAuditDetail: audit.lastDetail,
+    recordAudit(id, kind, detail = null) { audit.append(get(id), {kind,detail}, now()); },
     attribution: attribution.get,
     attributedIds: attribution.ids,
     recordAttempt: attribution.recordAttempt,
@@ -775,6 +782,11 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
         createdAt: current.createdAt,
         updatedAt: now(),
       });
+      if (options?.audit) return db.transaction(() => {
+        const beginning = ['start','resume','agent_restarted'].includes(options.audit.kind);
+        audit.append(beginning ? next : current, options.audit, next.updatedAt);
+        return write(next);
+      })();
       if (options?.mixed) return db.transaction(() => {
         attribution.markMixed(id, options.team);
         return write(next);

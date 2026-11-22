@@ -720,6 +720,7 @@ describe('pipelines API — preflight and runs', () => {
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
       project: 'Demo',
+      host: 'local',
       eligible: true,
       reasons: [],
       branch: 'main',
@@ -1426,6 +1427,18 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
     return { id, agent, workflow, view: () => request(ctx.app).get(`${base}/runs/${id}`) };
   }
 
+  it('exposes ordered attempt evidence and refuses invalid audit filters', async () => {
+    const ctx = await setup();
+    const { id } = await seedRun(ctx);
+    const page = await request(ctx.app).get(`${base}/runs/${id}/audit?size=1&stepIndex=0`);
+    expect(page.status).toBe(200);
+    expect(page.body.data[0]).toMatchObject({kind:'created', host:'local', attempt:0, stepIndex:0});
+    expect(page.body.page.size).toBe(1);
+    const invalid = await request(ctx.app).get(`${base}/runs/${id}/audit?stepIndex=-1`);
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.traceId).toBeTruthy();
+  });
+
   it('validates approval bodies and returns a conflict after an approval advances', async () => {
     const ctx = await setup();
     const { id } = await seedRun(ctx);
@@ -1828,6 +1841,16 @@ describe('pipelines API — worktrees', () => {
     input: 'docs/todos/feature.md',
     worktreePath: FEATURE_WT.path,
     ...overrides,
+  });
+
+  it('uses the selected host git runner for the existing checkout and its changes', async () => {
+    const remoteGit = vi.fn();
+    const ctx = await setupWorktrees(undefined, {routerDeps:{resolveHostTools: () => ({execFile:remoteGit,fs:fsPromises})}});
+    const {workflow} = await seedReady(ctx);
+    const response = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow, {skipSync:true}));
+    expect(response.status).toBe(201);
+    expect(ctx.listWorktrees).toHaveBeenCalledWith(expect.objectContaining({execFile:remoteGit}));
+    expect(ctx.readWorktreeChanges).toHaveBeenCalledWith(expect.objectContaining({execFile:remoteGit}));
   });
 
   it('lists the project worktrees in the paginated envelope', async () => {
@@ -3124,7 +3147,7 @@ describe('pipelines API — runs in tasks', () => {
 
     expect(started.status).toBe(201);
     expect(ctx.taskStore.get(started.body.taskId)).toMatchObject({ title: '"/tmp/drops/screenshot.png"', titleSource: 'input', project: 'Demo', state: 'active' });
-    expect(ctx.taskService.plan).toHaveBeenCalledWith({ project: 'Demo', title: '"/tmp/drops/screenshot.png"', titleSource: 'input' });
+    expect(ctx.taskService.plan).toHaveBeenCalledWith({ project: 'Demo', host: 'local', title: '"/tmp/drops/screenshot.png"', titleSource: 'input' });
   });
 
   it('replays an untitled request without creating a second task, also once the task is named', async () => {
@@ -3737,7 +3760,7 @@ describe('pipelines API — runs across the repositories of a project', () => {
     ctx = await setupRepositories({ taskService });
     const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'Replies', repositories: ['codedeck', 'mobile-app'] }, startIn: 'mobile-app' }));
     expect(started.status).toBe(201);
-    expect(taskService.plan).toHaveBeenCalledWith({ project: 'Demo', title: 'Replies', titleSource: 'owner', repositories: ['mobile-app', 'codedeck'] });
+    expect(taskService.plan).toHaveBeenCalledWith({ project: 'Demo', host: 'local', title: 'Replies', titleSource: 'owner', repositories: ['mobile-app', 'codedeck'] });
     expect(started.body.worktree.path).toBe(`${FOLDER}/mobile-app`);
     expect(started.body.steps.map(item => item.kind)).toEqual(['setup', 'node']);
     const run = ctx.runStore.get(started.body.id);
@@ -3799,7 +3822,7 @@ describe('pipelines API — runs across the repositories of a project', () => {
     const plain = planning(() => other);
     other = await setupRepositories({ taskService: plain });
     await request(other.app).post(`${base}/runs`).send(other.body({ newTask: { title: 'Alone' } }));
-    expect(plain.plan).toHaveBeenLastCalledWith({ project: 'Demo', title: 'Alone', titleSource: 'owner' });
+    expect(plain.plan).toHaveBeenLastCalledWith({ project: 'Demo', host: 'local', title: 'Alone', titleSource: 'owner' });
   });
 
   it('names the field to fix when a repository of the new task is not one of the project\'s', async () => {

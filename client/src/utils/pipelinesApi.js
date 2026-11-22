@@ -282,6 +282,21 @@ export function listRunReviews(runId, { signal, stepIndex } = {}) {
 }
 
 /** One page of notes reported by a run's steps, newest first. */
+export async function listRunAudit(runId, stepIndex) {
+  if (typeof runId !== 'string' || !runId.trim()) throw new PipelineApiError('Audit requires a run id');
+  if (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex > 32) throw new PipelineApiError('Audit requires a step index');
+  const rows = await listAll(`/runs/${encodeURIComponent(runId)}/audit`, {query:{sort:'id,asc',stepIndex:String(stepIndex)}});
+  for (const row of rows) {
+    if (!row || row.runId !== runId || row.stepIndex !== stepIndex || !Number.isSafeInteger(row.id) || row.id < 1
+      || !Number.isInteger(row.attempt) || row.attempt < 0 || !Number.isInteger(row.pass) || row.pass < 0
+      || !['kind','host','worktreePath','agentName','createdAt'].every(key => typeof row[key] === 'string' && row[key].trim())
+      || !Number.isFinite(Date.parse(row.createdAt)) || !['model','effort','sessionId','detail'].every(key => row[key] === null || typeof row[key] === 'string')) {
+      throw new PipelineApiError('Invalid audit event');
+    }
+  }
+  return rows;
+}
+
 export function listRunNotes(runId, page, { signal, stepIndex } = {}) {
   if (!Number.isSafeInteger(page) || page < 0) throw new PipelineApiError('page must be a whole number of 0 or more');
   if (stepIndex !== undefined && (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex > 32)) throw new PipelineApiError('stepIndex must be an integer from 0 to 32');

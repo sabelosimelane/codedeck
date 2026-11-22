@@ -237,6 +237,27 @@ afterEach(() => {
 });
 
 describe('createRunEngine (Spec §8.3–§8.4)', () => {
+  it('pins a local pipeline terminal even when project defaults can change', async () => {
+    vi.useFakeTimers();
+    const ctx = setupEngine();
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1500);
+    await done;
+    expect(ctx.startSession).toHaveBeenCalledWith({project:'Demo', cwd:run.worktreePath, host:'local'});
+  });
+  it('blocks the next agent when its required handoff is missing on the execution host', async () => {
+    vi.useFakeTimers();
+    const ctx = setupEngine({engineExtras:{prepareNotes:vi.fn(),readNote:async()=>({status:'missing',content:null})}});
+    const def = definition({notesDir:'.codedeck/runs/abcdef12'});
+    def.steps.push({...def.steps[0],name:'Review'});
+    const run = ctx.runStore.create(validRun({definition:def,host:'worker'}));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(5000);
+    await done;
+    expect(ctx.runStore.get(run.id)).toMatchObject({status:'error',error:expect.stringMatching(/worker.*00-develop.md/)});
+    expect(ctx.startSession).toHaveBeenCalledTimes(1);
+  });
   it('requires a way to tell whether a terminal is in a folder', () => {
     expect(() => setupEngine({ engineExtras: { terminalInFolder: undefined } })).toThrow('createRunEngine: terminalInFolder must be a function');
   });
@@ -741,7 +762,7 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
       homePath: run.homePath,
     }));
     expect(ctx.startSession).toHaveBeenCalledWith({
-      project: 'Demo',
+      host:'local', project: 'Demo',
       cwd: run.worktreePath,
     });
     expect(ctx.attachBackground).toHaveBeenCalledWith('Demo-1', { cwd: run.worktreePath });
@@ -1476,8 +1497,8 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       try {
         await ctx.engine.resume(created.id);
         await advanceReadiness(2);
-        expect(terminalInFolder).toHaveBeenCalledWith('Demo-9', '/tmp/worktrees/home-feature-abcd1234');
-        expect(ctx.startSession).toHaveBeenCalledWith({ project: 'Demo', cwd: '/tmp/worktrees/home-feature-abcd1234' });
+        expect(terminalInFolder).toHaveBeenCalledWith('Demo-9', '/tmp/worktrees/home-feature-abcd1234', 'local');
+        expect(ctx.startSession).toHaveBeenCalledWith({ project: 'Demo', host:'local', cwd: '/tmp/worktrees/home-feature-abcd1234' });
         const finished = ctx.runStore.get(created.id);
         expect(finished.status).toBe('complete');
         expect(finished.steps[0]).toMatchObject({ sessionId: 'Demo-1', priorSessionIds: ['Demo-9'] });
@@ -1501,7 +1522,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       try {
         await ctx.engine.resume(created.id);
         await advanceReadiness(2);
-        expect(terminalInFolder).toHaveBeenCalledWith('Demo-7', '/tmp/worktrees/home-feature-abcd1234');
+        expect(terminalInFolder).toHaveBeenCalledWith('Demo-7', '/tmp/worktrees/home-feature-abcd1234', 'local');
         const finished = ctx.runStore.get(created.id);
         expect(finished.steps[1].sessionId).not.toBe('Demo-7');
         expect(finished.steps[1].priorSessionIds).toEqual([]);
@@ -1996,7 +2017,7 @@ describe('createRunEngine with an existing worktree', () => {
     expect(ctx.createWorktree).not.toHaveBeenCalled();
     expect((await ctx.engine.cleanup(run.id)).worktreeState).toBe('released');
     expect(ctx.removeWorktree).not.toHaveBeenCalled();
-    expect(ctx.startSession).toHaveBeenCalledWith({ project: 'Demo', cwd: '/tmp/worktrees/home-existing' });
+    expect(ctx.startSession).toHaveBeenCalledWith({ project: 'Demo', host:'local', cwd: '/tmp/worktrees/home-existing' });
     expect(ctx.attachBackground).toHaveBeenCalledWith('Demo-1', { cwd: '/tmp/worktrees/home-existing' });
   });
 
@@ -2470,6 +2491,35 @@ describe('createRunEngine — a loop of steps', () => {
     expect(ctx.runStore.get(run.id).status).toBe('complete');
     expect(readProgressCount).not.toHaveBeenCalled();
   });
+  it('blocks Test completion on the latest failed worker build receipt', async () => {
+    const {run,ctx} = await runLoop(['complete','complete','complete'], {
+      definition: {...looping(3),notesDir:'.codedeck/runs/abcdef12'},
+      overrides:{engineExtras:{
+        prepareNotes:vi.fn(),readNote:async()=>({status:'present',content:'All green'}),
+        readGradleReceipts:async()=>[{cwd:'/tmp/worktrees/home-feature-abcd1234',tasks:['check'],exitCode:1,
+          id:'a2d0b1c2-3456-4789-8abc-def012345678',startedAt:'2026-11-23T01:00:00Z',endedAt:'2026-11-23T01:00:01Z',executed:1,reused:0,skipped:0,outputDigest:'a'.repeat(64)}],
+      }},
+    });
+    expect(run.status).toBe('error');
+    expect(run.error).toMatch(/Gradle.*exit 1/);
+    expect(ctx.runStore.lastAuditDetail(run.id,1,'build_receipt')).toContain('./gradlew --console=plain check');
+  });
+
+  it('blocks an identical repair before a third developer launch', async () => {
+    let attempt = 0;
+    const def = {...looping(8),notesDir:'.codedeck/runs/abcdef12'};
+    const {run,script,ctx} = await runLoop(Array(12).fill('continue'),{definition:def,overrides:{engineExtras:{
+      prepareNotes:vi.fn(), fingerprintSources:async()=> 'a'.repeat(64),
+      readNote:async ({stepIndex})=>({status:'present',content:stepIndex===1 ? `REPAIR ${++attempt} AC2 | Detector.kt | chord fails`:'# Changed'}),
+    }}});
+    const history = ctx.runStore.auditPage(run.id,{page:0,size:100,direction:'asc',stepIndex:1}).data;
+    expect(history.filter(event => event.kind === 'verification_report')).toHaveLength(2);
+    expect(history.find(event => event.kind === 'loop_back').detail).toContain('Detector.kt');
+    expect(script.starts).toHaveLength(4);
+    expect(run.status).toBe('stopped');
+    expect(script.starts[2].command).toContain('AC2 | Detector.kt | chord fails');
+  });
+
   it('resets the no-progress streak when a later round ticks a task', async () => {
     const counts = [1, 1, 2, 2];
     const readProgressCount = vi.fn(async () => ({ tasksDone: counts.shift(), tasksTotal: 5 }));
@@ -2535,7 +2585,7 @@ describe('createRunEngine — a loop of steps', () => {
         readProgressCount,
         engineExtras: {
           prepareNotes: vi.fn(async () => {}),
-          readNote: vi.fn(async () => ({ status: 'missing', content: null })),
+          readNote: vi.fn(async () => ({ status: 'present', content: '# Verification' })),
         },
       },
     });

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {validateGradleReceipt} from './gradle-proof.mjs';
 import defaultFs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -305,6 +306,10 @@ export async function prepare({ worktreePath, definition, input, places, attachm
   if (tracked.stdout.trim()) throw unignored();
   const folder = await ensureRunNotesFolder({ worktreePath, notesDir: definition.notesDir, fs });
   await replaceFile(fs, folder, 'README.md', readme);
+  if (definition.steps.some(step => ['Test','Review & Test'].includes(step.name))) {
+    const verifier = await defaultFs.readFile(new URL('./gradle-proof.mjs', import.meta.url), 'utf8');
+    await replaceFile(fs,folder,'gradle-proof.mjs',verifier);
+  }
   try {
     await runGit(execFile, ['-C', worktreePath, 'check-ignore', '-q', `${definition.notesDir}/README.md`]);
   } catch (error) {
@@ -329,6 +334,10 @@ export async function readNote({ worktreePath, definition, stepIndex, fs = defau
   requireFs(fs, ['stat', 'lstat', 'realpath', 'open', 'readFile']);
   const file = notePath(definition, stepIndex);
   if (file === null) return { status: 'missing', content: null };
+  return readRunFile(worktreePath,file,fs);
+}
+
+async function readRunFile(worktreePath,file,fs) {
   try {
     const target = path.resolve(worktreePath, file);
     const realRoot = await fs.realpath(worktreePath);
@@ -352,4 +361,27 @@ export async function readNote({ worktreePath, definition, stepIndex, fs = defau
     if (error?.code === 'ENOENT') return { status: 'missing', content: null };
     return { status: 'unreadable', content: null };
   }
+}
+
+
+export async function readGradleReceipts({worktreePath,definition,stepIndex,attempt,fs = defaultFs}) {
+  requireWorktree(worktreePath);
+  requireDefinition(definition);
+  requireStep(definition,stepIndex);
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('Invalid Gradle receipt attempt');
+  const folder = await verifiedRunFolder(fs,worktreePath,definition.notesDir);
+  const prefix = `gradle-${stepIndex}-${attempt}-`;
+  const files = (await fs.readdir(folder)).filter(name => name.startsWith(prefix) && name.endsWith('.json'));
+  if (files.length > 100) throw new Error('Too many Gradle receipts in one attempt');
+  const receipts = [];
+  for (const name of files) {
+    const id = name.slice(prefix.length,-5);
+    if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Invalid Gradle receipt filename');
+    const result = await readRunFile(worktreePath,path.join(definition.notesDir,name),fs);
+    if (result.status !== 'present') throw new Error(`Cannot read Gradle receipt ${id}`);
+    const receipt = validateGradleReceipt(JSON.parse(result.content));
+    if (receipt.id !== id || receipt.stepIndex !== stepIndex || receipt.attempt !== attempt) throw new Error('Gradle receipt identity mismatch');
+    receipts.push(receipt);
+  }
+  return receipts.sort((a,b) => a.endedAt.localeCompare(b.endedAt));
 }

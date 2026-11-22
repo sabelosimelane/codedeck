@@ -108,6 +108,27 @@ export function createTerminalWorkflow({ write, notify }) {
   let phase = 'waiting';
   let pass = 0;
   let badIdentifierRetries = 0;
+  let workObserved = false;
+  let askedForInput = false;
+  let acceptedSignal = null;
+  let handoffDeadline = null;
+  let handoffTimer;
+  let audit = null;
+  function armHandoffDeadline() {
+    clearTimeout(handoffTimer);
+    handoffTimer = setTimeout(() => finish('error', 'Handoff timed out after the agent finished. Check its final disposition before resuming.'), Math.max(0, handoffDeadline - Date.now()));
+  }
+  function requestDisposition() {
+    workObserved = true;
+    badIdentifierRetries = 1;
+    rawOutput = '';
+    clearTimeout(enterTimer);
+    handoffDeadline = Date.now() + 24000;
+    armHandoffDeadline();
+    audit?.('disposition_requested', 'Idle or invalid final signal; requested disposition only');
+    publish();
+    pasteAndSubmit(buildBadIdentifierPrompt(identifier));
+  }
   let limitReached = false;
   let quietTimer;
   // Checked before every repeat pass (a run's attachment copies); not part of the replayed request.
@@ -128,6 +149,7 @@ export function createTerminalWorkflow({ write, notify }) {
   });
   const publish = () => notify(snapshot());
   function cancelTimers() {
+    clearTimeout(handoffTimer);
     clearTimeout(quietTimer);
     clearTimeout(resetTimer);
     clearTimeout(enterTimer);
@@ -151,9 +173,9 @@ export function createTerminalWorkflow({ write, notify }) {
       return false;
     }
   }
-  function pasteAndSubmit(text) {
+  function pasteAndSubmit(text, onSubmitted) {
     if (submit(`\x1b[200~${text}\x1b[201~`)) {
-      enterTimer = setTimeout(() => submit('\r'), SUBMIT_DELAY_MS);
+      enterTimer = setTimeout(() => { if (submit('\r')) onSubmitted?.(); }, SUBMIT_DELAY_MS);
     }
   }
   // Short enough to copy; the counter prevents reuse within this session.
@@ -167,13 +189,17 @@ export function createTerminalWorkflow({ write, notify }) {
     status = 'running';
     phase = 'waiting';
     pass += 1;
+    workObserved = false;
+    askedForInput = false;
+    acceptedSignal = null;
+    handoffDeadline = null;
     badIdentifierRetries = 0;
     identifier = issueIdentifier();
     passIdentifiers = new Set([identifier]);
     pendingIdentifier = null;
     rawOutput = '';
     publish();
-    pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance));
+    pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance), () => audit?.('prompt_submitted', 'Controller submitted terminal input'));
   }
   function reset() {
     phase = 'reset_output';
@@ -198,6 +224,10 @@ export function createTerminalWorkflow({ write, notify }) {
       identifier,
       passIdentifiers: [...passIdentifiers],
       issuedIdentifiers: [...issuedIdentifiers],
+      workObserved,
+      askedForInput,
+      handoffDeadline,
+      ...(acceptedSignal && { acceptedSignal }),
     };
   }
   function startBeforePassReset() {
@@ -225,6 +255,10 @@ export function createTerminalWorkflow({ write, notify }) {
 
   return {
     snapshot,
+    setAudit(observer) {
+      if (observer !== null && typeof observer !== 'function') throw new Error('Workflow audit observer must be a function or null.');
+      audit = observer;
+    },
     /** Serializable state of the active pass for backend-restart recovery, or null when inactive. */
     exportState,
     /** The identifier the agent copies into its signal for the pass in progress, or null. */
@@ -271,10 +305,24 @@ export function createTerminalWorkflow({ write, notify }) {
       phase = savedState.phase;
       pass = savedState.pass;
       badIdentifierRetries = 0;
+      askedForInput = savedState.askedForInput ?? (savedState.status === 'needs_input' || savedState.passIdentifiers.length > 1);
+      if (typeof askedForInput !== 'boolean') throw new Error('Workflow askedForInput must be boolean.');
+      workObserved = savedState.workObserved ?? false;
+      handoffDeadline = savedState.handoffDeadline ?? null;
+      if (typeof workObserved !== 'boolean') throw new Error('Workflow workObserved must be boolean.');
+      if (handoffDeadline !== null) {
+        if (!Number.isSafeInteger(handoffDeadline) || handoffDeadline < 0 || !workObserved) throw new Error('Workflow handoffDeadline is invalid.');
+        badIdentifierRetries = 1;
+        armHandoffDeadline();
+      }
       identifier = savedState.identifier;
       passIdentifiers = new Set(savedState.passIdentifiers);
       issuedIdentifiers.clear();
       for (const id of savedState.issuedIdentifiers) issuedIdentifiers.add(id);
+      acceptedSignal = savedState.acceptedSignal ?? null;
+      if (acceptedSignal !== null && (!passIdentifiers.has(acceptedSignal.id)
+        || !['CONTINUE','COMPLETE','NEEDS_INPUT'].includes(acceptedSignal.signal)
+        || phase !== 'waiting')) throw new Error('Invalid persisted accepted disposition');
       pendingIdentifier = null;
       rawOutput = '';
 
@@ -294,7 +342,7 @@ export function createTerminalWorkflow({ write, notify }) {
      */
     replayScreen(screenText) {
       if (typeof screenText !== 'string') throw new Error('Workflow replayScreen must be a string.');
-      const match = findPassSignal(screenText, { status, phase, identifier, passIdentifiers });
+      const match = acceptedSignal ?? findPassSignal(screenText, { status, phase, identifier, passIdentifiers });
       if (!match) return false;
       rawOutput = '';
       this.output(`[[CDW:${match.id}:${match.signal}]]`);
@@ -346,12 +394,39 @@ export function createTerminalWorkflow({ write, notify }) {
      * For a prompt the agent's CLI did not take (it was cleared, or was still starting): the
      * caller decides from the screen that the agent never began the pass.
      */
+    observeTurn(turn, screen) {
+      if (!['working', 'idle'].includes(turn) || typeof screen !== 'string') throw new Error('Workflow turn observation requires a working or idle turn and screen text.');
+      if (status !== 'running' || phase !== 'waiting') return false;
+      if (turn === 'working' && !workObserved) {
+        workObserved = true;
+        audit?.('work_observed', null);
+        publish();
+      } else if (turn === 'idle' && handoffDeadline === null) {
+        // A fast turn may finish between polls. A near-ID can request a correction,
+        // but can never authorize a state transition.
+        if (!workObserved) {
+          const candidates = screen.matchAll(/\[\[CDW[;:]([\w-]+)[;:](?:CONTINUE|COMPLETE|NEEDS_INPUT)\]\]/g);
+          const belongs = [...candidates].some(([, id]) => id.length === identifier.length
+            && (id === identifier || !issuedIdentifiers.has(id))
+            && [...id].filter((letter, i) => letter !== identifier[i]).length <= 1);
+          // A new Muse footer below this pass's echoed prompt is evidence even
+          // when both the working sample and the final signal were missed.
+          const prompt = 'Iteration identifier: ' + identifier;
+          const promptAt = screen.lastIndexOf(prompt);
+          const finished = promptAt >= 0 && /^\s*◆ Worked for [^\n·]+ · [^\n·]+ · \d{1,2}\/[a-z]{3}\s*$/im.test(screen.slice(promptAt + prompt.length));
+          if (!belongs && !finished) return askedForInput;
+        }
+        requestDisposition();
+      }
+      return workObserved || askedForInput;
+    },
     resubmit() {
+      if (workObserved || askedForInput) throw new Error('Cannot resend a prompt after work was observed.');
       if (status !== 'running' || identifier === null) {
         throw new Error('The prompt can be sent again only while a pass is running.');
       }
       clearTimeout(enterTimer);
-      pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance));
+      pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance), () => audit?.('prompt_submitted', 'Controller submitted terminal input'));
     },
     /**
      * What to type for the agent as the answer to its request: the answer, and a new identifier
@@ -376,6 +451,8 @@ export function createTerminalWorkflow({ write, notify }) {
         pendingIdentifier = null;
       }
       status = 'running';
+      workObserved = false;
+      badIdentifierRetries = 0;
       rawOutput = '';
       publish();
     },
@@ -404,10 +481,7 @@ export function createTerminalWorkflow({ write, notify }) {
       if (!match) return;
       if (!issuedIdentifiers.has(match[1])) {
         if (status === 'running' && identifier !== null && badIdentifierRetries < MAX_BAD_IDENTIFIER_RETRIES) {
-          badIdentifierRetries += 1;
-          clearTimeout(enterTimer);
-          rawOutput = '';
-          pasteAndSubmit(buildBadIdentifierPrompt(identifier));
+          requestDisposition();
           return;
         }
         finish('error', 'Workflow signal identifier does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.');
@@ -415,9 +489,17 @@ export function createTerminalWorkflow({ write, notify }) {
       }
       clearTimeout(enterTimer);
       rawOutput = '';
+      if (!acceptedSignal) {
+        acceptedSignal = { id: match[1], signal: match[2] };
+        audit?.('signal_accepted', match[2]);
+      }
+      acceptedSignal = null;
+      clearTimeout(handoffTimer);
+      handoffDeadline = null;
       if (match[2] === 'COMPLETE') finish('complete');
       else if (match[2] === 'NEEDS_INPUT') {
         // Keep the identifier: after the user answers, the agent finishes this pass.
+        askedForInput = true;
         status = 'needs_input';
         publish();
       } else if (request.maxIterations !== undefined && pass >= request.maxIterations) {

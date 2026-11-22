@@ -49,3 +49,16 @@ describe('createTerminalInFolder', () => {
     }
   });
 });
+
+it('rejects a terminal on a different host before inspecting an identically named folder', async () => {
+  const inspect = vi.fn(async () => ({currentPath: '/tmp'}));
+  const matches = createTerminalInFolder(inspect, {sessionHost: () => 'worker'});
+  expect(await matches('session','/tmp','local')).toBe(false);
+  expect(inspect).not.toHaveBeenCalled();
+});
+
+it('uses the local host for the local-filesystem terminal inspector', async () => {
+  const match = createTerminalInFolder(async () => ({currentPath:'/tmp'}));
+  expect(await match('s','/tmp','local')).toBe(true);
+  expect(await match('s','/tmp','worker')).toBe(false);
+});

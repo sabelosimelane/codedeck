@@ -1,3 +1,4 @@
+import { sourceFingerprint } from './pipelines/repair-evidence.js';
 import CircuitBreaker from 'opossum';
 import { createTeamTrials } from './pipelines/team-trials.js';
 import { createTeamObservations } from './pipelines/team-observations.js';
@@ -46,6 +47,7 @@ import {
 import {
   prepare as preparePipelineNotes,
   readNote as readPipelineNote,
+  readGradleReceipts,
   writeFeedback as writePipelineFeedback,
   writeBrief as writePipelineBrief,
   writeCommitNote as writePipelineCommitNote,
@@ -1101,6 +1103,17 @@ const taskNaming = createTaskNaming({
   warn: message => console.warn(message),
 });
 const runtimeForSession = sessionId => sessions.get(sessionId)?.hostRuntime ?? resolveHostRuntime(sessionId)?.hostRuntime ?? terminalRuntime;
+const pipelinePlaces = createRunPlaces({
+    taskStore,
+    findProject: name => loadProjects().find(project => project.name === name) ?? null,
+    execFile,
+    resolveHostTools,
+  });
+const pipelineTerminalInFolder = createTerminalInFolder(
+    sessionId => runtimeForSession(sessionId).inspectPaneAsync(sessionId),
+    { sessionHost: sessionId => terminalSessionHostStore.get(sessionId)?.host ?? resolveHostRuntime(sessionId)?.host ?? LOCAL_HOST,
+      resolveRealpath: (sessionId, target) => resolveHostTools(resolveHostRuntime(sessionId)?.host ?? LOCAL_HOST).realpath(target) },
+  );
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
   onNoteWritten: note => {
@@ -1109,10 +1122,7 @@ const pipelineRunEngine = createRunEngine({
   setTerminalMuted: (sessionId, muted) => setObservedTerminalMuted(sessionAttention, sessionId, muted),
   restartAgentTerminal: (sessionId, cwd) => runtimeForSession(sessionId).respawnMainPaneAsync(sessionId, cwd),
   typeIntoTerminal: (sessionId, text) => runtimeForSession(sessionId).typeLineAsync(sessionId, text),
-  terminalInFolder: createTerminalInFolder(
-    sessionId => runtimeForSession(sessionId).inspectPaneAsync(sessionId),
-    { resolveRealpath: (sessionId, target) => resolveHostTools(resolveHostRuntime(sessionId)?.host ?? LOCAL_HOST).realpath(target) },
-  ),
+  terminalInFolder: pipelineTerminalInFolder,
   // The pane, and how CodeDeck's own attachment to it stands: input written through a browser's
   // or a run's tmux client goes wherever that client is.
   inspectTerminal: async (sessionId) => {
@@ -1163,16 +1173,13 @@ const pipelineRunEngine = createRunEngine({
     return listPipelineDirtyPaths({ worktreePath, execFile: tools.execFile });
   },
   // Where a run may work and read: the worktrees of its task and the project's other repositories, as they are when a step starts.
-  listRunPlaces: createRunPlaces({
-    taskStore,
-    findProject: name => loadProjects().find(project => project.name === name) ?? null,
-    execFile,
-    resolveHostTools,
-  }),
+  listRunPlaces: pipelinePlaces,
+  fingerprintSources: async run => sourceFingerprint((await pipelinePlaces(run)).worktrees, resolveHostTools(run.host).execFile),
   prepareNotes: ({ host, ...opts }) => {
     const tools = resolveHostTools(host);
     return preparePipelineNotes({ ...opts, fs: tools.fs, execFile: tools.execFile });
   },
+  readGradleReceipts: ({host,...opts}) => readGradleReceipts({...opts,fs:resolveHostTools(host).fs}),
   readNote: ({ host, ...opts }) => readPipelineNote({ ...opts, fs: resolveHostTools(host).fs }),
   writeFeedback: ({ host, ...opts }) => writePipelineFeedback({ ...opts, fs: resolveHostTools(host).fs }),
   writeBrief: ({ host, ...opts }) => writePipelineBrief({ ...opts, fs: resolveHostTools(host).fs }),
@@ -1188,7 +1195,8 @@ const pipelineRunEngine = createRunEngine({
     }
   },
   startSession: async ({ project, cwd, host }) => {
-    const started = await startSessionWithWorktree(project, { cwd, ...(host && host !== LOCAL_HOST ? { host, skipSync: true } : {}) });
+    const started = await startSessionWithWorktree(project, { cwd, host, skipSync: true });
+    if (started.host !== host || started.cwd !== cwd || !await pipelineTerminalInFolder(started.id, cwd, host)) throw new Error(`Pipeline terminal ${started.id} did not start at ${host}:${cwd}`);
     return started.id;
   },
   attachBackground: (sessionId, { cwd } = {}) => attachBackgroundSessionAsync(

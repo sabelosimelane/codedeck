@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { shellQuote } from '../command-runner.js';
+import { repairFindings } from './repair-evidence.js';
 import { execFile } from 'node:child_process';
 import { inspectCommitWorktree as inspectGitWorktree } from './run-worktree.js';
 import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
@@ -13,7 +16,7 @@ import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
 import { buildStepGuidance } from './step-guidance.js';
 import { planRunTerminalMuting } from './run-terminal-muting.js';
-import { writeCommitNote as defaultWriteCommitNote, prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
+import { notePath, writeCommitNote as defaultWriteCommitNote, prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
 import { listAttachmentCopiesAtRisk as defaultListAttachmentsAtRisk, verifyAttachmentCopies as defaultVerifyAttachments } from './attachment-verify.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
@@ -94,6 +97,7 @@ export function createRunEngine({
   reviewStore,
   prepareNotes = defaultPrepareNotes,
   readNote = defaultReadNote,
+  readGradleReceipts,
   writeFeedback = defaultWriteFeedback,
   writeBrief = defaultWriteBrief,
   writeCommitNote = defaultWriteCommitNote,
@@ -117,6 +121,7 @@ export function createRunEngine({
   inspectCommitWorktree = entry => inspectGitWorktree(entry, execFile),
   // Where a run may work and read: the worktrees of its task and the project's other repositories.
   // Left out, a run has only its own worktree.
+  fingerprintSources,
   listRunPlaces = async () => undefined,
   pathExists = async () => true,
   canReclaimReleasedTaskWorktree = () => false,
@@ -176,8 +181,8 @@ export function createRunEngine({
     }
   }
 
-  function updateRun(runId, patch) {
-    const stored = runStore.update(runId, patch);
+  function updateRun(runId, patch, audit) {
+    const stored = runStore.update(runId, patch, audit ? {audit} : undefined);
     syncTerminalMuting(runId, stored);
     return stored;
   }
@@ -187,6 +192,15 @@ export function createRunEngine({
     if (!current || !['running', 'needs_input'].includes(current.status)) return;
     const exported = typeof workflow?.exportState === 'function' ? workflow.exportState() : null;
     updateRun(runId, { workflowState: exported });
+  }
+
+  function attachAudit(runId, workflow) {
+    workflow.setAudit?.((kind, detail) => {
+      if (getHandle(runId).workflow !== workflow) return;
+      const current = runStore.get(runId);
+      if (!['running','needs_input'].includes(current?.status)) return;
+      updateRun(runId, {workflowState:workflow.exportState()}, {kind,detail});
+    });
   }
 
   function markRunInterrupted(runId) {
@@ -280,7 +294,7 @@ export function createRunEngine({
       steps: next.steps,
       inputRequest: next.inputRequest,
       ...(!['running', 'needs_input'].includes(next.status) ? { workflowState: null } : {}),
-    });
+    }, {kind:event.type, detail:event.repairKey ?? event.error ?? event.reason ?? (event.type === 'loop_back' ? `See ${current.definition.steps[current.currentStepIndex].name} attempt ${current.steps[current.currentStepIndex].attempt} findings` : null)});
   }
 
   function failRun(runId, message) {
@@ -563,6 +577,8 @@ export function createRunEngine({
     // was working, and the owner's answer came after.
     let pickup = { pass: null, idleMs: 0, resent: false, asked: false, screen: null };
     let silentStall = { pass: null, unchangedMs: 0, warned: false, screen: null };
+    let observationLost = false;
+    let idleTurnReadings = 0;
     let dialogReadings = 0;
     let exitedReadings = 0;
     const watchPickup = (readiness, screen) => {
@@ -618,6 +634,11 @@ export function createRunEngine({
       const screen = Array.isArray(state?.lines) ? state.lines.join('\n') : null;
       await enqueueTransition(runId, async () => {
         if (over()) return;
+        const unavailable = !state?.executionReason || ['tmux_lookup_failed','tmux_unavailable','missing_foreground_command'].includes(state.executionReason);
+        if (unavailable !== observationLost) {
+          observationLost = unavailable;
+          runStore.recordAudit(runId, unavailable ? 'observation_unavailable' : 'observation_restored', null);
+        }
         if (readiness === 'exited' || readiness === 'closed') {
           if (['running', 'needs_input'].includes(runStore.get(runId)?.status)
             && ['running', 'resetting', 'needs_input'].includes(workflow.snapshot().status)) {
@@ -635,7 +656,10 @@ export function createRunEngine({
           return;
         }
         exitedReadings = 0;
-        watchPickup(readiness, screen);
+        idleTurnReadings = readiness === 'ready' ? idleTurnReadings + 1 : 0;
+        const working = ['agent_working', 'agent_delegated', 'agent_background_shells'].includes(state?.executionReason);
+        const observed = (working || idleTurnReadings >= 2) && workflow.observeTurn?.(working ? 'working' : 'idle', screen ?? '');
+        if (!observed) watchPickup(readiness, screen);
         if (over()) return;
         if (!showsDialog) {
           dialogReadings = 0;
@@ -718,6 +742,42 @@ export function createRunEngine({
     return content;
   }
 
+  async function captureHandoff(current, pass, completed = false) {
+    const index = current.currentStepIndex;
+    if (current.definition.steps[index].kind !== 'node') return;
+    await recordNote(current, index, pass);
+    const relative = notePath(current.definition, index);
+    if (!relative) return;
+    const step = current.definition.steps[index];
+    const note = noteStore.latestByStep(current.id).get(index);
+    const present = note?.attempt === current.steps[index].attempt && note.pass === pass && ['written','unchanged'].includes(note.status);
+    if (!present && (index < current.steps.length - 1 || step.repeat.mode === 'loop_back')) {
+      throw new Error(`Required handoff verification note on ${current.host} at ${current.worktreePath}/${relative} is ${note?.status ?? 'unavailable'}.`);
+    }
+    if (readGradleReceipts && ['Test','Review & Test'].includes(step.name)) {
+      const records = await readGradleReceipts({worktreePath:current.worktreePath,host:current.host,definition:current.definition,
+        stepIndex:index,attempt:current.steps[index].attempt});
+      if (records.length) {
+        const places = await listRunPlaces(current);
+        const roots = places?.worktrees.map(tree => tree.path) ?? [current.worktreePath];
+        const latest = new Map();
+        for (const record of records) {
+          if (!roots.some(root => record.cwd === root || record.cwd.startsWith(root + '/'))) throw new Error('Gradle receipt cwd outside run worktrees');
+          const command = './gradlew --console=plain ' + record.tasks.join(' ');
+          const detail = `Worker receipt ${record.id}: ${command} in ${record.cwd}, exit ${record.exitCode}, ${record.executed} executed, ${record.reused} reused, ${record.skipped} skipped; ${record.startedAt} to ${record.endedAt}; output SHA-256 ${record.outputDigest}`;
+          runStore.recordAudit(current.id,'build_receipt',detail.slice(0,2000));
+          latest.set(JSON.stringify([record.cwd,record.tasks]),record);
+        }
+        const failed = [...latest.values()].find(record => record.exitCode !== 0);
+        if (completed && failed) throw new Error(`Gradle verification returned exit ${failed.exitCode} for ${failed.tasks.join(' ')}`);
+      }
+    }
+    if (present && (['Test','Review & Test'].includes(step.name) || verificationPrompts.has(step.prompt))) {
+      const digest = createHash('sha256').update(noteStore.lastContent(current.id, index)).digest('hex');
+      runStore.recordAudit(current.id,'verification_report',`Agent-reported checks in ${relative} (SHA-256 ${digest})`);
+    }
+  }
+
   async function applyWorkflowSnapshot(runId, snapshot) {
     if (!runStore.get(runId)) return { terminal: true };
     // The loop moved on, so the agent is past any dialog it was showing.
@@ -728,7 +788,7 @@ export function createRunEngine({
     }
 
     if (snapshot.status === 'complete') {
-      if (current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
+      await captureHandoff(current, snapshot.iteration, true);
       if (verificationPrompts.has(current.definition.steps[current.currentStepIndex].prompt)) verificationOutcome(current, current.currentStepIndex);
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received', at: now() });
@@ -746,7 +806,7 @@ export function createRunEngine({
     }
 
     if (snapshot.status === 'stopped' && snapshot.limitReached) {
-      if (current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
+      await captureHandoff(current, snapshot.iteration);
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received', at: now() });
       }
@@ -755,6 +815,19 @@ export function createRunEngine({
         persistTransition(runId, { type: current.definition.steps[current.currentStepIndex]?.approval ? 'approval_requested' : 'step_complete', at: now() });
       } else if (repeat?.mode === 'loop_back'
         && current.steps[current.currentStepIndex].roundsCompleted + 1 < repeat.max) {
+        let repairKey;
+        if (current.definition.notesDir && ['Test','Review & Test'].includes(current.definition.steps[current.currentStepIndex].name) && fingerprintSources) {
+          const findings = repairFindings(noteStore.lastContent(runId, current.currentStepIndex), current.steps[current.currentStepIndex].attempt);
+          const fingerprint = await fingerprintSources(current);
+          if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Invalid source fingerprint');
+          repairKey = createHash('sha256').update(JSON.stringify([fingerprint,findings])).digest('hex');
+          const previous = runStore.lastAuditDetail(runId,current.currentStepIndex,'loop_back');
+          if (previous?.split('\n')[0] === repairKey) {
+            persistTransition(runId, {type:'stop', reason:'no_progress', at:now()});
+            return {terminal:true};
+          }
+          repairKey = [repairKey, ...findings].join('\n').slice(0,2000);
+        }
         // Work is left and another round is allowed: the loop starts again at its first step.
         const handle = getHandle(runId);
         let progress = null;
@@ -789,7 +862,7 @@ export function createRunEngine({
           }
           handle.lastTasksDone = progress.tasksDone;
         }
-        persistTransition(runId, { type: 'loop_back', toStepIndex: repeat.toStepIndex, at: now() });
+        persistTransition(runId, { type: 'loop_back', toStepIndex: repeat.toStepIndex, repairKey, at: now() });
         if (handle.roundsWithoutProgress >= NO_PROGRESS_ROUNDS) {
           persistTransition(runId, { type: 'stop', reason: 'no_progress', at: now() });
           handle.lastTasksDone = null;
@@ -974,7 +1047,7 @@ export function createRunEngine({
       if (sessionId !== null) {
         let inside = false;
         try {
-          inside = await terminalInFolder(sessionId, run.worktreePath);
+          inside = await terminalInFolder(sessionId, run.worktreePath, run.host);
         } catch (err) {
           console.warn(`[pipeline-run] ${runId}: terminal ${sessionId} could not be checked in ${run.worktreePath} (${err?.message || err}); step ${defStep.name} opens a new terminal there`);
           inside = false;
@@ -994,7 +1067,7 @@ export function createRunEngine({
         sessionId = await startSession({
           project: run.project,
           cwd: run.worktreePath,
-          ...remoteHost,
+          host: run.host,
         });
         if (handle.stopped) return;
       }
@@ -1014,7 +1087,7 @@ export function createRunEngine({
         sessionId = await startSession({
           project: run.project,
           cwd: run.worktreePath,
-          ...remoteHost,
+          host: run.host,
         });
         if (handle.stopped) return;
         run = updateRun(runId, { steps: run.steps.map((s, i) => (
@@ -1051,7 +1124,24 @@ export function createRunEngine({
       const attempt = current.steps[stepIndex].attempt;
       // Snapshot prompts are already composed once at POST /runs (Spec §4.4). The CLI that
       // became ready decides how a leading /skill is written (Codex: $skill).
-      const command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
+      let command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
+      if (current.definition.notesDir && fingerprintSources) {
+        const closer = current.definition.steps.findIndex(item => ['Test','Review & Test'].includes(item.name) && item.repeat.mode === 'loop_back' && item.repeat.toStepIndex === stepIndex);
+        if (closer >= 0) {
+          command += '\nProve each acceptance check with a targeted red then green test before ticking it. Leave the full suite to Test.';
+          if (current.steps[closer].roundsCompleted > 0) {
+            const repairs = repairFindings(noteStore.lastContent(runId,closer),current.steps[closer].attempt);
+            command += '\nWork only on these Test findings and their targeted regressions:\n' + repairs.join('\n');
+          }
+        }
+        if (['Test','Review & Test'].includes(defStep.name) && defStep.repeat.mode === 'loop_back') {
+          command += `\nFor CONTINUE put one line per buildable check in your note: REPAIR ${attempt} <check-id> | <file path> | <observed failure or outstanding task>. For checks blocked on owner evidence use NEEDS_INPUT. Record each command and its result. Run targeted checks during repair; run the final suite once when all checks hold.`;
+        }
+      }
+      if (current.definition.notesDir && readGradleReceipts && ['Test','Review & Test'].includes(defStep.name)) {
+        const verifier = shellQuote(current.worktreePath + '/' + current.definition.notesDir + '/gradle-proof.mjs');
+        command += `\nFor Gradle verification run node ${verifier} ${stepIndex} ${attempt} <task names> from the build root. Preserve native task history. CodeDeck collects the build exit code and Gradle's task reuse decisions.`;
+      }
       const maxIterations = maxIterationsFor(defStep.repeat);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
       const guidance = buildStepGuidance(current.definition, stepIndex, {
@@ -1110,6 +1200,7 @@ export function createRunEngine({
       }
       handle.workflow = workflow;
 
+      attachAudit(runId, workflow);
       workflow.start({
         requestId,
         command,
@@ -1153,6 +1244,7 @@ export function createRunEngine({
         // Release failures must not mask the run outcome, but must not be silent.
         console.error(`[pipeline-run] release failed for ${runId}:`, err);
       }
+      handle.workflow?.setAudit?.(null);
       handle.attachment = null;
       handle.workflow = null;
       handle.dialogPause = false;
@@ -1237,6 +1329,7 @@ export function createRunEngine({
       } catch (err) {
         console.error(`[pipeline-run] release failed for ${runId}:`, err);
       }
+      handle.workflow?.setAudit?.(null);
       handle.attachment = null;
       handle.workflow = null;
       handle.dialogPause = false;
@@ -1532,7 +1625,7 @@ export function createRunEngine({
         const sessionId = step.sessionId;
         let available = false;
         try {
-          available = (await terminalStillThere(sessionId)) && await terminalInFolder(sessionId, run.worktreePath);
+          available = (await terminalStillThere(sessionId)) && await terminalInFolder(sessionId, run.worktreePath, run.host);
         } catch (err) {
           console.warn(`[pipeline-run] startup terminal check failed for ${run.id} (${sessionId}): ${err?.message || err}`);
           available = false;
@@ -1559,7 +1652,7 @@ export function createRunEngine({
           console.warn(`[pipeline-run] startup screen read failed for ${run.id} (${sessionId}): ${err?.message || err}`);
         }
 
-        const hasSignalOnScreen = savedState.phase === 'waiting' && findPassSignal(screenText, savedState) !== null;
+        const hasSignalOnScreen = savedState.phase === 'waiting' && (savedState.acceptedSignal != null || findPassSignal(screenText, savedState) !== null);
         if (readiness === 'closed' || (readiness === 'exited' && !hasSignalOnScreen)) {
           markRunInterrupted(run.id);
           summary.interrupted.push(run.id);
@@ -1639,6 +1732,7 @@ export function createRunEngine({
         handle.workflow = workflow;
 
         try {
+          attachAudit(run.id, workflow);
           workflow.reattach(savedState, beforePassOption);
         } catch (err) {
           console.warn(`[pipeline-run] startup workflow reattach failed for ${run.id} (${sessionId}): ${err?.message || err}`);

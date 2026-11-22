@@ -1,8 +1,9 @@
+import { listRunAudit } from '../../utils/pipelinesApi';
 import ChangeRunTeam from '../pipelines/ChangeRunTeam';
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, CheckCircle2, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'lucide-react';
 import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
-import { describeRunDuration, describeRunStatus, describeStepDuration, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
+import { describeAuditIntervals, describeRunDuration, describeRunStatus, describeStepDuration, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
 import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
 import ApprovalReview from './ApprovalReview.jsx';
 import QuestionsPanel from './QuestionsPanel.jsx';
@@ -37,7 +38,7 @@ function progressLine(progress) {
 }
 
 /** A record list for one step, loaded when opened. `load()` resolves to an array, or null when it failed. */
-function StepRecords({ label, emptyText, load, resetKey, render }) {
+function StepRecords({ label, emptyText, load, resetKey, render, summary }) {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState({ status: 'idle', items: [] });
   const latest = useRef(0);
@@ -58,6 +59,7 @@ function StepRecords({ label, emptyText, load, resetKey, render }) {
       {open && state.status === 'loading' && <span className="pipeline-run-muted">Loading…</span>}
       {open && state.status === 'failed' && <span className="pipeline-run-danger">{`${label} could not be loaded.`}</span>}
       {open && state.status === 'ready' && state.items.length === 0 && <span className="pipeline-run-muted">{emptyText}</span>}
+      {open && state.items.length > 0 && summary?.(state.items)}
       {open && state.items.length > 0 && <ul aria-label={label} className="pipeline-run-list">{state.items.map(render)}</ul>}
     </div>
   );
@@ -80,7 +82,7 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
         {step.askOwner && <span className="pipeline-run-muted" title="This step's questions always come to you, also when agents decide">always asks you</span>}
         {loopTarget && <span className="pipeline-run-muted">{`loops back to ${loopTarget.name}`}</span>}
       </div>
-      {step.sessionId === null && step.status === 'pending' && <span className="pipeline-run-muted">This step has not started, so it has no terminal yet.</span>}
+      {step.sessionId === null && step.status === 'pending' && !step.elapsedMs && <span className="pipeline-run-muted">This step has not started, so it has no terminal yet.</span>}
       {step.sessionId !== null && !terminalOpen && (
         <span className="pipeline-run-warning">
           This step&apos;s terminal is closed.{' '}
@@ -91,6 +93,15 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
       {asking && <QuestionsPanel key={`${run.id}:${step.index}:${step.iteration}:${run.inputRequest?.questions ?? ''}`} run={run} onAnswer={onAnswer} />}
       {reviewing && <ApprovalReview key={`${run.id}:${step.index}:${step.attempt}:${step.iteration}`} run={run} onLoadNotes={onLoadNotes} onApprove={onApprove} onSendBack={onSendBack} />}
       <div className="task-step-records-row">
+        <StepRecords label="Audit timeline" emptyText="No controller evidence for this interval." resetKey={`${resetKey}:${run.updatedAt}`}
+          load={() => listRunAudit(run.id, step.index)}
+          summary={events => describeAuditIntervals(events).map(row => <p key={row.attempt}>{`Attempt ${row.attempt} · ${row.words}`}</p>)}
+          render={event => <li key={event.id} className="pipeline-run-list-item">
+            <strong>{`Attempt ${event.attempt} · ${event.kind.replaceAll('_',' ')}`}</strong>
+            <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleTimeString()}</time>
+            <span>{[event.host, event.worktreePath, event.sessionId, event.agentName, event.model, event.effort].filter(Boolean).join(' · ')}</span>
+            {event.detail && <span>{event.detail}</span>}
+          </li>} />
         {step.kind === 'node' && run.notesDir !== null && (
           <StepRecords label="Notes" emptyText="This step has left no note yet." resetKey={resetKey}
             load={async () => (await onLoadNotes(run.id, 0, step.index))?.notes ?? null}
@@ -280,15 +291,18 @@ export default function TaskView({
             const state = describeStepState(step, { isCurrent: step.index === currentIndex }).state;
             const words = describeStepProgress(step);
             const took = stepDurations[i];
+            const elapsed = took?.live && step.attempt > 1
+              ? `Attempt ${step.attempt} · ${describeStepDuration({...step,elapsedMs:0},now).words} since last start · ${took.words} total`
+              : took?.words;
             const Icon = STATE_ICON[state];
             return (
               <button key={step.index} type="button" onClick={() => selectStep(step)} className="task-step" data-step-state={state}
                 aria-current={step.index === selectedIndex ? 'step' : undefined}
-                aria-label={`${step.name}: ${[words.label, words.detail, took && (took.live ? `${took.words} so far` : `took ${took.words}`)].filter(Boolean).join(', ')}`}>
+                aria-label={`${step.name}: ${[words.label, words.detail, elapsed !== took?.words ? elapsed : took && (took.live ? `${took.words} so far` : `took ${took.words}`)].filter(Boolean).join(', ')}`}>
                 <Icon size={13} aria-hidden="true" className="task-step-icon" />
                 <span className="task-step-text">
                   <span className="task-step-name">{step.name}{step.repeat.mode === 'loop_back' && <Repeat size={11} aria-hidden="true" />}</span>
-                  <span className="task-step-words">{[words.label, words.detail, took?.words].filter(Boolean).join(' · ')}</span>
+                  <span className="task-step-words" title="Elapsed time across all attempts of this step">{[words.label, words.detail, elapsed].filter(Boolean).join(' · ')}</span>
                 </span>
               </button>
             );

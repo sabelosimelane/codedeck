@@ -837,3 +837,14 @@ describe('pipeline run store — loops and who decides', () => {
     });
   });
 
+
+it('commits an audit event atomically with the transition and rejects an invalid event', () => {
+  const {store} = setup();
+  const run = store.create(validRun());
+  expect(() => store.update(run.id, {status:'running'}, {audit:{kind:'oops',detail:null}})).toThrow(/audit/);
+  expect(store.get(run.id).status).toBe('pending');
+  store.update(run.id, {status:'running'}, {audit:{kind:'start',detail:null}});
+  const page = store.auditPage(run.id, {page:0,size:10,direction:'asc',stepIndex:null});
+  expect(page.data.map(row=>row.kind)).toEqual(['created','start']);
+  expect(page.data[1]).toMatchObject({host:'local',worktreePath:run.worktreePath,agentName:'codex',sessionId:null});
+});

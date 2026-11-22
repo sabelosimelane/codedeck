@@ -80,7 +80,7 @@ describe('TaskView', () => {
       const rail = within(screen.getByRole('navigation', { name: 'Steps' }));
       expect(rail.getByRole('button', { name: 'Plan: Done, took 4m 12s' }).textContent).toContain('Done · 4m 12s');
       expect(rail.getByRole('button', { name: 'Develop: Stopped, took 1h 5m' }).textContent).toContain('Stopped · 1h 5m');
-      expect(rail.getByRole('button', { name: 'Test: Not started, round 3 of 12, took 45s' }).textContent).toContain('Not started · round 3 of 12 · 45s');
+      expect(rail.getByRole('button', { name: 'Test: Awaiting next round, round 3 of 12, took 45s' }).textContent).toContain('Awaiting next round · round 3 of 12 · 45s');
       expect(rail.getByRole('button', { name: 'Commit: Running, 14s so far' }).textContent).toContain('Running · 14s');
       act(() => { vi.advanceTimersByTime(3000); });
       expect(rail.getByRole('button', { name: 'Commit: Running, 17s so far' }).textContent).toContain('Running · 17s');
@@ -334,4 +334,24 @@ it('lets the owner change teams on a failed run without resuming it', async () =
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Change team' })).toBeNull());
   expect(fetch).toHaveBeenCalledWith('/api/pipelines/runs/run-1/team', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ expectedUpdatedAt: stopped.updatedAt, teamId: id }) }));
   expect(h.onResume).not.toHaveBeenCalled();
+});
+
+it('shows durable handoff evidence when the operator opens the audit timeline', async () => {
+  const fetch = vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({
+    data:[{id:1,runId:'run-1',stepIndex:1,attempt:2,pass:1,host:'worker',worktreePath:'/tmp/wt',sessionId:'Demo-2',agentName:'Muse',model:null,effort:null,kind:'disposition_requested',detail:'Malformed signal',createdAt:'2026-11-23T00:00:00Z'}],
+    page:{hasNextPage:false},
+  })));
+  view();
+  fireEvent.click(screen.getByRole('button',{name:'Audit timeline'}));
+  expect(await screen.findByText(/Malformed signal/)).toBeTruthy();
+  expect(fetch.mock.calls[0][0]).toContain('stepIndex=1');
+});
+
+it('labels the active attempt and its cumulative elapsed time on the rail', () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date('2026-11-23T00:05:00Z'));
+    view({run:run({currentStepIndex:0, steps:[step(0,'Develop',{status:'running',sessionId:'Demo-2',attempt:2,iteration:1,elapsedMs:2400000,startedAt:'2026-11-23T00:04:00Z'})]})});
+    expect(screen.getByRole('navigation',{name:'Steps'}).textContent).toContain('Attempt 2 · 1m 0s since last start · 41m 0s total');
+  } finally { vi.useRealTimers(); }
 });

@@ -1,0 +1,48 @@
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+import { runGit } from './run-worktree.js';
+
+export function repairFindings(note, attempt) {
+  if (typeof note !== 'string') throw new Error('Repair evidence requires a Test note');
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('Repair evidence requires a positive attempt');
+  const prefix = `REPAIR ${attempt} `;
+  const lines = note.split(/\r?\n/).filter(line => line.startsWith(prefix));
+  if (!lines.length) throw new Error(`Test requested another round without a REPAIR ${attempt} finding for a buildable check. Owner or handset evidence requires NEEDS_INPUT.`);
+  const findings = lines.map(line => {
+    const [id,location,...reason] = line.slice(prefix.length).split('|').map(part => part.trim());
+    if (!/^[\w.-]{1,64}$/.test(id)) throw new Error('Repair finding requires a check id');
+    if (!location) throw new Error(`Repair finding ${id} requires a file path`);
+    if (!reason.join('|').trim()) throw new Error(`Repair finding ${id} requires a failure or outstanding task`);
+    if (line.length > 500 || /[\x00-\x1f\x7f]/.test(line)) throw new Error(`Invalid repair finding for ${id}`);
+    return `${id} | ${location} | ${reason.join('|')}`;
+  });
+  if (findings.join('\n').length > 6000) throw new Error('Repair findings exceed 6000 characters');
+  return [...new Set(findings)].sort();
+}
+
+// Git's no-index diff hashes the symlink itself, never its external target.
+export async function sourceFingerprint(trees, execFile) {
+  if (!Array.isArray(trees) || !trees.length) throw new Error('Repair fingerprint requires a worktree');
+  const digest = createHash('sha256');
+  const add = value => digest.update(JSON.stringify(value)).update('\n');
+  for (const tree of trees) {
+    if (typeof tree?.path !== 'string' || !path.isAbsolute(tree.path)) throw new Error('Repair worktree needs an absolute path');
+    if (typeof tree.repository !== 'string' || !tree.repository.trim()) throw new Error('Repair worktree needs a repository');
+    const git = async args => (await runGit(execFile,['-C',tree.path,...args])).stdout;
+    add([tree.repository,tree.path,await git(['rev-parse','HEAD'])]);
+    const diff = ['--no-ext-diff','--no-textconv','--binary'];
+    add(await git(['diff',...diff,'HEAD','--']));
+    const others = await git(['ls-files','--others','--exclude-standard','-z']);
+    for (const name of others.split('\0').filter(Boolean).sort()) {
+      if (path.isAbsolute(name) || name.split('/').includes('..')) throw new Error('Git returned an invalid worktree path');
+      add(name);
+      try {
+        add(await git(['diff','--no-index',...diff,'--','/dev/null',name]));
+      } catch (error) {
+        if (Number(error.code) !== 1 || !error.stdout?.startsWith('diff --git ')) throw error;
+        add(error.stdout);
+      }
+    }
+  }
+  return digest.digest('hex');
+}

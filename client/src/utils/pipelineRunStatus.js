@@ -63,7 +63,7 @@ export function describeStepProgress(step) {
   if (!step.repeat || typeof step.repeat !== 'object' || typeof step.repeat.mode !== 'string') throw new Error('step progress: repeat must be an object with a mode');
   if (!Number.isSafeInteger(step.iteration) || step.iteration < 0) throw new Error('step progress: iteration must be a nonnegative integer');
   if (!Number.isSafeInteger(step.roundsCompleted) || step.roundsCompleted < 0) throw new Error('step progress: roundsCompleted must be a nonnegative integer');
-  const label = STEP_LABEL[step.status];
+  const label = step.status === 'pending' && (step.roundsCompleted > 0 || step.elapsedMs > 0) ? 'Awaiting next round' : STEP_LABEL[step.status];
   const over = STEP_OVER.has(step.status);
   const { mode, max } = step.repeat;
   if (mode === 'until_complete') {
@@ -131,4 +131,36 @@ export function describeRunDuration(run, now) {
   }
   // The start is the backend's time and `now` this device's: a clock that is behind must not show a negative time.
   return { words: durationWords(Math.max(0, now - start)), live: true };
+}
+
+// Only charge intervals with two recorded boundaries in the same attempt.
+// A restored observer needs fresh evidence before attributing work again.
+const auditBuckets = {
+  start: 'Launch', resume: 'Launch', agent_restarted: 'Launch', step_running: 'Launch',
+  prompt_submitted: 'Unclassified', observation_unavailable: 'Unclassified', observation_restored: 'Unclassified',
+  input_received: 'Unclassified', work_observed: 'Work observed', disposition_requested: 'Handoff',
+  signal_accepted: 'Handoff', needs_input: 'Owner wait', approval_requested: 'Owner wait',
+  step_complete: null, loop_back: null, approved: null, approve: null, stop: null, error: null, interrupted: null,
+  limit_reached: 'Owner wait', continue: null, send_back: null,
+};
+export function describeAuditIntervals(events) {
+  const attempts = new Map();
+  for (const event of events) {
+    if (!event.attempt) continue;
+    const time = Date.parse(event.createdAt);
+    let entry = attempts.get(event.attempt);
+    if (!entry) {
+      entry = { bucket: null, time, totals: new Map() };
+      attempts.set(event.attempt, entry);
+    }
+    if (entry.bucket && time > entry.time) {
+      entry.totals.set(entry.bucket, (entry.totals.get(entry.bucket) ?? 0) + time - entry.time);
+    }
+    if (Object.hasOwn(auditBuckets,event.kind)) entry.bucket = auditBuckets[event.kind];
+    entry.time = time;
+  }
+  return Array.from(attempts, ([attempt, {totals}]) => ({
+    attempt, words: ['Launch','Work observed','Owner wait','Handoff','Unclassified']
+      .filter(bucket => totals.has(bucket)).map(bucket => bucket + ' ' + durationWords(totals.get(bucket))).join(' · ') || 'No closed interval yet',
+  }));
 }

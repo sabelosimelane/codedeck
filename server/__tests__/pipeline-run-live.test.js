@@ -441,8 +441,15 @@ describeLive('pipeline run live notes', () => {
       },
       terminalAvailable: sessionId => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
       createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
-      classifyReadiness: () => 'ready',
-      readExecutionState: async () => ({ executionReason: 'agent_prompt_idle', foregroundCommand: 'node', lines: ['› '], profile: { promptVisible: () => true, skillPrefix: '/' }, isAlive: true, entryExists: true }),
+      classifyReadiness: classifyAgentReadiness,
+      readExecutionState: async sessionId => {
+        // The stub enables raw input before printing its greeting. Reporting
+        // ready before that point can deliver the workflow prompt to the shell.
+        const lines = runtime.captureSessionSnapshot(sessionId, 100).data.split('\n');
+        return { executionReason: 'agent_prompt_idle', foregroundCommand: 'node', lines,
+          profile: { promptVisible: () => lines.some(line => line.includes('OpenAI Codex (stub)')), skillPrefix: '/' },
+          isAlive: true, entryExists: true };
+      },
       readScreen: async () => [],
       readinessPollMs: 50, launchEnterDelayMs: 50,
     });

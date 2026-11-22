@@ -454,3 +454,26 @@ describe('createHostTerminalRuntime.getSessionActivityAsync', () => {
     await expect(makeRuntime(runner).getSessionActivityAsync('proj-1')).rejects.toThrow(/activity/);
   });
 });
+
+describe('remote workflow pane inspection', () => {
+  it('reads the lowest pane on the worker, including a path containing a tab', async () => {
+    const runner = fakeRunner({ 'list-panes': '3\n1\n', 'display-message': '1\t0\t0\t0\tmuse\t\t/tmp/my\tproject\n' });
+    expect(await makeRuntime(runner).inspectPaneAsync('tester')).toEqual({
+      paneIndex: 1, inMode: false, inputOff: false, dead: false, currentCommand: 'muse', mode: '', currentPath: '/tmp/my\tproject',
+    });
+    expect(runner.tmuxCalls('display-message')[0].args).toContain('tester:0.1');
+  });
+});
+
+it('routes lost launch input and recovery of an untaken prompt to the remote main pane', async () => {
+  const runner = fakeRunner({ 'list-panes':'1\n2\n' });
+  const runtime = makeRuntime(runner);
+  await runtime.typeLineAsync('tester', 'muse');
+  await runtime.respawnMainPaneAsync('tester','/tmp/work');
+  expect(runner.tmuxCalls('send-keys').map(call => call.args)).toEqual([
+    ['send-keys','-t','tester:0.1','-l','--','muse'],
+    ['send-keys','-t','tester:0.1','Enter'],
+    ['send-keys','-R','-t','tester:0.1'],
+  ]);
+  expect(runner.tmuxCalls('respawn-pane')[0].args).toEqual(['respawn-pane','-k','-c','/tmp/work','-t','tester:0.1']);
+});

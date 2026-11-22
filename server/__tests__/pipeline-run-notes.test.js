@@ -438,3 +438,21 @@ it('lists the recorded base commit for each writable repository in the run READM
   expect(buildReadme(definition, 'Watch', places)).toContain('phone — ' + entry.baseCommit);
   expect(() => buildReadme(definition, 'Watch', { ...places, worktrees: [{ ...entry, baseCommit: 'invalid' }] })).toThrow(/base commit/i);
 });
+
+it('installs the Gradle verifier on the worker, preserves the exit code, and records native reuse', async () => {
+  const root = await repo();
+  const def = {...definition,steps:[{...definition.steps[1],name:'Test'}]};
+  await prepare({worktreePath:root,definition:def,input:''});
+  const bin = path.join(root,'gradlew');
+  const cli = path.join(root,def.notesDir,'gradle-proof.mjs');
+  await fs.writeFile(bin, '#!/usr/bin/env node\nconsole.log("> Task :check UP-TO-DATE");process.exit(process.argv.includes("failTest") ? 1 : 0);',{mode:0o755});
+  const invoke = task => execFileSync(process.execPath,[cli,'0','1',task],{cwd:root,encoding:'utf8'});
+  const line = invoke('check').match(/^GRADLE_RECEIPT 1 ([a-f0-9-]{36})$/m);
+  expect(line).toBeTruthy();
+  const receipt = JSON.parse(await fs.readFile(path.join(runFolder(root),'gradle-0-1-'+line[1]+'.json'),'utf8'));
+  expect(receipt).toMatchObject({attempt:1,tasks:['check'],exitCode:0,reused:1,executed:0,cwd:root});
+  expect(()=>invoke('failTest')).toThrow();
+  const {readGradleReceipts} = await import('../pipelines/run-notes.js');
+  expect((await readGradleReceipts({worktreePath:root,definition:def,stepIndex:0,attempt:1})).map(row=>row.exitCode).sort()).toEqual([0,1]);
+  expect(()=>invoke('--evil')).toThrow();
+});

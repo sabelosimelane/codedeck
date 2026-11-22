@@ -451,7 +451,7 @@ export function createPipelinesRouter(deps) {
   // Where a run may work and read, for a run in a place that already exists. Built when first asked for, after the dependencies are checked.
   let readRunPlaces = null;
   const runPlaces = (run) => {
-    readRunPlaces ??= createRunPlaces({ taskStore, findProject, execFile, resolveHomeRepoPath });
+    readRunPlaces ??= createRunPlaces({ taskStore, findProject, execFile, resolveHostTools, resolveHomeRepoPath });
     return readRunPlaces(run);
   };
   if (!workflowStore) throw new Error('pipelines router: workflowStore is required');
@@ -475,7 +475,7 @@ export function createPipelinesRouter(deps) {
   const asRunView = async run => {
     const viewRun = run.worktreeState === 'released' && canReclaimReleasedTaskRun({ run, taskStore, runStore })
       ? { ...run, reclaimableTaskWorktree: true } : run;
-    const inspected = await readRunProgress({ run: viewRun, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader });
+    const inspected = await readRunProgress({ run: viewRun, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: run.host !== 'local' && resolveHostTools ? createRunProgressReader({fs:resolveHostTools(run.host).fs}) : progressReader });
     // `tasksDone`/`tasksTotal` count every phase; `phase` is the first one with work left.
     const progress = inspected === null ? null : { file: inspected.file, status: inspected.status, phaseCount: inspected.phaseCount, phase: inspected.phase, tasksDone: inspected.tasksDone, tasksTotal: inspected.tasksTotal };
     return buildRunView(viewRun, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
@@ -1141,13 +1141,13 @@ export function createPipelinesRouter(deps) {
         const target = body.startIn === undefined ? open[0] : open.find(candidate => candidate.repository === body.startIn);
         if (!target) throw fieldError('startIn', 'Use the name of a repository of this task that is still open');
         wantedPath = target.worktreePath;
-        const checkoutOf = candidate => (candidate.own ? project.path : candidate.repositoryPath);
+        const checkoutOf = candidate => (candidate.own ? location.path : candidate.repositoryPath);
         checkoutPath = checkoutOf(target);
         startRepository = target.repository;
         if (forNewTask) {
           setupPairs = [];
           for (const entry of [target, ...open.filter(candidate => candidate !== target)]) {
-            setupPairs.push({ repository: entry.repository, homePath: await resolveHomeRepoPath({ projectPath: checkoutOf(entry), execFile }), worktreePath: entry.worktreePath });
+            setupPairs.push({ repository: entry.repository, homePath: await resolveHomeRepoPath({ projectPath: checkoutOf(entry), execFile: runExecFile }), worktreePath: entry.worktreePath });
           }
         }
       } else {
@@ -1156,9 +1156,9 @@ export function createPipelinesRouter(deps) {
         const other = otherRepositories.find(entry => entry.path === wantedPath);
         if (other) { checkoutPath = other.path; startRepository = other.name; }
       }
-      if (checkoutPath !== project.path) homePath = await resolveHomeRepoPath({ projectPath: checkoutPath, execFile });
+      if (checkoutPath !== location.path) homePath = await resolveHomeRepoPath({ projectPath: checkoutPath, execFile: runExecFile });
       // The path is only ever one git itself reported for a repository of this project.
-      const worktrees = await listWorktrees({ projectPath: checkoutPath, execFile });
+      const worktrees = await listWorktrees({ projectPath: checkoutPath, execFile: runExecFile });
       worktree = worktrees.find(candidate => candidate.path === wantedPath) ?? null;
       const taskFilesMissing = () => new PipelineError("This task's files are no longer on disk.", 409);
       if (task && !worktree) throw taskFilesMissing();
@@ -1166,13 +1166,13 @@ export function createPipelinesRouter(deps) {
       if (forNewTask) {
         // A locked worktree can still be listed without Git marking it prunable.
         if (worktree.missing) throw taskFilesMissing();
-        const directory = await fs.promises.stat(worktree.path).catch(error => {
+        const directory = await runFs.stat(worktree.path).catch(error => {
           if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
           throw error;
         });
         if (!directory?.isDirectory()) throw taskFilesMissing();
       }
-      const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
+      const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile: runExecFile });
       const reserved = reservedElsewhere(body.requestId);
       const refusal = worktreeRefusal(worktree, changes, runStore.list(), reserved.paths);
       if (refusal) throw new PipelineError(refusal.message, 409, undefined, { reasons: [refusal] });
@@ -1182,7 +1182,7 @@ export function createPipelinesRouter(deps) {
         throw new PipelineError(busy.message, 409, undefined, { reasons: [busy] });
       }
       names = { worktreePath: worktree.path, branch: worktree.branch };
-      places = await runPlaces({ project: project.name, taskId: task ? task.id : null, worktreePath: worktree.path });
+      places = await runPlaces({ host: runHost, project: project.name, taskId: task ? task.id : null, worktreePath: worktree.path });
     } else {
       names = planNames({
         runId,
@@ -1233,8 +1233,8 @@ export function createPipelinesRouter(deps) {
     if (definition.progressFile !== null) {
       // The progress file is read in the worktree the run works in: a new one copies the commit of its repository's checkout.
       const present = file => (useExisting
-        ? isProgressFileInWorktree({ worktreePath: names.worktreePath, progressFile: file })
-        : hasCommittedFile({ repoPath: checkoutPath, progressFile: file, execFile }));
+        ? isProgressFileInWorktree({ worktreePath: names.worktreePath, progressFile: file, fs: runFs })
+        : hasCommittedFile({ repoPath: checkoutPath, progressFile: file, execFile: runExecFile }));
       if (!(await present(definition.progressFile))) {
         // The owner may have typed the file's whole path, not only the part that replaces {input}.
         // Read that way the progress file is the input itself, and the run starts with the part.
@@ -1306,7 +1306,7 @@ export function createPipelinesRouter(deps) {
       if (taken) throw new PipelineError(taken.message, 409, undefined, { reasons: [taken] });
     }
     if (worktree && publication) {
-      const refreshed = (await listWorktrees({ projectPath: checkoutPath, execFile }))
+      const refreshed = (await listWorktrees({ projectPath: checkoutPath, execFile: runExecFile }))
         .find(candidate => candidate.path === worktree.path) ?? null;
       if (!refreshed || refreshed.missing) {
         await discardBatch();
@@ -1317,7 +1317,7 @@ export function createPipelinesRouter(deps) {
       }
       let changes;
       try {
-        changes = await readWorktreeChanges({ worktreePath: refreshed.path, execFile });
+        changes = await readWorktreeChanges({ worktreePath: refreshed.path, execFile: runExecFile });
       } catch (error) {
         // A checkout Git can no longer open (corrupt index, for example) is refused as unreadable
         // at publication, not left to 500 after the batch was already written.
@@ -1725,6 +1725,17 @@ export function createPipelinesRouter(deps) {
         .map(({ id, stepIndex: index, stepName, attempt, verdict, comment, createdAt }) => ({ id, stepIndex: index, stepName, attempt, verdict, comment, createdAt })),
       page: { currentPage: query.page, size: query.size, totalElements: total, totalPages: Math.ceil(total / query.size), hasNextPage: (query.page + 1) * query.size < total },
     });
+  }));
+
+  router.get(`${BASE}/runs/:id/audit`, route((req, res) => {
+    const run = loadRun(req.params.id);
+    const query = parseCollectionQuery(req.query, {sortFields:['id'], defaultSort:'id,asc', filters:[{
+      name:'stepIndex', parse(value) {
+        if (typeof value !== 'string' || !/^\d+$/.test(value) || Number(value) > 32) throw fieldError('stepIndex','Use a step index from 0 to 32');
+        return Number(value);
+      },
+    }]});
+    res.json(runStore.auditPage(run.id,{...query, stepIndex:query.filters.stepIndex ?? null}));
   }));
 
   router.get(`${BASE}/runs/:id/notes`, route((req, res) => {
