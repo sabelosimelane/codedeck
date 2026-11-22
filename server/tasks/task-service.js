@@ -11,7 +11,7 @@ import { isUuid } from '../../shared/pipeline-definitions.mjs';
 import { create as createWorktree, listWorktrees, planNames, planTaskFolder, preflight, readWorktreeChanges, remove as removeWorktree, resolveHomeRepoPath, runGit } from '../pipelines/run-worktree.js';
 import { readStoredRepositories } from '../project-repositories.js';
 import { holdsWorktree } from '../pipelines/run-worktree-hold.js';
-import { isTaskTitle, TASK_TITLE_MAX } from './task-store.js';
+import { isRepositoryName, isTaskTitle, TASK_TITLE_MAX } from './task-store.js';
 import { getProjectLocation, LOCAL_HOST, normalizeHostName, normalizeProject } from '../project-config.js';
 import { syncProjectLocation } from '../git-sync-service.js';
 
@@ -27,6 +27,8 @@ export class TaskError extends Error {
 const invalid = (field, message) => new TaskError('One or more fields failed validation.', 400, [{ field, message }]);
 const TITLE_RULE = `Use 1–${TASK_TITLE_MAX} characters on one line`;
 const OPEN_STATES = ['active', 'pr_open'];
+const PATH_MAX = 1024;
+const isAbsoluteFolder = value => typeof value === 'string' && value.length >= 1 && value.length <= PATH_MAX && path.isAbsolute(value) && !value.includes('\0');
 const firstLine = text => String(text ?? '').trim().split('\n')[0].slice(0, 300);
 /** What Git said went wrong: its `fatal:` or `error:` line when it has one, else its first line. */
 const gitReason = (text) => {
@@ -36,7 +38,7 @@ const gitReason = (text) => {
 };
 
 export function createTaskService({
-  taskStore, findProject, execFile, startSession, pathExists, realpath, newId = randomUUID,
+  taskStore, findProject, execFile, startSession, pathExists, realpath = target => fs.promises.realpath(target), newId = randomUUID,
   // Whether a workflow run is working in a task right now: a repository is not added under it.
   isRunWorking,
   listRuns,
@@ -418,35 +420,168 @@ export function createTaskService({
     return task;
   }
 
+  /** A folder the owner named: on disk and the top level of a Git working tree. Says which branch and commit it is on. */
+  async function inspectFolder(given, field, tools) {
+    if (!(await onDisk(given, tools))) throw invalid(field, 'This folder does not exist');
+    const folder = await tools.realpath(given);
+    if (typeof folder !== 'string' || !path.isAbsolute(folder)) throw new Error('realpath must return an absolute path');
+    const check = await preflight({ projectPath: folder, projectHost: tools.host, allowRemote: Boolean(resolveHostTools), setupAgentId: undefined, execFile: tools.execFile, realpath: tools.realpath });
+    if (!Array.isArray(check?.reasons)) throw new Error('Git preflight reasons are invalid');
+    for (const reason of check.reasons) {
+      if (typeof reason?.code !== 'string' || typeof reason?.message !== 'string') throw new Error('Git preflight reason is invalid');
+      if (reason.code === 'not_git_toplevel') throw invalid(field, 'This folder is not the top level of a Git working tree');
+      if (reason.code !== 'setup_agent_missing') throw new TaskError(reason.message, reason.code === 'host_unreachable' ? 503 : 409);
+    }
+    if (check.branch !== null && typeof check.branch !== 'string') throw new Error('Git preflight branch is invalid');
+    if (typeof check.head !== 'string' || !commitId.test(check.head)) throw new Error('Git preflight head is invalid');
+    return { path: folder, branch: check.branch, head: check.head };
+  }
+
+  /** The folder a checkout's repository is kept in, as the disk names it, so that two checkouts of one repository compare equal. */
+  async function realHomeOf(checkout, tools) {
+    const home = await tools.realpath(await homeOf(checkout, tools));
+    if (typeof home !== 'string' || !path.isAbsolute(home)) throw new Error('realpath must return an absolute path');
+    return home;
+  }
+
+  /** The project's repositories, each with the folder its repository is kept in, for telling whose a folder is. */
+  async function knownRepositories(project, location, tools) {
+    const known = [{ name: path.basename(await homeOf(location.path, tools)), path: location.path, own: true },
+      ...readStoredRepositories({ name: project.name, repositories: location.repositories }).map(entry => ({ name: entry.name, path: entry.path, own: false }))];
+    for (const entry of known) {
+      try {
+        entry.home = await realHomeOf(entry.path, tools);
+      } catch (error) {
+        // The project's own repository was read just above. A listed folder Git cannot read is no folder's repository.
+        if (entry.own) throw error;
+        console.warn(`[tasks] listed repository ${entry.name} of ${project.name} could not be read: ${firstLine(error?.stderr || error?.message)}`);
+        entry.home = null;
+      }
+    }
+    return known;
+  }
+
+  const ADD_WAYS = ['repository', 'path', 'worktreePath'];
+  const OWN_CHECKOUT = 'This folder is the checkout its repository is kept in, not a worktree made for this work. Add it as a repository to give the task a copy of it.';
+  const usedName = name => new TaskError(`Another repository of this project is already called ${name}.`, 409);
+
+  /** One of the project's repositories, by its name: the task gets a new copy from the checkout the project lists. */
+  async function sourceByName(name, project, location, tools) {
+    const wrongName = invalid('repository', 'Use the name of one of this project\'s repositories');
+    const ownHome = await homeOf(location.path, tools);
+    const listed = readStoredRepositories({ name: project.name, repositories: location.repositories }).find(entry => entry.name === name);
+    const checkoutPath = name === path.basename(ownHome) ? location.path : listed?.path;
+    if (checkoutPath === undefined) throw wrongName;
+    return { name, checkoutPath, repositoryPath: checkoutPath === location.path ? null : checkoutPath, existing: null,
+      homePath: async () => (checkoutPath === location.path ? ownHome : homeOf(checkoutPath, tools)) };
+  }
+
+  /** A repository the project does not list, by the folder it is checked out in: the task gets a new copy from that checkout. */
+  async function sourceByFolder(given, project, location, tools) {
+    const folder = await inspectFolder(given, 'path', tools);
+    const home = await realHomeOf(folder.path, tools);
+    const known = await knownRepositories(project, location, tools);
+    const listed = known.find(entry => entry.home === home || entry.path === folder.path);
+    if (listed) throw new TaskError(`This folder belongs to ${listed.name}, a repository of this project. Add it from the list.`, 409);
+    const name = path.basename(home);
+    if (!isRepositoryName(name)) throw invalid('path', 'This folder has no usable name');
+    if (known.some(entry => entry.name === name)) throw usedName(name);
+    return { name, checkoutPath: folder.path, repositoryPath: folder.path, existing: null, homePath: async () => home };
+  }
+
   /**
-   * Gives an open task a copy of one more of the project's repositories: a worktree beside its
-   * others, on the task's branch, from that repository's current commit. Nothing is prepared in it.
+   * A worktree that already exists, of any repository: it joins the task as it is. Its work lands in the
+   * checkout the project lists for its repository, or else in the folder that repository is kept in.
+   */
+  async function sourceByWorktree(given, project, location, tools) {
+    if (typeof listRuns !== 'function') throw new TypeError('listRuns is required to add an existing worktree');
+    if (typeof reservedWorktreePaths !== 'function') throw new TypeError('reservedWorktreePaths is required to add an existing worktree');
+    if (typeof taskStore.findOpenByWorktreePath !== 'function') throw new TypeError('taskStore.findOpenByWorktreePath is required');
+    const folder = await inspectFolder(given, 'worktreePath', tools);
+    if (taskStore.findOpenByWorktreePath(folder.path)) throw new TaskError('This worktree already belongs to a task.', 409);
+    const home = await realHomeOf(folder.path, tools);
+    const known = await knownRepositories(project, location, tools);
+    const listed = known.find(entry => entry.home === home) ?? null;
+    const checkout = listed ? listed.path : home;
+    if (folder.path === checkout || known.some(entry => entry.path === folder.path)) throw new TaskError(OWN_CHECKOUT, 409);
+    if (folder.branch === null) throw new TaskError(candidateReasons.detached, 409);
+    const runs = listRuns();
+    const reserved = reservedWorktreePaths();
+    if (!Array.isArray(runs)) throw new Error('Run list is invalid');
+    if (!(reserved instanceof Set)) throw new Error('Reserved worktree paths are invalid');
+    if (runs.some(run => holdsWorktree(run, folder.path)) || reserved.has(folder.path)) throw new TaskError(candidateReasons.in_use, 409);
+    const name = listed ? listed.name : path.basename(home);
+    if (!listed) {
+      if (!isRepositoryName(name)) throw invalid('worktreePath', 'This folder has no usable name');
+      if (known.some(entry => entry.name === name)) throw usedName(name);
+    }
+    let baseBranch;
+    try {
+      baseBranch = (await runGit(tools.execFile, ['-C', checkout, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+    } catch (error) {
+      // Git ran and refused: the repository has no checkout of its own to land in (a bare repository, or one with no commit).
+      if (typeof error?.code === 'number') throw new TaskError(candidateReasons.base_unknown, 409, undefined, { cause: error });
+      throw error;
+    }
+    if (!baseBranch) throw new Error(`Git base branch is invalid for ${name}`);
+    if (baseBranch === 'HEAD') throw new TaskError(candidateReasons.base_unknown, 409);
+    const noBase = 'The worktree branch has no common base with the checkout.';
+    let baseCommit;
+    try { baseCommit = (await runGit(tools.execFile, ['-C', checkout, 'merge-base', baseBranch, folder.branch])).stdout.trim(); }
+    catch (error) { if (error?.code === 1) throw new TaskError(noBase, 409, undefined, { cause: error }); throw error; }
+    if (!commitId.test(baseCommit)) throw new TaskError(noBase, 409);
+    return { name, checkoutPath: checkout, repositoryPath: listed?.own ? null : checkout,
+      existing: { worktreePath: folder.path, branch: folder.branch, baseBranch, baseCommit } };
+  }
+
+  /**
+   * Gives an open task one more repository, named in one of three ways. `repository`: one of the
+   * project's, by name. `path`: a repository the project does not list, by the folder it is checked
+   * out in; it joins this task only and the project's list stays as it is. Either gets a worktree
+   * beside the task's others, on the task's branch, from that checkout's current commit, with nothing
+   * prepared in it. `worktreePath`: a worktree that already exists, taken as it is; Git is only read.
    */
   async function addRepositoryNow(id, body) {
     const task = requireTask(id);
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) throw invalid('body', 'Use an object with repository');
-    const unknown = Object.keys(body).filter(field => field !== 'repository');
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) throw invalid('body', 'Use an object with repository, path or worktreePath');
+    const unknown = Object.keys(body).filter(field => !ADD_WAYS.includes(field));
     if (unknown.length) throw new TaskError('One or more fields failed validation.', 400, unknown.map(field => ({ field, message: 'Unknown field' })));
-    const name = body.repository;
-    const wrongName = invalid('repository', 'Use the name of one of this project\'s repositories');
-    if (typeof name !== 'string' || name.length === 0 || name.includes('/')) throw wrongName;
+    const given = ADD_WAYS.filter(field => Object.hasOwn(body, field));
+    if (given.length > 1) throw new TaskError('One or more fields failed validation.', 400, given.map(field => ({ field, message: 'Give one of repository, path and worktreePath' })));
+    const way = given[0] ?? 'repository';
+    if (way === 'repository' && (typeof body.repository !== 'string' || body.repository.length === 0 || body.repository.includes('/'))) {
+      throw invalid('repository', 'Use the name of one of this project\'s repositories');
+    }
+    if (way === 'path' && !isAbsoluteFolder(body.path)) throw invalid('path', 'Use the absolute path of a folder');
+    if (way === 'worktreePath' && !isAbsoluteFolder(body.worktreePath)) throw invalid('worktreePath', 'Use the absolute path of a worktree');
     if (!OPEN_STATES.includes(task.state)) throw new TaskError('This task is finished.', 409);
+
+    const { project, location, tools } = await resolveProject(task.project, task.host);
+    const source = way === 'repository' ? await sourceByName(body.repository, project, location, tools)
+      : way === 'path' ? await sourceByFolder(body.path, project, location, tools)
+        : await sourceByWorktree(body.worktreePath, project, location, tools);
+    const { name } = source;
     const had = task.worktrees.find(worktree => worktree.repository === name);
     if (had) {
       throw new TaskError(OPEN_STATES.includes(had.state)
         ? `${name} is already part of this task.`
         : `${name} was already merged or closed in this task and cannot be added again.`, 409);
     }
-    const { project, location, tools } = await resolveProject(task.project, task.host);
-    const ownHome = await homeOf(location.path, tools);
-    const listed = readStoredRepositories({ name: project.name, repositories: location.repositories }).find(entry => entry.name === name);
-    const checkoutPath = name === path.basename(ownHome) ? location.path : listed?.path;
-    if (checkoutPath === undefined) throw wrongName;
     // A run that is working may be writing in the task; the repository is added when it pauses or finishes.
     if (isRunWorking(task.id) === true) throw new TaskError('A workflow run is working in this task. Add the repository when it pauses or finishes.', 409);
 
+    if (source.existing !== null) {
+      try {
+        return taskStore.addWorktree(task.id, { repository: name, repositoryPath: source.repositoryPath, ...source.existing });
+      } catch (error) {
+        if (taskStore.findOpenByWorktreePath(source.existing.worktreePath)) throw new TaskError('This worktree already belongs to a task.', 409, undefined, { cause: error });
+        throw error;
+      }
+    }
+
+    const { checkoutPath } = source;
     const baseBranch = await checkCheckout(checkoutPath, name, tools);
-    const homePath = checkoutPath === location.path ? ownHome : await homeOf(checkoutPath, tools);
+    const homePath = await source.homePath();
     // Beside the task's other worktrees when it has a folder of its own; else named as its own worktree is.
     const branch = task.branch.startsWith('task/') ? task.branch : `task/${task.id.slice(0, 8)}`;
     const worktreePath = task.folder !== null
@@ -456,7 +591,7 @@ export function createTaskService({
 
     // Recorded before Git is asked, at the commit the repository is on now.
     const baseCommit = await headOf(checkoutPath, tools);
-    const recorded = taskStore.addWorktree(task.id, { repository: name, repositoryPath: checkoutPath === location.path ? null : checkoutPath, worktreePath, branch, baseBranch, baseCommit });
+    const recorded = taskStore.addWorktree(task.id, { repository: name, repositoryPath: source.repositoryPath, worktreePath, branch, baseBranch, baseCommit });
     try {
       await createWorktree({ homePath, worktreePath, branch, baseCommit, execFile: tools.execFile, mkdir: tools.mkdir });
     } catch (error) {

@@ -253,7 +253,9 @@ export function createTasksRouter({ service, taskStore, landing, changes } = {})
 
   // --- Landing one repository of a task ---
 
-  // One more of the project's repositories for an open task: `{repository}`. The service checks the body, since it knows the project's repositories.
+  // One more repository for an open task, named one way: `{repository}` (one of the project's, by name), `{path}` (a repository the
+  // project does not list, by its folder) or `{worktreePath}` (a worktree that already exists, taken as it is). The service checks the
+  // body, since it knows the project's repositories and reads the folders.
   router.post(`${BASE}/:id/worktrees`, route(async (req, res) => {
     res.status(201).json(taskView(await service.addRepository(req.params.id, req.body ?? null)));
   }));

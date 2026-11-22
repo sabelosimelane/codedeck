@@ -340,6 +340,20 @@ export async function addTaskRepository(taskId, repository) {
   return parseTask(await request(`/${taskId}/worktrees`, { method: 'POST', body: { repository } }));
 }
 
+/** Gives an open task a new copy of a repository its project does not list, named by the folder it is checked out in. For that task only. */
+export async function addTaskOutsideRepository(taskId, folder) {
+  requireTaskId(taskId);
+  if (!text(folder)) throw new TypeError('folder must be a nonempty string');
+  return parseTask(await request(`/${taskId}/worktrees`, { method: 'POST', body: { path: folder.trim() } }));
+}
+
+/** Makes a worktree that already exists part of an open task, as it is. */
+export async function addTaskWorktree(taskId, worktreePath) {
+  requireTaskId(taskId);
+  if (!text(worktreePath)) throw new TypeError('worktreePath must be a nonempty string');
+  return parseTask(await request(`/${taskId}/worktrees`, { method: 'POST', body: { worktreePath: worktreePath.trim() } }));
+}
+
 export async function commitTaskWorktree(taskId, worktreeId, message) {
   requireTaskId(taskId);
   requireWorktreeId(worktreeId);

@@ -1374,7 +1374,7 @@ export default function TerminalArea({
         )}
       </div>}
       {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged}
-        canAddRepository={Array.isArray(project.repositories) && project.repositories.length > 0} onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
+        canAddRepository onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
         // One repository of the task was merged or closed: its terminals are gone, the task stays on screen.
         onRepositoryFinished={result => removeClosedSessions(result.terminalsClosed)} />}
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}

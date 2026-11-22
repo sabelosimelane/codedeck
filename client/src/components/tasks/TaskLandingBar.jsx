@@ -17,7 +17,7 @@ const FALLBACK = 'Something went wrong. Please try again.';
  * backend every few seconds; every button round-trips through the backend and nothing here
  * decides whether an action is allowed.
  */
-/** `canAddRepository`: the task's project lists other repositories, so the task can be given a copy of one more. */
+/** `canAddRepository`: the task can be given one more repository, one of its project's or one from any other folder. */
 export default function TaskLandingBar({ task, canAddRepository = false, onChanged, onFinished, onRepositoryFinished }) {
   // A task with several repositories lands each on its own; one with a single worktree is landed as a whole.
   if (Array.isArray(task.worktrees) && task.worktrees.length > 1) {

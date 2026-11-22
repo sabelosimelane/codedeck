@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { execFile } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService } from '../tasks/task-service.js';
@@ -14,7 +14,7 @@ const databases = [];
 afterEach(() => databases.splice(0).forEach(db => db.close()));
 
 /** A project whose own repository is `backend`, listing `mobile-app` and `frontend` (through its main worktree). */
-async function setup({ exec = execFile, link = true, working = { now: false } } = {}) {
+async function setup({ exec = execFile, link = true, working = { now: false }, runs = [], reserved = new Set() } = {}) {
   const ctx = groupFixture();
   if (link) {
     await ctx.service.add('Demo', { path: ctx.mobile });
@@ -27,11 +27,12 @@ async function setup({ exec = execFile, link = true, working = { now: false } } 
   const ids = [ID, '7a000000-0000-4000-8000-000000000002'];
   const service = createTaskService({
     isRunWorking: () => working.now,
+    listRuns: () => runs, reservedWorktreePaths: () => reserved,
     taskStore, findProject: ctx.findProject, execFile: exec, startSession: start,
     pathExists: async target => existsSync(target), newId: () => ids.shift(),
   });
   const folder = path.join(ctx.group, 'worktrees', 'whatsapp-replies-7a000000');
-  return { ...ctx, taskStore, tasks: service, start, folder, working };
+  return { ...ctx, taskStore, tasks: service, start, folder, working, runs, reserved };
 }
 
 async function rejection(promise) {
@@ -248,7 +249,7 @@ describe('a task across the repositories of a project', { timeout: 30_000 }, () 
       expect(await rejection(tasks.addRepository(ID, { repository: 'mobile-app' }))).toMatchObject({ status: 409, message: 'mobile-app was already merged or closed in this task and cannot be added again.' });
       expect(await rejection(tasks.addRepository(ID, { repository: 'tools' }))).toMatchObject({ status: 400, errors: [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }] });
       for (const body of [undefined, null, [], 'frontend']) {
-        expect(await rejection(tasks.addRepository(ID, body))).toMatchObject({ status: 400, errors: [{ field: 'body', message: 'Use an object with repository' }] });
+        expect(await rejection(tasks.addRepository(ID, body))).toMatchObject({ status: 400, errors: [{ field: 'body', message: 'Use an object with repository, path or worktreePath' }] });
       }
       for (const repository of [undefined, null, '', 7, 'a/b']) {
         expect(await rejection(tasks.addRepository(ID, { repository }))).toMatchObject({ status: 400, errors: [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }] });
@@ -268,6 +269,152 @@ describe('a task across the repositories of a project', { timeout: 30_000 }, () 
       expect(error.message).toMatch(/^The copy of mobile-app could not be created: .*already exists\.$/);
       expect(existsSync(path.join(folder, 'mobile-app'))).toBe(false);
       expect(taskStore.get(ID).worktrees).toHaveLength(1);
+    });
+  });
+
+  describe('adding a repository the project does not list to an open task', () => {
+    const TOP_LEVEL = 'This folder is not the top level of a Git working tree';
+
+    it('gives the task a copy of a repository from any folder, beside its others, and leaves the project\'s list alone', async () => {
+      const { tasks, folder, tools, taskStore, stored } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      const listedBefore = JSON.stringify(stored());
+      const task = await tasks.addRepository(ID, { path: tools });
+      expect(task.worktrees.map(worktree => [worktree.repository, worktree.first, worktree.worktreePath, worktree.branch])).toEqual([
+        ['backend', true, path.join(folder, 'backend'), 'task/whatsapp-replies-7a000000'],
+        ['tools', false, path.join(folder, 'tools'), 'task/whatsapp-replies-7a000000'],
+      ]);
+      expect(task.worktrees[1]).toMatchObject({ own: false, repositoryPath: tools, baseBranch: 'main', baseCommit: git(tools, ['rev-parse', 'HEAD']), state: 'active' });
+      expect(git(path.join(folder, 'tools'), ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('task/whatsapp-replies-7a000000');
+      expect(taskStore.get(ID)).toEqual(task);
+      expect(JSON.stringify(stored())).toBe(listedBefore);
+    });
+
+    it('keeps the copy beside its own repository when the task has no folder of its own', async () => {
+      const { tasks, base, tools } = await setup({ link: false });
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      const task = await tasks.addRepository(ID, { path: tools });
+      expect(task.folder).toBeNull();
+      expect(task.worktrees[1]).toMatchObject({ repository: 'tools', repositoryPath: tools, worktreePath: path.join(base, 'elsewhere', 'worktrees', 'tools-whatsapp-replies-7a000000') });
+    });
+
+    it('refuses a folder that is not a repository, one the project lists, a name already used, and more than one way of naming it', async () => {
+      const { tasks, tools, notes, mobile, frontend, otherBackend, base, working, taskStore } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      for (const value of [undefined, null, '', 7, 'relative/tools', `${tools}\0`, `/${'a'.repeat(1024)}`]) {
+        expect(await rejection(tasks.addRepository(ID, { path: value }))).toMatchObject({ status: 400, errors: [{ field: 'path', message: 'Use the absolute path of a folder' }] });
+      }
+      expect(await rejection(tasks.addRepository(ID, { path: path.join(base, 'nowhere') }))).toMatchObject({ status: 400, errors: [{ field: 'path', message: 'This folder does not exist' }] });
+      mkdirSync(path.join(tools, 'src'));
+      for (const folder of [notes, path.join(tools, 'src'), path.join(tools, 'README.md')]) {
+        expect(await rejection(tasks.addRepository(ID, { path: folder }))).toMatchObject({ status: 400, errors: [{ field: 'path', message: TOP_LEVEL }] });
+      }
+      // A repository of the project is added by its name, whichever of its folders is given.
+      expect(await rejection(tasks.addRepository(ID, { path: mobile }))).toMatchObject({ status: 409, message: 'This folder belongs to mobile-app, a repository of this project. Add it from the list.' });
+      expect(await rejection(tasks.addRepository(ID, { path: frontend }))).toMatchObject({ status: 409, message: 'This folder belongs to frontend, a repository of this project. Add it from the list.' });
+      expect(await rejection(tasks.addRepository(ID, { path: otherBackend }))).toMatchObject({ status: 409, message: 'Another repository of this project is already called backend.' });
+      const both = { message: 'Give one of repository, path and worktreePath' };
+      expect(await rejection(tasks.addRepository(ID, { repository: 'mobile-app', path: tools }))).toMatchObject({ status: 400, errors: [{ field: 'repository', ...both }, { field: 'path', ...both }] });
+      expect(await rejection(tasks.addRepository(ID, { path: tools, worktreePath: tools }))).toMatchObject({ status: 400, errors: [{ field: 'path', ...both }, { field: 'worktreePath', ...both }] });
+      working.now = true;
+      expect(await rejection(tasks.addRepository(ID, { path: tools }))).toMatchObject({ status: 409, message: 'A workflow run is working in this task. Add the repository when it pauses or finishes.' });
+      working.now = false;
+      expect(taskStore.get(ID).worktrees).toHaveLength(1);
+      await tasks.addRepository(ID, { path: tools });
+      expect(await rejection(tasks.addRepository(ID, { path: tools }))).toMatchObject({ status: 409, message: 'tools is already part of this task.' });
+    });
+  });
+
+  describe('adding an existing worktree to an open task', () => {
+    /** A worktree made by hand beside its repository, with a commit of its own and a file Git does not track. */
+    function handMade(repo, name, branch = `feat/${name}`) {
+      const made = path.join(path.dirname(repo), 'worktrees', name);
+      git(repo, ['worktree', 'add', '-q', '-b', branch, made]);
+      writeFileSync(path.join(made, 'work.txt'), 'work\n');
+      git(made, ['add', 'work.txt']);
+      git(made, ['commit', '-q', '-m', 'work']);
+      writeFileSync(path.join(made, 'scratch.txt'), 'not tracked\n');
+      return made;
+    }
+
+    it('takes a worktree of a repository the project does not list as it is, landing in that repository\'s own checkout', async () => {
+      const { tasks, tools, taskStore, folder } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      const made = handMade(tools, 'tools-meter');
+      const head = git(made, ['rev-parse', 'HEAD']);
+      const task = await tasks.addRepository(ID, { worktreePath: made });
+      expect(task.worktrees[1]).toMatchObject({
+        repository: 'tools', own: false, first: false, repositoryPath: tools, worktreePath: made,
+        branch: 'feat/tools-meter', baseBranch: 'main', baseCommit: git(tools, ['rev-parse', 'HEAD']), state: 'active',
+      });
+      expect(taskStore.get(ID)).toEqual(task);
+      // Nothing in it was touched, and no copy was made in the task's folder.
+      expect(git(made, ['rev-parse', 'HEAD'])).toBe(head);
+      expect(git(made, ['status', '--porcelain'])).toBe('?? scratch.txt');
+      expect(existsSync(path.join(folder, 'tools'))).toBe(false);
+    });
+
+    it('knows a worktree of one of the project\'s repositories by that repository', async () => {
+      const { tasks, mobile, backend } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies', repositories: ['frontend'] });
+      const ofMobile = handMade(mobile, 'mobile-meter');
+      const ofBackend = handMade(backend, 'backend-meter');
+      await tasks.addRepository(ID, { worktreePath: ofMobile });
+      const task = await tasks.addRepository(ID, { worktreePath: ofBackend });
+      expect(task.worktrees.slice(1).map(worktree => [worktree.repository, worktree.own, worktree.repositoryPath, worktree.worktreePath, worktree.baseBranch])).toEqual([
+        ['mobile-app', false, mobile, ofMobile, 'main'],
+        ['backend', true, null, ofBackend, 'main'],
+      ]);
+    });
+
+    it('refuses a folder that is not a worktree made for the work', async () => {
+      const { tasks, tools, notes, base, frontendMain, mobile, taskStore } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      for (const value of [undefined, null, '', 7, 'relative/tools', `${tools}\0`]) {
+        expect(await rejection(tasks.addRepository(ID, { worktreePath: value }))).toMatchObject({ status: 400, errors: [{ field: 'worktreePath', message: 'Use the absolute path of a worktree' }] });
+      }
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: path.join(base, 'nowhere') }))).toMatchObject({ status: 400, errors: [{ field: 'worktreePath', message: 'This folder does not exist' }] });
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: notes }))).toMatchObject({ status: 400, errors: [{ field: 'worktreePath', message: 'This folder is not the top level of a Git working tree' }] });
+      const own = 'This folder is the checkout its repository is kept in, not a worktree made for this work. Add it as a repository to give the task a copy of it.';
+      for (const checkout of [tools, mobile, frontendMain]) {
+        expect(await rejection(tasks.addRepository(ID, { worktreePath: checkout }))).toMatchObject({ status: 409, message: own });
+      }
+      const detached = handMade(tools, 'tools-detached');
+      git(detached, ['checkout', '-q', '--detach']);
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: detached }))).toMatchObject({ status: 409, message: 'No branch is checked out in this worktree.' });
+      const orphan = handMade(tools, 'tools-orphan');
+      git(orphan, ['checkout', '-q', '--orphan', 'unrelated']);
+      git(orphan, ['commit', '-q', '-m', 'unrelated']);
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: orphan }))).toMatchObject({ status: 409, message: 'The worktree branch has no common base with the checkout.' });
+      expect(taskStore.get(ID).worktrees).toHaveLength(1);
+    });
+
+    it('refuses a worktree whose repository has no base branch checked out', async () => {
+      const { tasks, tools } = await setup();
+      await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      const made = handMade(tools, 'tools-meter');
+      git(tools, ['checkout', '-q', '--detach']);
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: made }))).toMatchObject({ status: 409, message: 'No base branch is checked out in the repository.' });
+    });
+
+    it('refuses a worktree a task or a run already has, a repository the task already has, and a working run', async () => {
+      const { tasks, tools, otherBackend, runs, reserved, working, taskStore } = await setup();
+      const first = await tasks.create({ project: 'Demo', title: 'WhatsApp replies' });
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: first.worktreePath }))).toMatchObject({ status: 409, message: 'This worktree already belongs to a task.' });
+      const made = handMade(tools, 'tools-meter');
+      runs.push({ worktreePath: made, status: 'running', worktreeState: 'external' });
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: made }))).toMatchObject({ status: 409, message: 'An open workflow run is already using it.' });
+      runs.length = 0;
+      reserved.add(made);
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: made }))).toMatchObject({ status: 409, message: 'An open workflow run is already using it.' });
+      reserved.clear();
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: handMade(otherBackend, 'backend-meter') }))).toMatchObject({ status: 409, message: 'Another repository of this project is already called backend.' });
+      working.now = true;
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: made }))).toMatchObject({ status: 409, message: 'A workflow run is working in this task. Add the repository when it pauses or finishes.' });
+      working.now = false;
+      expect(taskStore.get(ID).worktrees).toHaveLength(1);
+      await tasks.addRepository(ID, { worktreePath: made });
+      expect(await rejection(tasks.addRepository(ID, { worktreePath: handMade(tools, 'tools-again') }))).toMatchObject({ status: 409, message: 'tools is already part of this task.' });
     });
   });
 });

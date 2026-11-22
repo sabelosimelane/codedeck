@@ -6,7 +6,7 @@ import { buildWorktreeGroups, resolveSessionWorktrees } from '../../utils/worktr
 
 vi.mock('../Terminal', () => ({ default: ({ sessionId, cwd }) => <span data-testid={`mounted-${sessionId}`} data-cwd={cwd} /> }));
 vi.mock('../PaneDivider', () => ({ default: () => null }));
-vi.mock('../tasks/TaskLandingBar.jsx', () => ({ default: ({ task }) => <span data-testid="landing-bar">{task.title}</span> }));
+vi.mock('../tasks/TaskLandingBar.jsx', () => ({ default: ({ task, canAddRepository }) => <span data-testid="landing-bar" data-can-add={String(canAddRepository)}>{task.title}</span> }));
 vi.mock('../TerminalInspector', () => ({ default: () => null }));
 const toast = vi.hoisted(() => vi.fn());
 const tasksApi = vi.hoisted(() => ({ openTaskTerminal: vi.fn(), createTask: vi.fn() }));
@@ -55,6 +55,14 @@ describe('TerminalArea with several repositories', () => {
     expect(view.getAllByTestId('terminal-tab').map(chip)).toEqual(['mobile-app', 'backend']);
     expect(view.getByRole('button', { name: 'Replies (2)' }).getAttribute('aria-pressed')).toBe('true');
     expect(view.getByTestId('landing-bar').textContent).toBe('Replies');
+  });
+
+  it('lets a task be given a repository whether or not its project lists others, since one can come from any folder', async () => {
+    const listing = mount(TASK_KEY);
+    await waitFor(() => expect(listing.getByTestId('landing-bar').getAttribute('data-can-add')).toBe('true'));
+    cleanup();
+    const alone = mount(TASK_KEY, { project: { ...project, repositories: [] } });
+    await waitFor(() => expect(alone.getByTestId('landing-bar').getAttribute('data-can-add')).toBe('true'));
   });
 
   it('keeps a terminal in another repository\'s own checkout in Main and names that repository', async () => {

@@ -56,9 +56,19 @@ async function setup({ openTerminal, landing, changes = [] } = {}) {
     // Stands in for Git: records the worktree the real service would have created, and refuses what it would refuse.
     addRepository: vi.fn(async (taskId, body) => {
       const task = real.get(taskId);
-      if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'body', message: 'Use an object with repository' }]);
-      const unknown = Object.keys(body).filter(field => field !== 'repository');
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'body', message: 'Use an object with repository, path or worktreePath' }]);
+      const ways = ['repository', 'path', 'worktreePath'];
+      const unknown = Object.keys(body).filter(field => !ways.includes(field));
       if (unknown.length) throw new TaskError('One or more fields failed validation.', 400, unknown.map(field => ({ field, message: 'Unknown field' })));
+      const given = ways.filter(field => Object.hasOwn(body, field));
+      if (given.length > 1) throw new TaskError('One or more fields failed validation.', 400, given.map(field => ({ field, message: 'Give one of repository, path and worktreePath' })));
+      // A repository outside the project, by its folder, and a worktree that already exists.
+      if (given[0] === 'path' || given[0] === 'worktreePath') {
+        const field = given[0];
+        if (typeof body[field] !== 'string' || !body[field].startsWith('/') || body[field].length > 1024) throw new TaskError('One or more fields failed validation.', 400, [{ field, message: field === 'path' ? 'Use the absolute path of a folder' : 'Use the absolute path of a worktree' }]);
+        const existing = field === 'worktreePath';
+        return taskStore.addWorktree(taskId, { repository: 'tools', repositoryPath: '/tmp/elsewhere/tools', worktreePath: existing ? body.worktreePath : `/tmp/worktrees/${taskId}-tools`, branch: existing ? 'feat/tools' : 'task/t-1', baseBranch: 'main', baseCommit: 'b'.repeat(40) });
+      }
       if (typeof body.repository !== 'string' || !['mobile-app', 'frontend'].includes(body.repository)) throw new TaskError('One or more fields failed validation.', 400, [{ field: 'repository', message: 'Use the name of one of this project\'s repositories' }]);
       if (task.worktrees.some(worktree => worktree.repository === body.repository)) throw new TaskError(`${body.repository} is already part of this task.`, 409);
       return { ...taskStore.addWorktree(taskId, { repository: body.repository, repositoryPath: `/tmp/group/${body.repository}`, worktreePath: `/tmp/worktrees/${taskId}-${body.repository}`, branch: 'task/t-1', baseBranch: 'main', baseCommit: 'b'.repeat(40) }), secretColumn: 'never shown' };
@@ -637,6 +647,46 @@ describe('tasks API — the repositories of a task', () => {
     // The same request again adds nothing.
     expectProblem(await request(server).post(url).send({ repository: 'mobile-app' }), 409, url);
     expect((await request(server).get(`${base}/${id(1)}`)).body.worktrees).toHaveLength(2);
+  });
+
+  it('adds a repository the project does not list by its folder, and an existing worktree by its path', async () => {
+    const { server, service } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Across' });
+    await request(server).post(base).send({ project: 'Demo', title: 'Beside' });
+    const copied = await request(server).post(`${base}/${id(1)}/worktrees`).send({ path: '/tmp/elsewhere/tools' });
+    expect(copied.status).toBe(201);
+    expect(copied.body.worktrees.map(worktree => [worktree.repository, worktree.own, worktree.first, worktree.branch])).toEqual([['demo', true, true, 'task/t-1'], ['tools', false, false, 'task/t-1']]);
+    expect(service.addRepository).toHaveBeenLastCalledWith(id(1), { path: '/tmp/elsewhere/tools' });
+    const taken = await request(server).post(`${base}/${id(2)}/worktrees`).send({ worktreePath: '/tmp/elsewhere/worktrees/tools-meter' });
+    expect(taken.status).toBe(201);
+    expect(taken.body.worktrees[1]).toMatchObject({ repository: 'tools', own: false, worktreePath: '/tmp/elsewhere/worktrees/tools-meter', branch: 'feat/tools', state: 'active' });
+    expect(service.addRepository).toHaveBeenLastCalledWith(id(2), { worktreePath: '/tmp/elsewhere/worktrees/tools-meter' });
+  });
+
+  it('refuses a folder that is not an absolute path, more than one way of naming the repository, and unknown fields, naming each field', async () => {
+    const { server } = await setup();
+    await request(server).post(base).send({ project: 'Demo', title: 'Across' });
+    const url = `${base}/${id(1)}/worktrees`;
+    const one = 'Give one of repository, path and worktreePath';
+    const cases = [
+      [{ path: 'relative/tools' }, [{ field: 'path', message: 'Use the absolute path of a folder' }]],
+      [{ path: '' }, [{ field: 'path', message: 'Use the absolute path of a folder' }]],
+      [{ path: null }, [{ field: 'path', message: 'Use the absolute path of a folder' }]],
+      [{ path: 7 }, [{ field: 'path', message: 'Use the absolute path of a folder' }]],
+      [{ path: `/${'a'.repeat(1024)}` }, [{ field: 'path', message: 'Use the absolute path of a folder' }]],
+      [{ path: "'; DROP TABLE tasks; --" }, [{ field: 'path', message: 'Use the absolute path of a folder' }]],
+      [{ worktreePath: [] }, [{ field: 'worktreePath', message: 'Use the absolute path of a worktree' }]],
+      [{ worktreePath: '<script>alert(1)</script>' }, [{ field: 'worktreePath', message: 'Use the absolute path of a worktree' }]],
+      [{ repository: 'mobile-app', path: '/tmp/elsewhere/tools' }, [{ field: 'repository', message: one }, { field: 'path', message: one }]],
+      [{ path: '/tmp/elsewhere/tools', worktreePath: '/tmp/elsewhere/worktrees/tools-meter' }, [{ field: 'path', message: one }, { field: 'worktreePath', message: one }]],
+      [{ path: '/tmp/elsewhere/tools', branch: 'x', force: true }, [{ field: 'branch', message: 'Unknown field' }, { field: 'force', message: 'Unknown field' }]],
+    ];
+    for (const [body, errors] of cases) {
+      const response = await request(server).post(url).send(body);
+      expectProblem(response, 400, url);
+      expect(response.body.errors).toEqual(errors);
+    }
+    expect((await request(server).get(`${base}/${id(1)}`)).body.worktrees).toHaveLength(1);
   });
 
   it('adds one worktree when the same repository is asked for twice at once', async () => {

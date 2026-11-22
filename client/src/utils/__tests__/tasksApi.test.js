@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  parseTaskForPhone, addTaskRepository, listTaskChanges, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, listWorktreeCandidates, makeTaskFromWorktree, parseWorktreeCandidate, mergeTask, mergeTaskWorktree,
+  parseTaskForPhone, addTaskOutsideRepository, addTaskRepository, addTaskWorktree, listTaskChanges, closeTask, closeTaskWorktree, commitTask, commitTaskWorktree, createTask, getTaskLanding, listOpenTasks, listTaskWorktreeLandings, listWorktreeCandidates, makeTaskFromWorktree, parseWorktreeCandidate, mergeTask, mergeTaskWorktree,
   openTaskPullRequest, openTaskTerminal, openTaskWorktreePullRequest, parseLanding, parseTask, parseTaskSummary, parseWorktreeLanding, renameTask,
 } from '../tasksApi';
 
@@ -374,6 +374,25 @@ describe('landing one repository of a task', () => {
     await expect(addTaskRepository('nope', 'mobile-app')).rejects.toThrow('taskId');
     vi.stubGlobal('fetch', vi.fn(async () => reply({ message: 'A workflow run is working in this task. Add the repository when it pauses or finishes.' }, { ok: false, status: 409 })));
     await expect(addTaskRepository(ID, 'mobile-app')).rejects.toThrow('A workflow run is working in this task. Add the repository when it pauses or finishes.');
+  });
+
+  it('adds a repository the project does not list by its folder, and an existing worktree by its path', async () => {
+    const second = worktree({ id: WT2, repository: 'tools', own: false, first: false, worktreePath: '/tmp/worktrees/replies/tools' });
+    const fetchMock = vi.fn(async () => reply(task({ worktrees: [worktree(), second] }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await addTaskOutsideRepository(ID, ' /tmp/elsewhere/tools ')).worktrees.map(entry => entry.repository)).toEqual(['demo', 'tools']);
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/tasks/${ID}/worktrees`);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ path: '/tmp/elsewhere/tools' });
+    expect((await addTaskWorktree(ID, '/tmp/elsewhere/worktrees/tools-meter')).worktrees).toHaveLength(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(`/api/tasks/${ID}/worktrees`);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ worktreePath: '/tmp/elsewhere/worktrees/tools-meter' });
+    for (const add of [addTaskOutsideRepository, addTaskWorktree]) {
+      for (const folder of [undefined, null, '', '   ', 7]) await expect(add(ID, folder)).rejects.toThrow('must be a nonempty string');
+      await expect(add('nope', '/tmp/elsewhere/tools')).rejects.toThrow('taskId');
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ message: 'One or more fields failed validation.', errors: [{ field: 'path', message: 'This folder does not exist' }] }, { ok: false, status: 400 })));
+    await expect(addTaskOutsideRepository(ID, '/tmp/nowhere')).rejects.toMatchObject({ status: 400, message: 'This folder does not exist' });
   });
 
   it('passes on why a repository could not be landed', async () => {
