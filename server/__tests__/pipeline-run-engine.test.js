@@ -2505,6 +2505,27 @@ describe('createRunEngine — a loop of steps', () => {
     expect(ctx.runStore.lastAuditDetail(run.id,1,'build_receipt')).toContain('./gradlew --console=plain check');
   });
 
+  it('resumes Develop with the original free-form Test note, then enforces the new Test prompt', async () => {
+    const script = scriptedWorkflow(['complete', 'continue']);
+    const ctx = setupEngine({createWorkflow: script.createWorkflow, engineExtras: {
+      prepareNotes: vi.fn(), fingerprintSources: vi.fn(),
+      readNote: async () => ({status: 'present', content: '# Still failing A5'}),
+    }});
+    const def = {...looping(8), notesDir: '.codedeck/runs/abcdef12'};
+    const run = ctx.runStore.create(validRun({
+      definition: def, status: 'error', error: 'Missing REPAIR 5', finishedAt: new Date().toISOString(), worktreeState: 'external', baseCommit: BASE_COMMIT,
+      steps: [step({status: 'failed', attempt: 7}), step({attempt: 5, roundsCompleted: 5}), step()],
+    }));
+    ctx.noteStore.add({runId: run.id, stepIndex: 1, stepName: 'Test', attempt: 5, pass: 1,
+      status:'written', summary:'Reopened A5', content:'# Reopened A5\nSee regression in the Test note.'});
+    await ctx.engine.resume(run.id);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(script.starts).toHaveLength(2);
+    expect(script.starts[0].command).toContain(notePath(def, 1));
+    expect(script.starts[1].command).toContain('REPAIR 6 ');
+    expect(ctx.runStore.get(run.id)).toMatchObject({currentStepIndex: 1, status: 'error', error: expect.stringContaining('REPAIR 6')});
+  });
+
   it('blocks an identical repair before a third developer launch', async () => {
     let attempt = 0;
     const def = {...looping(8),notesDir:'.codedeck/runs/abcdef12'};
@@ -4075,9 +4096,37 @@ describe('CLI and UI sync — restart recovery & mid-pass exit detection', () =>
       readinessPollMs: 1000,
       dialogPollMs: 2000,
       launchEnterDelayMs: 100,
+      ...overrides.engineExtras,
     });
     return { runStore, engine, writes, attachBackground, getWorkflow: () => activeWorkflow };
   }
+
+  it('accepts a reattached legacy Test handoff under the prompt that was sent', async () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    const develop = definition().steps[0];
+    const def = definition({notesDir: '.codedeck/runs/abcdef12', steps: [
+      develop, {...develop, name: 'Test', agent: {...develop.agent, id: WORKFLOW_ID, launchCommand: 'muse'}, repeat: {mode: 'loop_back', toStepIndex: 0, max: 8}},
+    ]});
+    const opts = {readExecutionState: async () => executionState(), engineExtras: {
+      prepareNotes: vi.fn(), readNote: async () => ({status: 'present', content: '# Reopened A5'}),
+    }};
+    const first = realWorkflowSetup(db, opts);
+    const run = first.runStore.create(validRun({definition: def, worktreeState: 'present', baseCommit: BASE_COMMIT}));
+    first.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1200);
+    first.getWorkflow().output(`[[CDW:${first.getWorkflow().signalIdentifier()}:COMPLETE]]`);
+    await vi.advanceTimersByTimeAsync(1400);
+    const saved = first.runStore.get(run.id);
+    expect(saved.currentStepIndex).toBe(1);
+    expect(saved.workflowState.identifier).toBeTruthy();
+    expect(saved.workflowState.request.command).not.toContain('REPAIR');
+    const restarted = realWorkflowSetup(db, {...opts, engineExtras: {...opts.engineExtras, fingerprintSources:vi.fn()}});
+    await restarted.engine.reconcileOnStartup();
+    restarted.getWorkflow().output(`[[CDW:${saved.workflowState.identifier}:CONTINUE]]`);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(restarted.runStore.get(run.id)).toMatchObject({status:'running', currentStepIndex:0});
+  });
 
   it('reattaches to a still-working CLI after backend restart without marking interrupted or resending the prompt', async () => {
     const db = new Database(':memory:');

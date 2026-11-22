@@ -59,6 +59,12 @@ function maxIterationsFor(repeat) {
   return 1;
 }
 
+// This exact prefix is present in the persisted command of every Test attempt
+// that received the structured handoff contract, including across restarts.
+function repairInstruction(attempt) {
+  return `\nFor CONTINUE put one line per buildable check in your note: REPAIR ${attempt} <check-id> | <file path> | <observed failure or outstanding task>.`;
+}
+
 function terminalGoneMessage(stepName) {
   return `The terminal of step ${stepName} is no longer available. Resume the run to continue in a new terminal.`;
 }
@@ -778,7 +784,7 @@ export function createRunEngine({
     }
   }
 
-  async function applyWorkflowSnapshot(runId, snapshot) {
+  async function applyWorkflowSnapshot(runId, snapshot, command) {
     if (!runStore.get(runId)) return { terminal: true };
     // The loop moved on, so the agent is past any dialog it was showing.
     endDialogPause(runId);
@@ -816,7 +822,8 @@ export function createRunEngine({
       } else if (repeat?.mode === 'loop_back'
         && current.steps[current.currentStepIndex].roundsCompleted + 1 < repeat.max) {
         let repairKey;
-        if (current.definition.notesDir && ['Test','Review & Test'].includes(current.definition.steps[current.currentStepIndex].name) && fingerprintSources) {
+        if (current.definition.notesDir && ['Test','Review & Test'].includes(current.definition.steps[current.currentStepIndex].name) && fingerprintSources
+          && command.includes(repairInstruction(current.steps[current.currentStepIndex].attempt))) {
           const findings = repairFindings(noteStore.lastContent(runId, current.currentStepIndex), current.steps[current.currentStepIndex].attempt);
           const fingerprint = await fingerprintSources(current);
           if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Invalid source fingerprint');
@@ -1130,12 +1137,17 @@ export function createRunEngine({
         if (closer >= 0) {
           command += '\nProve each acceptance check with a targeted red then green test before ticking it. Leave the full suite to Test.';
           if (current.steps[closer].roundsCompleted > 0) {
-            const repairs = repairFindings(noteStore.lastContent(runId,closer),current.steps[closer].attempt);
-            command += '\nWork only on these Test findings and their targeted regressions:\n' + repairs.join('\n');
+            const evidence = runStore.lastAuditDetail(runId, closer, 'loop_back');
+            command += `\nRead the latest Test findings in ${notePath(current.definition, closer)}. Address the outstanding checks and run their targeted regressions.`;
+            // Only Test validates its own note. A pre-upgrade handoff may have
+            // recorded its findings entirely in prose.
+            if (evidence && /^[a-f0-9]{64}\n/.test(evidence)) {
+              command += '\n' + evidence.slice(65);
+            }
           }
         }
         if (['Test','Review & Test'].includes(defStep.name) && defStep.repeat.mode === 'loop_back') {
-          command += `\nFor CONTINUE put one line per buildable check in your note: REPAIR ${attempt} <check-id> | <file path> | <observed failure or outstanding task>. For checks blocked on owner evidence use NEEDS_INPUT. Record each command and its result. Run targeted checks during repair; run the final suite once when all checks hold.`;
+          command += repairInstruction(attempt) + ` For checks blocked on owner evidence use NEEDS_INPUT. Record each command and its result. Run targeted checks during repair; run the final suite once when all checks hold.`;
         }
       }
       if (current.definition.notesDir && readGradleReceipts && ['Test','Review & Test'].includes(defStep.name)) {
@@ -1169,7 +1181,7 @@ export function createRunEngine({
       const onNotify = (snapshot) => {
         enqueueTransition(runId, async () => {
           try {
-            const { terminal } = await applyWorkflowSnapshot(runId, snapshot);
+            const { terminal } = await applyWorkflowSnapshot(runId, snapshot, command);
             if (terminal) settleWorkflow();
           } catch (err) {
             const message = String(err?.message || err || 'Run failed').slice(0, 2000);
@@ -1698,7 +1710,7 @@ export function createRunEngine({
         const onNotify = (snapshot) => {
           enqueueTransition(run.id, async () => {
             try {
-              const { terminal } = await applyWorkflowSnapshot(run.id, snapshot);
+              const { terminal } = await applyWorkflowSnapshot(run.id, snapshot, savedState.request.command);
               if (terminal) settleWorkflow();
             } catch (err) {
               const message = String(err?.message || err || 'Run failed').slice(0, 2000);
