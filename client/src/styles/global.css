@@ -105,10 +105,11 @@
 .worktree-group-header-title, .worktree-group-header-detail { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-group-header-title { flex: 1; }
 .worktree-group-header-detail { margin-top: 2px; font-size: 10px; color: var(--text-muted); }
-.worktree-group-header-status { flex: none; padding: 1px 4px; border-radius: 4px; color: var(--text-muted); background: var(--bg-hover); white-space: nowrap; }
+.worktree-group-header-status { display: inline-flex; align-items: center; gap: 3px; flex: none; padding: 1px 5px; border-radius: 999px; color: var(--text-muted); background: var(--bg-hover); white-space: nowrap; }
 .worktree-group-header-status[data-tone="waiting"], .worktree-switcher-waiting { color: var(--warning); }
 .worktree-group-header-status[data-tone="danger"] { color: var(--danger); }
 .worktree-group-header-status[data-tone="active"] { color: var(--accent); }
+.worktree-group-header-status[data-tone="done"] { color: var(--toast-success-text); background: color-mix(in oklab, var(--accent) 18%, var(--bg-surface)); border: 1px solid color-mix(in oklab, var(--accent) 44%, transparent); font-weight: 600; }
 
 .worktree-switcher { display: flex; gap: 4px; padding: 4px 8px; min-width: 0; overflow-x: auto; flex-wrap: nowrap; background: var(--bg-sidebar); border-bottom: 1px solid var(--border); }
 .worktree-switcher-button { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 190px; padding: 3px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
@@ -121,10 +122,11 @@
 .worktree-switcher-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-switcher-count, .worktree-switcher-waiting, .worktree-switcher-state { flex: none; }
 .worktree-switcher-button:has(.worktree-switcher-state) { max-width: 300px; }
-.worktree-switcher-state { padding: 0 4px; border-radius: 4px; background: var(--bg-hover); color: var(--text-muted); white-space: nowrap; }
+.worktree-switcher-state { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 999px; background: var(--bg-hover); color: var(--text-muted); white-space: nowrap; }
 .worktree-switcher-state[data-tone="waiting"] { color: var(--warning); }
 .worktree-switcher-state[data-tone="danger"] { color: var(--danger); }
 .worktree-switcher-state[data-tone="active"] { color: var(--accent); }
+.worktree-switcher-state[data-tone="done"] { color: var(--toast-success-text); background: color-mix(in oklab, var(--accent) 18%, var(--bg-surface)); border: 1px solid color-mix(in oklab, var(--accent) 44%, transparent); font-weight: 600; }
 
 * {
   margin: 0;

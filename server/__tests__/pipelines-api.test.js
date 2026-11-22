@@ -4637,3 +4637,58 @@ it('returns traced problem details for invalid team score queries and missing tr
     if(status===400) expect(response.body.errors).toEqual([expect.objectContaining({field:'sort'})]);
   }
 });
+
+it('omits disabled workflow stages and per-run disabledSteps while keeping loop targets aligned', async () => {
+  const ctx = await setup();
+  const { agent } = await seedReady(ctx);
+  const workflow = (await request(ctx.app).post(base + '/workflows').send({
+    name: 'Flexible build',
+    agentsDecide: false,
+    nodes: [
+      { ...node(agent.id, { name: 'Requirements', prompt: 'Ask {input}' }), enabled: false },
+      node(agent.id, { name: 'Specify', prompt: 'Specify {input}' }),
+      node(agent.id, { name: 'Develop', prompt: 'Build {input}' }),
+      node(agent.id, { name: 'Review', prompt: 'Review {input}' }),
+      node(agent.id, { name: 'Test', prompt: 'Test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 4 } }),
+    ],
+  }).expect(201)).body;
+
+  expect(workflow.nodes[0].enabled).toBe(false);
+
+  // Starting without disabledSteps skips nodes disabled on the workflow and adjusts loop toStepIndex.
+  const defaultRun = (await request(ctx.app).post(base + '/runs').send({
+    requestId: 'default-disabled',
+    workflowId: workflow.id,
+    project: 'Demo',
+    input: 'feature',
+  }).expect(201)).body;
+  expect(defaultRun.steps.map(s => s.name)).toEqual(['Setup', 'Specify', 'Develop', 'Review', 'Test']);
+  expect(defaultRun.steps[4].repeat).toEqual({ mode: 'loop_back', toStepIndex: 2, max: 4 });
+
+  // Starting with per-run disabledSteps skips the named steps for that run.
+  const customRun = (await request(ctx.app).post(base + '/runs').send({
+    requestId: 'custom-disabled',
+    workflowId: workflow.id,
+    project: 'Demo',
+    input: 'feature',
+    disabledSteps: ['Requirements', 'Review'],
+  }).expect(201)).body;
+  expect(customRun.steps.map(s => s.name)).toEqual(['Setup', 'Specify', 'Develop', 'Test']);
+  expect(customRun.steps[3].repeat).toEqual({ mode: 'loop_back', toStepIndex: 2, max: 4 });
+
+  // Refuses disabling a loop target or unknown step name.
+  await request(ctx.app).post(base + '/runs').send({
+    requestId: 'bad-loop-disabled',
+    workflowId: workflow.id,
+    project: 'Demo',
+    input: 'feature',
+    disabledSteps: ['Develop'],
+  }).expect(400);
+  await request(ctx.app).post(base + '/runs').send({
+    requestId: 'unknown-disabled',
+    workflowId: workflow.id,
+    project: 'Demo',
+    input: 'feature',
+    disabledSteps: ['Nonexistent'],
+  }).expect(400);
+});

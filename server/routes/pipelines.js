@@ -273,11 +273,26 @@ function buildDefinitionSnapshot({
   setupPairs,
   team,
   stepOverrides,
+  disabledSteps,
   checkouts,
   withSetup,
 }) {
   const errors = [];
-  const needsInput = workflow.nodes.some(node => String(node.prompt).includes('{input}')) || workflow.progressFile?.includes('{input}');
+  const disabledSet = disabledSteps !== undefined
+    ? new Set(disabledSteps.map(name => name.trim().toLowerCase()))
+    : null;
+  const activeNodes = disabledSet !== null
+    ? workflow.nodes.filter(node => !disabledSet.has(node.name.toLowerCase()))
+    : workflow.nodes.filter(node => node.enabled !== false);
+  if (activeNodes.length === 0) {
+    errors.push({ field: 'disabledSteps', message: 'Keep at least one step enabled for this run' });
+  }
+  activeNodes.forEach((node, index) => {
+    if (node.repeat.mode === 'loop_back' && loopTargetIndex(activeNodes, index) < 0) {
+      errors.push({ field: 'disabledSteps', message: `${node.name} loops back to ${node.repeat.to}, which is disabled` });
+    }
+  });
+  const needsInput = activeNodes.some(node => String(node.prompt).includes('{input}')) || workflow.progressFile?.includes('{input}');
   if (needsInput && (!input || !input.trim())) {
     errors.push({ field: 'input', message: 'input is required when a node prompt contains {input}' });
   }
@@ -291,13 +306,13 @@ function buildDefinitionSnapshot({
   // Setup, when the run has one, is step 0; a loop names the step it returns to by its index.
   const firstNodeStep = withSetup ? 1 : 0;
   const repeatSnapshot = (index) => {
-    const { repeat } = workflow.nodes[index];
+    const { repeat } = activeNodes[index];
     if (repeat.mode === 'once') return { mode: 'once' };
     if (repeat.mode === 'until_complete') return { mode: 'until_complete', max: repeat.max };
-    return { mode: 'loop_back', toStepIndex: firstNodeStep + loopTargetIndex(workflow.nodes, index), max: repeat.max };
+    return { mode: 'loop_back', toStepIndex: firstNodeStep + loopTargetIndex(activeNodes, index), max: repeat.max };
   };
 
-  const nodeSteps = workflow.nodes.map((node, index) => {
+  const nodeSteps = activeNodes.map((node, index) => {
     const id = assignedAgentId(node, team, stepOverrides);
     const agent = id && agentStore.get(id);
     if (!agent) {
@@ -1013,6 +1028,9 @@ export function createPipelinesRouter(deps) {
     if (Object.keys(body.stepOverrides ?? {}).some(name => !workflow.nodes.some(node => node.name === name))) {
       throw fieldError('stepOverrides', 'An overridden step no longer exists in this workflow');
     }
+    if ((body.disabledSteps ?? []).some(name => !workflow.nodes.some(node => node.name.toLowerCase() === name.trim().toLowerCase()))) {
+      throw fieldError('disabledSteps', 'A disabled step no longer exists in this workflow');
+    }
 
     let task = null;
     if (inTask) {
@@ -1184,6 +1202,7 @@ export function createPipelinesRouter(deps) {
         workflow,
         team,
         stepOverrides: body.stepOverrides,
+        disabledSteps: body.disabledSteps,
         agentStore,
         settings,
         input: forInput,

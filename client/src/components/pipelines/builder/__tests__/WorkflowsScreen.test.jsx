@@ -192,3 +192,10 @@ it('preserves an unsaved workflow while inspecting the improvement dashboard',as
   fireEvent.click(screen.getByRole('button',{name:'Workflow builder',exact:true}));
   expect(screen.getByLabelText('Workflow name').value).toBe('Unsaved workflow');
 });
+
+it('shows disabled in the builder step rail when a step is unchecked', async () => {
+  await open();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit workflow Feature' }));
+  fireEvent.click(screen.getByLabelText('Node 1 enabled'));
+  expect(rail().getByText('Planner · codex-high · approval · disabled')).toBeTruthy();
+});

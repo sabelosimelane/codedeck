@@ -807,3 +807,17 @@ it('uses a team and overrides just one of two steps sharing its role', async () 
   fireEvent.click(startButton());
   await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ teamId: team.id, stepOverrides: { Fix: agents[2].id } })));
 });
+
+it('allows disabling a step for a single run from Step assignments', async () => {
+  mockApi();
+  const { onStart } = await renderDialog();
+  fireEvent.click(screen.getByText('Step assignments'));
+  const toggle = screen.getByLabelText('Run Fix');
+  expect(toggle.checked).toBe(true);
+  fireEvent.click(toggle);
+  expect(toggle.checked).toBe(false);
+  expect(screen.getByLabelText('Fix agent').disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'a change' } });
+  fireEvent.click(startButton());
+  await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ disabledSteps: ['Fix'] })));
+});

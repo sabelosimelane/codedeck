@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-11-22] - Streamline Feature from requirements, add stage disabling, and highlight completed runs
+
+### Executive Summary
+* The **Feature from requirements** workflow now reaches implementation faster and avoids redundant test-suite execution inside the build loop: `Specify` writes both the repository specification and the phased `plan.md` in a single pass (removing the separate `Plan` cold-start stage), `Review` focuses on diff auditing and defect fixes without re-running broad test suites that `Test` runs immediately afterward, and `Test` pauses via `NEEDS_INPUT` when blocked on owner evidence or later-stage artifacts instead of looping on unchanged diffs (with the default build loop cap lowered from 12 to 8). Workflow stages can now also be disabled in the **Workflow Builder** or toggled per run in the **Run Workflow** dialog without deleting them, and completed runs display a high-contrast completion badge in task headers and worktree switchers.
+
+### Technical Details
+* **✨ New Feature:**
+  * `shared/workflow-templates.mjs` — folded `plan.md` creation into `Specify` in `feature-from-requirements` (`Requirements → Specify → Develop → Review → Test → Commit`), updated `Review` prompts across `bug-fix`, `feature-build`, and `feature-from-requirements` to avoid duplicating `Test`'s broad test-suite execution, updated `Test` prompts in `feature-build` and `feature-from-requirements` to use `NEEDS_INPUT` when blocked on external/owner evidence, and lowered the default build loop limit from 12 to 8.
+  * `shared/pipeline-definitions.mjs` — added optional `enabled` boolean validation on workflow, template, and step-preset nodes (requiring at least one enabled node and an enabled loop target for enabled `loop_back` steps) and `disabledSteps` validation on `validateRunStartBody`.
+  * `client/src/components/pipelines/WorkflowEditor.jsx`, `client/src/components/pipelines/WorkflowList.jsx` — added the `Enable this step` checkbox per stage, `disabled` step-rail metadata badge, and `(disabled)` workflow summary label.
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx`, `client/src/utils/pipelinesApi.js`, `client/src/hooks/usePipelineRuns.js`, `client/src/utils/pipelineRecords.js` — added per-run `Enabled`/`Disabled` step toggles under `Step assignments` and forwarded `disabledSteps` on run start.
+  * `client/src/components/TerminalArea.jsx`, `client/src/components/WorktreeGroupHeader.jsx`, `client/src/components/pipelines/pipeline-runs.css`, `client/src/components/tasks/task-view.css`, `client/src/styles/global.css` — added check icons and high-contrast `done` status pill and completion banner styling for completed workflow runs.
+* **🛠️ Codebase:**
+  * `server/pipelines/workflow-store.js`, `server/pipelines/library-store.js`, `server/pipelines/request-store.js`, `server/routes/pipelines.js` — persisted `enabled: false` on disabled workflow and template nodes, migrated unmodified stock `Feature from requirements` and `Review`/`Test` prompts, serialized `disabledSteps` in start reservations, and filtered disabled stages out of `buildDefinitionSnapshot` while keeping loop `toStepIndex` aligned.
+* **🧪 Tests:**
+  * `server/__tests__/workflow-templates.test.js`, `server/__tests__/pipeline-definitions.test.js`, `server/__tests__/pipeline-definition-store.test.js`, `server/__tests__/pipelines-api.test.js`, `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx`, `client/src/components/pipelines/__tests__/RunWorkflowDialog.test.jsx`, `client/src/components/pipelines/builder/__tests__/WorkflowsScreen.test.jsx` — updated template assertions and added unit and integration tests for workflow-level and per-run stage disabling.
+
 ## [2026-11-22] - Incremental workflow reviews, active-only step timers, Quick change template, and untracked loop guardrails
 
 ### Executive Summary

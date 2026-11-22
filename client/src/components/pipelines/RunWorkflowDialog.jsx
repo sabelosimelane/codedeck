@@ -5,7 +5,7 @@ import { listWorktreeCandidates, makeTaskFromWorktree } from '../../utils/tasksA
 import { useToast } from '../ToastContext';
 import { parseTeam, parseAgent, parseWorkflow, parsePreflight, parseRunPlan, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
-import { assignedAgentId, composePrompt, isProgressFilePath, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { assignedAgentId, composePrompt, isProgressFilePath, loopTargetIndex, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { Button, Dialog, Field, Note, SegmentedControl, Select, TextArea, TextInput } from '../ui/index.jsx';
 import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
 import WorktreeCandidatePicker from '../tasks/WorktreeCandidatePicker.jsx';
@@ -66,6 +66,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
   const [agents, setAgents] = useState([]);
   const [teamId, setTeamId] = useState('');
   const [overrides, setOverrides] = useState({});
+  const [stepEnabledOverrides, setStepEnabledOverrides] = useState({});
   const [workflowId, setWorkflowId] = useState('');
   const [input, setInput] = useState(initialInput);
   const [preflight, setPreflight] = useState(null);
@@ -101,11 +102,16 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
 
   const team = teams.find(item => item.id === teamId);
   const nodes = selectedWorkflow?.nodes ?? [];
+  const isStepEnabled = node => (Object.hasOwn(stepEnabledOverrides, node.name) ? stepEnabledOverrides[node.name] : node.enabled !== false);
+  const activeNodes = nodes.filter(isStepEnabled);
+  const disabledStepNames = nodes.filter(node => !isStepEnabled(node)).map(node => node.name);
+  const brokenLoop = activeNodes.find((node, index) => node.repeat.mode === 'loop_back' && loopTargetIndex(activeNodes, index) < 0) ?? null;
   const agentById = new Map(agents.map(agent => [agent.id, agent]));
-  const missing = nodes.filter(node => !agentById.has(assignedAgentId(node, team, overrides)));
+  const missing = activeNodes.filter(node => !agentById.has(assignedAgentId(node, team, overrides)));
   const assignment = {
     ...(teamId && { teamId }),
     ...(Object.keys(overrides).length > 0 && { stepOverrides: overrides }),
+    ...(Object.keys(stepEnabledOverrides).length > 0 && { disabledSteps: disabledStepNames }),
   };
 
   useEffect(() => {
@@ -195,10 +201,10 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
     && !isProgressFilePath(composePrompt(selectedWorkflow.progressFile, input), 512);
   const inputError = validateRunInputField(input, { mode: pathInput ? 'path' : 'descriptive' })
     ?? (invalidPath ? 'Enter the part of the Markdown path that replaces {input} in the Progress file.' : null);
-  const inputRequired = pathInput || nodes.some(node => node.prompt.includes('{input}'));
+  const inputRequired = pathInput || activeNodes.some(node => node.prompt.includes('{input}'));
   const locked = starting || submission !== null;
   const canStart = !starting && !checkingFiles && (submission !== null
-    || (!loading && eligible && Boolean(workflowId) && missing.length === 0 && !inputError && (!inputRequired || input.trim().length > 0)));
+    || (!loading && eligible && Boolean(workflowId) && activeNodes.length > 0 && !brokenLoop && missing.length === 0 && !inputError && (!inputRequired || input.trim().length > 0)));
 
   // The todo is looked up for a new task of a workflow that reads a Progress file, in a project with several repositories.
   const wantsPlan = !loading && !error && !inputError && several && where === NEW_TASK && Boolean(selectedWorkflow?.progressFile) && input.trim().length > 0;
@@ -378,7 +384,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
           <Field label="Workflow"
             action={<Button variant="link" onClick={() => { onClose(); openWorkflowBuilder(); }}>Edit workflows…</Button>}
             hint={selectedWorkflow?.description || null}>
-            <Select label="Workflow" value={workflowId} onChange={id => { setWorkflowId(id); setOverrides({}); }}>
+            <Select label="Workflow" value={workflowId} onChange={id => { setWorkflowId(id); setOverrides({}); setStepEnabledOverrides({}); }}>
               {workflows.map(workflow => (
                 <option key={workflow.id} value={workflow.id}>{workflow.kind && workflow.kind !== 'other' ? `${workflow.name} — ${WORKFLOW_KIND_LABELS[workflow.kind]}` : workflow.name}</option>
               ))}
@@ -394,8 +400,20 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
               <summary>Step assignments</summary>
               {nodes.map(node => {
                 const inherited = agentById.get(assignedAgentId(node, team));
-                return <Field key={node.name} label={node.role ? `${node.name} · ${node.role}` : node.name}>
-                  <Select label={`${node.name} agent`} value={Object.hasOwn(overrides, node.name) ? overrides[node.name] : ''} onChange={value => {
+                const enabled = isStepEnabled(node);
+                return <Field key={node.name} label={node.role ? `${node.name} · ${node.role}` : node.name}
+                  action={<label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                    <input type="checkbox" aria-label={`Run ${node.name}`} checked={enabled} onChange={event => {
+                      const checked = event.target.checked;
+                      setStepEnabledOverrides(current => {
+                        const next = { ...current, [node.name]: checked };
+                        if (checked === (node.enabled !== false)) delete next[node.name];
+                        return next;
+                      });
+                    }} />
+                    <span>{enabled ? 'Enabled' : 'Disabled'}</span>
+                  </label>}>
+                  <Select label={`${node.name} agent`} disabled={!enabled} value={Object.hasOwn(overrides, node.name) ? overrides[node.name] : ''} onChange={value => {
                     setOverrides(current => {
                       const next = { ...current, [node.name]: value };
                       if (!value) delete next[node.name];
@@ -408,6 +426,8 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
                 </Field>;
               })}
             </details>
+            {activeNodes.length === 0 && <Note tone="warning">Keep at least one step enabled for this run.</Note>}
+            {brokenLoop && <Note tone="warning">{`${brokenLoop.name} loops back to ${brokenLoop.repeat.to}, which is disabled.`}</Note>}
             {missing.length > 0 && <Note tone="warning">Choose an agent for {missing.map(node => node.name).join(', ')}.</Note>}
           </Field>}
 

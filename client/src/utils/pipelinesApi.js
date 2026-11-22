@@ -193,10 +193,11 @@ export function getRun(runId, { signal } = {}) {
  * task) or `worktreePath` (an existing working tree, such as Main). `startIn` names the repository
  * of the task the run starts in, for a project with several.
  */
-export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, host, skipSync, files = [] }, { signal } = {}) {
+export function startRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, disabledSteps, host, skipSync, files = [] }, { signal } = {}) {
   if (!Array.isArray(files)) throw new TypeError('Workflow files must be an array');
   const fields = {
     requestId, workflowId, project, input, teamId, stepOverrides,
+    ...(disabledSteps === undefined ? {} : { disabledSteps }),
     ...(worktreePath === undefined ? {} : { worktreePath }),
     ...(taskId === undefined ? {} : { taskId }),
     ...(newTask === undefined ? {} : { newTask }),

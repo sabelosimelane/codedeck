@@ -412,7 +412,33 @@ describe('workflow progress file persistence', () => {
     });
     const reopened = createWorkflowStore(db).get(created.id);
     expect(reopened.nodes[1].prompt).toMatch(/On a repeat pass, read your previous Review and Test notes/);
+    expect(reopened.nodes[1].prompt).toMatch(/do not run broad test suites that the Test step will run next/);
     expect(reopened.nodes[2].prompt).toBe(customReview);
     expect(reopened.nodes[3].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 3 });
+  });
+
+  it('folds unmodified stock Specify + Plan in Feature from requirements and persists disabled nodes', () => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const oldSpecify = 'Read the Requirements note. Write the specification for {input} as a Markdown file beside the specifications this project already keeps, following their conventions; if it keeps none, put the file in its docs folder. Cover the behaviour in each case, the rules and their edge cases, changes to data and interfaces, what must stay the same, what is out of scope, and acceptance checks that can be tested. Change no code. In your run note give the path of the file, summarise the specification, and list every decision you made that the requirements did not settle.';
+    const oldPlan = 'Read the specification named in the Specify note and the code it touches. Change no code. Write plan.md in the run notes folder named by its README. Size the plan to the change: work one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each acceptance check as a task in the phase that builds what it checks. Use ## Phase N: <title> sections with - [ ] tasks. The phases together must cover every acceptance check. In your run note summarise the plan and say why it has as many phases as it has.';
+    const created = workflows.create({
+      name: 'Feature from requirements',
+      kind: 'build',
+      agentsDecide: false,
+      nodes: [
+        { ...node(agent.id), name: 'Requirements', prompt: 'Read {input}', enabled: false },
+        { ...node(agent.id), name: 'Specify', prompt: oldSpecify },
+        { ...node(agent.id), name: 'Plan', prompt: oldPlan },
+        { ...node(agent.id), name: 'Develop', prompt: 'Build {input}' },
+        { ...node(agent.id), name: 'Test', prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 12 } },
+      ],
+    });
+    expect(created.nodes[0].enabled).toBe(false);
+    const reopened = createWorkflowStore(db).get(created.id);
+    expect(reopened.nodes.map(n => n.name)).toEqual(['Requirements', 'Specify', 'Develop', 'Test']);
+    expect(reopened.nodes[0].enabled).toBe(false);
+    expect(reopened.nodes[1].prompt).toMatch(/Then write plan\.md in the run notes folder/);
+    expect(reopened.nodes[3].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 8 });
   });
 });

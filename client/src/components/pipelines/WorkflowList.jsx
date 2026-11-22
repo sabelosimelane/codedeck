@@ -11,7 +11,10 @@ import { failureMessage } from './definitionForm';
 function summary(workflow) {
   const count = workflow.nodes.length;
   // A node that loops back is followed by the node its loop returns to.
-  const names = workflow.nodes.map(node => (node.repeat.mode === 'loop_back' ? `${node.name} ↺ ${node.repeat.to}` : node.name));
+  const names = workflow.nodes.map((node) => {
+    const label = node.repeat.mode === 'loop_back' ? `${node.name} ↺ ${node.repeat.to}` : node.name;
+    return node.enabled === false ? `${label} (disabled)` : label;
+  });
   return `${count} ${count === 1 ? 'node' : 'nodes'}: ${names.join(' → ')}${workflow.agentsDecide ? ' · agents decide' : ''}`;
 }
 

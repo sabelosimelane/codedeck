@@ -194,7 +194,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     }
   }, [refresh, showToast]);
 
-  const startRun = useCallback(async ({ requestId, workflowId, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, host, skipSync, files }, { throwOnFailure = false } = {}) => {
+  const startRun = useCallback(async ({ requestId, workflowId, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, disabledSteps, host, skipSync, files }, { throwOnFailure = false } = {}) => {
     const project = projectNameRef.current;
     if (!project) {
       if (throwOnFailure) throw Object.assign(new Error('Select a project before starting a workflow'), { status: 400 });
@@ -202,7 +202,7 @@ export function usePipelineRuns({ projectName, showToast }) {
       return null;
     }
     try {
-      const created = await apiStartRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, host, skipSync, files });
+      const created = await apiStartRun({ requestId, workflowId, project, input, worktreePath, taskId, newTask, startIn, teamId, stepOverrides, disabledSteps, host, skipSync, files });
       if (typeof created?.id !== 'string' || created.id === '') throw new Error('The server did not confirm the start. Retry the same submission.');
       if (!mountedRef.current || projectNameRef.current !== project) return created;
       setLocallyStartedRunIds((current) => {

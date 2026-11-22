@@ -69,6 +69,7 @@ function parseNodes(id, raw) {
   nodes.forEach((node, index) => {
     if (typeof node.role !== 'string') fieldError(id, `nodes[${index}].role`, 'must be a string');
     if (typeof node.askOwner !== 'boolean') fieldError(id, `nodes[${index}].askOwner`, 'must be true or false');
+    if (node.enabled !== undefined && typeof node.enabled !== 'boolean') fieldError(id, `nodes[${index}].enabled`, 'must be true or false');
   });
   return nodes;
 }
@@ -120,6 +121,7 @@ function normalizeNodes(nodes) {
     readOnly: node.readOnly ?? false,
     approval: node.approval ?? false,
     askOwner: node.askOwner ?? false,
+    ...(node.enabled === false ? { enabled: false } : {}),
   }));
 }
 
@@ -172,17 +174,43 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     ],
     [
       'Review all changes on this branch (both uncommitted changes and any commits since the base commit) against the Specify note. Fix every defect you find and record your findings and fixes.',
+      'Review the changes on this branch (both uncommitted changes and any commits since the base commit) against the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified work. Fix every defect you find, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record your findings and fixes.',
+    ],
+    [
       'Review the changes on this branch (both uncommitted changes and any commits since the base commit) against the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified work. Fix every defect you find and record your findings and fixes.',
+      'Review the changes on this branch (both uncommitted changes and any commits since the base commit) against the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified work. Fix every defect you find, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record your findings and fixes.',
     ],
     [
       'Review all feature changes on this branch (both uncommitted changes and any commits since the base commit) against plan.md and the task. Fix every defect and record findings and fixes.',
+      'Review the feature changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the task. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record findings and fixes.',
+    ],
+    [
       'Review the feature changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the task. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect and record findings and fixes.',
+      'Review the feature changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the task. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record findings and fixes.',
     ],
     [
       'Review all feature changes on this branch (both uncommitted changes and any commits since the base commit) against plan.md and the specification named in the Specify note. Fix every defect and record findings and fixes.',
+      'Review the feature changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the specification named in the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record findings and fixes.',
+    ],
+    [
       'Review the feature changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the specification named in the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect and record findings and fixes.',
+      'Review the feature changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the specification named in the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record findings and fixes.',
+    ],
+    [
+      'Read the Requirements note. Write the specification for {input} as a Markdown file beside the specifications this project already keeps, following their conventions; if it keeps none, put the file in its docs folder. Cover the behaviour in each case, the rules and their edge cases, changes to data and interfaces, what must stay the same, what is out of scope, and acceptance checks that can be tested. Change no code. In your run note give the path of the file, summarise the specification, and list every decision you made that the requirements did not settle.',
+      'Read the Requirements note and the code it touches. Write the specification for {input} as a Markdown file beside the specifications this project already keeps, following their conventions; if it keeps none, put the file in its docs folder. Cover the behaviour in each case, the rules and their edge cases, changes to data and interfaces, what must stay the same, what is out of scope, and acceptance checks that can be tested. Then write plan.md in the run notes folder named by its README. Size the plan to the change: work one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each acceptance check as a task in the phase that builds what it checks. Use ## Phase N: <title> sections with - [ ] tasks. The phases together must cover every acceptance check. Change no code. In your run note give the path of the file, summarise the specification and the plan, say why it has as many phases as it has, and list every decision you made that the requirements did not settle.',
+    ],
+    [
+      'Test the phase just built. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.',
+      'Test the phase just built. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. If an unticked check is waiting for owner evidence or an artifact from a later step, use NEEDS_INPUT with the evidence collected so far to obtain the owner evidence or an explicit owner deferral instead of repeating passing tests on an unchanged diff. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.',
+    ],
+    [
+      'Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.',
+      'Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. If an unticked check is waiting for owner evidence or an artifact from a later step, use NEEDS_INPUT with the evidence collected so far to obtain the owner evidence or an explicit owner deferral instead of repeating passing tests on an unchanged diff. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.',
     ],
   ]);
+
+  const STOCK_FEATURE_FROM_REQ_PLAN_PROMPT = 'Read the specification named in the Specify note and the code it touches. Change no code. Write plan.md in the run notes folder named by its README. Size the plan to the change: work one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each acceptance check as a task in the phase that builds what it checks. Use ## Phase N: <title> sections with - [ ] tasks. The phases together must cover every acceptance check. In your run note summarise the plan and say why it has as many phases as it has.';
 
   const upgradeNodes = db.transaction(() => {
     const save = db.prepare('UPDATE pipeline_workflows SET nodes = ? WHERE id = ?');
@@ -199,7 +227,11 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
           && ['Test', 'Verify'].includes(node.name)
           && node.repeat?.mode === 'loop_back'
           && node.repeat?.max === 5;
-        if (!missingProps && !nextPrompt && !capUntrackedLoop) return node;
+        const capBuildLoop = row.kind === 'build'
+          && node.name === 'Test'
+          && node.repeat?.mode === 'loop_back'
+          && node.repeat?.max === 12;
+        if (!missingProps && !nextPrompt && !capUntrackedLoop && !capBuildLoop) return node;
         changed = true;
         return {
           ...node,
@@ -209,7 +241,15 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
           ...(!Object.hasOwn(node, 'askOwner') ? { askOwner: false } : {}),
           ...(nextPrompt ? { prompt: nextPrompt } : {}),
           ...(capUntrackedLoop ? { repeat: { ...node.repeat, max: 3 } } : {}),
+          ...(capBuildLoop ? { repeat: { ...node.repeat, max: 8 } } : {}),
         };
+      }).filter((node, index, list) => {
+        const dropMergedPlan = node?.name === 'Plan'
+          && node?.prompt === STOCK_FEATURE_FROM_REQ_PLAN_PROMPT
+          && list[index - 1]?.name === 'Specify'
+          && list[index - 1]?.prompt?.includes('Then write plan.md in the run notes folder');
+        if (dropMergedPlan) changed = true;
+        return !dropMergedPlan;
       });
       if (changed) {
         save.run(JSON.stringify(upgraded), row.id);

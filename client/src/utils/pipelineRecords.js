@@ -83,7 +83,8 @@ function parseNode(nodes, index, id, kind = 'workflow', withAgent = true) {
   if (typeof node.approval !== 'boolean' || (node.repeat?.mode === 'loop_back' && node.approval)) throw invalid(kind, `${path}.approval`, id);
   // Whether this step's questions always come to the owner, also when agents decide.
   if (typeof node.askOwner !== 'boolean') throw invalid(kind, `${path}.askOwner`, id);
-  return { name: node.name, role: node.role, askOwner: node.askOwner, ...(withAgent ? { agentId: node.agentId } : {}), prompt: node.prompt, repeat: parseRepeat(nodes, index, id), readOnly: node.readOnly, approval: node.approval };
+  if (node.enabled !== undefined && typeof node.enabled !== 'boolean') throw invalid(kind, `${path}.enabled`, id);
+  return { name: node.name, role: node.role, askOwner: node.askOwner, ...(withAgent ? { agentId: node.agentId } : {}), prompt: node.prompt, repeat: parseRepeat(nodes, index, id), readOnly: node.readOnly, approval: node.approval, ...(node.enabled === false ? { enabled: false } : {}) };
 }
 
 function parseDefinition(record, kind, withAgent) {

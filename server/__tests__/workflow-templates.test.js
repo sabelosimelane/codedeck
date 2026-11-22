@@ -11,7 +11,7 @@ describe('workflow templates', () => {
       ['bug-fix', 'Bug fix', 'bugfix', ['Clarify', 'Analyse', 'Specify', 'Develop', 'Review', 'Test', 'Commit']],
       ['quick-change', 'Quick change', 'build', ['Scope', 'Develop', 'Review & Test', 'Commit']],
       ['feature-build', 'Feature build', 'build', ['Plan', 'Develop', 'Review', 'Test', 'Commit']],
-      ['feature-from-requirements', 'Feature from requirements', 'build', ['Requirements', 'Specify', 'Plan', 'Develop', 'Review', 'Test', 'Commit']],
+      ['feature-from-requirements', 'Feature from requirements', 'build', ['Requirements', 'Specify', 'Develop', 'Review', 'Test', 'Commit']],
       ['troubleshoot', 'Troubleshoot', 'troubleshoot', ['Clarify', 'Investigate', 'Prove', 'Fix', 'Verify', 'Commit']],
       ['review-only', 'Review only', 'review', ['Survey', 'Review', 'Report']],
     ]);
@@ -40,7 +40,7 @@ describe('workflow templates', () => {
       const template = WORKFLOW_TEMPLATES.find(item => item.id === id);
       expect(template.nodes.some(node => node.readOnly && node.approval)).toBe(true);
       expect(template.nodes.at(-1)).toMatchObject({ name: 'Commit', repeat: { mode: 'once' } });
-      expect(template.nodes.find(node => node.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: id === 'bug-fix' ? 3 : 12 });
+      expect(template.nodes.find(node => node.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: id === 'bug-fix' ? 3 : 8 });
     }
     const bugFix = WORKFLOW_TEMPLATES.find(item => item.id === 'bug-fix');
     const featureBuild = WORKFLOW_TEMPLATES.find(item => item.id === 'feature-build');
@@ -103,19 +103,21 @@ describe('workflow templates', () => {
 
   it.each(['feature-build', 'feature-from-requirements'])('%s sizes its plan to the change and runs the full suite once, at the end', (id) => {
     const byName = Object.fromEntries(WORKFLOW_TEMPLATES.find(item => item.id === id).nodes.map(node => [node.name, node]));
+    const planner = byName.Plan ?? byName.Specify;
     // A small change is one phase; a phase is built behaviour, never checking or tests alone.
-    expect(byName.Plan.prompt).toMatch(/Size the plan to the change/);
-    expect(byName.Plan.prompt).toMatch(/one phase/);
-    expect(byName.Plan.prompt).toMatch(/never a phase that only checks or adds tests/);
-    expect(byName.Plan.prompt).toMatch(/at most 4 phases/);
-    expect(byName.Plan.prompt).toMatch(/in the phase that builds what it checks/);
-    expect(byName.Plan.prompt).not.toMatch(/small enough to build and test in one round/);
+    expect(planner.prompt).toMatch(/Size the plan to the change/);
+    expect(planner.prompt).toMatch(/one phase/);
+    expect(planner.prompt).toMatch(/never a phase that only checks or adds tests/);
+    expect(planner.prompt).toMatch(/at most 4 phases/);
+    expect(planner.prompt).toMatch(/in the phase that builds what it checks/);
+    expect(planner.prompt).not.toMatch(/small enough to build and test in one round/);
     // Each round runs the phase's own tests; the whole suite runs once, when nothing is left to build.
     expect(byName.Test.prompt).toMatch(/only the tests for that phase/);
+    expect(byName.Test.prompt).toMatch(/NEEDS_INPUT/);
     expect(byName.Test.prompt).toMatch(/full test suite once/);
   });
 
-  it('builds a feature from requirements: asks what is missing, agrees a specification, then plans and builds it', () => {
+  it('builds a feature from requirements: asks what is missing, agrees a specification and phased plan, then builds it', () => {
     const template = WORKFLOW_TEMPLATES.find(item => item.id === 'feature-from-requirements');
     const byName = Object.fromEntries(template.nodes.map(node => [node.name, node]));
     // Requirements asks about a feature, not about a fault, and always asks the owner.
@@ -126,18 +128,16 @@ describe('workflow templates', () => {
     expect(byName.Requirements.prompt).toMatch(/Ask nothing you could find out yourself, and when nothing is missing ask nothing/);
     expect(byName.Requirements.prompt).not.toMatch(/reproduce/);
     expect(byName.Requirements).toEqual((({ id, ...step }) => step)(BUILT_IN_STEPS.find(step => step.id === 'requirements')));
-    // The specification is a file in the repository, so its step is not read-only; nothing is built before it is approved.
+    // The specification is a file in the repository and plan.md stays in the run notes; nothing is built before Specify is approved.
     expect(byName.Specify).toMatchObject({ readOnly: false, approval: true, askOwner: false, repeat: { mode: 'once' } });
     expect(byName.Specify.prompt).toMatch(/Read the Requirements note/);
+    expect(byName.Specify.prompt).toMatch(/write plan\.md in the run notes folder/i);
     expect(byName.Specify.prompt).toMatch(/Change no code/);
     expect(byName.Specify.prompt).toMatch(/give the path of the file/);
-    // The plan stays in the run notes, where a run without a Progress file reads its progress.
-    expect(byName.Plan).toMatchObject({ readOnly: true, approval: false, repeat: { mode: 'once' } });
-    expect(byName.Plan.prompt).toMatch(/Write plan\.md in the run notes folder/);
     expect(byName.Develop.prompt).toMatch(/do not run git commit/i);
     expect(byName.Review.prompt).toMatch(/commits since the base commit/i);
-    for (const name of ['Plan', 'Develop', 'Review', 'Test']) expect(byName[name].prompt, name).toMatch(/specification named in the Specify note/);
-    expect(byName.Test.repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 12 });
+    for (const name of ['Develop', 'Review', 'Test']) expect(byName[name].prompt, name).toMatch(/specification named in the Specify note/);
+    expect(byName.Test.repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 8 });
     expect(template.nodes.at(-1)).toMatchObject({ name: 'Commit', repeat: { mode: 'once' } });
     expect(byName.Commit.prompt).toMatch(/Include the specification/);
     expect(template.nodes.filter(node => node.askOwner).map(node => node.name)).toEqual(['Requirements']);
@@ -194,10 +194,11 @@ describe('workflow templates', () => {
     }
   });
 
-  it('instructs Review steps to review incrementally on repeat passes', () => {
+  it('instructs Review steps to review incrementally on repeat passes and avoid duplicating broad test suites', () => {
     for (const id of ['bug-fix', 'feature-build', 'feature-from-requirements']) {
       const review = WORKFLOW_TEMPLATES.find(item => item.id === id).nodes.find(node => node.name === 'Review');
       expect(review.prompt).toMatch(/On a repeat pass, read your previous Review and Test notes and review only what changed since that pass/);
+      expect(review.prompt).toMatch(/do not run broad test suites that the Test step will run next/);
     }
   });
 

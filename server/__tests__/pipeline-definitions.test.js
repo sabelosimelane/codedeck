@@ -578,3 +578,44 @@ describe('a step that always asks the owner', () => {
     expect(fields(validateStepPresetBody({ name: 'Clarify', prompt: 'Ask', repeat: { mode: 'once' }, askOwner: 1 }))).toEqual(['askOwner']);
   });
 });
+
+describe('disabling a stage in a workflow or run start', () => {
+  const node = (name, extra = {}) => ({ name, agentId: UUID, prompt: 'Do work', repeat: { mode: 'once' }, ...extra });
+
+  it('accepts enabled boolean on nodes, requires at least one enabled node, and forbids looping back to a disabled node', () => {
+    expect(validateWorkflowBody({
+      name: 'W',
+      agentsDecide: false,
+      nodes: [node('Requirements', { enabled: false }), node('Develop', { enabled: true })],
+    })).toEqual([]);
+    expect(validateWorkflowBody({
+      name: 'W',
+      agentsDecide: false,
+      nodes: [node('Requirements', { enabled: false })],
+    })).toEqual([{ field: 'nodes', message: 'Enable at least one node' }]);
+    expect(validateWorkflowBody({
+      name: 'W',
+      agentsDecide: false,
+      nodes: [
+        node('Develop', { enabled: false }),
+        node('Test', { repeat: { mode: 'loop_back', to: 'Develop', max: 3 } }),
+      ],
+    })).toEqual([
+      { field: 'nodes[1].repeat.to', message: 'Choose an enabled earlier node to loop back to' },
+    ]);
+    expect(fields(validateWorkflowBody({
+      name: 'W',
+      agentsDecide: false,
+      nodes: [node('Develop', { enabled: 'no' })],
+    }))).toEqual(['nodes[0].enabled']);
+  });
+
+  it('validates disabledSteps on validateRunStartBody', () => {
+    const valid = { requestId: 'run-1', workflowId: UUID, project: 'codedeck', input: 'x' };
+    expect(validateRunStartBody({ ...valid, disabledSteps: [] })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, disabledSteps: ['Requirements', 'Review'] })).toEqual([]);
+    expect(fields(validateRunStartBody({ ...valid, disabledSteps: 'Requirements' }))).toEqual(['disabledSteps']);
+    expect(fields(validateRunStartBody({ ...valid, disabledSteps: [''] }))).toEqual(['disabledSteps']);
+    expect(fields(validateRunStartBody({ ...valid, disabledSteps: ['Review', 'review'] }))).toEqual(['disabledSteps']);
+  });
+});

@@ -104,6 +104,7 @@ export function createTemplateStore(db, { now = () => new Date().toISOString() }
       nodes: body.nodes.map(node => ({
         name: node.name.trim(), role: (node.role ?? '').trim(), prompt: node.prompt, repeat: normalizeRepeat(node.repeat),
         readOnly: node.readOnly ?? false, approval: node.approval ?? false, askOwner: node.askOwner ?? false,
+        ...(node.enabled === false ? { enabled: false } : {}),
       })),
     }),
   });

@@ -72,7 +72,7 @@ export function reservedAttachmentIdentities(params) {
  * Ordered attachment identities are included only when the start carries files.
  */
 export function serializeStartParams({
-  workflowId, project, input, newTask, taskId, worktreePath, startIn, teamId, stepOverrides, attachments,
+  workflowId, project, input, newTask, taskId, worktreePath, startIn, teamId, stepOverrides, disabledSteps, attachments,
 }) {
   let place = { kind: 'new' };
   if (newTask !== undefined) place = { kind: 'newTask', title: newTask.title === undefined ? null : newTask.title.trim(), repositories: newTask.repositories };
@@ -80,6 +80,7 @@ export function serializeStartParams({
   else if (worktreePath !== undefined) place = { kind: 'worktree', worktreePath };
   const body = { workflowId, project, input, place, startIn, teamId,
     stepOverrides: stepOverrides && Object.fromEntries(Object.keys(stepOverrides).sort().map(name => [name, stepOverrides[name]])),
+    ...(disabledSteps !== undefined ? { disabledSteps: [...disabledSteps].map(name => name.trim()).sort() } : {}),
   };
   const identities = serializeAttachmentIdentities(attachments);
   if (identities !== undefined) body.attachments = identities;
@@ -123,7 +124,7 @@ function validateParams(requestId, params) {
 
   const body = { requestId, workflowId, project, input };
   const fields = { 'newTask.title': 'place.title', 'newTask.repositories': 'place.repositories', taskId: 'place.taskId', worktreePath: 'place.worktreePath' };
-  for (const key of ['startIn', 'teamId', 'stepOverrides']) {
+  for (const key of ['startIn', 'teamId', 'stepOverrides', 'disabledSteps']) {
     if (Object.hasOwn(parsed, key)) body[key] = parsed[key];
   }
   switch (place.kind) {

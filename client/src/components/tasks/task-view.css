@@ -1,5 +1,13 @@
 .task-view { flex: 1; min-height: 0; padding: 0; gap: 0; border-bottom: 0; }
-.task-view-header { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.task-view-header { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.task-view-header[data-run-status="complete"] { background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 7%, var(--bg-surface)), var(--bg-surface)); border-bottom-color: color-mix(in oklab, var(--accent) 30%, var(--border)); }
+.task-complete-banner { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid color-mix(in oklab, var(--accent) 38%, var(--border)); border-left: 3px solid var(--accent); border-radius: 8px; background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 13%, var(--bg-surface)), color-mix(in oklab, var(--accent-2) 6%, var(--bg-surface))); box-shadow: 0 4px 16px color-mix(in oklab, var(--accent) 10%, transparent); }
+.task-complete-badge { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in oklab, var(--accent) 20%, var(--bg-surface)); border: 1px solid color-mix(in oklab, var(--accent) 50%, transparent); color: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 10%, transparent); }
+.task-complete-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.task-complete-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.task-complete-title { color: var(--toast-success-text); font-size: 13px; font-weight: 600; letter-spacing: 0.01em; }
+.task-complete-meta { padding: 1px 7px; border-radius: 999px; background: color-mix(in oklab, var(--accent) 14%, var(--bg-base)); border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent); color: var(--text-primary); font-family: var(--font-mono); font-size: 11px; }
+.task-complete-text { color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
 .task-view-body { display: flex; flex: 1; min-height: 0; }
 .task-step-rail { display: flex; flex-direction: column; gap: 2px; flex: none; width: 200px; padding: 8px 6px; overflow-y: auto; border-right: 1px solid var(--border); background: var(--bg-sidebar); }
 .task-view button.task-step { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-left: 2px solid transparent; border-radius: 4px; background: transparent; color: var(--text-secondary); text-align: left; }

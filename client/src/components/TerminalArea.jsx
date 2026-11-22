@@ -3,7 +3,7 @@ import Terminal from './Terminal';
 import TerminalTabBar from './TerminalTabBar';
 import PaneDivider from './PaneDivider';
 import { removeSessionsFromLayout } from '../utils/closedSessions.js';
-import { Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play, Server } from 'lucide-react';
+import { Check, Plus, X, Columns, Eraser, Bug, Paintbrush, TerminalSquare, RotateCcw, Eye, EyeOff, Hourglass, Search, Play, Server } from 'lucide-react';
 import NewTaskDialog from './tasks/NewTaskDialog.jsx';
 import SyncConflictDialog from './SyncConflictDialog.jsx';
 import { createTask, openTaskTerminal } from '../utils/tasksApi.js';
@@ -1338,7 +1338,7 @@ export default function TerminalArea({
           const { title, tooltip } = describeWorktreeGroup(group);
           const runState = group.run ? describeRunStatus(group.run) : null;
           const waiting = runState?.needsOwner === true;
-          return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{runState && <span className="worktree-switcher-state" data-tone={runState.tone}>{runState.label.toLowerCase()}</span>}{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
+          return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{runState && <span className="worktree-switcher-state" data-tone={runState.tone}>{runState.tone === 'done' && <Check size={10} strokeWidth={2.75} aria-hidden="true" />}{runState.label.toLowerCase()}</span>}{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
         })}
         {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked && activeHost === 'local'} title={isTerminalRuntimeBlocked && activeHost === 'local' ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
         {/* A run works in a task or in Main, so it is started here, beside them, and not among a tab's own actions. */}

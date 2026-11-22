@@ -199,6 +199,10 @@ function validateLoops(errors, nodes) {
       add(errors, field, 'Choose an earlier node to loop back to');
       return;
     }
+    if (node.enabled !== false && isPlainObject(nodes[target]) && nodes[target].enabled === false) {
+      add(errors, field, 'Choose an enabled earlier node to loop back to');
+      return;
+    }
     // Every loop found so far ends before this node, so they overlap when this one starts inside it.
     const clash = loops.find(loop => target <= loop.end);
     if (clash) {
@@ -254,7 +258,7 @@ export function validateWorkflowBody(body, { revisionRequired = false, template 
       return;
     }
     for (const field of Object.keys(node)) {
-      if (!['name', 'role', ...(template ? [] : ['agentId']), 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner'].includes(field)) {
+      if (!['name', 'role', ...(template ? [] : ['agentId']), 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner', 'enabled'].includes(field)) {
         add(errors, `${prefix}.${field}`, 'Unknown field');
       }
     }
@@ -281,11 +285,14 @@ export function validateWorkflowBody(body, { revisionRequired = false, template 
     }
     validateRepeat(errors, prefix, node.repeat);
     // `askOwner`: this step's questions always come to the owner, also when agents decide.
-    for (const flag of ['readOnly', 'approval', 'askOwner']) {
+    for (const flag of ['readOnly', 'approval', 'askOwner', 'enabled']) {
       if (node[flag] !== undefined && typeof node[flag] !== 'boolean') add(errors, `${prefix}.${flag}`, 'Use true or false');
     }
     if (node.approval === true && node.repeat?.mode === 'loop_back') add(errors, `${prefix}.approval`, 'A step that closes a loop cannot wait for approval');
   });
+  if (body.nodes.every(node => isPlainObject(node) && node.enabled === false)) {
+    add(errors, 'nodes', 'Enable at least one node');
+  }
   validateLoops(errors, body.nodes);
 
   return errors;
@@ -294,7 +301,7 @@ export function validateWorkflowBody(body, { revisionRequired = false, template 
 /** A saved step: a named prompt with its options, copied into a workflow when inserted. */
 export function validateStepPresetBody(body, { revisionRequired = false } = {}) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['name', 'role', 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner', 'revision'])) return errors;
+  if (!rejectUnknown(errors, body, ['name', 'role', 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner', 'enabled', 'revision'])) return errors;
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
   optionalLine(errors, 'role', body.role, ROLE_MAX);
   requireRevision(errors, body.revision, revisionRequired);
@@ -306,7 +313,7 @@ export function validateStepPresetBody(body, { revisionRequired = false } = {}) 
   // A loop names another step of its workflow, which a step on its own does not have.
   if (body.repeat?.mode === 'loop_back') add(errors, 'repeat.mode', 'Choose once or until_complete; a loop is set in the workflow');
   else for (const error of repeatErrors) add(errors, error.field.replace(/^step\./, ''), error.message);
-  for (const flag of ['readOnly', 'approval', 'askOwner']) {
+  for (const flag of ['readOnly', 'approval', 'askOwner', 'enabled']) {
     if (body[flag] !== undefined && typeof body[flag] !== 'boolean') add(errors, flag, 'Use true or false');
   }
   return errors;
@@ -363,12 +370,31 @@ export function validateTeamChange(body) {
 
 export function validateRunStartBody(body, { inputMode = 'descriptive' } = {}) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides', 'host', 'skipSync'])) return errors;
+  if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides', 'disabledSteps', 'host', 'skipSync'])) return errors;
   if (body.host !== undefined && (typeof body.host !== 'string' || !body.host.trim() || SINGLE_LINE.test(body.host))) {
     add(errors, 'host', 'Use a host name');
   }
   if (body.skipSync !== undefined && typeof body.skipSync !== 'boolean') {
     add(errors, 'skipSync', 'Use true or false');
+  }
+  if (body.disabledSteps !== undefined) {
+    if (!Array.isArray(body.disabledSteps) || body.disabledSteps.length > 32) {
+      add(errors, 'disabledSteps', 'Use an array of up to 32 step names');
+    } else {
+      const seen = new Set();
+      for (const step of body.disabledSteps) {
+        if (typeof step !== 'string' || !step.trim() || step.trim().length > 64 || SINGLE_LINE.test(step)) {
+          add(errors, 'disabledSteps', 'Use 1–64 characters on one line without control characters');
+          break;
+        }
+        const key = step.trim().toLowerCase();
+        if (seen.has(key)) {
+          add(errors, 'disabledSteps', 'Each disabled step can appear only once');
+          break;
+        }
+        seen.add(key);
+      }
+    }
   }
   validateAssignments(body, errors);
   if (!isRunRequestId(body.requestId)) {

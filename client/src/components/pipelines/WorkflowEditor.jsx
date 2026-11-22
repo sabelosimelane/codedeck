@@ -16,10 +16,10 @@ const nextNodeKey = () => `node-${++lastNodeKey}`;
 
 // `loopTo` is the key of the node a loop returns to, so the loop follows that node when it is
 // renamed or moved; the name is filled in when the workflow is saved.
-const blankNode = () => ({ key: nextNodeKey(), name: '', role: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '', readOnly: false, approval: false, askOwner: false });
+const blankNode = () => ({ key: nextNodeKey(), name: '', role: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '', readOnly: false, approval: false, askOwner: false, enabled: true });
 
 // A saved step becomes a node of its own: a copy, so editing it here never changes the saved one.
-const nodeFromPreset = preset => ({ ...blankNode(), name: preset.name, role: preset.role, prompt: preset.prompt, mode: preset.repeat.mode, max: preset.repeat.mode === 'once' ? '' : String(preset.repeat.max), readOnly: preset.readOnly, approval: preset.approval, askOwner: preset.askOwner });
+const nodeFromPreset = preset => ({ ...blankNode(), name: preset.name, role: preset.role, prompt: preset.prompt, mode: preset.repeat.mode, max: preset.repeat.mode === 'once' ? '' : String(preset.repeat.max), readOnly: preset.readOnly, approval: preset.approval, askOwner: preset.askOwner, enabled: preset.enabled !== false });
 
 function toDraft(workflow, roleHints = null) {
   if (workflow === null) return { id: null, revision: null, name: '', kind: 'other', description: '', agentsDecide: false, progressFile: '', nodes: [blankNode()] };
@@ -41,6 +41,7 @@ function toDraft(workflow, roleHints = null) {
       readOnly: node.readOnly,
       approval: node.approval,
       askOwner: node.askOwner ?? false,
+      enabled: node.enabled !== false,
       mode: node.repeat.mode,
       max: node.repeat.mode === 'once' ? '' : String(node.repeat.max),
       loopTo: node.repeat.mode === 'loop_back' ? keys[loopTargetIndex(workflow.nodes, index)] : '',
@@ -73,6 +74,7 @@ function toFields(draft) {
       readOnly: node.readOnly,
       approval: node.mode === 'loop_back' ? false : node.approval,
       askOwner: node.askOwner,
+      ...(node.enabled === false ? { enabled: false } : {}),
       repeat: toRepeat(draft.nodes, node),
     })),
   };
@@ -82,7 +84,7 @@ function shownFields(nodeCount) {
   const fields = ['name', 'kind', 'description', 'agentsDecide', 'progressFile'];
   for (let index = 0; index < nodeCount; index++) {
     const prefix = `nodes[${index}]`;
-    fields.push(`${prefix}.name`, `${prefix}.role`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.readOnly`, `${prefix}.approval`, `${prefix}.askOwner`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
+    fields.push(`${prefix}.name`, `${prefix}.role`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.readOnly`, `${prefix}.approval`, `${prefix}.askOwner`, `${prefix}.enabled`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
   }
   return fields;
 }
@@ -291,6 +293,11 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
               </div>
               <TextField multiline rows={builder ? 14 : 3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="What this step should do. {input} is replaced with what you type when starting a run." />
               <label className="pipeline-check">
+                <input type="checkbox" aria-label={`Node ${number} enabled`} checked={node.enabled} disabled={busy} onChange={event => setNodeField(index, 'enabled')(event.target.checked)} />
+                <span>Enable this step — Uncheck to skip this step in new runs while keeping it in the workflow.</span>
+              </label>
+              {errors[`${prefix}.enabled`] && <span className="pipeline-field-error">{errors[`${prefix}.enabled`]}</span>}
+              <label className="pipeline-check">
                 <input type="checkbox" aria-label={`Node ${number} read-only step`} checked={node.readOnly} disabled={busy} onChange={event => setNodeField(index, 'readOnly')(event.target.checked)} />
                 <span>Read-only step — The agent is told to change nothing except files in its run notes folder.</span>
               </label>
@@ -363,7 +370,7 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
               <span className="workflow-rail-number">{index + 1}</span>
               <span className="workflow-rail-text">
                 <span className="workflow-rail-name">{node.name.trim() || '(no name yet)'}</span>
-                <span className="workflow-rail-meta">{[node.role.trim(), agents.find(agent => agent.id === node.agentId)?.name ?? 'Team role', node.mode === 'loop_back' ? `↺ ${draft.nodes.find(candidate => candidate.key === node.loopTo)?.name.trim() || '?'}` : null, node.approval && node.mode !== 'loop_back' ? 'approval' : null].filter(Boolean).join(' · ')}</span>
+                <span className="workflow-rail-meta">{[node.role.trim(), agents.find(agent => agent.id === node.agentId)?.name ?? 'Team role', node.mode === 'loop_back' ? `↺ ${draft.nodes.find(candidate => candidate.key === node.loopTo)?.name.trim() || '?'}` : null, node.approval && node.mode !== 'loop_back' ? 'approval' : null, !node.enabled ? 'disabled' : null].filter(Boolean).join(' · ')}</span>
               </span>
               {Object.keys(errors).some(field => field.startsWith(`nodes[${index}].`)) && <span className="pipeline-field-error" aria-label="This step has an invalid field">!</span>}
             </button>

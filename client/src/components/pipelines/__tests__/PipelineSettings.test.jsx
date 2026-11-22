@@ -1211,11 +1211,25 @@ describe('PipelineSettings — reuse: saved templates and saved steps', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add workflow' }));
     click(/Feature from requirements.*specification/);
     expect(screen.getByLabelText('Workflow kind').value).toBe('build');
-    expect(nodeNames()).toEqual(['Requirements', 'Specify', 'Plan', 'Develop', 'Review', 'Test', 'Commit']);
+    expect(nodeNames()).toEqual(['Requirements', 'Specify', 'Develop', 'Review', 'Test', 'Commit']);
     expect(screen.getByLabelText('Node 1 always ask me').checked).toBe(true);
     expect(screen.getByLabelText('Node 1 read-only step').checked).toBe(true);
     expect(screen.getByLabelText('Node 2 read-only step').checked).toBe(false);
     expect(backend.mutations()).toEqual([]);
+  });
+
+  it('allows disabling a step in a workflow while keeping its configuration saved', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] });
+    click('Edit workflow Feature');
+    expect(screen.getByLabelText('Node 1 enabled').checked).toBe(true);
+    fireEvent.click(screen.getByLabelText('Node 1 enabled'));
+    expect(screen.getByLabelText('Node 1 enabled').checked).toBe(false);
+    type('Node 1 repeat', 'once');
+    type('Node 2 agent', A1);
+    click('Save workflow');
+    await waitFor(() => toast('success', 'Workflow "Feature" saved'));
+    expect(backend.mutations()[0].body.nodes[0]).toMatchObject({ name: 'Develop', enabled: false });
+    expect(await workflows().findByText('2 nodes: Develop (disabled) → Test')).toBeTruthy();
   });
 
   it('inserts the built-in Requirements step into any workflow', async () => {

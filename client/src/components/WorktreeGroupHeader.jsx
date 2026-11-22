@@ -1,4 +1,5 @@
 import React from 'react';
+import { Check } from 'lucide-react';
 import { describeWorktreeGroup } from '../utils/worktreeGroups';
 import { describeRunStatus } from '../utils/pipelineRunStatus';
 
@@ -21,7 +22,12 @@ export default function WorktreeGroupHeader({ group, selected, onClick }) {
       className="worktree-group-header">
       <span className="worktree-group-header-row">
         <span className="worktree-group-header-title">{title}</span>
-        {status && <span className="worktree-group-header-status" data-tone={status.tone}>{status.label.toLowerCase()}</span>}
+        {status && (
+          <span className="worktree-group-header-status" data-tone={status.tone}>
+            {status.tone === 'done' && <Check size={10} strokeWidth={2.75} aria-hidden="true" />}
+            {status.label.toLowerCase()}
+          </span>
+        )}
       </span>
       {detail && <span className="worktree-group-header-detail">{detail}</span>}
     </button>
