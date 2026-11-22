@@ -33,7 +33,7 @@ it('fingerprints tracked and new sources on the selected host without run-note c
     expect(await source()).not.toBe(staged);
   } finally { await rm(dir,{recursive:true}); }
 });
-it('rejectsDetailedFinding_whenAbsolutePathAndReasonExceed500Chars', () => {
+it('accepts a detailed finding whose absolute path and reason together exceed 500 characters', () => {
   const file=`/Users/dev/git/app/worktrees/sos-shortcut-ceb9a7fb/mobile-app/app/src/main/java/com/example/app/${'a'.repeat(30)}/MainActivity.kt`;
   const reason=`Regression: MainActivity.kt:107 casts application as App ${'x'.repeat(480)}`;
   expect(file.length).toBeGreaterThan(140);
@@ -47,4 +47,15 @@ it('names the field and its length when a repair path or reason is too long', ()
 it('rejects control characters in a repair path or reason', () => {
   expect(()=>repairFindings('REPAIR 4 P2-1 | a\t.kt | failed',4)).toThrow(/P2-1.*path.*control/);
   expect(()=>repairFindings('REPAIR 4 P2-1 | a.kt | fail\x07ed',4)).toThrow(/P2-1.*reason.*control/);
+});
+it('rejects control characters at the edge of a repair path or reason', () => {
+  expect(()=>repairFindings('REPAIR 4 P2-1 | \ta.kt | failed',4)).toThrow(/P2-1.*path.*control/);
+  expect(()=>repairFindings('REPAIR 4 P2-1 | a.kt | failed\t',4)).toThrow(/P2-1.*reason.*control/);
+});
+it('keeps a pipe inside the reason verbatim and measures the reason as written', () => {
+  expect(repairFindings('REPAIR 4 P2-1 | a.kt | expected A | got B',4)).toEqual(['P2-1 | a.kt | expected A | got B']);
+  expect(()=>repairFindings(`REPAIR 4 P2-1 | a.kt | ${'a'.repeat(499)} | ${'b'.repeat(499)}`,4)).toThrow(/P2-1.*reason.*1001.*1000/);
+});
+it('rejects a reason made only of pipes', () => {
+  expect(()=>repairFindings('REPAIR 4 P2-1 | a.kt | |',4)).toThrow(/P2-1 requires a failure/);
 });

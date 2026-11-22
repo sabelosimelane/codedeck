@@ -5,9 +5,12 @@ import { runGit } from './run-worktree.js';
 export const MAX_REPAIR_PATH = 1024;
 export const MAX_REPAIR_REASON = 1000;
 
-function checkField(id, field, value, max) {
+// Control characters are checked before trimming, so one at a field's edge is not trimmed away.
+function checkField(id, field, raw, max) {
+  if (/[\x00-\x1f\x7f]/.test(raw)) throw new Error(`Repair finding ${id} ${field} contains a control character`);
+  const value = raw.trim();
   if (value.length > max) throw new Error(`Repair finding ${id} ${field} is ${value.length} characters; the limit is ${max}`);
-  if (/[\x00-\x1f\x7f]/.test(value)) throw new Error(`Repair finding ${id} ${field} contains a control character`);
+  return value;
 }
 
 export function repairFindings(note, attempt) {
@@ -17,13 +20,16 @@ export function repairFindings(note, attempt) {
   const lines = note.split(/\r?\n/).filter(line => line.startsWith(prefix));
   if (!lines.length) throw new Error(`Test requested another round without a REPAIR ${attempt} finding for a buildable check. Owner or handset evidence requires NEEDS_INPUT.`);
   const findings = lines.map(line => {
-    const [id,location,...reason] = line.slice(prefix.length).split('|').map(part => part.trim());
+    // Only the first two pipes separate fields; a pipe inside the reason is part of it.
+    const [rawId, rawLocation = '', ...rest] = line.slice(prefix.length).split('|');
+    const rawReason = rest.join('|');
+    const id = rawId.trim();
     if (!/^[\w.-]{1,64}$/.test(id)) throw new Error('Repair finding requires a check id');
+    const location = checkField(id, 'path', rawLocation, MAX_REPAIR_PATH);
     if (!location) throw new Error(`Repair finding ${id} requires a file path`);
-    if (!reason.join('|').trim()) throw new Error(`Repair finding ${id} requires a failure or outstanding task`);
-    checkField(id, 'path', location, MAX_REPAIR_PATH);
-    checkField(id, 'reason', reason.join('|'), MAX_REPAIR_REASON);
-    return `${id} | ${location} | ${reason.join('|')}`;
+    const reason = checkField(id, 'reason', rawReason, MAX_REPAIR_REASON);
+    if (!/[^|\s]/.test(reason)) throw new Error(`Repair finding ${id} requires a failure or outstanding task`);
+    return `${id} | ${location} | ${reason}`;
   });
   if (findings.join('\n').length > 6000) throw new Error('Repair findings exceed 6000 characters');
   return [...new Set(findings)].sort();
