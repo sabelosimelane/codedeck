@@ -2,6 +2,14 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { runGit } from './run-worktree.js';
 
+export const MAX_REPAIR_PATH = 1024;
+export const MAX_REPAIR_REASON = 1000;
+
+function checkField(id, field, value, max) {
+  if (value.length > max) throw new Error(`Repair finding ${id} ${field} is ${value.length} characters; the limit is ${max}`);
+  if (/[\x00-\x1f\x7f]/.test(value)) throw new Error(`Repair finding ${id} ${field} contains a control character`);
+}
+
 export function repairFindings(note, attempt) {
   if (typeof note !== 'string') throw new Error('Repair evidence requires a Test note');
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('Repair evidence requires a positive attempt');
@@ -13,7 +21,8 @@ export function repairFindings(note, attempt) {
     if (!/^[\w.-]{1,64}$/.test(id)) throw new Error('Repair finding requires a check id');
     if (!location) throw new Error(`Repair finding ${id} requires a file path`);
     if (!reason.join('|').trim()) throw new Error(`Repair finding ${id} requires a failure or outstanding task`);
-    if (line.length > 500 || /[\x00-\x1f\x7f]/.test(line)) throw new Error(`Invalid repair finding for ${id}`);
+    checkField(id, 'path', location, MAX_REPAIR_PATH);
+    checkField(id, 'reason', reason.join('|'), MAX_REPAIR_REASON);
     return `${id} | ${location} | ${reason.join('|')}`;
   });
   if (findings.join('\n').length > 6000) throw new Error('Repair findings exceed 6000 characters');

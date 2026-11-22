@@ -33,3 +33,18 @@ it('fingerprints tracked and new sources on the selected host without run-note c
     expect(await source()).not.toBe(staged);
   } finally { await rm(dir,{recursive:true}); }
 });
+it('rejectsDetailedFinding_whenAbsolutePathAndReasonExceed500Chars', () => {
+  const file=`/Users/dev/git/app/worktrees/sos-shortcut-ceb9a7fb/mobile-app/app/src/main/java/com/example/app/${'a'.repeat(30)}/MainActivity.kt`;
+  const reason=`Regression: MainActivity.kt:107 casts application as App ${'x'.repeat(480)}`;
+  expect(file.length).toBeGreaterThan(140);
+  expect(reason.length).toBeGreaterThan(530);
+  expect(repairFindings(`REPAIR 4 P2-1 | ${file} | ${reason}`,4)).toEqual([`P2-1 | ${file} | ${reason}`]);
+});
+it('names the field and its length when a repair path or reason is too long', () => {
+  expect(()=>repairFindings(`REPAIR 4 P2-1 | /${'p'.repeat(1024)} | failed`,4)).toThrow(/P2-1.*path.*1025.*1024/);
+  expect(()=>repairFindings(`REPAIR 4 P2-1 | a.kt | ${'r'.repeat(1001)}`,4)).toThrow(/P2-1.*reason.*1001.*1000/);
+});
+it('rejects control characters in a repair path or reason', () => {
+  expect(()=>repairFindings('REPAIR 4 P2-1 | a\t.kt | failed',4)).toThrow(/P2-1.*path.*control/);
+  expect(()=>repairFindings('REPAIR 4 P2-1 | a.kt | fail\x07ed',4)).toThrow(/P2-1.*reason.*control/);
+});
