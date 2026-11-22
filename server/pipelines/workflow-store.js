@@ -157,17 +157,62 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     db.exec("ALTER TABLE pipeline_workflows ADD COLUMN description TEXT NOT NULL DEFAULT ''");
   }
 
+  const STOCK_PROMPT_UPGRADES = new Map([
+    [
+      'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown.',
+      'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. Check whether any referenced or read-only repository must change; if a repository is missing from this task\'s worktrees, ask to add it in this same NEEDS_INPUT pass. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown.',
+    ],
+    [
+      'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown. Record the agreed acceptance checks in your note, including how each outcome will be verified and which checks need external evidence.',
+      'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. Check whether any referenced or read-only repository must change; if a repository is missing from this task\'s worktrees, ask to add it in this same NEEDS_INPUT pass. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown. Record the agreed acceptance checks in your note, including how each outcome will be verified and which checks need external evidence.',
+    ],
+    [
+      'Read {input} and restate what is being asked for in your own words. Change nothing. Check that you know who it is for and what they need to do with it, what it must do in each case including errors and empty states, what is out of scope, what existing behaviour must stay the same, and how it will be shown to work. First look for each of these yourself in the code, the documents and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the requirements as you now understand them, what you found yourself, what the owner told you, and what is still open.',
+      'Read {input} and restate what is being asked for in your own words. Change nothing. Check that you know who it is for and what they need to do with it, what it must do in each case including errors and empty states, what is out of scope, what existing behaviour must stay the same, and how it will be shown to work. Check whether any referenced or read-only repository must change; if a repository is missing from this task\'s worktrees, ask to add it in this same NEEDS_INPUT pass. First look for each of these yourself in the code, the documents and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the requirements as you now understand them, what you found yourself, what the owner told you, and what is still open.',
+    ],
+    [
+      'Review all changes on this branch (both uncommitted changes and any commits since the base commit) against the Specify note. Fix every defect you find and record your findings and fixes.',
+      'Review the changes on this branch (both uncommitted changes and any commits since the base commit) against the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified work. Fix every defect you find and record your findings and fixes.',
+    ],
+    [
+      'Review all feature changes on this branch (both uncommitted changes and any commits since the base commit) against plan.md and the task. Fix every defect and record findings and fixes.',
+      'Review the feature changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the task. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect and record findings and fixes.',
+    ],
+    [
+      'Review all feature changes on this branch (both uncommitted changes and any commits since the base commit) against plan.md and the specification named in the Specify note. Fix every defect and record findings and fixes.',
+      'Review the feature changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the specification named in the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect and record findings and fixes.',
+    ],
+  ]);
+
   const upgradeNodes = db.transaction(() => {
     const save = db.prepare('UPDATE pipeline_workflows SET nodes = ? WHERE id = ?');
-    for (const row of db.prepare('SELECT id, nodes FROM pipeline_workflows').all()) {
+    for (const row of db.prepare('SELECT id, kind, nodes FROM pipeline_workflows').all()) {
       let nodes;
       try { nodes = JSON.parse(row.nodes); } catch { fieldError(row.id, 'nodes', 'must be valid JSON'); }
       if (!Array.isArray(nodes)) fieldError(row.id, 'nodes', 'must be an array');
-      // Nodes saved before a step could have a role have none.
-      if (nodes.some(node => node && typeof node === 'object' && !Array.isArray(node) && (!Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || !Object.hasOwn(node, 'role') || !Object.hasOwn(node, 'askOwner')))) {
-        save.run(JSON.stringify(nodes.map(node => node && typeof node === 'object' && !Array.isArray(node)
-          ? { ...node, ...(!Object.hasOwn(node, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(node, 'approval') ? { approval: false } : {}), ...(!Object.hasOwn(node, 'role') ? { role: '' } : {}), ...(!Object.hasOwn(node, 'askOwner') ? { askOwner: false } : {}) }
-          : node)), row.id);
+      let changed = false;
+      const upgraded = nodes.map(node => {
+        if (!node || typeof node !== 'object' || Array.isArray(node)) return node;
+        const missingProps = !Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || !Object.hasOwn(node, 'role') || !Object.hasOwn(node, 'askOwner');
+        const nextPrompt = STOCK_PROMPT_UPGRADES.get(node.prompt);
+        const capUntrackedLoop = ['bugfix', 'troubleshoot'].includes(row.kind)
+          && ['Test', 'Verify'].includes(node.name)
+          && node.repeat?.mode === 'loop_back'
+          && node.repeat?.max === 5;
+        if (!missingProps && !nextPrompt && !capUntrackedLoop) return node;
+        changed = true;
+        return {
+          ...node,
+          ...(!Object.hasOwn(node, 'readOnly') ? { readOnly: false } : {}),
+          ...(!Object.hasOwn(node, 'approval') ? { approval: false } : {}),
+          ...(!Object.hasOwn(node, 'role') ? { role: '' } : {}),
+          ...(!Object.hasOwn(node, 'askOwner') ? { askOwner: false } : {}),
+          ...(nextPrompt ? { prompt: nextPrompt } : {}),
+          ...(capUntrackedLoop ? { repeat: { ...node.repeat, max: 3 } } : {}),
+        };
+      });
+      if (changed) {
+        save.run(JSON.stringify(upgraded), row.id);
       }
     }
   });

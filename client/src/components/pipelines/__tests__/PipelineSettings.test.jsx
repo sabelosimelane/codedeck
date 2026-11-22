@@ -612,15 +612,17 @@ describe('PipelineSettings workflows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add workflow' }));
     expect(screen.getByRole('button', { name: 'Blank' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Bug fix.*Investigate/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Quick change.*Scope a small change/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Feature build.*Plan/ })).toBeTruthy();
     click(/Bug fix.*Investigate/);
     expect(screen.getByLabelText('Workflow name').value).toBe('Bug fix 2');
     expect(nodeNames()).toEqual(['Clarify', 'Analyse', 'Specify', 'Develop', 'Review', 'Test', 'Commit']);
-    // Clarify checks the report first and always asks the owner; the work starts gated at Analyse.
+    // Clarify checks the report first and always asks the owner; the work is gated at Specify.
     expect(screen.getByLabelText('Node 1 read-only step').checked).toBe(true);
     expect(screen.getByLabelText('Node 1 always ask me').checked).toBe(true);
     expect(screen.getByLabelText('Node 1 wait for my approval').checked).toBe(false);
-    expect(screen.getByLabelText('Node 2 wait for my approval').checked).toBe(true);
+    expect(screen.getByLabelText('Node 2 wait for my approval').checked).toBe(false);
+    expect(screen.getByLabelText('Node 3 wait for my approval').checked).toBe(true);
     expect(screen.getByLabelText('Node 2 always ask me').checked).toBe(false);
     expect(screen.getByLabelText('Node 1 agent').value).toBe('');
     // What each step is for comes with the template, and can be edited.
@@ -630,7 +632,7 @@ describe('PipelineSettings workflows', () => {
     for (let index = 1; index <= 7; index++) type(`Node ${index} agent`, A1);
     click('Save workflow');
     await waitFor(() => expect(backend.mutations()).toHaveLength(1));
-    expect(backend.mutations()[0].body.nodes[5].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 5 });
+    expect(backend.mutations()[0].body.nodes[5].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 3 });
     expect(backend.mutations()[0].body.nodes.map(node => node.askOwner)).toEqual([true, false, false, false, false, true, false]);
     expect(backend.mutations()[0].body.nodes[0].role).toBe('Investigator');
     expect(backend.mutations()[0].body).toMatchObject({ kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.' });

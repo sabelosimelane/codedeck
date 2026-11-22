@@ -38,14 +38,14 @@ function finishStep(step, at) {
   step.finishedAt = at ?? step.finishedAt ?? null;
 }
 
-// A step is working from the moment it is started until it completes, asks for approval, reaches
-// its limit, loops back, fails or is stopped. Waiting for an answer is part of working.
-const WORKING_STEP = new Set(['launching', 'running', 'needs_input']);
+// A step is working from the moment it is started until it completes, asks for input or approval,
+// reaches its limit, loops back, fails or is stopped. Time spent waiting for the owner is not work.
+const WORKING_STEP = new Set(['launching', 'running']);
 
 /**
  * Adds the stretch a working step has just ended to the time it has worked in all. Called
  * before the step's status changes, and only for a step that was working: the time a step
- * lay interrupted, waited for approval or waited for its next round is not work.
+ * lay interrupted, waited for input or approval, or waited for its next round is not work.
  */
 function addWorkedTime(step, at) {
   if (!Number.isInteger(step.elapsedMs) || step.elapsedMs < 0) throw new Error('step time: elapsedMs must be an integer ≥ 0');
@@ -89,6 +89,10 @@ function applyNeedsInput(run, event) {
   }
   // What the agent asked: an object when it signalled NEEDS_INPUT, null for a launch dialog.
   if (event.inputRequest === undefined) throw new Error('needs_input event: inputRequest is required');
+  if (event.at !== undefined) {
+    addWorkedTime(step, event.at);
+    step.startedAt = null;
+  }
   run.status = 'needs_input';
   step.status = 'needs_input';
   run.inputRequest = event.inputRequest;
@@ -99,6 +103,12 @@ function applyInputReceived(run, event) {
   if (run.status !== 'needs_input') illegal(run.status, event.type);
   const step = currentStep(run);
   if (step.status !== 'needs_input') illegal(`step:${step.status}`, event.type);
+  if (event.at !== undefined) {
+    if (typeof event.at !== 'string' || Number.isNaN(Date.parse(event.at))) {
+      throw new Error('step time: the event must say when it happened');
+    }
+    step.startedAt = event.at;
+  }
   run.status = 'running';
   step.status = 'running';
   return run;

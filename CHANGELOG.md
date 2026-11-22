@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-11-22] - Incremental workflow reviews, active-only step timers, Quick change template, and untracked loop guardrails
+
+### Executive Summary
+* Workflow execution now scales with change complexity and reports truthful active step durations: `Review` passes scope repeat reviews to changes since the previous pass (instead of re-auditing already-verified phases from scratch), step timers pause while a run waits in `needs_input` (and warn explicitly when a step is blocked on a CLI terminal dialog), a 4-step `Quick change` template and upfront multi-repository checks in `Clarify`/`Requirements` reduce ceremony and mid-run stalls, and untracked loops pause after two repeat rounds without finishing.
+
+### Technical Details
+* **✨ New Feature:**
+  * `shared/workflow-templates.mjs` — added the 4-step `quick-change` (`Quick change`) workflow template (`Scope → Develop → Review & Test → Commit`), updated `Review` prompts for incremental repeat passes, added upfront repository/worktree checks to `Clarify` and `Requirements`, and set default loop limits on `Bug fix` and `Troubleshoot` to 3 passes.
+  * `server/pipelines/step-guidance.js`, `server/pipelines/run-engine.js` — passed `attempt` to `buildStepGuidance` so repeat passes inside a note-keeping loop instruct the agent to read its previous note and focus on what changed since that pass.
+  * `server/pipelines/workflow-store.js` — added an exact-match node migration in `upgradeNodes` to upgrade unmodified stock `Clarify`, `Requirements`, and `Review` prompts and cap unmodified `bugfix`/`troubleshoot` loop limits at 3 while preserving custom prompts.
+  * `client/src/components/tasks/TaskView.jsx` — added an explicit header warning when `needs_input` has `inputRequest: null` (CLI terminal dialog) and updated the `no_progress` warning banner for runs without a `plan.md` progress file.
+* **🐛 Bug Fix:**
+  * **Problem:** `WORKING_STEP` included `needs_input`, folding hours of owner wait time or silent CLI startup dialogs into a step's displayed working time (`elapsedMs`), and note-keeping loops without a `plan.md` progress file bypassed `NO_PROGRESS_ROUNDS`.
+  * **Solution:** Removed `needs_input` from `WORKING_STEP` in `server/pipelines/run-machine.js` and `client/src/utils/pipelineRunStatus.js`, banked active time on `needs_input` and resumed `startedAt` on `input_received` with backend timestamps in `server/pipelines/run-engine.js`, and enforced `NO_PROGRESS_ROUNDS` on note-keeping loops without a progress file.
+* **🧪 Tests:**
+  * `server/__tests__/workflow-templates.test.js`, `server/__tests__/pipeline-step-guidance.test.js`, `server/__tests__/pipeline-run-machine.test.js`, `server/__tests__/pipeline-definition-store.test.js`, `server/__tests__/pipeline-run-engine.test.js`, `client/src/utils/__tests__/pipelineRunStatus.test.js`, `client/src/components/tasks/__tests__/TaskView.test.jsx`, `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx` — updated and added coverage for all four improvements.
+
 ## [2026-11-22] - Live per-stage timing, resilient workflow signals, and Muse Code preset
 
 ### Executive Summary

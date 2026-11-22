@@ -102,14 +102,14 @@ describe('describeStepDuration', () => {
     expect(describeStepDuration(step({ status: 'pending', elapsedMs: 0 }), now(0))).toBeNull();
   });
 
-  it.each(['complete', 'limit_accepted', 'pending', 'awaiting_approval', 'limit_reached', 'failed', 'stopped', 'interrupted'])(
+  it.each(['complete', 'limit_accepted', 'pending', 'needs_input', 'awaiting_approval', 'limit_reached', 'failed', 'stopped', 'interrupted'])(
     'shows the accumulated working time for a %s step that has worked before',
     (status) => {
       expect(describeStepDuration(step({ status }), now(99999))).toEqual({ words: '4m 12s', live: false });
     },
   );
 
-  it.each(['launching', 'running', 'needs_input'])(
+  it.each(['launching', 'running'])(
     'counts live from startedAt on top of accumulated elapsedMs while a step is %s',
     (status) => {
       expect(describeStepDuration(step({ status, elapsedMs: 60000, startedAt: at(10) }), now(75))).toEqual({ words: '2m 5s', live: true });

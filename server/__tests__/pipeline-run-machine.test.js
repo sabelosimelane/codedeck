@@ -645,13 +645,15 @@ describe('applyEvent — the time a step has worked', () => {
     expect(next.steps[0].elapsedMs).toBe(90000);
   });
 
-  it('counts the wait for an answer, and not the wait for an approval', () => {
+  it('pauses the working clock while waiting for an answer or an approval', () => {
     const asked = applyEvent(one(), { type: 'needs_input', inputRequest: null, at: at(10) });
+    expect(asked.steps[0]).toMatchObject({ status: 'needs_input', elapsedMs: 10000, startedAt: null });
     const answered = applyEvent(asked, { type: 'input_received', at: at(70) });
+    expect(answered.steps[0]).toMatchObject({ status: 'running', elapsedMs: 10000, startedAt: at(70) });
     const requested = applyEvent(answered, { type: 'approval_requested', at: at(100) });
-    expect(requested.steps[0].elapsedMs).toBe(100000);
+    expect(requested.steps[0].elapsedMs).toBe(40000);
     const approved = applyEvent(requested, { type: 'approve', at: at(5000) });
-    expect(approved.steps[0]).toMatchObject({ status: 'complete', elapsedMs: 100000 });
+    expect(approved.steps[0]).toMatchObject({ status: 'complete', elapsedMs: 40000 });
   });
 
   it('adds the new attempt after the owner sends a step back', () => {

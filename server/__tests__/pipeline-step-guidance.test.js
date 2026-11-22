@@ -55,6 +55,20 @@ describe('buildStepGuidance', () => {
     expect(buildStepGuidance(def, 3, OPTIONS)).toBe(BOUNDARY);
   });
 
+  it('tells a loop step on a repeat pass to read its previous note and focus on what changed', () => {
+    const def = {
+      ...definition(false, step('Plan'), step('Develop'), step('Review'), step('Test', loop(1)), step('Commit')),
+      notesDir: '.codedeck/runs/abcdef12',
+    };
+    expect(buildStepGuidance(def, 2, { ...OPTIONS, attempt: 1 })).not.toContain('in this loop: read your previous note');
+    expect(buildStepGuidance(def, 2, { ...OPTIONS, attempt: 2 })).toContain(
+      'Pass 2 of Review in this loop: read your previous note in .codedeck/runs/abcdef12 and focus on what changed since that pass instead of re-auditing already-verified work.',
+    );
+    expect(buildStepGuidance(def, 0, { ...OPTIONS, attempt: 2 })).not.toContain('in this loop: read your previous note');
+    expect(buildStepGuidance(def, 4, { ...OPTIONS, attempt: 2 })).not.toContain('in this loop: read your previous note');
+    expect(() => buildStepGuidance(def, 2, { ...OPTIONS, attempt: 0 })).toThrow('step guidance: attempt must be a positive integer');
+  });
+
   it('tells every node, but not Setup, to decide for itself when agents decide', () => {
     const def = definition(true, step('Setup', { mode: 'until_complete', max: 3 }, 'setup'), step('Develop'), step('Review'));
     expect(buildStepGuidance(def, 0, OPTIONS)).toBeUndefined();

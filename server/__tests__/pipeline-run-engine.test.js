@@ -2327,7 +2327,7 @@ describe('createRunEngine — a loop of steps', () => {
     return { createWorkflow, starts };
   }
 
-  async function runLoop(outcomes, { max = 3, overrides = {} } = {}) {
+  async function runLoop(outcomes, { max = 3, definition = looping(max), overrides = {} } = {}) {
     const script = scriptedWorkflow([...outcomes]);
     const sessions = [];
     const ctx = setupEngine({
@@ -2338,7 +2338,7 @@ describe('createRunEngine — a loop of steps', () => {
       }),
       ...overrides,
     });
-    const run = ctx.runStore.create(validRun({ definition: looping(max) }));
+    const run = ctx.runStore.create(validRun({ definition }));
     const done = ctx.engine.start(run.id);
     // Each step needs at most the launch Enter (100 ms) and one readiness poll (1 s).
     for (let i = 0; i < outcomes.length + 1; i += 1) await vi.advanceTimersByTimeAsync(1100);
@@ -2526,21 +2526,69 @@ describe('createRunEngine — a loop of steps', () => {
     expect(readProgressCount).toHaveBeenCalledTimes(6);
   });
 
-  it('fails the run when the terminal a step should return to is gone', async () => {
-    let attaches = 0;
-    const { ctx, run } = await runLoop(['continue', 'continue', 'complete'], {
+  it('stops a note-keeping loop without a progress file after two repeat rounds, and tells repeat passes to focus on changes', async () => {
+    const readProgressCount = vi.fn(async () => null);
+    const { script, run } = await runLoop(Array(6).fill('continue'), {
+      max: 6,
+      definition: { ...looping(6), notesDir: '.codedeck/runs/abcdef12' },
       overrides: {
+        readProgressCount,
+        engineExtras: {
+          prepareNotes: vi.fn(async () => {}),
+          readNote: vi.fn(async () => ({ status: 'missing', content: null })),
+        },
+      },
+    });
+    expect(run).toMatchObject({ status: 'stopped', stopReason: 'no_progress', currentStepIndex: 0 });
+    expect(run.steps[1].roundsCompleted).toBe(3);
+    expect(script.starts).toHaveLength(6);
+    expect(script.starts[0].guidance).not.toContain('in this loop: read your previous note');
+    expect(script.starts[2].guidance).toContain('Pass 2 of Develop in this loop: read your previous note in .codedeck/runs/abcdef12');
+  });
+
+  it('opens a new terminal automatically when the terminal a step should return to is gone', async () => {
+    let attaches = 0;
+    const { ctx, run, script } = await runLoop(['continue', 'continue', 'complete', 'complete', 'complete'], {
+      overrides: {
+        terminalAvailable: vi.fn((sessionId) => !(attaches >= 2 && sessionId === 'Demo-1')),
+        engineExtras: {
+          terminalInFolder: vi.fn(async (sessionId) => {
+            if (attaches >= 2 && sessionId === 'Demo-1') {
+              throw new Error("Command failed: tmux list-panes -t Demo-1:0 -F #{pane_index}\ncan't find session: Demo-1");
+            }
+            return true;
+          }),
+        },
         attachBackground: vi.fn(() => {
           attaches += 1;
-          if (attaches === 3) throw new Error('Background attach refused: session is deleted.');
           return { write: () => {}, release: () => {} };
         }),
       },
     });
-    expect(run.status).toBe('error');
-    expect(run.error).toBe('The terminal of step Develop is no longer available. Resume the run to continue in a new terminal.');
-    expect(run.steps[0].status).toBe('failed');
-    expect(ctx.startSession).toHaveBeenCalledTimes(2);
+    expect(run.status).toBe('complete');
+    expect(run.error).toBeNull();
+    expect(run.steps[0]).toMatchObject({ status: 'complete', sessionId: 'Demo-3', priorSessionIds: ['Demo-1'] });
+    expect(ctx.startSession).toHaveBeenCalledTimes(4);
+    // Develop round 2 runs in a fresh terminal (no reset); Test returns to its own (reset).
+    expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, false, true, false]);
+  });
+
+  it('also opens a new terminal when attachBackground fails on a returning step whose terminal just disappeared', async () => {
+    let attaches = 0;
+    const { ctx, run, script } = await runLoop(['continue', 'continue', 'complete', 'complete', 'complete'], {
+      overrides: {
+        attachBackground: vi.fn((sessionId) => {
+          attaches += 1;
+          if (attaches === 3 && sessionId === 'Demo-1') throw new Error('Background attach refused: session is deleted.');
+          return { write: () => {}, release: () => {} };
+        }),
+      },
+    });
+    expect(run.status).toBe('complete');
+    expect(run.error).toBeNull();
+    expect(run.steps[0]).toMatchObject({ status: 'complete', sessionId: 'Demo-3', priorSessionIds: ['Demo-1'] });
+    expect(ctx.startSession).toHaveBeenCalledTimes(4);
+    expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, false, true, false]);
   });
 
   it('starts the agent again in the terminal a step returns to when it has exited there', async () => {
@@ -2566,19 +2614,20 @@ describe('createRunEngine — a loop of steps', () => {
     expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, false, true, false]);
   });
 
-  it('Resume gives the failed step a new terminal and launches its agent there', async () => {
-    let attaches = 0;
+  it('Resume gives a step that failed when its terminal closed while launching a new terminal and launches its agent there', async () => {
+    let pollCount = 0;
     const outcomes = ['continue', 'continue', 'complete', 'complete', 'complete'];
     const script = scriptedWorkflow(outcomes);
     const ctx = setupEngine({
       createWorkflow: script.createWorkflow,
-      attachBackground: vi.fn(() => {
-        attaches += 1;
-        if (attaches === 3) throw new Error('Background attach refused: session is deleted.');
-        return { write: (data) => { ctx.writes.push(data); }, release: () => {} };
+      attachBackground: vi.fn(() => ({ write: (data) => { ctx.writes.push(data); }, release: () => {} })),
+      readExecutionState: vi.fn(async () => {
+        pollCount += 1;
+        // On round 2 of Develop (3rd step execution), the terminal closes during readiness check.
+        if (pollCount === 3) return executionState({ entryExists: false, ptyAlive: false });
+        return executionState();
       }),
-      // Once the attach to Develop's terminal has failed, that terminal is gone.
-      terminalAvailable: vi.fn(() => attaches < 3),
+      terminalAvailable: vi.fn((sessionId) => !(pollCount >= 3 && sessionId === 'Demo-1')),
     });
     const created = ctx.runStore.create(validRun({ definition: looping(), worktreeState: 'external', baseCommit: BASE_COMMIT }));
     const done = ctx.engine.start(created.id);

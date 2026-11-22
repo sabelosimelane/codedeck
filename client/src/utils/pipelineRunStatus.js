@@ -53,7 +53,7 @@ const STEP_LABEL = Object.freeze({
   interrupted: 'Interrupted',
 });
 const STEP_OVER = new Set(['complete', 'limit_accepted']);
-const WORKING_STEP = new Set(['launching', 'running', 'needs_input']);
+const WORKING_STEP = new Set(['launching', 'running']);
 const count = (number, word) => `${number} ${word}${number === 1 ? '' : (word === 'pass' ? 'es' : 's')}`;
 
 /** How a step stands, in words: a label, and where it is in its passes or loop rounds (or null). */

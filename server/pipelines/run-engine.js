@@ -415,7 +415,7 @@ export function createRunEngine({
       if (result === 'ready') {
         const current = runStore.get(runId);
         if (current?.status === 'needs_input') {
-          persistTransition(runId, { type: 'input_received' });
+          persistTransition(runId, { type: 'input_received', at: now() });
         }
         return { ok: true, state: lastState, launched };
       }
@@ -465,7 +465,7 @@ export function createRunEngine({
         const current = runStore.get(runId);
         if (current?.status === 'running') {
           // A dialog shown while launching is answered in the terminal; the agent signalled nothing.
-          persistTransition(runId, { type: 'needs_input', inputRequest: null });
+          persistTransition(runId, { type: 'needs_input', inputRequest: null, at: now() });
         }
         // Clock pauses while needs_input.
         continue;
@@ -474,7 +474,7 @@ export function createRunEngine({
       // waiting — resume from needs_input if the dialog cleared
       const current = runStore.get(runId);
       if (current?.status === 'needs_input') {
-        persistTransition(runId, { type: 'input_received' });
+        persistTransition(runId, { type: 'input_received', at: now() });
       }
 
       // The limit is on a launch. An agent that is still working where the step returns is
@@ -543,7 +543,7 @@ export function createRunEngine({
     if (!handle.dialogPause) return;
     handle.dialogPause = false;
     if (runStore.get(runId)?.status === 'needs_input') {
-      persistTransition(runId, { type: 'input_received' });
+      persistTransition(runId, { type: 'input_received', at: now() });
     }
   }
 
@@ -647,7 +647,7 @@ export function createRunEngine({
         // A request the agent signalled, or one being answered for the owner, is left alone.
         if (handle.dialogPause || runStore.get(runId)?.status !== 'running'
           || !['running', 'resetting'].includes(workflow.snapshot().status)) return;
-        persistTransition(runId, { type: 'needs_input', inputRequest: null });
+        persistTransition(runId, { type: 'needs_input', inputRequest: null, at: now() });
         handle.dialogPause = true;
       });
     }
@@ -731,7 +731,7 @@ export function createRunEngine({
       if (current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
       if (verificationPrompts.has(current.definition.steps[current.currentStepIndex].prompt)) verificationOutcome(current, current.currentStepIndex);
       if (current.status === 'needs_input') {
-        persistTransition(runId, { type: 'input_received' });
+        persistTransition(runId, { type: 'input_received', at: now() });
       }
       if (await failIfSetupDirty(current)) {
         return { terminal: true };
@@ -748,7 +748,7 @@ export function createRunEngine({
     if (snapshot.status === 'stopped' && snapshot.limitReached) {
       if (current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
       if (current.status === 'needs_input') {
-        persistTransition(runId, { type: 'input_received' });
+        persistTransition(runId, { type: 'input_received', at: now() });
       }
       const repeat = current.definition.steps[current.currentStepIndex]?.repeat;
       if (repeat?.mode === 'once') {
@@ -758,6 +758,7 @@ export function createRunEngine({
         // Work is left and another round is allowed: the loop starts again at its first step.
         const handle = getHandle(runId);
         let progress = null;
+        let readFailed = false;
         try {
           progress = await readProgressCount(current);
           if (progress !== null && (!Number.isSafeInteger(progress?.tasksDone) || progress.tasksDone < 0
@@ -765,6 +766,7 @@ export function createRunEngine({
             throw new TypeError('readProgressCount must return null or valid task totals');
           }
         } catch (error) {
+          readFailed = true;
           if (!progressWarnings.has(runId)) {
             progressWarnings.add(runId);
             console.warn(`[pipeline-progress-guard] run=${runId} read failed: ${error?.message || error}`);
@@ -772,9 +774,16 @@ export function createRunEngine({
           progress = null;
         }
         if (progress === null) {
-          handle.lastTasksDone = null;
-          handle.roundsWithoutProgress = 0;
+          if (handle.lastTasksDone !== null || readFailed || current.definition.notesDir === null) {
+            handle.lastTasksDone = null;
+            handle.roundsWithoutProgress = 0;
+          } else if (handle.untrackedLoopStarted) {
+            handle.roundsWithoutProgress += 1;
+          } else {
+            handle.untrackedLoopStarted = true;
+          }
         } else {
+          handle.untrackedLoopStarted = false;
           if (handle.lastTasksDone !== null) {
             handle.roundsWithoutProgress = progress.tasksDone > handle.lastTasksDone ? 0 : handle.roundsWithoutProgress + 1;
           }
@@ -784,6 +793,7 @@ export function createRunEngine({
         if (handle.roundsWithoutProgress >= NO_PROGRESS_ROUNDS) {
           persistTransition(runId, { type: 'stop', reason: 'no_progress', at: now() });
           handle.lastTasksDone = null;
+          handle.untrackedLoopStarted = false;
           handle.roundsWithoutProgress = 0;
         }
       } else {
@@ -808,7 +818,7 @@ export function createRunEngine({
         // Stop, or the terminal closing, may have ended the run while the screen was read.
         if (runStore.get(runId)?.status !== 'running') return { terminal: false };
         if (await decideForOwner(runId, current, inputRequest, snapshot)) return { terminal: false };
-        persistTransition(runId, { type: 'needs_input', inputRequest });
+        persistTransition(runId, { type: 'needs_input', inputRequest, at: now() });
       }
       persistWorkflowState(runId, getHandle(runId).workflow);
       return { terminal: false };
@@ -817,7 +827,7 @@ export function createRunEngine({
     if (snapshot.status === 'running' || snapshot.status === 'resetting') {
       if (snapshot.status === 'resetting' && snapshot.iteration >= 1 && current.definition.steps[current.currentStepIndex]?.kind === 'node') await recordNote(current, current.currentStepIndex, snapshot.iteration);
       if (current.status === 'needs_input') {
-        persistTransition(runId, { type: 'input_received' });
+        persistTransition(runId, { type: 'input_received', at: now() });
       }
       // Read again: the transition above changed the step's status.
       const latest = runStore.get(runId);
@@ -944,29 +954,42 @@ export function createRunEngine({
       // A step works in the terminal of its agent: the one it used before (an earlier round of
       // a loop, or the attempt being resumed), else one where the same agent already runs in
       // this worktree. Its agent is cleared there before the prompt is sent. Only a step whose
-      // agent has no terminal gets a new one, with the agent launched in it.
+      // agent has no usable terminal in the worktree gets a new one, with the agent launched in it.
+      const archiveStepSession = (deadSessionId) => {
+        if (step.sessionId !== deadSessionId) return;
+        run = updateRun(runId, { steps: run.steps.map((s, i) => (
+          i === stepIndex ? { ...s, sessionId: null, priorSessionIds: [...(s.priorSessionIds || []), deadSessionId] } : s
+        )) });
+        step = run.steps[stepIndex];
+      };
       let { sessionId } = step;
       if (sessionId === null) sessionId = await findAgentTerminal(run, stepIndex);
+      if (sessionId !== null && !(await terminalStillThere(sessionId))) {
+        console.warn(`[pipeline-run] ${runId}: terminal ${sessionId} is no longer available; step ${defStep.name} opens a new terminal in ${run.worktreePath}`);
+        archiveStepSession(sessionId);
+        sessionId = null;
+      }
       // A terminal can leave the worktree: its shell changed folder, or tmux lost the session and a
       // new one of the same name was opened in the project. Its agent would work in the wrong place.
       if (sessionId !== null) {
-        const inside = await terminalInFolder(sessionId, run.worktreePath);
+        let inside = false;
+        try {
+          inside = await terminalInFolder(sessionId, run.worktreePath);
+        } catch (err) {
+          console.warn(`[pipeline-run] ${runId}: terminal ${sessionId} could not be checked in ${run.worktreePath} (${err?.message || err}); step ${defStep.name} opens a new terminal there`);
+          inside = false;
+        }
         if (typeof inside !== 'boolean') {
           throw new Error(`pipeline run: terminalInFolder must answer true or false for ${sessionId}`);
         }
         if (handle.stopped) return;
         if (!inside) {
           console.warn(`[pipeline-run] ${runId}: terminal ${sessionId} is not in ${run.worktreePath}; step ${defStep.name} opens a new terminal there`);
-          if (step.sessionId === sessionId) {
-            run = updateRun(runId, { steps: run.steps.map((s, i) => (
-              i === stepIndex ? { ...s, sessionId: null, priorSessionIds: [...(s.priorSessionIds || []), sessionId] } : s
-            )) });
-            step = run.steps[stepIndex];
-          }
+          archiveStepSession(sessionId);
           sessionId = null;
         }
       }
-      const returning = sessionId !== null;
+      let returning = sessionId !== null;
       if (!returning) {
         sessionId = await startSession({
           project: run.project,
@@ -986,8 +1009,20 @@ export function createRunEngine({
         attachment = await attachBackground(sessionId, { cwd: run.worktreePath });
       } catch (err) {
         if (!returning) throw err;
-        console.warn(`[pipeline-run] returning to ${sessionId} failed for ${runId}: ${err?.message || err}`);
-        throw new Error(terminalGoneMessage(defStep.name));
+        console.warn(`[pipeline-run] returning to ${sessionId} failed for ${runId}: ${err?.message || err}; step ${defStep.name} opens a new terminal in ${run.worktreePath}`);
+        archiveStepSession(sessionId);
+        sessionId = await startSession({
+          project: run.project,
+          cwd: run.worktreePath,
+          ...remoteHost,
+        });
+        if (handle.stopped) return;
+        run = updateRun(runId, { steps: run.steps.map((s, i) => (
+          i === stepIndex ? { ...s, sessionId } : s
+        )) });
+        step = run.steps[stepIndex];
+        returning = false;
+        attachment = await attachBackground(sessionId, { cwd: run.worktreePath });
       }
       handle.attachment = attachment;
 
@@ -1022,6 +1057,7 @@ export function createRunEngine({
       const guidance = buildStepGuidance(current.definition, stepIndex, {
         worktreePath: current.worktreePath,
         attachments: current.attachments,
+        attempt,
         ...(feedbackFile ? { feedbackPath: feedbackFile } : {}),
         ...(places === undefined ? {} : { places }),
       });
@@ -1284,6 +1320,7 @@ export function createRunEngine({
       handle.stopped = true;
       handle.stopRequested = true;
       handle.lastTasksDone = null;
+      handle.untrackedLoopStarted = false;
       handle.roundsWithoutProgress = 0;
       try {
         handle.workflow?.stop?.();
@@ -1308,6 +1345,7 @@ export function createRunEngine({
         handle.stopped = false;
         handle.stopRequested = false;
         handle.lastTasksDone = null;
+        handle.untrackedLoopStarted = false;
         handle.roundsWithoutProgress = 0;
         persistTransition(runId, { type: 'continue', at: now() });
         const after = runStore.get(runId);
@@ -1396,6 +1434,7 @@ export function createRunEngine({
         handle.stopped = false;
         handle.stopRequested = false;
         handle.lastTasksDone = null;
+        handle.untrackedLoopStarted = false;
         handle.roundsWithoutProgress = 0;
         persistTransition(runId, { type: 'resume', newTerminal, at: now() });
         const updated = runStore.get(runId);

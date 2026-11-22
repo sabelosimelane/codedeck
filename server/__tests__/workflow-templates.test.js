@@ -9,6 +9,7 @@ describe('workflow templates', () => {
   it('ships the exact starting workflows and immutable definitions', () => {
     expect(WORKFLOW_TEMPLATES.map(({ id, name, kind, nodes }) => [id, name, kind, nodes.map(node => node.name)])).toEqual([
       ['bug-fix', 'Bug fix', 'bugfix', ['Clarify', 'Analyse', 'Specify', 'Develop', 'Review', 'Test', 'Commit']],
+      ['quick-change', 'Quick change', 'build', ['Scope', 'Develop', 'Review & Test', 'Commit']],
       ['feature-build', 'Feature build', 'build', ['Plan', 'Develop', 'Review', 'Test', 'Commit']],
       ['feature-from-requirements', 'Feature from requirements', 'build', ['Requirements', 'Specify', 'Plan', 'Develop', 'Review', 'Test', 'Commit']],
       ['troubleshoot', 'Troubleshoot', 'troubleshoot', ['Clarify', 'Investigate', 'Prove', 'Fix', 'Verify', 'Commit']],
@@ -39,11 +40,13 @@ describe('workflow templates', () => {
       const template = WORKFLOW_TEMPLATES.find(item => item.id === id);
       expect(template.nodes.some(node => node.readOnly && node.approval)).toBe(true);
       expect(template.nodes.at(-1)).toMatchObject({ name: 'Commit', repeat: { mode: 'once' } });
-      expect(template.nodes.find(node => node.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: id === 'bug-fix' ? 5 : 12 });
+      expect(template.nodes.find(node => node.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: id === 'bug-fix' ? 3 : 12 });
     }
-    expect(WORKFLOW_TEMPLATES[0].nodes.find(node => node.name === 'Analyse')).toMatchObject({ readOnly: true, approval: false });
-    expect(WORKFLOW_TEMPLATES[0].nodes.find(node => node.name === 'Specify')).toMatchObject({ readOnly: true, approval: true });
-    expect(WORKFLOW_TEMPLATES[1].nodes[0].prompt).toContain('plan.md');
+    const bugFix = WORKFLOW_TEMPLATES.find(item => item.id === 'bug-fix');
+    const featureBuild = WORKFLOW_TEMPLATES.find(item => item.id === 'feature-build');
+    expect(bugFix.nodes.find(node => node.name === 'Analyse')).toMatchObject({ readOnly: true, approval: false });
+    expect(bugFix.nodes.find(node => node.name === 'Specify')).toMatchObject({ readOnly: true, approval: true });
+    expect(featureBuild.nodes[0].prompt).toContain('plan.md');
   });
 
   it('troubleshoots by evidence, an approved hypothesis and a failing test before any fix', () => {
@@ -55,11 +58,11 @@ describe('workflow templates', () => {
     expect(byName.Prove.prompt).toMatch(/Investigate note/);
     expect(byName.Prove.prompt).toMatch(/Change no production code/);
     expect(byName.Fix.prompt).toMatch(/Do not weaken or delete the test/);
-    expect(byName.Verify.repeat).toEqual({ mode: 'loop_back', to: 'Fix', max: 5 });
+    expect(byName.Verify.repeat).toEqual({ mode: 'loop_back', to: 'Fix', max: 3 });
     expect(template.nodes.at(-1).name).toBe('Commit');
   });
 
-  it.each([['bug-fix', 'Specify', 'Test'], ['troubleshoot', 'Clarify', 'Verify']])('records acceptance and reserves evidence decisions for the owner in %s', (id, source, check) => {
+  it.each([['bug-fix', 'Specify', 'Test'], ['quick-change', 'Scope', 'Review & Test'], ['troubleshoot', 'Clarify', 'Verify']])('records acceptance and reserves evidence decisions for the owner in %s', (id, source, check) => {
     const { nodes } = buildTemplateDraft(id);
     expect(nodes.find(node => node.name === source).prompt).toMatch(/agreed acceptance checks/i);
     const verify = nodes.find(node => node.name === check);
@@ -70,11 +73,12 @@ describe('workflow templates', () => {
     expect(nodes.at(-1).prompt).toMatch(/owner-approved/);
   });
 
-  it('opens the fix and troubleshoot workflows by checking the report, asking the owner only for what is missing', () => {
+  it('opens the fix and troubleshoot workflows by checking the report and required repositories, asking the owner only for what is missing', () => {
     for (const id of ['bug-fix', 'troubleshoot']) {
       const first = WORKFLOW_TEMPLATES.find(item => item.id === id).nodes[0];
       expect(first).toMatchObject({ name: 'Clarify', readOnly: true, approval: false, askOwner: true, repeat: { mode: 'once' } });
       expect(first.prompt).toMatch(/First look for each of these yourself/);
+      expect(first.prompt).toMatch(/referenced or read-only repository must change/);
       expect(first.prompt).toMatch(/Ask nothing you could find out yourself, and when nothing is missing ask nothing/);
     }
     for (const id of ['feature-build', 'review-only']) {
@@ -175,7 +179,9 @@ describe('workflow templates', () => {
   });
 
   it('uses input in the described steps, no skill invocation, and bounded prompts', () => {
-    const inputSteps = { 'bug-fix': ['Clarify', 'Analyse', 'Specify', 'Develop', 'Commit'], 'feature-build': ['Plan', 'Commit'],
+    const inputSteps = { 'bug-fix': ['Clarify', 'Analyse', 'Specify', 'Develop', 'Commit'],
+      'quick-change': ['Scope', 'Develop', 'Commit'],
+      'feature-build': ['Plan', 'Commit'],
       'feature-from-requirements': ['Requirements', 'Specify', 'Commit'],
       troubleshoot: ['Clarify', 'Investigate', 'Prove', 'Commit'], 'review-only': ['Survey'] };
     for (const template of WORKFLOW_TEMPLATES) {
@@ -188,8 +194,15 @@ describe('workflow templates', () => {
     }
   });
 
+  it('instructs Review steps to review incrementally on repeat passes', () => {
+    for (const id of ['bug-fix', 'feature-build', 'feature-from-requirements']) {
+      const review = WORKFLOW_TEMPLATES.find(item => item.id === id).nodes.find(node => node.name === 'Review');
+      expect(review.prompt).toMatch(/On a repeat pass, read your previous Review and Test notes and review only what changed since that pass/);
+    }
+  });
+
   it('instructs Committer steps to update CHANGELOG.md and write a dated release file under docs/releases/', () => {
-    for (const id of ['bug-fix', 'feature-build', 'feature-from-requirements', 'troubleshoot']) {
+    for (const id of ['bug-fix', 'quick-change', 'feature-build', 'feature-from-requirements', 'troubleshoot']) {
       const commit = WORKFLOW_TEMPLATES.find(item => item.id === id).nodes.at(-1);
       expect(commit.role).toBe('Committer');
       expect(commit.prompt).toContain('CHANGELOG.md');

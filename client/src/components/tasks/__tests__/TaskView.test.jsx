@@ -242,7 +242,9 @@ describe('TaskView', () => {
 
   it('asks before Resume and closes a finished run without removing the task', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true).mockReturnValueOnce(false).mockReturnValueOnce(true);
-    const { h } = view({ run: run({ status: 'stopped', stopReason: 'no_progress', actions: { ...run().actions, stop: false, resume: true, cleanup: true },
+    const { h } = view({ run: run({ status: 'stopped', stopReason: 'no_progress',
+      progress: { file: 'plan.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'One', tasksDone: 0, tasksTotal: 2 } },
+      actions: { ...run().actions, stop: false, resume: true, cleanup: true },
       steps: run().steps.map(item => (item.index === 1 ? { ...item, status: 'stopped' } : item)) }) });
     expect(screen.getByText(/No task was ticked in the last/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
@@ -257,12 +259,25 @@ describe('TaskView', () => {
     expect(confirm.mock.calls[2][0]).toContain('The task and its files remain available');
     fireEvent.click(screen.getByRole('button', { name: 'Close run' }));
     expect(h.onCleanup).toHaveBeenCalledWith('run-1');
+    cleanup();
+    view({ run: run({ status: 'stopped', stopReason: 'no_progress', progress: null,
+      actions: { ...run().actions, stop: false, resume: true, cleanup: true },
+      steps: run().steps.map(item => (item.index === 1 ? { ...item, status: 'stopped' } : item)) }) });
+    expect(screen.getByText(/This loop ran 2 rounds without finishing/)).toBeTruthy();
+  });
+
+  it('warns in the header when a step is paused on a terminal dialog rather than a workflow question', () => {
+    view({ run: run({ status: 'needs_input', inputRequest: null,
+      steps: run().steps.map(item => (item.index === 1 ? { ...item, status: 'needs_input' } : item)) }) });
+    expect(screen.getByText(/Develop is paused on a terminal dialog/)).toBeTruthy();
   });
 
   it('keeps a finished run in view, points at landing the task, and highlights no run action', () => {
-    view({ inTask: true, run: run({ status: 'complete', currentStepIndex: 2, actions: { ...run().actions, stop: false, cleanup: true },
+    view({ inTask: true, run: run({ status: 'complete', finishedAt: '2026-11-19T10:05:00.000Z', currentStepIndex: 2, actions: { ...run().actions, stop: false, cleanup: true },
       steps: run().steps.map(item => ({ ...item, status: 'complete', sessionId: item.sessionId ?? 'Demo-2', attempt: 1, iteration: 1 })) }) });
     expect(screen.getByLabelText('Run status: Complete')).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Workflow complete' })).toBeTruthy();
+    expect(screen.getByText('3/3 steps done · 5m 0s')).toBeTruthy();
     expect(screen.getByText('This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run takes the run off the screen and closes the terminals it used.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Close run' }).className).not.toContain('pipeline-run-primary');
     cleanup();

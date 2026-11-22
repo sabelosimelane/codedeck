@@ -393,4 +393,26 @@ describe('workflow progress file persistence', () => {
     db.prepare('UPDATE pipeline_workflows SET progress_file = ? WHERE id = ?').run('../bad.md', created.id);
     expect(() => workflows.get(created.id)).toThrow('progress_file');
   });
+
+  it('upgrades unmodified stock Review/Clarify/Requirements prompts and caps untracked loop max at 3 while keeping custom prompts', () => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const oldReview = 'Review all feature changes on this branch (both uncommitted changes and any commits since the base commit) against plan.md and the specification named in the Specify note. Fix every defect and record findings and fixes.';
+    const customReview = 'Review the uncommitted changes and then fix all the findings {input}';
+    const created = workflows.create({
+      name: 'Saved bug fix',
+      kind: 'bugfix',
+      agentsDecide: false,
+      nodes: [
+        { ...node(agent.id), name: 'Develop', prompt: 'Implement {input}' },
+        { ...node(agent.id), name: 'Review', prompt: oldReview },
+        { ...node(agent.id), name: 'Custom', prompt: customReview },
+        { ...node(agent.id), name: 'Test', prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 5 } },
+      ],
+    });
+    const reopened = createWorkflowStore(db).get(created.id);
+    expect(reopened.nodes[1].prompt).toMatch(/On a repeat pass, read your previous Review and Test notes/);
+    expect(reopened.nodes[2].prompt).toBe(customReview);
+    expect(reopened.nodes[3].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 3 });
+  });
 });

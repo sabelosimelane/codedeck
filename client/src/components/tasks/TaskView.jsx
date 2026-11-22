@@ -1,6 +1,6 @@
 import ChangeRunTeam from '../pipelines/ChangeRunTeam';
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'lucide-react';
+import { Check, CheckCircle2, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'lucide-react';
 import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
 import { describeRunDuration, describeRunStatus, describeStepDuration, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
 import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
@@ -210,12 +210,15 @@ export default function TaskView({
 
   return (
     <div data-testid="task-view" className="task-view pipeline-run-bar">
-      <header className="task-view-header">
+      <header className="task-view-header" data-run-status={run.status}>
         <div className="pipeline-run-heading">
           <strong className="pipeline-run-name" title={tooltip}>{heading}</strong>
           {run.team !== undefined && <RunTeam team={run.team} />}
           {repository !== null && <span className="pipeline-run-muted" title="The run's current directory is this repository's worktree">{`works in ${repository}`}</span>}
-          <span className="pipeline-run-status" data-status={run.status} data-tone={status.tone} aria-label={`Run status: ${status.label}`}>{status.label}</span>
+          <span className="pipeline-run-status" data-status={run.status} data-tone={status.tone} aria-label={`Run status: ${status.label}`}>
+            {status.tone === 'done' && <Check size={12} strokeWidth={2.5} aria-hidden="true" />}
+            {status.label}
+          </span>
           <span className="pipeline-run-muted" title={duration.live ? 'Time since this run was started, waiting for you included' : 'Time from the start of this run to its end, waiting for you included'}
             aria-label={`${duration.live ? 'Run time so far' : 'Run time'}: ${duration.words}`}>{duration.live ? duration.words : `took ${duration.words}`}</span>
           {run.agentsDecide && <span title="Agents in this run go with their own recommendations instead of pausing for you" className="pipeline-run-agents-decide">agents decide{run.decisionCount > 0 ? ` · ${run.decisionCount} so far` : ''}</span>}
@@ -235,10 +238,34 @@ export default function TaskView({
           </div>
         </div>
         {progress && <div title={run.progress.file} className="pipeline-run-progress"><span className={progress.tone === 'plain' ? 'pipeline-run-progress-phase' : `pipeline-run-${progress.tone}`}>{progress.text}</span>{progress.detail && <span className="pipeline-run-muted">{` · ${progress.detail}`}</span>}</div>}
-        {run.status === 'stopped' && run.stopReason === 'no_progress' && <div className="pipeline-run-warning">{`No task was ticked in the last ${NO_PROGRESS_ROUNDS} rounds. Check what the steps reported, then Resume to try again.`}</div>}
-        {run.status === 'complete' && run.worktree?.state === 'external' && <div className="pipeline-run-muted">{inTask
-          ? 'This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run takes the run off the screen and closes the terminals it used.'
-          : 'This run has finished. Close run takes it off the screen and closes the terminals it used.'}</div>}
+        {run.status === 'needs_input' && run.inputRequest === null && (
+          <div className="pipeline-run-warning">
+            {`${current.name} is paused on a terminal dialog (not a workflow question). Answer or dismiss the prompt directly in its terminal below.`}
+          </div>
+        )}
+        {run.status === 'stopped' && run.stopReason === 'no_progress' && (
+          <div className="pipeline-run-warning">
+            {run.progress
+              ? `No task was ticked in the last ${NO_PROGRESS_ROUNDS} rounds. Check what the steps reported, then Resume to try again.`
+              : `This loop ran ${NO_PROGRESS_ROUNDS} rounds without finishing. Check what the steps reported, then Resume to try again.`}
+          </div>
+        )}
+        {run.status === 'complete' && (
+          <div className="task-complete-banner" role="status" aria-label="Workflow complete">
+            <span className="task-complete-badge" aria-hidden="true"><CheckCircle2 size={18} strokeWidth={2.2} /></span>
+            <div className="task-complete-copy">
+              <div className="task-complete-heading">
+                <strong className="task-complete-title">Workflow complete</strong>
+                <span className="task-complete-meta">{`${run.steps.filter(s => s.status === 'complete' || s.status === 'limit_accepted').length}/${run.steps.length} steps done · ${duration.words}`}</span>
+              </div>
+              <div className="task-complete-text">{run.worktree?.state === 'external'
+                ? (inTask
+                  ? 'This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run takes the run off the screen and closes the terminals it used.'
+                  : 'This run has finished. Close run takes it off the screen and closes the terminals it used.')
+                : 'All steps finished. Review the work or clean up the worktree when ready.'}</div>
+            </div>
+          </div>
+        )}
         {run.error && <span className="pipeline-run-danger">{run.error}</span>}
         {blockedCleanup && (
           <>

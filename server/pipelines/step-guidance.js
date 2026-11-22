@@ -72,6 +72,7 @@ export function buildStepGuidance(definition, stepIndex, options) {
     throw new TypeError('step guidance: worktreePath must be a non-empty absolute path');
   }
   if (options.feedbackPath !== undefined && options.feedbackPath !== feedbackPath(definition, stepIndex)) throw new TypeError('step guidance: feedbackPath must be the step feedback path');
+  if (options.attempt !== undefined && (!Number.isInteger(options.attempt) || options.attempt < 1)) throw new TypeError('step guidance: attempt must be a positive integer');
   const places = requirePlaces(options.places, options.worktreePath);
   // More than one worktree to work in, or other repositories of the project to read: the run is told about each.
   const several = places !== null && places.worktrees.length > 1;
@@ -80,6 +81,10 @@ export function buildStepGuidance(definition, stepIndex, options) {
   if (hasAttachments && definition.notesDir === null) {
     throw new TypeError('step guidance: attachments require a notes directory');
   }
+  const inLoop = definition.steps.some((item, index) => index >= stepIndex
+    && item?.repeat?.mode === 'loop_back'
+    && Number.isInteger(item.repeat.toStepIndex)
+    && item.repeat.toStepIndex <= stepIndex);
 
   const parts = [];
   if (step.kind === 'node' && !named) parts.push(`Work only inside this run's worktree, ${options.worktreePath}, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing.`);
@@ -92,7 +97,12 @@ export function buildStepGuidance(definition, stepIndex, options) {
     if (places.readOnly.length > 0) parts.push(`These repositories of the project are not part of this ${scope}: ${list(places.readOnly)}. Read them there when a document refers to them and never change them.`);
     parts.push(`If a repository that is not part of this ${scope} must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.`);
   }
-  if (step.kind === 'node' && definition.notesDir !== null) parts.push(`Run notes: read ${definition.notesDir}/README.md before you start, and before your final signal write your note to ${notePath(definition, stepIndex)}.`);
+  if (step.kind === 'node' && definition.notesDir !== null) {
+    parts.push(`Run notes: read ${definition.notesDir}/README.md before you start, and before your final signal write your note to ${notePath(definition, stepIndex)}.`);
+    if (options.attempt !== undefined && options.attempt > 1 && inLoop) {
+      parts.push(`Pass ${options.attempt} of ${step.name} in this loop: read your previous note in ${definition.notesDir} and focus on what changed since that pass instead of re-auditing already-verified work.`);
+    }
+  }
   // Setup and every node are pointed at the attachment manifest when the run has files.
   if (hasAttachments) parts.push(attachmentStepGuidance(definition.notesDir));
   if (step.kind === 'node' && summaryStepIndex(definition) === stepIndex) parts.push(SUMMARY);
