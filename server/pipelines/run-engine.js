@@ -28,6 +28,7 @@ const DEFAULT_DIALOG_POLL_MS = 2000;
 // How long an agent may sit idle at an unchanged prompt while its pass runs before the prompt
 // is taken to be lost: it is sent once more, and then the run fails.
 const DEFAULT_PROMPT_PICKUP_MS = 30_000;
+const EMPTY_WELCOME_PICKUP_MS = 4000;
 // Readings of an unchanged shell, after a launch, that mean the launch command never arrived.
 const LAUNCH_LOST_READINGS = 3;
 // Consecutive dialog readings required before pausing a running step, preventing transient TUI redraw flaps.
@@ -587,7 +588,7 @@ export function createRunEngine({
     let idleTurnReadings = 0;
     let dialogReadings = 0;
     let exitedReadings = 0;
-    const watchPickup = (readiness, screen) => {
+    const watchPickup = (readiness, screen, state) => {
       const pass = workflow.snapshot();
       if (pass.iteration !== pickup.pass) pickup = { pass: pass.iteration, idleMs: 0, resent: false, asked: false, screen: null };
       if (pass.iteration !== silentStall.pass) silentStall = { pass: pass.iteration, unchangedMs: 0, warned: false, screen: null };
@@ -612,7 +613,12 @@ export function createRunEngine({
         return;
       }
       pickup.idleMs += dialogPollMs;
-      if (pickup.idleMs < promptPickupMs) return;
+      const emptyWelcome = state.profile?.emptyWelcomePrompt?.(state.lines);
+      const grace = emptyWelcome ? Math.min(promptPickupMs, EMPTY_WELCOME_PICKUP_MS) : promptPickupMs;
+      if (pickup.idleMs < grace) return;
+      const action = !pickup.resent ? 'Retrying prompt delivery.' : restartedAttempt ? 'Ending attempt.' : 'Restarting agent.';
+      const observation = emptyWelcome ? 'Empty Muse welcome' : 'Idle prompt';
+      runStore.recordAudit(runId, 'prompt_unclaimed', `${observation} unchanged for ${pickup.idleMs} ms. ${action}`);
       pickup.idleMs = 0;
       if (!pickup.resent) {
         pickup.resent = true;
@@ -665,7 +671,7 @@ export function createRunEngine({
         idleTurnReadings = readiness === 'ready' ? idleTurnReadings + 1 : 0;
         const working = ['agent_working', 'agent_delegated', 'agent_background_shells'].includes(state?.executionReason);
         const observed = (working || idleTurnReadings >= 2) && workflow.observeTurn?.(working ? 'working' : 'idle', screen ?? '');
-        if (!observed) watchPickup(readiness, screen);
+        if (!observed) watchPickup(readiness, screen, state);
         if (over()) return;
         if (!showsDialog) {
           dialogReadings = 0;

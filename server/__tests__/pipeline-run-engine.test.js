@@ -1,7 +1,12 @@
-import { execFile, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { classifyTerminalExecution } from '../terminal-execution-classifier.js';
+import { classify as classifyReadiness } from '../pipelines/agent-readiness.js';
+import { findAgentProfile } from '../agent-profiles/index.js';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import * as muse from '../agent-profiles/muse.js';
 import { notePath } from '../pipelines/run-notes.js';
 import { remove as removeGitWorktree } from '../pipelines/run-worktree.js';
 import { buildTemplateDraft } from '../../shared/workflow-templates.mjs';
@@ -3099,6 +3104,48 @@ describe('createRunEngine — a prompt the agent never took', () => {
     return { ctx, loop, run, done };
   }
 
+  const welcome = [
+    '  Muse Code 1.4.25',
+    '  warning: rules file at /tmp/project/CLAUDE.md is ignored this session because',
+    '  AGENTS.md takes precedence in that directory',
+    '  Skills: 101 loaded · 1 warning · 27 details hidden (ctrl+o to expand)',
+    '  To continue this session, run muse resume 01a20581-0d86-77d1-88c4-79a45d747472',
+    '── Voice input (alt(option)+v to start) ──────', '❯', '──────────────────',
+    '  muse-spark-1.3 · high · ~/git/project · YOLO',
+  ];
+  const museScreens = lines => Array.from({length: 20}, () => executionState({lines, profile: muse, foregroundCommand: 'muse-bin-1.4.25'}));
+
+  it.each([
+    ['with a resume hint', welcome],
+    ['below the shell launch command', ['bash-3.2$ muse --model muse-spark-1.3-contributor --effort high --yolo', ...welcome]],
+    ['without a warning or resume hint', welcome.filter((_, i) => ![1, 2, 4].includes(i))],
+  ])('recovers a dropped prompt on an empty Muse welcome %s', async (_, lines) => {
+    const restartAgentTerminal = vi.fn(async () => {});
+    const {ctx, run, loop} = await startPass(museScreens(lines), {promptPickupMs: 30_000, restartAgentTerminal});
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(restartAgentTerminal).toHaveBeenCalledTimes(1);
+    const events = ctx.runStore.auditPage(run.id, {page:0, size:50, direction:'asc', stepIndex:0}).data;
+    expect(events.filter(e => e.kind === 'prompt_unclaimed').map(e => e.detail)).toEqual([
+      'Empty Muse welcome unchanged for 4000 ms. Retrying prompt delivery.',
+      'Empty Muse welcome unchanged for 4000 ms. Restarting agent.',
+    ]);
+  });
+
+  it.each([
+    ['a staged draft', welcome.map(line => line === '❯' ? '❯ pending instructions' : line)],
+    ['a prior turn', [...welcome.slice(0, 5), '◆ Worked for 23m 34s', ...welcome.slice(5)]],
+    ['an unrecognized footer', [...welcome, 'Choose an action']],
+    ['a partial screen', welcome.slice(3)],
+  ])('keeps the regular pickup window for %s', async (_, lines) => {
+    const {loop} = await startPass(museScreens(lines), {promptPickupMs: 30_000});
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+  });
+
   it('sends the prompt again when the agent stays idle at an unchanged prompt after it was sent', async () => {
     const { ctx, loop, run, done } = await startPass();
     // The first look sets what the screen shows; ten seconds unchanged after it count.
@@ -3228,6 +3275,74 @@ describe('createRunEngine — a prompt the agent never took', () => {
     expect(ctx.runStore.get(run.id).status).toBe('running');
   });
 });
+
+// Opt-in, one real local model turn. Lose only the first task paste and its Enter.
+it.skipIf(process.env.CODEDECK_MUSE_PICKUP_CANARY !== '1')('recovers one dropped paste in a live local Muse terminal', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'codedeck-pickup-'));
+  const socket = 'cd-' + randomUUID();
+  const tmux = (args, input) => execFileSync('tmux', ['-L', socket, ...args], {input, encoding: 'utf8', timeout: 5000});
+  let workflow;
+  let pastes = 0;
+  let skipEnter = false;
+  const ctx = setupEngine({
+    classifyReadiness,
+    readinessPollMs: 500,
+    createWorkflow: options => (workflow = createTerminalWorkflow(options)),
+    attachBackground: () => ({
+      release() {},
+      write(data) {
+        if (data.startsWith('\x1b[200~')) {
+          pastes++;
+          if (pastes === 1) { skipEnter = true; return; }
+          tmux(['load-buffer', '-'], data.slice(6, -6));
+          tmux(['paste-buffer', '-dp', '-t', 'sample']);
+        } else if (data === '\r') {
+          if (!skipEnter) tmux(['send-keys', '-t', 'sample', 'Enter']);
+          skipEnter = false;
+        } else {
+          tmux(['send-keys', '-t', 'sample', '-l', data]);
+        }
+      },
+    }),
+    readExecutionState: async () => {
+      const foregroundCommand = tmux(['display', '-p', '-t', 'sample', '#{pane_current_command}']).trim();
+      const snapshotText = tmux(['capture-pane', '-p', '-t', 'sample']);
+      const lines = snapshotText.split('\n');
+      const state = classifyTerminalExecution({paneCurrentCommand: foregroundCommand, paneDead: 0, snapshotText, subagentPanes: [], quietSeconds: 0});
+      workflow?.replayScreen(snapshotText);
+      return {...state, lines, profile: findAgentProfile({foregroundCommand, lines}), isAlive:true, entryExists:true};
+    },
+  });
+  const def = definition();
+  def.steps[0].prompt = 'Transport check. Use no tools. Reply immediately with the required COMPLETE signal.';
+  def.steps[0].agent = {...def.steps[0].agent, name:'Muse', launchCommand:'muse --model muse-spark-1.3-contributor --effort high --yolo'};
+  const run = ctx.runStore.create(validRun({definition:def, homePath:dir, worktreePath:dir}));
+  let timeout;
+  try {
+    execFileSync('git', ['init', '-q', dir]);
+    tmux(['-f', '/dev/null', 'new-session', '-d', '-s', 'sample', '-x', '150', '-y', '45', '-c', dir, '/bin/bash --noprofile --norc']);
+    await Promise.race([ctx.engine.start(run.id), new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('Muse pickup canary timed out')), 60000);
+    })]);
+    const events = ctx.runStore.auditPage(run.id, {page:0, size:100, direction:'asc', stepIndex:0}).data;
+    console.log(JSON.stringify(events.map(({kind, createdAt, detail}) => ({kind, createdAt, detail}))));
+    expect(ctx.runStore.get(run.id).status).toBe('complete');
+    expect(events.filter(e => e.kind === 'prompt_submitted')).toHaveLength(2);
+    const retries = events.filter(e => e.kind === 'prompt_unclaimed');
+    expect(retries).toHaveLength(1);
+    expect(retries[0].detail).toMatch(/^Empty Muse welcome/);
+    expect(Date.parse(retries[0].createdAt) - Date.parse(events.find(e => e.kind === 'prompt_submitted').createdAt)).toBeLessThan(8000);
+    expect(events.some(e => e.kind === 'agent_restarted')).toBe(false);
+  } finally {
+    clearTimeout(timeout);
+    try {
+      if (ctx.runStore.get(run.id).status === 'running') await ctx.engine.stop(run.id);
+    } finally {
+      spawnSync('tmux', ['-L', socket, 'kill-server']);
+    }
+    rmSync(dir, {recursive:true, force:true});
+  }
+}, 70000);
 
 describe('createRunEngine — a step reuses the terminal of its agent', () => {
   const CODEX = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
