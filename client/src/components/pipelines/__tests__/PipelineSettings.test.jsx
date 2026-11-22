@@ -396,7 +396,7 @@ describe('PipelineSettings agent presets', () => {
     click('Add agent');
 
     expect(providerOptions()).toEqual([
-      ['claude', 'Claude Code'], ['codex', 'Codex'], ['cursor', 'Cursor'], ['agy', 'Antigravity'], ['custom', 'Custom command'],
+      ['claude', 'Claude Code'], ['codex', 'Codex'], ['cursor', 'Cursor'], ['agy', 'Antigravity'], ['muse', 'Muse Code'], ['custom', 'Custom command'],
     ]);
     expect(screen.getByLabelText('Provider').value).toBe('claude');
     expect(screen.getByLabelText('Model').value).toBe('');
@@ -422,6 +422,24 @@ describe('PipelineSettings agent presets', () => {
     expect(screen.getByLabelText('Model').value).toBe('gemini-4-neon-high');
     expect(screen.getByLabelText('Effort').value).toBe('high');
     expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
+  });
+
+  it('saves and reopens a Muse Code workflow agent', async () => {
+    await renderSettings();
+    click('Add agent');
+    type('Agent name', 'Muse Spark Contributor High');
+    type('Provider', 'muse');
+    type('Model', 'muse-spark-1.3-contributor');
+    type('Effort', 'high');
+    fireEvent.click(screen.getByLabelText('Skip permission prompts'));
+    click('Save agent');
+
+    expect(await agents().findByText('command muse --model muse-spark-1.3-contributor --effort high --yolo')).toBeTruthy();
+    click('Edit agent Muse Spark Contributor High');
+    expect(screen.getByLabelText('Provider').value).toBe('muse');
+    expect(screen.getByLabelText('Model').value).toBe('muse-spark-1.3-contributor');
+    expect(screen.getByLabelText('Effort').value).toBe('high');
+    expect(screen.getByLabelText('Skip permission prompts').checked).toBe(true);
   });
 
   it('adds an agent from a provider, model and effort', async () => {

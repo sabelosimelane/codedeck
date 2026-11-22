@@ -65,21 +65,29 @@ describe('TaskView', () => {
     expect(screen.getByTestId('task-view').textContent).not.toMatch(/limit_|needs_input|awaiting_/);
   });
 
-  it('says how long each finished step worked in all in the step rail, every round of a loop included', () => {
-    const steps = [
-      step(0, 'Plan', { status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1, elapsedMs: 252000 }),
-      step(1, 'Develop', { status: 'complete', sessionId: 'Demo-2', attempt: 3, iteration: 1, elapsedMs: 3900000 }),
-      step(2, 'Test', { status: 'complete', sessionId: 'Demo-2', attempt: 3, iteration: 1, roundsCompleted: 2, repeat: { mode: 'loop_back', toStepIndex: 1, max: 12 }, elapsedMs: 45000 }),
-      step(3, 'Commit', { status: 'running', sessionId: 'Demo-3', attempt: 1, iteration: 1, elapsedMs: 9000 }),
-      step(4, 'Report'),
-    ];
-    view({ run: run({ currentStepIndex: 3, steps }) });
-    const rail = within(screen.getByRole('navigation', { name: 'Steps' }));
-    expect(rail.getByRole('button', { name: 'Plan: Done, took 4m 12s' }).textContent).toContain('Done · 4m 12s');
-    expect(rail.getByRole('button', { name: 'Develop: Done, took 1h 5m' }).textContent).toContain('Done · 1h 5m');
-    expect(rail.getByRole('button', { name: 'Test: Done, 3 rounds, took 45s' }).textContent).toContain('Done · 3 rounds · 45s');
-    expect(rail.getByRole('button', { name: 'Commit: Running' }).textContent).not.toMatch(/\d+s/);
-    expect(rail.getByRole('button', { name: 'Report: Not started' })).toBeTruthy();
+  it('counts working steps live and keeps showing accumulated time for finished, stopped and looped steps', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-11-19T10:12:05.000Z'));
+      const steps = [
+        step(0, 'Plan', { status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1, elapsedMs: 252000 }),
+        step(1, 'Develop', { status: 'stopped', sessionId: 'Demo-2', attempt: 3, iteration: 1, elapsedMs: 3900000 }),
+        step(2, 'Test', { status: 'pending', sessionId: 'Demo-2', attempt: 3, iteration: 0, roundsCompleted: 2, repeat: { mode: 'loop_back', toStepIndex: 1, max: 12 }, elapsedMs: 45000 }),
+        step(3, 'Commit', { status: 'running', sessionId: 'Demo-3', attempt: 1, iteration: 1, startedAt: '2026-11-19T10:12:00.000Z', elapsedMs: 9000 }),
+        step(4, 'Report'),
+      ];
+      view({ run: run({ currentStepIndex: 3, steps }) });
+      const rail = within(screen.getByRole('navigation', { name: 'Steps' }));
+      expect(rail.getByRole('button', { name: 'Plan: Done, took 4m 12s' }).textContent).toContain('Done · 4m 12s');
+      expect(rail.getByRole('button', { name: 'Develop: Stopped, took 1h 5m' }).textContent).toContain('Stopped · 1h 5m');
+      expect(rail.getByRole('button', { name: 'Test: Not started, round 3 of 12, took 45s' }).textContent).toContain('Not started · round 3 of 12 · 45s');
+      expect(rail.getByRole('button', { name: 'Commit: Running, 14s so far' }).textContent).toContain('Running · 14s');
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(rail.getByRole('button', { name: 'Commit: Running, 17s so far' }).textContent).toContain('Running · 17s');
+      expect(rail.getByRole('button', { name: 'Report: Not started' })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('counts the whole run in the header while it is going, and says what it took once it is over', () => {

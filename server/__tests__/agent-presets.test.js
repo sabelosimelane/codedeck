@@ -10,6 +10,7 @@ describe('agent presets', () => {
       ['codex', 'Codex'],
       ['cursor', 'Cursor'],
       ['agy', 'Antigravity'],
+      ['muse', 'Muse Code'],
     ]);
   });
 
@@ -20,6 +21,7 @@ describe('agent presets', () => {
       codex: ['low', 'medium', 'high', 'xhigh'],
       cursor: [],
       agy: ['low', 'medium', 'high', 'xhigh', 'max'],
+      muse: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     });
   });
 });
@@ -35,6 +37,8 @@ describe('buildLaunchCommand', () => {
     ['codex', { skipPermissions: true }, 'command codex --dangerously-bypass-approvals-and-sandbox'],
     ['agy', {}, 'command agy'],
     ['agy', { model: 'gemini-4-neon-high', effort: 'high', skipPermissions: true }, 'command agy --model gemini-4-neon-high --effort high --dangerously-skip-permissions'],
+    ['muse', {}, 'command muse'],
+    ['muse', { model: 'muse-spark-1.3-contributor', effort: 'high', skipPermissions: true }, 'command muse --model muse-spark-1.3-contributor --effort high --yolo'],
     ['cursor', {}, 'command agent'],
     ['cursor', { model: 'gpt-5.6-sol-high', skipPermissions: true }, 'command agent --model gpt-5.6-sol-high --force'],
   ])('%s %j builds %s', (provider, fields, command) => {
@@ -98,6 +102,7 @@ describe('parseLaunchCommand', () => {
     ['codex', { skipPermissions: true }],
     ['cursor', { model: 'cursor-grok-4.6-high-fast' }],
     ['cursor', { skipPermissions: true }],
+    ['muse', { model: 'muse-spark-1.3-contributor', effort: 'high', skipPermissions: true }],
   ])('reads back what %s %j built', (provider, fields) => {
     const selection = { provider, model: '', effort: '', skipPermissions: false, ...fields };
     expect(parseLaunchCommand(buildLaunchCommand(selection).command)).toEqual(selection);

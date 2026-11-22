@@ -934,7 +934,6 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
       return;
     }
     if (s.pty !== ptyProcess) return;
-    s.workflow?.stop();
 
     // In tmux mode, check if the underlying session survived
     if (reattachCount < MAX_TMUX_REATTACH && runtime.isSessionRecoverable(sessionId)) {
@@ -962,6 +961,7 @@ function registerPtyExitHandler(ptyProcess, sessionId, sessions, runtime, cols, 
       console.log(`[terminal] tmux_reattach_exhausted session=${sessionId}`);
     }
 
+    s.workflow?.stop();
     s.alive = false;
     s.clientDetached = false;
     s.wsAttached = false;
@@ -1484,7 +1484,6 @@ function registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRunti
       return;
     }
     if (s.pty !== ptyProcess) return;
-    s.workflow?.stop();
 
     const markRemoteDetached = (err) => {
       s.alive = false;
@@ -1497,6 +1496,7 @@ function registerRemotePtyExitHandler(ptyProcess, sessionId, sessions, hostRunti
     };
 
     const markDead = () => {
+      s.workflow?.stop();
       s.alive = false;
       s.clientDetached = false;
       s.wsAttached = false;

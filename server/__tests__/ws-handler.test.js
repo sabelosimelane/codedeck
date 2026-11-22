@@ -1668,6 +1668,32 @@ describe('runtime abstraction (Phase 5)', () => {
       expect(entry.alive).toBe(false);
       expect(entry.events.some(e => e.type === 'tmux_reattach_failed')).toBe(true);
     });
+
+    it('keeps an active workflow running when a tmux client exits and re-attaches, but stops it when the session dies', () => {
+      const newPty = createMockPty();
+      let spawnCount = 0;
+      const runtime = createMockRuntime(
+        vi.fn(() => spawnCount++ === 0 ? mockPty : newPty),
+        { type: 'tmux', recoverable: true },
+      );
+      const ws = createMockWs();
+      const req = createMockReq({ sessionId: 'test-1', cwd: '/tmp' });
+
+      handleWsConnection(ws, req, sessions, runtime);
+      const entry = sessions.get('test-1');
+      const stopSpy = vi.spyOn(entry.workflow, 'stop');
+
+      // Transient tmux client exit while tmux session is still recoverable: workflow must stay alive.
+      mockPty.emitExit({ exitCode: 0 });
+      expect(entry.alive).toBe(true);
+      expect(stopSpy).not.toHaveBeenCalled();
+
+      // Actual session death (not recoverable): workflow must be stopped.
+      runtime.isSessionRecoverable.mockReturnValue(false);
+      newPty.emitExit({ exitCode: 0 });
+      expect(entry.alive).toBe(false);
+      expect(stopSpy).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('tmux snapshot hydration', () => {

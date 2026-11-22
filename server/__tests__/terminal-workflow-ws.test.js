@@ -74,18 +74,22 @@ describe('workflow over terminal WebSocket', () => {
     send(f.ws, { type: 'input', data });
     expect(f.pty.write).not.toHaveBeenCalled();
   });
-  it('publishes an identifier mismatch error and releases manual input without resetting', () => {
+  it('asks once on an identifier mismatch, then publishes an error and releases manual input without resetting on a second mismatch', () => {
     const f = fixture();
     f.startBackground();
     vi.advanceTimersByTime(100);
     f.output('[[CDW:21b30afa-19ab-4ee4-963a-38c1694ee034:CONTINUE]]');
+    vi.advanceTimersByTime(100);
+    expect(f.sessions.get('demo-1').workflow.snapshot()).toMatchObject({ status: 'running', active: true, error: null });
+    expect(f.pty.write).toHaveBeenCalledTimes(4);
+    f.output('[[CDW:21b30afa-19ab-4ee4-963a-38c1694ee035:CONTINUE]]');
     expect(messages(f.ws)).toContainEqual(expect.objectContaining({
       type: 'workflow_state', state: expect.objectContaining({
         status: 'error', active: false, error: expect.stringContaining('identifier does not match'),
       }),
     }));
     vi.advanceTimersByTime(60000);
-    expect(f.pty.write).toHaveBeenCalledTimes(2);
+    expect(f.pty.write).toHaveBeenCalledTimes(4);
     send(f.ws, { type: 'input', data: 'manual input' });
     expect(f.pty.write).toHaveBeenLastCalledWith('manual input');
   });

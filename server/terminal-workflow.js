@@ -7,6 +7,7 @@ const QUIET_MS = 1000;
 const SUBMIT_DELAY_MS = 100;
 const RESET_TIMEOUT_MS = 15000;
 const MAX_OUTPUT = 65536;
+const MAX_BAD_IDENTIFIER_RETRIES = 1;
 // `resetFirst` clears the agent's context before the first pass, for a terminal whose agent
 // already worked. `guidance` is one more sentence or two of instruction for every pass.
 // A step's guidance names every repository of its task with its path, so it has room for several.
@@ -70,6 +71,12 @@ export function buildPrompt(command, identifier, guidance) {
   return `${command}\n\nCodeDeck workflow instruction: perform one pass of the command above. As your final output, emit exactly one signal, only after all work and tools for this pass have finished. Use CONTINUE if this pass finished and the overall requested task still has work remaining. Use COMPLETE only if the entire requested task is finished. Use NEEDS_INPUT if you need an answer, permission, or encounter a problem that prevents continuation. Before a NEEDS_INPUT signal, state what you need: print the questions marker on a line of its own, then a numbered list with one short question per item, each followed by Recommended: and the answer you recommend; write nothing else between the questions marker and the signal. Do not reset context yourself. Do not print a signal as an example or while explaining this instruction.${guidance === undefined ? '' : ` ${guidance}`}\nIteration identifier: ${identifier}\nCopy the iteration identifier verbatim; do not reconstruct or invent it. Construct the signal by joining these parts without spaces: opening [[CDW: ; the iteration identifier ; a colon ; the chosen uppercase status ; closing ]] . Construct the questions marker the same way, with QUESTIONS in place of the status.`;
 }
 
+/** Reminder typed into the agent when it mistypes the iteration identifier in its final signal. */
+function buildBadIdentifierPrompt(identifier) {
+  // Never include an assembled marker: terminal echo must not match a result.
+  return `CodeDeck: the signal identifier you emitted did not match the current iteration. Do not redo any work — emit your final signal again using the exact iteration identifier ${identifier}. Construct the signal by joining these parts without spaces: opening [[CDW: ; ${identifier} ; a colon ; your chosen uppercase status (CONTINUE, COMPLETE, or NEEDS_INPUT) ; closing ]] .`;
+}
+
 /**
  * Find the last signal in captured terminal screen text that belongs to the active pass.
  * Signals from earlier passes or other runs in the same terminal are ignored.
@@ -100,6 +107,7 @@ export function createTerminalWorkflow({ write, notify }) {
   let rawOutput = '';
   let phase = 'waiting';
   let pass = 0;
+  let badIdentifierRetries = 0;
   let limitReached = false;
   let quietTimer;
   // Checked before every repeat pass (a run's attachment copies); not part of the replayed request.
@@ -159,6 +167,7 @@ export function createTerminalWorkflow({ write, notify }) {
     status = 'running';
     phase = 'waiting';
     pass += 1;
+    badIdentifierRetries = 0;
     identifier = issueIdentifier();
     passIdentifiers = new Set([identifier]);
     pendingIdentifier = null;
@@ -261,6 +270,7 @@ export function createTerminalWorkflow({ write, notify }) {
       status = savedState.status;
       phase = savedState.phase;
       pass = savedState.pass;
+      badIdentifierRetries = 0;
       identifier = savedState.identifier;
       passIdentifiers = new Set(savedState.passIdentifiers);
       issuedIdentifiers.clear();
@@ -393,6 +403,13 @@ export function createTerminalWorkflow({ write, notify }) {
         .find(candidate => (candidate[2] === 'NEEDS_INPUT' ? candidate[1] === identifier : passIdentifiers.has(candidate[1])) || !issuedIdentifiers.has(candidate[1]));
       if (!match) return;
       if (!issuedIdentifiers.has(match[1])) {
+        if (status === 'running' && identifier !== null && badIdentifierRetries < MAX_BAD_IDENTIFIER_RETRIES) {
+          badIdentifierRetries += 1;
+          clearTimeout(enterTimer);
+          rawOutput = '';
+          pasteAndSubmit(buildBadIdentifierPrompt(identifier));
+          return;
+        }
         finish('error', 'Workflow signal identifier does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.');
         return;
       }

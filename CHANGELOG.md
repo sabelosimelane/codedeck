@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-11-22] - Live per-stage timing, resilient workflow signals, and Muse Code preset
+
+### Executive Summary
+* Workflow runs now display live per-stage working durations while a stage runs and keep showing accumulated working time when a stage stops, fails, pauses, or loops back. Workflow automation is also more resilient: transient tmux/SSH client exits no longer kill active runs before re-attaching, and agents that typo the iteration identifier in their final signal are automatically asked once to re-emit it instead of immediately failing the pass. Also adds the Muse Code agent preset and expands Codex session history discovery to include interactive IDE/app-server threads ordered by recency.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/utils/pipelineRunStatus.js` — updated `describeStepDuration(step, now)` to count live (`elapsedMs + (now - startedAt)`) for working steps (`launching`, `running`, `needs_input`) and return settled `elapsedMs` for stopped, failed, interrupted, paused, awaiting-approval, and looped-back steps.
+  * `client/src/components/tasks/TaskView.jsx` — threaded the 1-second `now` ticker into `describeStepDuration(step, now)` and updated step rail `aria-label`s to distinguish live (`so far`) from settled (`took`) durations.
+  * `shared/agent-presets.mjs` — added the `muse` (`Muse Code`) workflow agent preset (`--effort`, `--yolo`).
+* **🐛 Bug Fix:**
+  * **Problem:** `registerPtyExitHandler` and `registerRemotePtyExitHandler` called `s.workflow?.stop()` before checking whether the underlying tmux session was still recoverable, stopping active runs with `Stopped: terminal closed` on transient client exits. In addition, a single character typo by an agent in its `[[CDW:<id>:<STATUS>]]` signal immediately failed the entire pass.
+  * **Solution:** Moved `s.workflow?.stop()` after the recoverability/re-attach branch (and into `markDead()` for remote sessions) in `server/ws-handler.js`, and added a one-shot correction reminder in `server/terminal-workflow.js` asking the agent to re-emit its signal with the exact iteration identifier without redoing work.
+* **🛠️ Codebase:**
+  * `server/ws-handler.js` — deferred `s.workflow?.stop()` until unrecoverable session death in local and remote PTY exit handlers.
+  * `server/terminal-workflow.js` — added `MAX_BAD_IDENTIFIER_RETRIES = 1`, `badIdentifierRetries` tracking per pass, and `buildBadIdentifierPrompt(identifier)`.
+  * `server/agent-history/codex.js` — included `vscode`, `atlas`, and `chatgpt` interactive sources and read `recency_at_ms` instead of `updated_at_ms`.
+* **🧪 Tests:**
+  * `client/src/utils/__tests__/pipelineRunStatus.test.js`, `client/src/components/tasks/__tests__/TaskView.test.jsx` — updated and added tests for live and settled per-stage durations.
+  * `server/__tests__/ws-handler.test.js` — added regression test verifying recoverable tmux client exits do not stop active workflows while session death does.
+  * `server/__tests__/terminal-workflow.test.js`, `server/__tests__/terminal-workflow-ws.test.js` — updated tests for one-shot signal identifier retry and failure on a second mismatch.
+  * `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx`, `server/__tests__/agent-presets.test.js`, `server/__tests__/agent-history/readers.test.js` — added coverage for the Muse Code preset and Codex history sources/recency.
+
 ## [2026-11-21] - Fix remote background terminal attach and remote task landing
 
 ### Executive Summary

@@ -87,36 +87,57 @@ describe('describeStepProgress', () => {
 });
 
 describe('describeStepDuration', () => {
-  const step = (overrides = {}) => ({ status: 'complete', elapsedMs: 252000, ...overrides });
+  const at = seconds => new Date(Date.UTC(2026, 10, 19, 10, 0, 0) + seconds * 1000).toISOString();
+  const now = seconds => Date.UTC(2026, 10, 19, 10, 0, 0) + seconds * 1000;
+  const step = (overrides = {}) => ({ status: 'complete', elapsedMs: 252000, startedAt: null, ...overrides });
 
   it.each([
     [400, 'under 1s'], [1000, '1s'], [59900, '59s'], [60000, '1m 0s'], [252000, '4m 12s'], [3599000, '59m 59s'], [3600000, '1h 0m'], [3900000, '1h 5m'], [90000000, '25h 0m'],
   ])('says a finished step that worked %s milliseconds took %s', (elapsedMs, words) => {
-    expect(describeStepDuration(step({ elapsedMs }))).toBe(words);
+    expect(describeStepDuration(step({ elapsedMs }), now(0))).toEqual({ words, live: false });
   });
 
-  it('says nothing for a finished step with no time: it finished before working time was kept', () => {
-    expect(describeStepDuration(step({ elapsedMs: 0 }))).toBeNull();
+  it('says nothing for a non-working step with no time kept', () => {
+    expect(describeStepDuration(step({ elapsedMs: 0 }), now(0))).toBeNull();
+    expect(describeStepDuration(step({ status: 'pending', elapsedMs: 0 }), now(0))).toBeNull();
   });
 
-  it('counts a step the owner continued past its limit as finished', () => {
-    expect(describeStepDuration(step({ status: 'limit_accepted' }))).toBe('4m 12s');
+  it.each(['complete', 'limit_accepted', 'pending', 'awaiting_approval', 'limit_reached', 'failed', 'stopped', 'interrupted'])(
+    'shows the accumulated working time for a %s step that has worked before',
+    (status) => {
+      expect(describeStepDuration(step({ status }), now(99999))).toEqual({ words: '4m 12s', live: false });
+    },
+  );
+
+  it.each(['launching', 'running', 'needs_input'])(
+    'counts live from startedAt on top of accumulated elapsedMs while a step is %s',
+    (status) => {
+      expect(describeStepDuration(step({ status, elapsedMs: 60000, startedAt: at(10) }), now(75))).toEqual({ words: '2m 5s', live: true });
+    },
+  );
+
+  it('never counts backwards when this device\'s clock is behind the backend\'s', () => {
+    expect(describeStepDuration(step({ status: 'running', elapsedMs: 0, startedAt: at(10) }), now(5))).toEqual({ words: 'under 1s', live: true });
+    expect(describeStepDuration(step({ status: 'running', elapsedMs: 60000, startedAt: at(10) }), now(5))).toEqual({ words: '1m 0s', live: true });
   });
 
-  it.each(['pending', 'launching', 'running', 'needs_input', 'awaiting_approval', 'limit_reached', 'failed', 'stopped', 'interrupted'])('says nothing for a step that is %s', (status) => {
-    expect(describeStepDuration(step({ status }))).toBeNull();
+  it('falls back to settled elapsedMs (or null) when a working step has no startedAt', () => {
+    expect(describeStepDuration(step({ status: 'running', elapsedMs: 9000, startedAt: null }), now(100))).toEqual({ words: '9s', live: false });
+    expect(describeStepDuration(step({ status: 'running', elapsedMs: 0, startedAt: null }), now(100))).toBeNull();
   });
 
   it.each([
-    ['a step that is not an object', null, 'step duration: step must be an object'],
-    ['an unknown status', step({ status: 'weird' }), 'step duration: status weird is unknown'],
-    ['a missing time', step({ elapsedMs: undefined }), 'step duration: elapsedMs must be an integer ≥ 0'],
-    ['a time that is null', step({ elapsedMs: null }), 'step duration: elapsedMs must be an integer ≥ 0'],
-    ['a negative time', step({ elapsedMs: -1 }), 'step duration: elapsedMs must be an integer ≥ 0'],
-    ['a time that is not whole', step({ elapsedMs: 1.5 }), 'step duration: elapsedMs must be an integer ≥ 0'],
-    ['a time as text', step({ elapsedMs: '252000' }), 'step duration: elapsedMs must be an integer ≥ 0'],
-  ])('throws on %s', (_label, value, message) => {
-    expect(() => describeStepDuration(value)).toThrow(message);
+    ['a step that is not an object', null, 0, 'step duration: step must be an object'],
+    ['an unknown status', step({ status: 'weird' }), 0, 'step duration: status weird is unknown'],
+    ['a missing time', step({ elapsedMs: undefined }), 0, 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a time that is null', step({ elapsedMs: null }), 0, 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a negative time', step({ elapsedMs: -1 }), 0, 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a time that is not whole', step({ elapsedMs: 1.5 }), 0, 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a time as text', step({ elapsedMs: '252000' }), 0, 'step duration: elapsedMs must be an integer ≥ 0'],
+    ['a malformed startedAt', step({ startedAt: 'yesterday' }), 0, 'step duration: startedAt must be a timestamp or null'],
+    ['a time now that is not a number', step(), 'now', 'step duration: now must be a time in milliseconds'],
+  ])('throws on %s', (_label, value, time, message) => {
+    expect(() => describeStepDuration(value, time)).toThrow(message);
   });
 });
 

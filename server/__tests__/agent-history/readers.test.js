@@ -22,12 +22,23 @@ describe('CLI readers', () => {
     const records = make(root).claude.list([cwd]).records;
     expect(records).toHaveLength(1); expect(records[0]).toMatchObject({ title: 'Custom title', firstPrompt: 'First typed prompt' });
   });
-  it('Codex excludes archived and non-cli sources, uses name and first message', () => {
+  it('Codex includes interactive cli and vscode sources, orders by recency_at_ms, excludes archived, exec and subagent sources', () => {
     const root = home(); const file = path.join(root, '.codex/state_5.sqlite'); fs.mkdirSync(path.dirname(file), { recursive: true }); const db = new Database(file);
-    db.exec('CREATE TABLE threads (id TEXT, cwd TEXT, name TEXT, first_user_message TEXT, updated_at_ms INTEGER, source TEXT, archived INTEGER)');
-    const insert = db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?)');
-    insert.run(id, cwd, 'Name', 'Prompt', 123, 'cli', 0); insert.run('2', cwd, 'Skip', 'Prompt', 123, 'exec', 0); insert.run('3', cwd, 'Skip', 'Prompt', 123, 'cli', 1); db.close();
-    expect(make(root).codex.list([cwd]).records).toMatchObject([{ title: 'Name', firstPrompt: 'Prompt' }]);
+    db.exec('CREATE TABLE threads (id TEXT, cwd TEXT, name TEXT, first_user_message TEXT, updated_at_ms INTEGER, recency_at_ms INTEGER, source TEXT, archived INTEGER)');
+    const insert = db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    const id2 = '22222222-2222-4222-8222-222222222222';
+    const id3 = '33333333-3333-4333-8333-333333333333';
+    insert.run(id, cwd, 'Name', 'Prompt', 999, 123, 'cli', 0);
+    insert.run(id2, cwd, 'App-server session', 'Prompt 2', 500, 456, 'vscode', 0);
+    insert.run(id3, cwd, 'Skip exec', 'Prompt', 123, 123, 'exec', 0);
+    insert.run('44444444-4444-4444-8444-444444444444', cwd, 'Skip subagent', 'Prompt', 123, 123, '{"subagent":"review"}', 0);
+    insert.run('55555555-5555-4555-8555-555555555555', cwd, 'Skip archived', 'Prompt', 123, 123, 'cli', 1);
+    insert.run('66666666-6666-4666-8666-666666666666', cwd, 'Skip archived vscode', 'Prompt', 123, 123, 'vscode', 1);
+    db.close();
+    expect(make(root).codex.list([cwd]).records).toMatchObject([
+      { conversationId: id, title: 'Name', firstPrompt: 'Prompt', updatedAt: 123 },
+      { conversationId: id2, title: 'App-server session', firstPrompt: 'Prompt 2', updatedAt: 456 },
+    ]);
   });
   it('Cursor extracts user_query and excludes subagents, false conversations and no cwd', () => {
     const root = home(); const group = path.join(root, '.cursor/chats/hash'); const meta = (uuid, fields) => write(path.join(group, uuid, 'meta.json'), JSON.stringify({ cwd, updatedAtMs: 123, hasConversation: true, ...fields }));
@@ -48,8 +59,8 @@ describe('CLI readers', () => {
 describe('reader field guards', () => {
   it('Codex rejects a numeric title on a matching row', () => {
     const root = home(); const file = path.join(root, '.codex/state_5.sqlite'); fs.mkdirSync(path.dirname(file), { recursive: true }); const db = new Database(file);
-    db.exec('CREATE TABLE threads (id TEXT, cwd TEXT, name, first_user_message TEXT, updated_at_ms INTEGER, source TEXT, archived INTEGER)');
-    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, cwd, 42, 'Prompt', 123, 'cli', 0); db.close();
+    db.exec('CREATE TABLE threads (id TEXT, cwd TEXT, name, first_user_message TEXT, updated_at_ms INTEGER, recency_at_ms INTEGER, source TEXT, archived INTEGER)');
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, cwd, 42, 'Prompt', 123, 123, 'cli', 0); db.close();
     expect(() => make(root).codex.list([cwd])).toThrow(/name/);
   });
   it('Cursor rejects a numeric title on a matching meta record', () => {

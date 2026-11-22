@@ -188,15 +188,17 @@ export default function TaskView({
     if (followSessionId) activateRef.current(followSessionId);
   }, [run.id, currentIndex, followSessionId]);
   const status = describeRunStatus(run);
-  // The run's time is counted on this device once a second, and only while the run is not over.
+  // The run's time and any working step's time are counted on this device once a second.
   const [now, setNow] = useState(() => Date.now());
   const duration = describeRunDuration(run, now);
+  const stepDurations = run.steps.map(step => describeStepDuration(step, now));
+  const counting = duration.live || stepDurations.some(item => item?.live);
   useEffect(() => {
-    if (!duration.live) return undefined;
+    if (!counting) return undefined;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [duration.live, run.id]);
+  }, [counting, run.id]);
   const progress = progressLine(run.progress);
   const blockedCleanup = run.worktree?.state === 'removal_blocked' && run.worktree.detail ? describeBlockedCleanup(run.worktree.detail) : null;
   const heading = title === run.workflowName ? title : `${title} · ${run.workflowName}`;
@@ -247,19 +249,19 @@ export default function TaskView({
       </header>
       <div className="task-view-body">
         <nav aria-label="Steps" className="task-step-rail">
-          {run.steps.map(step => {
+          {run.steps.map((step, i) => {
             const state = describeStepState(step, { isCurrent: step.index === currentIndex }).state;
             const words = describeStepProgress(step);
-            const took = describeStepDuration(step);
+            const took = stepDurations[i];
             const Icon = STATE_ICON[state];
             return (
               <button key={step.index} type="button" onClick={() => selectStep(step)} className="task-step" data-step-state={state}
                 aria-current={step.index === selectedIndex ? 'step' : undefined}
-                aria-label={`${step.name}: ${[words.label, words.detail, took && `took ${took}`].filter(Boolean).join(', ')}`}>
+                aria-label={`${step.name}: ${[words.label, words.detail, took && (took.live ? `${took.words} so far` : `took ${took.words}`)].filter(Boolean).join(', ')}`}>
                 <Icon size={13} aria-hidden="true" className="task-step-icon" />
                 <span className="task-step-text">
                   <span className="task-step-name">{step.name}{step.repeat.mode === 'loop_back' && <Repeat size={11} aria-hidden="true" />}</span>
-                  <span className="task-step-words">{[words.label, words.detail, took].filter(Boolean).join(' · ')}</span>
+                  <span className="task-step-words">{[words.label, words.detail, took?.words].filter(Boolean).join(' · ')}</span>
                 </span>
               </button>
             );

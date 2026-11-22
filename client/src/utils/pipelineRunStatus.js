@@ -53,6 +53,7 @@ const STEP_LABEL = Object.freeze({
   interrupted: 'Interrupted',
 });
 const STEP_OVER = new Set(['complete', 'limit_accepted']);
+const WORKING_STEP = new Set(['launching', 'running', 'needs_input']);
 const count = (number, word) => `${number} ${word}${number === 1 ? '' : (word === 'pass' ? 'es' : 's')}`;
 
 /** How a step stands, in words: a label, and where it is in its passes or loop rounds (or null). */
@@ -88,16 +89,26 @@ function durationWords(milliseconds) {
 const isStamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
 
 /**
- * How long a finished step worked, in words, or null for a step that is not finished or has no time kept. The
- * backend adds up every start of the step: each round of a loop, and each attempt after Resume
- * or Send back. Waiting for an answer counts; waiting for approval or lying interrupted does not.
+ * How long a step has worked, in words, or null when it has not worked and has no time kept. The
+ * backend adds up every finished start of the step in `elapsedMs` (each round of a loop, and each
+ * attempt after Resume or Send back). While the step is working (`launching`, `running`,
+ * `needs_input`), the current stretch from `startedAt` to `now` is added live; once it stops,
+ * fails, pauses, loops back or finishes, the accumulated `elapsedMs` is shown as settled.
  */
-export function describeStepDuration(step) {
+export function describeStepDuration(step, now) {
   if (!step || typeof step !== 'object' || Array.isArray(step)) throw new Error('step duration: step must be an object');
   if (typeof step.status !== 'string' || !Object.hasOwn(STEP_LABEL, step.status)) throw new Error(`step duration: status ${String(step.status)} is unknown`);
   if (!Number.isSafeInteger(step.elapsedMs) || step.elapsedMs < 0) throw new Error('step duration: elapsedMs must be an integer ≥ 0');
-  // No step works for no time at all: zero means the step finished before its working time was kept.
-  return STEP_OVER.has(step.status) && step.elapsedMs > 0 ? durationWords(step.elapsedMs) : null;
+  if (step.startedAt !== undefined && step.startedAt !== null && !isStamp(step.startedAt)) {
+    throw new Error('step duration: startedAt must be a timestamp or null');
+  }
+  if (typeof now !== 'number' || !Number.isFinite(now)) throw new Error('step duration: now must be a time in milliseconds');
+  if (WORKING_STEP.has(step.status) && isStamp(step.startedAt)) {
+    const currentStretch = Math.max(0, now - Date.parse(step.startedAt));
+    return { words: durationWords(step.elapsedMs + currentStretch), live: true };
+  }
+  // No step works for no time at all: zero means the step has not worked yet or finished before working time was kept.
+  return step.elapsedMs > 0 ? { words: durationWords(step.elapsedMs), live: false } : null;
 }
 
 /**

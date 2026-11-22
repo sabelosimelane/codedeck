@@ -46,6 +46,15 @@ export const AGENT_PRESETS = Object.freeze([
     skipPermissionsFlag: '--dangerously-skip-permissions',
     modelExample: 'gemini-4-neon-high',
   }),
+  Object.freeze({
+    id: 'muse',
+    label: 'Muse Code',
+    executable: 'muse',
+    efforts: Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
+    effortArgs: effort => `--effort ${effort}`,
+    skipPermissionsFlag: '--yolo',
+    modelExample: 'muse-spark-1.3-contributor',
+  }),
 ]);
 
 function requireType(field, value, type) {

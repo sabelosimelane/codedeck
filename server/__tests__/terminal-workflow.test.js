@@ -264,15 +264,43 @@ describe('terminal workflow', () => {
     expect(() => workflow.input(42)).toThrow('Workflow input must be a string.');
   });
 
-  it.each(['CONTINUE', 'COMPLETE', 'NEEDS_INPUT'])('reports a mistyped identifier in a fragmented %s signal without submitting more commands', status => {
-    const { workflow, write, notify } = setup();
+  it.each(['CONTINUE', 'COMPLETE', 'NEEDS_INPUT'])('asks the agent once to re-emit a mistyped identifier in a fragmented %s signal, then accepts the corrected signal', status => {
+    const { workflow, write } = setup();
     workflow.start(request);
     const id = token(write);
+    vi.advanceTimersByTime(100);
     const wrongId = `${id[0] === '1' ? '7' : '1'}${id.slice(1)}`;
     const value = signal(wrongId, status);
     workflow.output(`\x1b[32m${value.slice(0, 20)}`);
     expect(workflow.snapshot().status).toBe('running');
     workflow.output(`${value.slice(20)}\x1b[0m`);
+    expect(workflow.snapshot()).toMatchObject({ status: 'running', active: true, error: null });
+    vi.advanceTimersByTime(100);
+    // First write + enter = initial prompt; next write + enter = correction reminder.
+    expect(write).toHaveBeenCalledTimes(4);
+    const reminder = write.mock.calls[2][0];
+    expect(reminder).toContain(id);
+    expect(reminder).not.toContain(`[[CDW:${id}:`);
+    expect(write.mock.calls[3][0]).toBe('\r');
+
+    workflow.output(signal(id, status));
+    if (status === 'COMPLETE') expect(workflow.snapshot()).toMatchObject({ status: 'complete', active: false });
+    else if (status === 'NEEDS_INPUT') expect(workflow.snapshot()).toMatchObject({ status: 'needs_input', active: true });
+    else expect(workflow.snapshot()).toMatchObject({ status: 'resetting', active: true });
+  });
+
+  it.each(['CONTINUE', 'COMPLETE', 'NEEDS_INPUT'])('fails without submitting more commands if the agent mistypes the identifier a second time in a %s signal', status => {
+    const { workflow, write, notify } = setup();
+    workflow.start(request);
+    const id = token(write);
+    const wrongId = `${id[0] === '1' ? '7' : '1'}${id.slice(1)}`;
+    const secondWrongId = `${id[0] === '2' ? '8' : '2'}${id.slice(1)}`;
+    workflow.output(signal(wrongId, status));
+    vi.advanceTimersByTime(100);
+    expect(workflow.snapshot().status).toBe('running');
+    const writesAfterRetry = write.mock.calls.length;
+
+    workflow.output(signal(secondWrongId, status));
     expect(workflow.snapshot()).toMatchObject({
       status: 'error', active: false,
       error: 'Workflow signal identifier does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.',
@@ -280,7 +308,7 @@ describe('terminal workflow', () => {
     expect(notify).toHaveBeenLastCalledWith(workflow.snapshot());
     workflow.output(signal(id, 'CONTINUE'));
     vi.advanceTimersByTime(60000);
-    expect(write).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(writesAfterRetry);
   });
 
   it('ignores known older signals after Stop and a new Start', () => {
