@@ -2528,6 +2528,7 @@ describe('createRunEngine — a loop of steps', () => {
     expect(script.starts).toHaveLength(2);
     expect(script.starts[0].command).toContain(notePath(def, 1));
     expect(script.starts[1].command).toContain('REPAIR 6 ');
+    expect(script.starts[1].command).toContain('Keep each REPAIR line on one line: path at most 1024 characters, reason at most 1000.');
     expect(ctx.runStore.get(run.id)).toMatchObject({currentStepIndex: 1, status: 'error', error: expect.stringContaining('REPAIR 6')});
   });
 

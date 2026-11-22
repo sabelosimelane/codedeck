@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { shellQuote } from '../command-runner.js';
-import { repairFindings } from './repair-evidence.js';
+import { MAX_REPAIR_PATH, MAX_REPAIR_REASON, repairFindings } from './repair-evidence.js';
 import { execFile } from 'node:child_process';
 import { inspectCommitWorktree as inspectGitWorktree } from './run-worktree.js';
 import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
@@ -1153,7 +1153,7 @@ export function createRunEngine({
           }
         }
         if (['Test','Review & Test'].includes(defStep.name) && defStep.repeat.mode === 'loop_back') {
-          command += repairInstruction(attempt) + ` For checks blocked on owner evidence use NEEDS_INPUT. Record each command and its result. Run targeted checks during repair; run the final suite once when all checks hold.`;
+          command += repairInstruction(attempt) + ` Keep each REPAIR line on one line: path at most ${MAX_REPAIR_PATH} characters, reason at most ${MAX_REPAIR_REASON}. For checks blocked on owner evidence use NEEDS_INPUT. Record each command and its result. Run targeted checks during repair; run the final suite once when all checks hold.`;
         }
       }
       if (current.definition.notesDir && readGradleReceipts && ['Test','Review & Test'].includes(defStep.name)) {
