@@ -8,6 +8,9 @@ const SUBMIT_DELAY_MS = 100;
 const RESET_TIMEOUT_MS = 15000;
 const MAX_OUTPUT = 65536;
 const MAX_BAD_IDENTIFIER_RETRIES = 1;
+// How long an agent asked for its final signal may stay idle before the handoff fails.
+// The clock restarts whenever the agent is seen working, so it bounds idleness, not work.
+const HANDOFF_IDLE_MS = 24000;
 // `resetFirst` clears the agent's context before the first pass, for a terminal whose agent
 // already worked. `guidance` is one more sentence or two of instruction for every pass.
 // A step's guidance names every repository of its task with its path, so it has room for several.
@@ -123,7 +126,7 @@ export function createTerminalWorkflow({ write, notify }) {
     badIdentifierRetries = 1;
     rawOutput = '';
     clearTimeout(enterTimer);
-    handoffDeadline = Date.now() + 24000;
+    handoffDeadline = Date.now() + HANDOFF_IDLE_MS;
     armHandoffDeadline();
     audit?.('disposition_requested', 'Idle or invalid final signal; requested disposition only');
     publish();
@@ -400,6 +403,11 @@ export function createTerminalWorkflow({ write, notify }) {
       if (turn === 'working' && !workObserved) {
         workObserved = true;
         audit?.('work_observed', null);
+        publish();
+      } else if (turn === 'working' && handoffDeadline !== null) {
+        // The agent went back to work after being asked for its signal: not idle, so not timed out.
+        handoffDeadline = Date.now() + HANDOFF_IDLE_MS;
+        armHandoffDeadline();
         publish();
       } else if (turn === 'idle' && handoffDeadline === null) {
         // A fast turn may finish between polls. A near-ID can request a correction,

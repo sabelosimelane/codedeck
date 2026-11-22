@@ -116,3 +116,32 @@ it('recovers a missing signal when Muse finished between polls and the footer fo
   expect(workflow.observeTurn('idle', prompt + '\n◆ Finished\n' + done + '\n❯ ')).toBe(true);
   expect(write.mock.calls.filter(([text]) => text.includes('Do not redo'))).toHaveLength(1);
 });
+
+it('failsHandoff_whenAgentIsStillWorkingOnItsDispositionAt24Seconds', () => {
+  // Equinox run 9d814171: Codex's turn was cut off by a provider notice, CodeDeck asked for the
+  // disposition, the agent worked 33s more and then printed the right signal, 9s after the deadline.
+  const { workflow } = setup();
+  workflow.start(request);
+  workflow.observeTurn('working', '');
+  workflow.observeTurn('idle', 'ⓘ This content can’t be shown\n› Ask Codex to do anything');
+  for (let second = 0; second < 33; second += 3) {
+    vi.advanceTimersByTime(3000);
+    workflow.observeTurn('working', '• Ran rg Tests run');
+  }
+  expect(workflow.snapshot().status).toBe('running');
+  workflow.output(`[[CDW:${workflow.signalIdentifier()}:CONTINUE]]`);
+  expect(workflow.snapshot()).toMatchObject({status:'stopped',limitReached:true});
+});
+
+it('still times out a disposition 24s after the agent last worked', () => {
+  const { workflow } = setup();
+  workflow.start(request);
+  workflow.observeTurn('working', '');
+  workflow.observeTurn('idle', '› ');
+  vi.advanceTimersByTime(10000);
+  workflow.observeTurn('working', '• Ran');
+  vi.advanceTimersByTime(23000);
+  expect(workflow.snapshot().status).toBe('running');
+  vi.advanceTimersByTime(2000);
+  expect(workflow.snapshot()).toMatchObject({status:'error',error:expect.stringMatching(/handoff/i)});
+});
