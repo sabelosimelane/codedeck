@@ -85,7 +85,7 @@ describe('workflow over terminal WebSocket', () => {
     f.output('[[CDW:21b30afa-19ab-4ee4-963a-38c1694ee035:CONTINUE]]');
     expect(messages(f.ws)).toContainEqual(expect.objectContaining({
       type: 'workflow_state', state: expect.objectContaining({
-        status: 'error', active: false, error: expect.stringContaining('identifier does not match'),
+        status: 'error', active: false, error: expect.stringContaining('identifier 21b30afa-19ab-4ee4-963a-38c1694ee035 does not match'),
       }),
     }));
     vi.advanceTimersByTime(60000);
