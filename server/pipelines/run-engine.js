@@ -35,6 +35,9 @@ const LAUNCH_LOST_READINGS = 3;
 const DIALOG_DEBOUNCE_READINGS = 2;
 // Consecutive exited/closed readings required before failing a running step mid-pass.
 const EXIT_DEBOUNCE_READINGS = 2;
+// An agent between two steps of its turn can show an idle prompt for a moment (Muse has no live
+// status line then). Its turn counts as over only once the idle screen stops changing.
+const IDLE_SETTLE_READINGS = 5;
 // Log a stall warning if a running step's screen stays unchanged for 15 minutes while not idle at prompt.
 const SILENT_STALL_WARN_MS = 15 * 60 * 1000;
 const INTERRUPTIBLE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input']);
@@ -586,6 +589,8 @@ export function createRunEngine({
     let silentStall = { pass: null, unchangedMs: 0, warned: false, screen: null };
     let observationLost = false;
     let idleTurnReadings = 0;
+    let settledIdleReadings = 0;
+    let lastIdleScreen = null;
     let dialogReadings = 0;
     let exitedReadings = 0;
     const watchPickup = (readiness, screen, state) => {
@@ -669,8 +674,10 @@ export function createRunEngine({
         }
         exitedReadings = 0;
         idleTurnReadings = readiness === 'ready' ? idleTurnReadings + 1 : 0;
+        settledIdleReadings = readiness === 'ready' && screen === lastIdleScreen ? settledIdleReadings + 1 : (readiness === 'ready' ? 1 : 0);
+        lastIdleScreen = readiness === 'ready' ? screen : null;
         const working = ['agent_working', 'agent_delegated', 'agent_background_shells'].includes(state?.executionReason);
-        const observed = (working || idleTurnReadings >= 2) && workflow.observeTurn?.(working ? 'working' : 'idle', screen ?? '');
+        const observed = (working || (idleTurnReadings >= 2 && settledIdleReadings >= IDLE_SETTLE_READINGS)) && workflow.observeTurn?.(working ? 'working' : 'idle', screen ?? '');
         if (!observed) watchPickup(readiness, screen, state);
         if (over()) return;
         if (!showsDialog) {

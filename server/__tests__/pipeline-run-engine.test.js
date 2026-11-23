@@ -4217,6 +4217,30 @@ describe('CLI and UI sync — restart recovery & mid-pass exit detection', () =>
     return { runStore, engine, writes, attachBackground, getWorkflow: () => activeWorkflow };
   }
 
+  it('asksForDisposition_whenMusePausesBetweenStepsForTwoReadings', async () => {
+    // SOS run 4d9d8c06, Develop attempt 10: Muse showed no live status line between two steps of
+    // its turn for two readings, was told "Do not redo any work", and signalled CONTINUE unbuilt.
+    const db = new Database(':memory:');
+    databases.push(db);
+    let reading = 0;
+    const between = n => executionState({ lines: ['◆ Ran 2 commands · Find owner and host definitions', `  Read ${n} files · ctrl+o`, '❯ '] });
+    const states = [
+      executionState({ executionReason: 'agent_working', lines: ['◈ Thinking (3s · esc to interrupt)'] }),
+      between(1), between(2), between(3), between(4),
+      executionState({ executionReason: 'agent_working', lines: ['◈ Thinking (1s · esc to interrupt)'] }),
+    ];
+    const finished = executionState({ lines: ['◆ Done.', '❯ '] });
+    let setup;
+    const prompted = () => setup?.writes.some(text => text.includes('Iteration identifier'));
+    setup = realWorkflowSetup(db, { readExecutionState: async () => (prompted() ? states[reading++] : null) ?? finished });
+    const run = setup.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
+    setup.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(14000);
+    expect(setup.writes.filter(text => text.includes('Do not redo'))).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(14000);
+    expect(setup.writes.filter(text => text.includes('Do not redo'))).toHaveLength(1);
+  });
+
   it('accepts a reattached legacy Test handoff under the prompt that was sent', async () => {
     const db = new Database(':memory:');
     databases.push(db);
