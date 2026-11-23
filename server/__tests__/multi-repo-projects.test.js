@@ -47,8 +47,8 @@ describe('Phase 2: project-config repoManifest & workspaceMode', () => {
 
   it('normalizes workspaceMode=folder and deduplicates repoManifest while syncing primary gitUrl', () => {
     const p = normalizeProject({
-      name: 'mlondolozi',
-      path: '/local/mlondolozi',
+      name: 'acme',
+      path: '/local/acme',
       workspaceMode: 'folder',
       repoManifest: [
         { name: 'backend', gitUrl: 'git@github.com:org/backend.git', primary: true },
@@ -65,7 +65,7 @@ describe('Phase 2: project-config repoManifest & workspaceMode', () => {
   });
 
   it('upserts and removes manifest entries via helpers', () => {
-    let p = normalizeProject({ name: 'mlondolozi', path: '/local/mlondolozi/backend' });
+    let p = normalizeProject({ name: 'acme', path: '/local/acme/backend' });
     p = upsertManifestRepo(p, { name: 'backend', gitUrl: 'git@github.com:org/backend.git', primary: true });
     p = upsertManifestRepo(p, { name: 'frontend', gitUrl: 'git@github.com:org/frontend.git' });
     expect(p.repoManifest).toHaveLength(2);
@@ -80,13 +80,13 @@ describe('Phase 2: project-repositories workspace folder mode & auto-detect orig
   it('lists child repos, discovers unlinked children, and records origin in repoManifest for workspaceMode=folder', async () => {
     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codedeck-ws-'));
     try {
-      const wsDir = path.join(tmp, 'mlondolozi');
+      const wsDir = path.join(tmp, 'acme');
       const backendDir = path.join(wsDir, 'backend');
       const frontendDir = path.join(wsDir, 'frontend');
       const mcpDir = path.join(wsDir, 'mcp');
-      await initRepo(backendDir, { remoteUrl: 'git@github.com:org/mlondolozi-backend.git' });
-      await initRepo(frontendDir, { remoteUrl: 'git@github.com:org/mlondolozi-frontend.git' });
-      await initRepo(mcpDir, { remoteUrl: 'git@github.com:org/mlondolozi-mcp.git' });
+      await initRepo(backendDir, { remoteUrl: 'git@github.com:org/acme-backend.git' });
+      await initRepo(frontendDir, { remoteUrl: 'git@github.com:org/acme-frontend.git' });
+      await initRepo(mcpDir, { remoteUrl: 'git@github.com:org/acme-mcp.git' });
 
       const realWs = await fs.promises.realpath(wsDir);
       const realBackend = await fs.promises.realpath(backendDir);
@@ -94,7 +94,7 @@ describe('Phase 2: project-repositories workspace folder mode & auto-detect orig
       const realMcp = await fs.promises.realpath(mcpDir);
 
       let stored = [normalizeProject({
-        name: 'mlondolozi',
+        name: 'acme',
         path: realWs,
         workspaceMode: 'folder',
         locations: [{
@@ -102,34 +102,34 @@ describe('Phase 2: project-repositories workspace folder mode & auto-detect orig
           path: realWs,
           repositories: [{ name: 'backend', path: realBackend }],
         }],
-        repoManifest: [{ name: 'backend', gitUrl: 'git@github.com:org/mlondolozi-backend.git', primary: true }],
+        repoManifest: [{ name: 'backend', gitUrl: 'git@github.com:org/acme-backend.git', primary: true }],
       })];
 
       const svc = createProjectRepositories({
         loadProjects: () => stored,
         saveProjects: next => { stored = next; },
         execFile: cbExecFile,
-        startSession: vi.fn(async () => ({ id: 'mlondolozi-1' })),
+        startSession: vi.fn(async () => ({ id: 'acme-1' })),
       });
 
-      const listed = await svc.list('mlondolozi');
+      const listed = await svc.list('acme');
       expect(listed.map(r => r.name)).toEqual(['backend']);
       expect(listed[0].usable).toBe(true);
 
-      const candidates = await svc.candidates('mlondolozi');
+      const candidates = await svc.candidates('acme');
       expect(candidates.map(c => c.name)).toEqual(['frontend', 'mcp']);
 
-      await svc.add('mlondolozi', { path: realFrontend });
+      await svc.add('acme', { path: realFrontend });
       expect(stored[0].repoManifest).toContainEqual({
         name: 'frontend',
-        gitUrl: 'git@github.com:org/mlondolozi-frontend.git',
+        gitUrl: 'git@github.com:org/acme-frontend.git',
         primary: false,
       });
 
-      await svc.add('mlondolozi', { path: realMcp });
+      await svc.add('acme', { path: realMcp });
       expect(stored[0].locations[0].repositories.map(r => r.name)).toEqual(['backend', 'frontend', 'mcp']);
 
-      await svc.remove('mlondolozi', 'mcp');
+      await svc.remove('acme', 'mcp');
       expect(stored[0].repoManifest.map(r => r.name)).toEqual(['backend', 'frontend']);
     } finally {
       await fs.promises.rm(tmp, { recursive: true, force: true });
@@ -139,7 +139,7 @@ describe('Phase 2: project-repositories workspace folder mode & auto-detect orig
   it('auto-detects origin into repoManifest when adding a related repo to a primary-repo project', async () => {
     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codedeck-primary-'));
     try {
-      const wsDir = path.join(tmp, 'mlondolozi');
+      const wsDir = path.join(tmp, 'acme');
       const backendDir = path.join(wsDir, 'backend');
       const mobileDir = path.join(wsDir, 'mobile-app');
       await initRepo(backendDir, { remoteUrl: 'git@github.com:org/backend.git' });
@@ -149,7 +149,7 @@ describe('Phase 2: project-repositories workspace folder mode & auto-detect orig
       const realMobile = await fs.promises.realpath(mobileDir);
 
       let stored = [normalizeProject({
-        name: 'mlondolozi',
+        name: 'acme',
         path: realBackend,
         gitUrl: 'git@github.com:org/backend.git',
       })];
@@ -158,10 +158,10 @@ describe('Phase 2: project-repositories workspace folder mode & auto-detect orig
         loadProjects: () => stored,
         saveProjects: next => { stored = next; },
         execFile: cbExecFile,
-        startSession: vi.fn(async () => ({ id: 'mlondolozi-1' })),
+        startSession: vi.fn(async () => ({ id: 'acme-1' })),
       });
 
-      await svc.add('mlondolozi', { path: realMobile });
+      await svc.add('acme', { path: realMobile });
       expect(stored[0].repoManifest).toContainEqual({
         name: 'mobile-app',
         gitUrl: 'git@github.com:org/mobile-app.git',
@@ -177,7 +177,7 @@ describe('Phase 2: task-service supports workspaceMode=folder projects', () => {
   it('plans a multi-repo task for a workspace-folder project without requiring location.path to be a git repo', async () => {
     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codedeck-task-ws-'));
     try {
-      const wsDir = path.join(tmp, 'mlondolozi');
+      const wsDir = path.join(tmp, 'acme');
       const backendDir = path.join(wsDir, 'backend');
       const frontendDir = path.join(wsDir, 'frontend');
       await initRepo(backendDir);
@@ -188,7 +188,7 @@ describe('Phase 2: task-service supports workspaceMode=folder projects', () => {
       const realFrontend = await fs.promises.realpath(frontendDir);
 
       const project = normalizeProject({
-        name: 'mlondolozi',
+        name: 'acme',
         path: realWs,
         workspaceMode: 'folder',
         locations: [{
@@ -213,7 +213,7 @@ describe('Phase 2: task-service supports workspaceMode=folder projects', () => {
       });
 
       const planned = await taskSvc.plan({
-        project: 'mlondolozi',
+        project: 'acme',
         title: 'Add login',
         titleSource: 'owner',
         repositories: ['backend', 'frontend'],
@@ -243,14 +243,14 @@ describe('Phase 3: git-sync-service syncs all repositories of a project location
     });
 
     const project = normalizeProject({
-      name: 'mlondolozi',
-      path: '/local/mlondolozi/backend',
+      name: 'acme',
+      path: '/local/acme/backend',
       locations: [{
         host: 'local',
-        path: '/local/mlondolozi/backend',
+        path: '/local/acme/backend',
         repositories: [
-          { name: 'frontend', path: '/local/mlondolozi/frontend' },
-          { name: 'mobile-app', path: '/local/mlondolozi/mobile-app' },
+          { name: 'frontend', path: '/local/acme/frontend' },
+          { name: 'mobile-app', path: '/local/acme/mobile-app' },
         ],
       }],
     });
@@ -283,12 +283,12 @@ describe('Phase 3: projects API multi-repo routes', () => {
   it('POST /api/projects auto-discovers child git repos when pointed at a parent workspace folder', async () => {
     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codedeck-create-ws-'));
     try {
-      const wsDir = path.join(tmp, 'mlondolozi');
+      const wsDir = path.join(tmp, 'acme');
       await initRepo(path.join(wsDir, 'backend'), { remoteUrl: 'git@github.com:org/backend.git' });
       await initRepo(path.join(wsDir, 'frontend'), { remoteUrl: 'git@github.com:org/frontend.git' });
 
       const { app } = buildApp();
-      const res = await request(app).post('/api/projects').send({ name: 'mlondolozi', path: wsDir });
+      const res = await request(app).post('/api/projects').send({ name: 'acme', path: wsDir });
       expect(res.status).toBe(201);
       expect(res.body.workspaceMode).toBe('folder');
       expect(res.body.locations[0].repositories.map(r => r.name)).toEqual(['backend', 'frontend']);
@@ -304,14 +304,14 @@ describe('Phase 3: projects API multi-repo routes', () => {
   it('POST /api/projects/:name/discover-remotes backfills repoManifest for existing projects', async () => {
     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codedeck-discover-'));
     try {
-      const wsDir = path.join(tmp, 'mlondolozi');
+      const wsDir = path.join(tmp, 'acme');
       const backendDir = path.join(wsDir, 'backend');
       const frontendDir = path.join(wsDir, 'frontend');
       await initRepo(backendDir, { remoteUrl: 'git@github.com:org/backend.git' });
       await initRepo(frontendDir, { remoteUrl: 'git@github.com:org/frontend.git' });
 
       const existing = normalizeProject({
-        name: 'mlondolozi',
+        name: 'acme',
         path: backendDir,
         locations: [{
           host: 'local',
@@ -321,7 +321,7 @@ describe('Phase 3: projects API multi-repo routes', () => {
       });
 
       const { app } = buildApp({ initialProjects: [existing] });
-      const res = await request(app).post('/api/projects/mlondolozi/discover-remotes');
+      const res = await request(app).post('/api/projects/acme/discover-remotes');
       expect(res.status).toBe(200);
       expect(res.body.repoManifest).toEqual([
         { name: 'backend', gitUrl: 'git@github.com:org/backend.git', primary: true },
@@ -341,15 +341,15 @@ describe('Phase 3: projects API multi-repo routes', () => {
     });
 
     const existing = normalizeProject({
-      name: 'mlondolozi',
-      path: '/local/mlondolozi/backend',
+      name: 'acme',
+      path: '/local/acme/backend',
       gitUrl: 'git@github.com:org/backend.git',
       locations: [{
         host: 'local',
-        path: '/local/mlondolozi/backend',
+        path: '/local/acme/backend',
         repositories: [
-          { name: 'frontend', path: '/local/mlondolozi/frontend' },
-          { name: 'local-only', path: '/local/mlondolozi/local-only' },
+          { name: 'frontend', path: '/local/acme/frontend' },
+          { name: 'local-only', path: '/local/acme/local-only' },
         ],
       }],
       repoManifest: [
@@ -366,19 +366,19 @@ describe('Phase 3: projects API multi-repo routes', () => {
     });
 
     const res = await request(app)
-      .post('/api/projects/mlondolozi/locations/clone')
+      .post('/api/projects/acme/locations/clone')
       .send({ host: 'media-server' });
 
     expect(res.status).toBe(201);
     expect(cloned).toEqual([
-      { gitUrl: 'git@github.com:org/backend.git', targetPath: '/srv/git/mlondolozi/backend' },
-      { gitUrl: 'git@github.com:org/frontend.git', targetPath: '/srv/git/mlondolozi/frontend' },
+      { gitUrl: 'git@github.com:org/backend.git', targetPath: '/srv/git/acme/backend' },
+      { gitUrl: 'git@github.com:org/frontend.git', targetPath: '/srv/git/acme/frontend' },
     ]);
     const remoteLoc = res.body.locations.find(l => l.host === 'media-server');
     expect(remoteLoc).toMatchObject({
       host: 'media-server',
-      path: '/srv/git/mlondolozi/backend',
-      repositories: [{ name: 'frontend', path: '/srv/git/mlondolozi/frontend' }],
+      path: '/srv/git/acme/backend',
+      repositories: [{ name: 'frontend', path: '/srv/git/acme/frontend' }],
     });
     expect(res.body.cloneSummary).toEqual({
       cloned: ['backend', 'frontend'],
@@ -394,15 +394,15 @@ describe('Phase 3: projects API multi-repo routes', () => {
     });
 
     let existing = normalizeProject({
-      name: 'mlondolozi',
-      path: '/local/mlondolozi/backend',
+      name: 'acme',
+      path: '/local/acme/backend',
       gitUrl: 'git@github.com:org/backend.git',
       locations: [{
         host: 'local',
-        path: '/local/mlondolozi/backend',
+        path: '/local/acme/backend',
         repositories: [
-          { name: 'frontend', path: '/local/mlondolozi/frontend' },
-          { name: 'mcp', path: '/local/mlondolozi/mcp' },
+          { name: 'frontend', path: '/local/acme/frontend' },
+          { name: 'mcp', path: '/local/acme/mcp' },
         ],
       }],
       repoManifest: [
@@ -413,8 +413,8 @@ describe('Phase 3: projects API multi-repo routes', () => {
     });
     existing = upsertProjectLocation(existing, {
       host: 'media-server',
-      path: '/srv/git/mlondolozi/backend',
-      repositories: [{ name: 'frontend', path: '/srv/git/mlondolozi/frontend' }],
+      path: '/srv/git/acme/backend',
+      repositories: [{ name: 'frontend', path: '/srv/git/acme/frontend' }],
     });
 
     const { app } = buildApp({
@@ -424,12 +424,12 @@ describe('Phase 3: projects API multi-repo routes', () => {
     });
 
     const res = await request(app)
-      .post('/api/projects/mlondolozi/locations/media-server/clone-missing')
+      .post('/api/projects/acme/locations/media-server/clone-missing')
       .send({});
 
     expect(res.status).toBe(200);
     expect(cloned).toEqual([
-      { gitUrl: 'git@github.com:org/mcp.git', targetPath: '/srv/git/mlondolozi/mcp' },
+      { gitUrl: 'git@github.com:org/mcp.git', targetPath: '/srv/git/acme/mcp' },
     ]);
     const remoteLoc = res.body.locations.find(l => l.host === 'media-server');
     expect(remoteLoc.repositories.map(r => r.name)).toEqual(['frontend', 'mcp']);

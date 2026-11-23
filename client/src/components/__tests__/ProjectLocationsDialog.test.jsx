@@ -167,8 +167,8 @@ describe('ProjectLocationsDialog', () => {
   it('auto-discovers multi-repo remotes, lets user uncheck repos before cloning, and supports Clone missing on partial hosts', async () => {
     const onUpdated = vi.fn();
     const discoveredProject = {
-      name: 'mlondolozi',
-      path: '/local/mlondolozi/backend',
+      name: 'acme',
+      path: '/local/acme/backend',
       defaultHost: 'local',
       gitUrl: 'git@github.com:org/backend.git',
       autoSync: true,
@@ -181,15 +181,15 @@ describe('ProjectLocationsDialog', () => {
       locations: [
         {
           host: 'local',
-          path: '/local/mlondolozi/backend',
+          path: '/local/acme/backend',
           repositories: [
-            { name: 'frontend', path: '/local/mlondolozi/frontend' },
-            { name: 'local-only', path: '/local/mlondolozi/local-only' },
+            { name: 'frontend', path: '/local/acme/frontend' },
+            { name: 'local-only', path: '/local/acme/local-only' },
           ],
         },
         {
           host: 'staging',
-          path: '/srv/mlondolozi/backend',
+          path: '/srv/acme/backend',
           repositories: [],
         },
       ],
@@ -207,10 +207,10 @@ describe('ProjectLocationsDialog', () => {
           ],
         };
       }
-      if (String(url) === '/api/projects/mlondolozi/discover-remotes' && opts?.method === 'POST') {
+      if (String(url) === '/api/projects/acme/discover-remotes' && opts?.method === 'POST') {
         return { ok: true, status: 200, json: async () => discoveredProject };
       }
-      if (String(url) === '/api/projects/mlondolozi/locations/staging/clone-missing' && opts?.method === 'POST') {
+      if (String(url) === '/api/projects/acme/locations/staging/clone-missing' && opts?.method === 'POST') {
         return {
           ok: true,
           status: 200,
@@ -220,7 +220,7 @@ describe('ProjectLocationsDialog', () => {
           }),
         };
       }
-      if (String(url) === '/api/projects/mlondolozi/locations/clone' && opts?.method === 'POST') {
+      if (String(url) === '/api/projects/acme/locations/clone' && opts?.method === 'POST') {
         return {
           ok: true,
           status: 201,
@@ -235,8 +235,8 @@ describe('ProjectLocationsDialog', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const initialProject = {
-      name: 'mlondolozi',
-      path: '/local/mlondolozi/backend',
+      name: 'acme',
+      path: '/local/acme/backend',
       defaultHost: 'local',
       autoSync: true,
       locations: discoveredProject.locations,
@@ -255,7 +255,7 @@ describe('ProjectLocationsDialog', () => {
     fireEvent.click(cloneMissingBtn);
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/projects/mlondolozi/locations/staging/clone-missing',
+        '/api/projects/acme/locations/staging/clone-missing',
         expect.objectContaining({ method: 'POST' }),
       );
     });
@@ -268,7 +268,7 @@ describe('ProjectLocationsDialog', () => {
 
     fireEvent.click(view.getByText(/Clone 1 repo onto media-server/i));
     await waitFor(() => {
-      const cloneCall = fetchMock.mock.calls.find(([u, o]) => u === '/api/projects/mlondolozi/locations/clone' && o?.method === 'POST');
+      const cloneCall = fetchMock.mock.calls.find(([u, o]) => u === '/api/projects/acme/locations/clone' && o?.method === 'POST');
       expect(cloneCall).toBeTruthy();
       expect(JSON.parse(cloneCall[1].body)).toEqual({
         host: 'media-server',

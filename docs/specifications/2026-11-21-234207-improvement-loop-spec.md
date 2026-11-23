@@ -40,7 +40,7 @@ The pattern has six rules. Each one answers a failure listed above.
 ### 1.1 Starting point
 
 Branch `feature/team-scoring` (commit `427fee9`, worktree
-`/Users/sabside/git/worktrees/codedeck-team-scoring`) already implements rule 2 and, for team
+`/Users/dev/git/worktrees/codedeck-team-scoring`) already implements rule 2 and, for team
 roles only, rule 4 and part of rule 5: criteria fixed from the request
 (`server/pipelines/team-intent.js`), an independent Verifier step
 (`server/pipelines/verification.js`), owner interventions and the one-shot measure

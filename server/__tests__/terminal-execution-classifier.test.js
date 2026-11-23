@@ -59,7 +59,7 @@ describe('terminal execution classifier', () => {
       paneCurrentCommand: 'bash',
       paneDead: '0',
       subagentPanes: [], quietSeconds: 0,
-      snapshotText: 'sabside@media-server:~/git/mlondolozi/worktrees/when-sending-sos-the-10-seconds--e8b74aed/backend$\n',
+      snapshotText: 'dev@media-server:~/git/acme/worktrees/sample-task-e8b74aed/backend$\n',
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
       foregroundCommand: 'bash',

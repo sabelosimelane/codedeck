@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026-11-23] - Placeholders for private names in tests and reports
+
+### Technical Details
+* **🛠️ Codebase:**
+  * Test fixtures, one specification and the workflow handoff report used a real host name, user name and project name. They now use `media-server.example.ts.net`, `dev` and `acme`; the host name is painted over in `docs/reports/2026-11-23-workflow-handoff.png`. No behaviour changes.
+
 ## [2026-11-23] - A landing is finished before the backend stops
 
 ### Executive Summary

@@ -68,7 +68,7 @@ describe('agy idle with its mode shown in the input line', () => {
       '────────────────────────────────────────────────────────────────────────────────',
       '>',
       '────────────────────────────────────────────────────────────────────────────────',
-      '  ● [19:46:02] cd /home/sabside/git/mlondolozi/worktrees/when-sending-sos-the-10-seconds--e8b74aed/mobile-app && ./gradlew :core:jvmTest --tests ... running',
+      '  ● [19:46:02] cd /home/dev/git/acme/worktrees/sample-task-e8b74aed/mobile-app && ./gradlew :core:jvmTest --tests ... running',
       '────────────────────────────────────────────────────────────────────────────────',
       '? for shortcuts                                                                                              Gemini 4 Hydrogen · medium · 1 task(s) · /tasks',
     ];

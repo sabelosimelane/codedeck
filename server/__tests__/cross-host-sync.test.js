@@ -531,14 +531,14 @@ describe('cross-host git-ignored local artifact discovery and sync', () => {
     };
 
     const artifacts = await discoverIgnoredArtifacts({
-      repoPath: '/Users/dev/git/mlondolozi/backend',
+      repoPath: '/Users/dev/git/acme/backend',
       execFile,
       fs: fakeFs,
     });
 
     expect(execFile).toHaveBeenCalledWith(
       'git',
-      ['-C', '/Users/dev/git/mlondolozi/backend', 'status', '--porcelain=v1', '-z', '--ignored=traditional', '--untracked-files=normal'],
+      ['-C', '/Users/dev/git/acme/backend', 'status', '--porcelain=v1', '-z', '--ignored=traditional', '--untracked-files=normal'],
       expect.any(Object),
       expect.any(Function),
     );

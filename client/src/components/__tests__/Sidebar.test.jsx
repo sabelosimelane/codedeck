@@ -206,7 +206,7 @@ describe('Sidebar', () => {
 
   it.each(['active', 'waiting', 'shelved'])('keeps remote %s project names on their own line above host details', section => {
     global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
-    const project = { name: 'CodeDeck', path: '/tmp/codedeck', host: 'media-server.tail270b30.ts.net' };
+    const project = { name: 'CodeDeck', path: '/tmp/codedeck', host: 'media-server.example.ts.net' };
     const view = renderSidebar({ [`${section}Projects`]: [project] });
     if (section === 'shelved') fireEvent.click(view.getByText('Shelved (1)'));
     const name = view.getByText('CodeDeck');

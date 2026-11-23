@@ -309,9 +309,9 @@ describe('createHostTerminalRuntime pipeline pane ops (inspectPaneAsync, typeLin
   it('inspects the main pane of a remote session for worktree and mode checks', async () => {
     const runner = fakeRunner({
       'list-panes': '2\n0\n',
-      'display-message': '0\t0\t0\t0\tzsh\t\t/home/sabside/git/mlondolozi/worktrees/when-sending-sos-the-10-seconds--e8b74aed/backend\n',
+      'display-message': '0\t0\t0\t0\tzsh\t\t/home/dev/git/acme/worktrees/sample-task-e8b74aed/backend\n',
     });
-    const pane = await makeRuntime(runner).inspectPaneAsync('mlondolozi-3');
+    const pane = await makeRuntime(runner).inspectPaneAsync('acme-3');
     expect(pane).toEqual({
       paneIndex: 0,
       inMode: false,
@@ -319,29 +319,29 @@ describe('createHostTerminalRuntime pipeline pane ops (inspectPaneAsync, typeLin
       dead: false,
       currentCommand: 'zsh',
       mode: '',
-      currentPath: '/home/sabside/git/mlondolozi/worktrees/when-sending-sos-the-10-seconds--e8b74aed/backend',
+      currentPath: '/home/dev/git/acme/worktrees/sample-task-e8b74aed/backend',
     });
-    expect(runner.tmuxCalls('list-panes')[0].args).toEqual(['list-panes', '-t', 'mlondolozi-3:0', '-F', '#{pane_index}']);
+    expect(runner.tmuxCalls('list-panes')[0].args).toEqual(['list-panes', '-t', 'acme-3:0', '-F', '#{pane_index}']);
     expect(runner.tmuxCalls('display-message')[0].args).toEqual([
-      '-u', 'display-message', '-p', '-t', 'mlondolozi-3:0.0',
+      '-u', 'display-message', '-p', '-t', 'acme-3:0.0',
       '#{pane_index}\t#{pane_in_mode}\t#{pane_input_off}\t#{pane_dead}\t#{pane_current_command}\t#{pane_mode}\t#{pane_current_path}',
     ]);
   });
 
   it('types a single line into the remote main pane and presses Enter', async () => {
     const runner = fakeRunner({ 'list-panes': '0\n' });
-    await makeRuntime(runner).typeLineAsync('mlondolozi-4', 'claude --dangerously-skip-permissions');
+    await makeRuntime(runner).typeLineAsync('acme-4', 'claude --dangerously-skip-permissions');
     expect(runner.tmuxCalls('send-keys').map(c => c.args)).toEqual([
-      ['send-keys', '-t', 'mlondolozi-4:0.0', '-l', '--', 'claude --dangerously-skip-permissions'],
-      ['send-keys', '-t', 'mlondolozi-4:0.0', 'Enter'],
+      ['send-keys', '-t', 'acme-4:0.0', '-l', '--', 'claude --dangerously-skip-permissions'],
+      ['send-keys', '-t', 'acme-4:0.0', 'Enter'],
     ]);
   });
 
   it('resets terminal modes and respawns the remote main pane in the given folder', async () => {
     const runner = fakeRunner({ 'list-panes': '0\n' });
-    await makeRuntime(runner).respawnMainPaneAsync('mlondolozi-4', '/home/sabside/git/mlondolozi/backend');
-    expect(runner.tmuxCalls('send-keys')[0].args).toEqual(['send-keys', '-R', '-t', 'mlondolozi-4:0.0']);
-    expect(runner.tmuxCalls('respawn-pane')[0].args).toEqual(['respawn-pane', '-k', '-c', '/home/sabside/git/mlondolozi/backend', '-t', 'mlondolozi-4:0.0']);
+    await makeRuntime(runner).respawnMainPaneAsync('acme-4', '/home/dev/git/acme/backend');
+    expect(runner.tmuxCalls('send-keys')[0].args).toEqual(['send-keys', '-R', '-t', 'acme-4:0.0']);
+    expect(runner.tmuxCalls('respawn-pane')[0].args).toEqual(['respawn-pane', '-k', '-c', '/home/dev/git/acme/backend', '-t', 'acme-4:0.0']);
   });
 });
 
