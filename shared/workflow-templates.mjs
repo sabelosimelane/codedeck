@@ -62,6 +62,15 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
+  // The one built-in workflow that works through skills, which ship in skills/ and must be installed in each agent CLI.
+  Object.freeze({
+    id: 'feature-build-from-spec', name: 'Feature Build from Spec', kind: 'build', description: 'Build a feature from its todo file with the feature-dev and feature-test skills, one phase per round. Install the two skills from skills/ in this repository into each agent CLI first.', agentsDecide: true, progressFile: 'docs/{input}',
+    nodes: Object.freeze([
+      node('Develop', 'Developer', '/feature-dev {input}'),
+      node('Review', 'Reviewer', 'Review the uncommitted changes and then fix all the findings {input}'),
+      node('Test', 'Tester', '/feature-test {input}', loop(8)),
+    ]),
+  }),
   Object.freeze({
     id: 'feature-from-requirements', name: 'Feature from requirements', kind: 'build', description: 'Settle the requirements, agree a specification and phased plan, build each phase, review, test and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
