@@ -1,15 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { WORKFLOW_TEMPLATES, BUILT_IN_STEPS, buildTemplateDraft } from '../../shared/workflow-templates.mjs';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
 import { validateWorkflowBody, WORKFLOW_KINDS } from '../../shared/pipeline-definitions.mjs';
 
 const AGENT = '11111111-1111-4111-8111-111111111111';
-// The one built-in workflow that works through skills: its steps call them by name, and they ship in skills/.
-const SKILL_TEMPLATE = 'feature-build-from-spec';
-const SKILLS_DIR = fileURLToPath(new URL('../../skills/', import.meta.url));
-const skillCalls = template => template.nodes.map(node => node.prompt.match(/^\/([\w-]+)(?=\s|$)/)?.[1]).filter(Boolean);
+// The one built-in workflow that starts from a todo file that already exists: it reads its progress from that file and has no planning step.
+const TODO_TEMPLATE = 'feature-build-from-spec';
+
 
 describe('workflow templates', () => {
   it('ships the exact starting workflows and immutable definitions', () => {
@@ -35,11 +34,11 @@ describe('workflow templates', () => {
         expect(node.role.length).toBeLessThanOrEqual(32);
         expect(node.prompt.length).toBeLessThanOrEqual(8192);
       }
-      if (template.id === SKILL_TEMPLATE) continue;
+      for (const node of template.nodes) expect(node.prompt).not.toMatch(/(?:^|\s)\/[\w-]+|\$[\w-]+/);
+      if (template.id === TODO_TEMPLATE) continue;
       expect(template.agentsDecide).toBe(false);
       expect(template.progressFile).toBeNull();
       expect(template.nodes[0]).toMatchObject({ readOnly: true, repeat: { mode: 'once' } });
-      for (const node of template.nodes) expect(node.prompt).not.toMatch(/(?:^|\s)\/[\w-]+|\$[\w-]+/);
     }
   });
 
@@ -227,8 +226,8 @@ describe('workflow templates', () => {
     for (const template of WORKFLOW_TEMPLATES) {
       for (const node of template.nodes) {
         expect(node.prompt.includes('{input}'), `${template.name} / ${node.name}`).toBe(inputSteps[template.id].includes(node.name));
+        expect(node.prompt).not.toMatch(/^\s*\/[\w-]+/);
         expect(node.prompt).not.toMatch(/\$[\w-]+/);
-        if (template.id !== SKILL_TEMPLATE) expect(node.prompt).not.toMatch(/^\s*\/[\w-]+/);
         expect(node.prompt.length).toBeLessThanOrEqual(8192);
       }
     }
@@ -252,37 +251,40 @@ describe('workflow templates', () => {
     }
   });
 
-  it('builds a feature from its todo file with the feature-dev and feature-test skills, one phase per round', () => {
-    const template = WORKFLOW_TEMPLATES.find(item => item.id === SKILL_TEMPLATE);
+  it('builds a feature from its todo file with written-out prompts, one phase per round', () => {
+    const template = WORKFLOW_TEMPLATES.find(item => item.id === TODO_TEMPLATE);
     expect(template).toMatchObject({ name: 'Feature Build from Spec', kind: 'build', agentsDecide: true, progressFile: 'docs/{input}' });
-    expect(template.description).toMatch(/feature-dev and feature-test skills/);
-    expect(template.description).toMatch(/skills\//);
-    expect(template.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, prompt, repeat, readOnly, approval, askOwner }))).toEqual([
-      { name: 'Develop', role: 'Developer', prompt: '/feature-dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
-      { name: 'Review', role: 'Reviewer', prompt: 'Review the uncommitted changes and then fix all the findings {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
-      { name: 'Test', role: 'Tester', prompt: '/feature-test {input}', repeat: { mode: 'loop_back', to: 'Develop', max: 8 }, readOnly: false, approval: false, askOwner: false },
+    expect(template.description).not.toMatch(/skill/i);
+    expect(template.nodes.map(({ name, role, repeat, readOnly, approval, askOwner }) => ({ name, role, repeat, readOnly, approval, askOwner }))).toEqual([
+      { name: 'Develop', role: 'Developer', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
+      { name: 'Review', role: 'Reviewer', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
+      { name: 'Test', role: 'Tester', repeat: { mode: 'loop_back', to: 'Develop', max: 8 }, readOnly: false, approval: false, askOwner: false },
     ]);
-    // No other built-in workflow depends on a skill.
-    expect(WORKFLOW_TEMPLATES.filter(item => skillCalls(item).length > 0).map(item => item.id)).toEqual([SKILL_TEMPLATE]);
+    const byName = Object.fromEntries(template.nodes.map(node => [node.name, node.prompt]));
+    // Every step works from the todo file the run was started with, which is also where its progress is read.
+    for (const prompt of Object.values(byName)) expect(prompt).toContain('the todo file docs/{input}');
+    expect(byName.Develop).toMatch(/first phase in it with unticked tasks/);
+    expect(byName.Develop).toMatch(/Write failing tests first/);
+    expect(byName.Develop).toMatch(/tick each task when done/);
+    expect(byName.Develop).toMatch(/do not run git commit/);
+    expect(byName.Review).toMatch(/On a repeat pass, read your previous Review and Test notes and review only what changed since that pass/);
+    expect(byName.Review).toMatch(/do not run broad test suites that the Test step will run next/);
+    expect(byName.Test).toMatch(/Untick any task that does not hold/);
+    expect(byName.Test).toMatch(/only the tests for that phase/);
+    expect(byName.Test).toContain('Set up what a check needs yourself');
+    expect(byName.Test).toMatch(/use NEEDS_INPUT once/);
+    expect(byName.Test).toMatch(/full test suite once/);
+    expect(byName.Test).toMatch(/Report COMPLETE only when every task is ticked and the full test suite passes/);
   });
 
-  it('ships every skill a built-in workflow calls, free of anything from the machine it was written on', () => {
-    const called = [...new Set(WORKFLOW_TEMPLATES.flatMap(skillCalls))].sort();
-    expect(called).toEqual(['feature-dev', 'feature-test']);
-    expect(readdirSync(SKILLS_DIR, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort()).toEqual(called);
-    for (const name of called) {
-      const file = `${SKILLS_DIR}${name}/SKILL.md`;
-      expect(existsSync(file), file).toBe(true);
-      const text = readFileSync(file, 'utf8');
-      expect(text.startsWith(`---\nname: ${name}\n`), `${name} front matter`).toBe(true);
-      const files = readdirSync(`${SKILLS_DIR}${name}`, { recursive: true, withFileTypes: true }).filter(entry => entry.isFile());
-      for (const entry of files) {
-        const body = readFileSync(`${entry.parentPath}/${entry.name}`, 'utf8');
-        expect(body, `${name}/${entry.name}`).not.toMatch(/\/Users\/|\/home\/[a-z]/);
+  it('ships no workflow that needs a skill: every built-in step carries its whole prompt', () => {
+    for (const template of WORKFLOW_TEMPLATES) {
+      for (const node of template.nodes) {
+        expect(node.prompt, `${template.name} / ${node.name}`).not.toMatch(/(?:^|\s)\/[a-z][\w-]*(?=\s|$)/);
+        expect(node.prompt.length, `${template.name} / ${node.name}`).toBeGreaterThan(60);
       }
-      expect(files.some(entry => entry.name === 'evals.json'), `${name} evals`).toBe(false);
     }
-    expect(existsSync(`${SKILLS_DIR}README.md`)).toBe(true);
+    expect(existsSync(fileURLToPath(new URL('../../skills', import.meta.url)))).toBe(false);
   });
 
   it('rejects missing and unknown ids', () => {

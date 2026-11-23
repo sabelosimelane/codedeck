@@ -62,13 +62,13 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
-  // The one built-in workflow that works through skills, which ship in skills/ and must be installed in each agent CLI.
+  // Builds from a todo file that already exists: the todo is the plan and the place progress is read from, so there is no planning step.
   Object.freeze({
-    id: 'feature-build-from-spec', name: 'Feature Build from Spec', kind: 'build', description: 'Build a feature from its todo file with the feature-dev and feature-test skills, one phase per round. Install the two skills from skills/ in this repository into each agent CLI first.', agentsDecide: true, progressFile: 'docs/{input}',
+    id: 'feature-build-from-spec', name: 'Feature Build from Spec', kind: 'build', description: 'Build a feature from a todo file that already exists, one phase per round: develop, review and test until every task is ticked.', agentsDecide: true, progressFile: 'docs/{input}',
     nodes: Object.freeze([
-      node('Develop', 'Developer', '/feature-dev {input}'),
-      node('Review', 'Reviewer', 'Review the uncommitted changes and then fix all the findings {input}'),
-      node('Test', 'Tester', '/feature-test {input}', loop(8)),
+      node('Develop', 'Developer', 'Read the todo file docs/{input}, its session notes and the specification it names. Build the first phase in it with unticked tasks, and only that phase. Write failing tests first, make them pass, tick each task when done, add to the todo\'s session notes what the next round needs to know, leave changes uncommitted for Review and Test (do not run git commit), and record what changed.'),
+      node('Review', 'Reviewer', 'Review the changes for the phase just built in the todo file docs/{input} (both uncommitted changes and any commits since the base commit) against that phase and the specification the todo names. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified phases. Fix every defect, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record findings and fixes.'),
+      node('Test', 'Tester', 'Test the phase just built in the todo file docs/{input} against the acceptance checks of the specification it names. Untick any task that does not hold. While a phase in the todo still has unticked tasks, run only the tests for that phase. ' + ownEnvironment + ' If an unticked task turns out to need what no agent here can have (' + ownerOnly + '), use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether the owner will check it themselves; when the owner says so, tick it, mark it "owner check" in the todo and list it in your note with what the owner should do and expect. Do not repeat passing tests on an unchanged diff. When no phase has unticked tasks, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in the todo has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.', loop(8)),
     ]),
   }),
   Object.freeze({
