@@ -606,8 +606,8 @@ export function createTaskService({
   let queue = Promise.resolve();
   return {
     plan,
-    async listWorktreeCandidates(projectName) {
-      return (await candidateRecords(projectName)).map(({ repositoryPath, checkout, baseBranch, ...publicCandidate }) => publicCandidate);
+    async listWorktreeCandidates(projectName, options = {}) {
+      return (await candidateRecords(projectName, options?.host)).map(({ repositoryPath, checkout, baseBranch, ...publicCandidate }) => publicCandidate);
     },
     adoptWorktree(input) {
       const run = queue.then(() => adoptWorktreeNow(input));
@@ -627,7 +627,13 @@ export function createTaskService({
           const { project, host, tools } = await resolveProject(planned.project, planned.host);
           if (project.autoSync !== false) {
             const repoPaths = planned.worktrees.map(w => ({ repository: w.repository, repoPath: w.checkoutPath }));
-            const outcome = await syncLocation({ project, host, repoPaths, runner: tools.runner });
+            const outcome = await syncLocation({
+              project,
+              host,
+              repoPaths,
+              runner: tools.runner,
+              resolveRunner: h => resolveHostTools?.(h)?.runner ?? null,
+            });
             if (!outcome.ok) {
               throw new TaskError(outcome.message, outcome.status, undefined, {
                 extra: { code: outcome.code, host: outcome.host, results: outcome.results },

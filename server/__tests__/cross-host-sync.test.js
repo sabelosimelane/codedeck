@@ -20,6 +20,10 @@ import {
   cloneToHost,
   isValidGitUrl,
   repoFolderNameFromGitUrl,
+  isExcludedArtifactPath,
+  discoverIgnoredArtifacts,
+  adaptLocalPropertiesContent,
+  syncRepoArtifacts,
 } from '../git-sync-service.js';
 import { createProjectsRouter } from '../routes/projects.js';
 import { createProjectDeletionService } from '../project-deletion-service.js';
@@ -463,5 +467,161 @@ describe('remote background attach and task landing', () => {
     expect(view.filesPresent).toBe(true);
     expect(view.main.branch).toBe('main');
     db.close();
+  });
+});
+
+describe('cross-host git-ignored local artifact discovery and sync', () => {
+  it('filters out build outputs, dependency caches, IDE folders, and dump/lock files while keeping config & secret artifacts', () => {
+    expect(isExcludedArtifactPath('.env.local')).toBe(false);
+    expect(isExcludedArtifactPath('.local-secrets/fcm-credentials.json')).toBe(false);
+    expect(isExcludedArtifactPath('app/google-services.json')).toBe(false);
+    expect(isExcludedArtifactPath('iosApp/Local.xcconfig')).toBe(false);
+    expect(isExcludedArtifactPath('iosApp/iosApp/GoogleService-Info.plist')).toBe(false);
+    expect(isExcludedArtifactPath('local.properties')).toBe(false);
+    expect(isExcludedArtifactPath('shared/local.properties')).toBe(false);
+
+    expect(isExcludedArtifactPath('node_modules')).toBe(true);
+    expect(isExcludedArtifactPath('target')).toBe(true);
+    expect(isExcludedArtifactPath('app/build')).toBe(true);
+    expect(isExcludedArtifactPath('shared/.gradle')).toBe(true);
+    expect(isExcludedArtifactPath('.remember')).toBe(true);
+    expect(isExcludedArtifactPath('.claude')).toBe(true);
+    expect(isExcludedArtifactPath('.omx')).toBe(true);
+    expect(isExcludedArtifactPath('.classpath')).toBe(true);
+    expect(isExcludedArtifactPath('.project')).toBe(true);
+    expect(isExcludedArtifactPath('.settings')).toBe(true);
+    expect(isExcludedArtifactPath('iosApp/.DS_Store')).toBe(true);
+    expect(isExcludedArtifactPath('java_pid35173.hprof')).toBe(true);
+    expect(isExcludedArtifactPath('tsconfig.tsbuildinfo')).toBe(true);
+    expect(isExcludedArtifactPath('.local-secrets/voice-vault.key.lock')).toBe(true);
+    expect(isExcludedArtifactPath('.mcp-bash-config.json')).toBe(true);
+  });
+
+  it('discovers ignored files and walks allowed ignored folders like .local-secrets/', async () => {
+    const porcelain = [
+      '!! .classpath',
+      '!! .claude/',
+      '!! .env.local',
+      '!! .local-secrets/',
+      '!! .remember/',
+      '!! target/',
+      '!! app/build/',
+      '!! app/google-services.json',
+      '',
+    ].join('\0');
+
+    const execFile = vi.fn((_cmd, _args, _opts, cb) => cb(null, porcelain, ''));
+    const fakeFs = {
+      stat: vi.fn(async (p) => {
+        if (p.endsWith('/.local-secrets')) {
+          return { isDirectory: () => true, isFile: () => false, size: 0 };
+        }
+        return { isDirectory: () => false, isFile: () => true, size: 512 };
+      }),
+      readdir: vi.fn(async (p) => {
+        if (p.endsWith('/.local-secrets')) {
+          return [
+            { name: 'fcm-credentials.json', isFile: () => true, isDirectory: () => false },
+            { name: 'jwt-private.pem', isFile: () => true, isDirectory: () => false },
+            { name: 'voice-vault.key.lock', isFile: () => true, isDirectory: () => false },
+          ];
+        }
+        return [];
+      }),
+    };
+
+    const artifacts = await discoverIgnoredArtifacts({
+      repoPath: '/Users/dev/git/mlondolozi/backend',
+      execFile,
+      fs: fakeFs,
+    });
+
+    expect(execFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/Users/dev/git/mlondolozi/backend', 'status', '--porcelain=v1', '-z', '--ignored=traditional', '--untracked-files=normal'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(artifacts).toEqual([
+      '.env.local',
+      '.local-secrets/fcm-credentials.json',
+      '.local-secrets/jwt-private.pem',
+      'app/google-services.json',
+    ]);
+  });
+
+  it('adapts local.properties sdk.dir to the target host Android SDK path or drops unresolvable sdk.dir-only files', () => {
+    expect(
+      adaptLocalPropertiesContent('sdk.dir=/Users/dev/Library/Android/sdk\n', '/home/dev/Android/Sdk'),
+    ).toBe('sdk.dir=/home/dev/Android/Sdk\n');
+
+    expect(
+      adaptLocalPropertiesContent('# header\nsdk.dir=/Users/dev/Library/Android/sdk\n', null),
+    ).toBeNull();
+
+    expect(
+      adaptLocalPropertiesContent('sdk.dir=/Users/dev/Library/Android/sdk\nMAPS_API_KEY=secret123\n', null),
+    ).toBe('MAPS_API_KEY=secret123\n');
+  });
+
+  it('syncs missing artifacts to the target host and rewrites local.properties sdk.dir', async () => {
+    const porcelain = [
+      '!! app/google-services.json',
+      '!! local.properties',
+      '!! shared/local.properties',
+      '',
+    ].join('\0');
+
+    const sourceFiles = new Map([
+      ['/local/mobile-app/app/google-services.json', Buffer.from('{"project_info":{}}', 'utf8')],
+      ['/local/mobile-app/local.properties', Buffer.from('sdk.dir=/Users/dev/Library/Android/sdk\n', 'utf8')],
+      ['/local/mobile-app/shared/local.properties', Buffer.from('sdk.dir=/Users/dev/Library/Android/sdk\n', 'utf8')],
+    ]);
+    const targetFiles = new Map([
+      ['/remote/mobile-app/shared/local.properties', Buffer.from('sdk.dir=/home/dev/Android/Sdk\n', 'utf8')],
+    ]);
+
+    const sourceFs = {
+      stat: vi.fn(async () => ({ isDirectory: () => false, isFile: () => true, size: 64 })),
+      readdir: vi.fn(async () => []),
+      readFile: vi.fn(async p => sourceFiles.get(p)),
+    };
+    const targetFs = {
+      access: vi.fn(async p => {
+        if (!targetFiles.has(p)) {
+          const err = new Error('ENOENT');
+          err.code = 'ENOENT';
+          throw err;
+        }
+      }),
+      writeFile: vi.fn(async (p, buf) => {
+        targetFiles.set(p, Buffer.from(buf));
+      }),
+    };
+    const targetRunner = {
+      kind: 'ssh',
+      host: 'media-server',
+      run: vi.fn(async (cmd, args) => {
+        if (cmd === 'sh' && args[1]?.includes('ANDROID_HOME')) {
+          return { stdout: '/home/dev/Android/Sdk\n', stderr: '' };
+        }
+        return { stdout: '', stderr: '' };
+      }),
+    };
+
+    const res = await syncRepoArtifacts({
+      sourceRepoPath: '/local/mobile-app',
+      sourceRunner: { kind: 'local', host: 'local' },
+      sourceExecFile: (_cmd, _args, _opts, cb) => cb(null, porcelain, ''),
+      sourceFs,
+      targetRepoPath: '/remote/mobile-app',
+      targetRunner,
+      targetFs,
+    });
+
+    expect(res.synced).toEqual(['app/google-services.json', 'local.properties']);
+    expect(res.skipped).toEqual(['shared/local.properties']);
+    expect(targetFiles.get('/remote/mobile-app/app/google-services.json').toString('utf8')).toBe('{"project_info":{}}');
+    expect(targetFiles.get('/remote/mobile-app/local.properties').toString('utf8')).toBe('sdk.dir=/home/dev/Android/Sdk\n');
   });
 });

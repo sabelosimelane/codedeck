@@ -283,7 +283,7 @@ describe('createHostTerminalRuntime.captureAgentScreen', () => {
   it.each([
     ['alternate', '1', ['capture-pane', '-p', '-t', 'proj-1']],
     ['primary', '0', ['capture-pane', '-p', '-S', '-70', '-t', 'proj-1']],
-  ])('reads the visible %s screen', async (_mode, alternateOn, expectedArgs) => {
+  ])('reads the visible %s screen via captureAgentScreen and captureAgentScreenAsync', async (_mode, alternateOn, expectedArgs) => {
     const runner = fakeRunner({
       'display-message': args => {
         if (args.at(-1).includes('alternate_on')) return `${alternateOn}\t0\t\t4\t2\t1\tblock\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t1`;
@@ -292,13 +292,56 @@ describe('createHostTerminalRuntime.captureAgentScreen', () => {
       },
       'capture-pane': 'Question?\n',
     });
-    expect(await makeRuntime(runner).captureAgentScreen('proj-1', 100)).toMatchObject({ data: 'Question?\r\n', historyGuaranteed: true });
+    const rt = makeRuntime(runner);
+    expect(await rt.captureAgentScreen('proj-1', 100)).toMatchObject({ data: 'Question?\r\n', historyGuaranteed: true });
+    expect(typeof rt.captureAgentScreenAsync).toBe('function');
+    expect(await rt.captureAgentScreenAsync('proj-1', 100)).toMatchObject({ data: 'Question?\r\n', historyGuaranteed: true });
     expect(runner.tmuxCalls('capture-pane')[0].args).toEqual(expectedArgs);
   });
 
   it('reports tmux failure as untrustworthy', async () => {
     const runner = fakeRunner({ 'display-message': transportError() });
     expect((await makeRuntime(runner).captureAgentScreen('proj-1', 100)).historyGuaranteed).toBe(false);
+  });
+});
+
+describe('createHostTerminalRuntime pipeline pane ops (inspectPaneAsync, typeLineAsync, respawnMainPaneAsync)', () => {
+  it('inspects the main pane of a remote session for worktree and mode checks', async () => {
+    const runner = fakeRunner({
+      'list-panes': '2\n0\n',
+      'display-message': '0\t0\t0\t0\tzsh\t\t/home/sabside/git/mlondolozi/worktrees/when-sending-sos-the-10-seconds--e8b74aed/backend\n',
+    });
+    const pane = await makeRuntime(runner).inspectPaneAsync('mlondolozi-3');
+    expect(pane).toEqual({
+      paneIndex: 0,
+      inMode: false,
+      inputOff: false,
+      dead: false,
+      currentCommand: 'zsh',
+      mode: '',
+      currentPath: '/home/sabside/git/mlondolozi/worktrees/when-sending-sos-the-10-seconds--e8b74aed/backend',
+    });
+    expect(runner.tmuxCalls('list-panes')[0].args).toEqual(['list-panes', '-t', 'mlondolozi-3:0', '-F', '#{pane_index}']);
+    expect(runner.tmuxCalls('display-message')[0].args).toEqual([
+      '-u', 'display-message', '-p', '-t', 'mlondolozi-3:0.0',
+      '#{pane_index}\t#{pane_in_mode}\t#{pane_input_off}\t#{pane_dead}\t#{pane_current_command}\t#{pane_mode}\t#{pane_current_path}',
+    ]);
+  });
+
+  it('types a single line into the remote main pane and presses Enter', async () => {
+    const runner = fakeRunner({ 'list-panes': '0\n' });
+    await makeRuntime(runner).typeLineAsync('mlondolozi-4', 'claude --dangerously-skip-permissions');
+    expect(runner.tmuxCalls('send-keys').map(c => c.args)).toEqual([
+      ['send-keys', '-t', 'mlondolozi-4:0.0', '-l', '--', 'claude --dangerously-skip-permissions'],
+      ['send-keys', '-t', 'mlondolozi-4:0.0', 'Enter'],
+    ]);
+  });
+
+  it('resets terminal modes and respawns the remote main pane in the given folder', async () => {
+    const runner = fakeRunner({ 'list-panes': '0\n' });
+    await makeRuntime(runner).respawnMainPaneAsync('mlondolozi-4', '/home/sabside/git/mlondolozi/backend');
+    expect(runner.tmuxCalls('send-keys')[0].args).toEqual(['send-keys', '-R', '-t', 'mlondolozi-4:0.0']);
+    expect(runner.tmuxCalls('respawn-pane')[0].args).toEqual(['respawn-pane', '-k', '-c', '/home/sabside/git/mlondolozi/backend', '-t', 'mlondolozi-4:0.0']);
   });
 });
 

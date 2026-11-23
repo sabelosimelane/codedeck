@@ -4241,6 +4241,61 @@ describe('CLI and UI sync — restart recovery & mid-pass exit detection', () =>
     expect(setup.writes.filter(text => text.includes('Do not redo'))).toHaveLength(1);
   });
 
+  it('advancesOnce_whenPollingSeesACursorPositionedSignalForTheCurrentPass', async () => {
+    // Finding 12: the engine poll must advance exactly once when the captured
+    // screen renders the current pass signal at a cursor position, while plain
+    // output, stale-iteration tokens, echoed prompt text and never-issued
+    // identifiers leave the pass running, and a repeated screen after the
+    // advance changes nothing.
+    const db = new Database(':memory:');
+    databases.push(db);
+    let lines = ['› '];
+    let setup;
+    const prompted = () => setup?.writes.some(text => text.includes('Iteration identifier'));
+    setup = realWorkflowSetup(db, {
+      readExecutionState: async () => prompted()
+        ? executionState({ executionReason: 'agent_working', lines })
+        : executionState(),
+    });
+    const run = setup.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
+    const done = setup.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(setup.runStore.get(run.id).status).toBe('running');
+    const id = setup.getWorkflow().signalIdentifier();
+    expect(id).toMatch(/^[\w-]+$/);
+    const signal = (sid, status) => `[[CDW:${sid}:${status}]]`;
+
+    // Plain output preserves the running pass.
+    lines = ['Editing files...', '› '];
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(setup.getWorkflow().snapshot()).toMatchObject({ status: 'running', iteration: 1 });
+
+    // A stale signal for an earlier iteration is ignored.
+    lines = ['old output', signal('deadbeef-1', 'COMPLETE')];
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(setup.getWorkflow().snapshot()).toMatchObject({ status: 'running', iteration: 1 });
+
+    // Echoed prompt text and a never-issued identifier are ignored.
+    const echo = setup.writes.find(text => text.includes('Iteration identifier'));
+    expect(echo).toContain('[[CDW:');
+    lines = [echo, signal('ffffeeee-9', 'COMPLETE')];
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(setup.getWorkflow().snapshot()).toMatchObject({ status: 'running', iteration: 1 });
+
+    // A cursor-positioned signal for the current pass advances exactly once.
+    lines = [`\x1b[24;1H${signal(id, 'COMPLETE')}`];
+    await vi.advanceTimersByTimeAsync(2000);
+    await done;
+    expect(setup.runStore.get(run.id)).toMatchObject({ status: 'complete', error: null });
+    expect(setup.getWorkflow().snapshot()).toMatchObject({ status: 'complete', iteration: 1 });
+
+    // Duplicate polls of the same screen leave the completed run unchanged.
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(setup.runStore.get(run.id)).toMatchObject({ status: 'complete', error: null });
+    expect(setup.getWorkflow().snapshot()).toMatchObject({ status: 'complete', iteration: 1 });
+  });
+
   it('accepts a reattached legacy Test handoff under the prompt that was sent', async () => {
     const db = new Database(':memory:');
     databases.push(db);

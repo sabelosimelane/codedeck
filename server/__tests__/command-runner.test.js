@@ -173,6 +173,14 @@ describe('local runner', () => {
     expect(fs.readFileSync(dest, 'utf8')).toBe('copy-me');
   });
 
+  it('copies a file via local copyFrom', async () => {
+    const src = tempFile('copy-from-me');
+    const dest = path.join(os.tmpdir(), `codedeck-runner-from-dest-${Math.random().toString(36).slice(2)}`);
+    tempFiles.push(dest);
+    await runner.copyFrom(src, dest);
+    expect(fs.readFileSync(dest, 'utf8')).toBe('copy-from-me');
+  });
+
   it('spawns a PTY whose output flows', async () => {
     const pty = runner.spawnPty('sh', ['-c', 'printf pty-local'], { cols: 80, rows: 24 });
     const output = await readPtyOutput(pty);
@@ -373,6 +381,45 @@ describe('ssh runner', () => {
     const runner = makeRunner();
     expect(runner.host).toBe('devbox');
     expect(runner.kind).toBe('ssh');
+  });
+
+  it('copyFrom composes scp argv with the remote source first and the local destination last', async () => {
+    const seen = [];
+    const execFile = vi.fn((_file, argv, _options, callback) => {
+      seen.push([_file, argv]);
+      callback(null, '', '');
+    });
+    const runner = createSshRunner(
+      { name: 'devbox', sshTarget: 'devbox' },
+      { socketDir, execFile },
+    );
+    const localDest = path.join(os.tmpdir(), `codedeck-copyfrom-${Math.random().toString(36).slice(2)}`);
+    await runner.copyFrom('/remote/tree.tar', localDest);
+    expect(execFile).toHaveBeenCalledTimes(1);
+    const [file, argv] = seen[0];
+    expect(file).toBe('scp');
+    expect(argv).toContain('BatchMode=yes');
+    expect(argv).toContain('ControlMaster=auto');
+    expect(argv).toContain('ConnectTimeout=5');
+    const dashDash = argv.indexOf('--');
+    expect(dashDash).toBeGreaterThanOrEqual(0);
+    // scp source → target: remote spec first, local destination last.
+    expect(argv[dashDash + 1]).toBe('devbox:/remote/tree.tar');
+    expect(argv[argv.length - 1]).toBe(localDest);
+    expect(runner.host).toBe('devbox');
+  });
+
+  it('copyFrom propagates a failed transfer to the caller', async () => {
+    const failure = Object.assign(new Error('scp: connection lost'), { code: 1 });
+    const execFile = vi.fn((_file, _argv, _options, callback) => {
+      callback(failure);
+    });
+    const runner = createSshRunner(
+      { name: 'devbox', sshTarget: 'devbox' },
+      { socketDir, execFile },
+    );
+    await expect(runner.copyFrom('/remote/tree.tar', '/local/dest.tar')).rejects.toBe(failure);
+    expect(execFile).toHaveBeenCalledTimes(1);
   });
 
   it.each([

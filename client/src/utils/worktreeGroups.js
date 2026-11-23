@@ -42,11 +42,40 @@ function taskWorktrees(task) {
 }
 
 /**
+ * All Main repository checkouts across every bound host location of the project.
+ */
+function allMainRepositories(project, repositories) {
+  if (!Array.isArray(project.locations)) return repositories;
+  const extra = [];
+  for (const loc of project.locations) {
+    if (!loc || typeof loc !== 'object') continue;
+    if (typeof loc.path === 'string' && loc.path.startsWith('/')) {
+      const folder = loc.path.replace(/\/+$/, '');
+      const name = folder.slice(folder.lastIndexOf('/') + 1);
+      if (name && !repositories.some(r => r.path === loc.path) && !extra.some(r => r.path === loc.path)) {
+        extra.push({ name, path: loc.path, own: true });
+      }
+    }
+    if (Array.isArray(loc.repositories)) {
+      for (const repo of loc.repositories) {
+        if (repo && typeof repo.name === 'string' && typeof repo.path === 'string' && repo.path.startsWith('/')) {
+          if (!repositories.some(r => r.path === repo.path) && !extra.some(r => r.path === repo.path)) {
+            extra.push({ name: repo.name, path: repo.path, own: false });
+          }
+        }
+      }
+    }
+  }
+  return extra.length === 0 ? repositories : [...repositories, ...extra];
+}
+
+/**
  * The group a path belongs to. Every repository of the project is reached from Main, and
  * every worktree of a task belongs to that task, which is known by the worktree it started in.
  */
 function groupKeyForPath(project, repositories, tasks, value) {
-  if (value === null || repositories.some(repository => repository.path === value)) return 'main';
+  const allRepos = allMainRepositories(project, repositories);
+  if (value === null || allRepos.some(repository => repository.path === value)) return 'main';
   const task = tasks.find(candidate => candidate.project === project.name && candidate.worktrees.some(worktree => worktree.worktreePath === value));
   return task ? task.worktreePath : value;
 }

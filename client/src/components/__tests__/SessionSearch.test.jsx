@@ -101,6 +101,31 @@ describe('Session search', () => {
     await screen.findByText('“Inspect tests”');
   });
 
+  it('renders host filter and host badges across multiple hosts, warns on unreachable hosts, and sends activeHost on resume', async () => {
+    const remoteRow = { cli: 'claude', conversationId: 'r', title: 'Remote work', firstPrompt: null, project: 'Alpha', host: 'media-server.tail270b30.ts.net', cwd: '/home/u/alpha', updatedAt: Date.now() };
+    const hosts = [
+      { host: 'local', available: true, error: null },
+      { host: 'media-server.tail270b30.ts.net', available: true, error: null },
+      { host: 'offline-box.ts.net', available: false, error: 'host unreachable' },
+    ];
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(response({ ...result([remoteRow, alpha]), hosts }))
+      .mockResolvedValueOnce(response({ ...result([remoteRow]), hosts }))
+      .mockResolvedValueOnce(response({ sessionId: 'Alpha-4', project: 'Alpha', host: 'local', synced: true, cli: 'claude', conversationId: 'r' }, true, 201));
+
+    const view = open({ activeHost: 'local' });
+    await screen.findByText('Remote work');
+    expect(screen.getByText(/Could not reach offline-box/i)).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Host' }), { target: { value: 'media-server.tail270b30.ts.net' } });
+    await waitFor(() => expect(global.fetch.mock.calls[1][0]).toContain('host=media-server.tail270b30.ts.net'));
+
+    fireEvent.click(await screen.findByRole('button', { name: /Remote work/ }));
+    await waitFor(() => expect(view.onResumed).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'Alpha-4', synced: true })));
+    expect(JSON.parse(global.fetch.mock.calls[2][1].body)).toEqual({ cli: 'claude', conversationId: 'r', project: 'Alpha', host: 'local' });
+    expect(mocks.showToast).toHaveBeenCalledWith({ type: 'success', message: 'Synced and resumed Claude conversation' });
+  });
+
   it('moves highlight with arrows and resumes with Enter after backend confirmation', async () => {
     global.fetch = vi.fn().mockResolvedValueOnce(response(result([alpha, beta])))
       .mockResolvedValueOnce(response({ sessionId: 'Beta-9', project: 'Beta', cli: 'codex', conversationId: 'b' }, true, 201));

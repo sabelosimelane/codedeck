@@ -62,7 +62,12 @@ async function request(url, { method = 'GET', body, signal } = {}) {
   catch { throw new Error(FALLBACK); }
   if (!response.ok) {
     const field = Array.isArray(payload?.errors) && text(payload.errors[0]?.message) ? payload.errors[0].message : null;
-    throw Object.assign(new Error(field ?? (text(payload?.message) ? payload.message : FALLBACK)), { status: response.status });
+    throw Object.assign(new Error(field ?? (text(payload?.message) ? payload.message : FALLBACK)), {
+      status: response.status,
+      ...(payload?.code ? { code: payload.code } : {}),
+      ...(payload?.host ? { host: payload.host } : {}),
+      ...(Array.isArray(payload?.results) ? { results: payload.results } : {}),
+    });
   }
   return payload;
 }
@@ -75,44 +80,65 @@ function readPage(body, kind) {
 }
 
 /** The project's own repository and every other one it lists, with how each stands in Git. */
-export async function listProjectRepositories(project, { signal } = {}) {
+export async function listProjectRepositories(project, { host, signal } = {}) {
   const root = base(project);
+  const hostQuery = text(host) ? `&host=${encodeURIComponent(host)}` : '';
   const repositories = [];
   for (let page = 0; ; page += 1) {
-    const body = readPage(await request(`${root}/repositories?size=${PAGE_SIZE}&page=${page}`, { signal }), 'repositories');
+    const body = readPage(await request(`${root}/repositories?size=${PAGE_SIZE}&page=${page}${hostQuery}`, { signal }), 'repositories');
     body.data.forEach((entry, index) => repositories.push(parseRepository(entry, index)));
     if (!body.page.hasNextPage) return repositories;
   }
 }
 
 /** One page of the repositories found beside the project that it does not list yet. */
-export async function getRepositoryCandidates(project, page, { signal } = {}) {
+export async function getRepositoryCandidates(project, page, { host, signal } = {}) {
   const root = base(project);
   if (!Number.isSafeInteger(page) || page < 0) throw new TypeError('page must be a whole number from 0');
-  const body = readPage(await request(`${root}/repository-candidates?size=${CANDIDATE_PAGE_SIZE}&page=${page}`, { signal }), 'repository candidates');
+  const hostQuery = text(host) ? `&host=${encodeURIComponent(host)}` : '';
+  const body = readPage(await request(`${root}/repository-candidates?size=${CANDIDATE_PAGE_SIZE}&page=${page}${hostQuery}`, { signal }), 'repository candidates');
   return { candidates: body.data.map(parseCandidate), hasNextPage: body.page.hasNextPage, total: body.page.totalElements };
 }
 
-export async function addProjectRepository(project, path, { signal } = {}) {
+export async function addProjectRepository(project, path, { host, signal } = {}) {
   const root = base(project);
   if (!absolute(path)) throw new TypeError('path must be an absolute path');
-  return parseRepository(await request(`${root}/repositories`, { method: 'POST', body: { path }, signal }));
+  return parseRepository(await request(`${root}/repositories`, {
+    method: 'POST',
+    body: { path, ...(host === undefined ? {} : { host }) },
+    signal,
+  }));
 }
 
-export async function removeProjectRepository(project, repository, { signal } = {}) {
+export async function removeProjectRepository(project, repository, { host, signal } = {}) {
   const root = base(project);
   if (!text(repository)) throw new TypeError('repository must be a nonempty string');
-  await request(`${root}/repositories/${encodeURIComponent(repository)}`, { method: 'DELETE', signal });
+  const hostQuery = text(host) ? `?host=${encodeURIComponent(host)}` : '';
+  await request(`${root}/repositories/${encodeURIComponent(repository)}${hostQuery}`, { method: 'DELETE', signal });
 }
 
 /** Opens a terminal in the own checkout of one of the project's repositories and says where it opened. */
-export async function openProjectTerminal(project, repository, { signal } = {}) {
+export async function openProjectTerminal(project, repository, { host, skipSync, signal } = {}) {
   const root = base(project);
   if (!text(repository)) throw new TypeError('repository must be a nonempty string');
-  const body = await request(`${root}/terminals`, { method: 'POST', body: { repository }, signal });
+  const body = await request(`${root}/terminals`, {
+    method: 'POST',
+    body: {
+      repository,
+      ...(host === undefined ? {} : { host }),
+      ...(skipSync === undefined ? {} : { skipSync }),
+    },
+    signal,
+  });
   if (!text(body?.sessionId)) throw new Error('Invalid project terminal response: sessionId');
   if (body.project !== project) throw new Error('Invalid project terminal response: project');
   if (body.repository !== repository) throw new Error('Invalid project terminal response: repository');
   if (!absolute(body.path)) throw new Error('Invalid project terminal response: path');
-  return { sessionId: body.sessionId, project: body.project, repository: body.repository, path: body.path };
+  return {
+    sessionId: body.sessionId,
+    project: body.project,
+    ...(text(body.host) ? { host: body.host } : {}),
+    repository: body.repository,
+    path: body.path,
+  };
 }

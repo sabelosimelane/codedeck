@@ -8,6 +8,9 @@ const SUBMIT_DELAY_MS = 100;
 const RESET_TIMEOUT_MS = 15000;
 const MAX_OUTPUT = 65536;
 const MAX_BAD_IDENTIFIER_RETRIES = 1;
+// Cursor-positioning CSI sequences (CUP, CUU, CUD, CUF, CUB, CNL, CPL, CHA, HVP) jump over
+// existing cells on a 2D TUI screen; bytes before and after a cursor jump are not contiguous text.
+const CURSOR_MOVEMENT_CSI = /\x1b\[\d*(?:;\d*)*[ABCDEFGHf]/g;
 // How long an agent asked for its final signal may stay idle before the handoff fails.
 // The clock restarts whenever the agent is seen working, so it bounds idleness, not work.
 const HANDOFF_IDLE_MS = 24000;
@@ -463,6 +466,7 @@ export function createTerminalWorkflow({ write, notify }) {
         identifier = pendingIdentifier;
         passIdentifiers.add(identifier);
         pendingIdentifier = null;
+        badIdentifierRetries = 0;
       }
       status = 'running';
       workObserved = false;
@@ -484,7 +488,7 @@ export function createTerminalWorkflow({ write, notify }) {
       }
       // Retain raw chunks until stripping so split escape sequences are handled.
       rawOutput = (rawOutput + data).slice(-MAX_OUTPUT);
-      const text = stripVTControlCharacters(rawOutput).replace(/\s/g, '');
+      const text = stripVTControlCharacters(rawOutput.replace(CURSOR_MOVEMENT_CSI, '\0')).replace(/\s/g, '');
       // Known older signals can be redrawn by the terminal. An unknown ID is
       // an invalid result, not a reason to wait forever or accept a near match.
       const match = [...text.matchAll(/\[\[CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]/g)]

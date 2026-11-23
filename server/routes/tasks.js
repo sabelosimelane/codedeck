@@ -19,6 +19,11 @@ const FILTERS = [
   { name: 'open', parse: raw => { if (raw !== 'true' && raw !== 'false') throw fieldError('open', 'Use true or false'); return raw === 'true'; } },
 ];
 
+const CANDIDATE_FILTERS = [
+  FILTERS[0],
+  { name: 'host', parse: raw => { if (typeof raw !== 'string' || raw.trim().length === 0) throw fieldError('host', 'Use a host name'); return raw.trim(); } },
+];
+
 const CHANGE_FILTERS = [FILTERS[0]];
 
 /** A merged task as the list of changes shows it; spelled out for the same reason as a task. */
@@ -193,9 +198,12 @@ export function createTasksRouter({ service, taskStore, landing, changes } = {})
   }));
 
   router.get(`${BASE}/worktree-candidates`, route(async (req, res) => {
-    const query = parseCollectionQuery(req.query, { sortFields: ['path'], defaultSort: 'path,asc', filters: [FILTERS[0]] }, fieldError);
+    const query = parseCollectionQuery(req.query, { sortFields: ['path'], defaultSort: 'path,asc', filters: CANDIDATE_FILTERS }, fieldError);
     if (query.filters.project === undefined) throw fieldError('project', 'A project name is required');
-    const page = paginate(await service.listWorktreeCandidates(query.filters.project), query);
+    const candidates = query.filters.host
+      ? await service.listWorktreeCandidates(query.filters.project, { host: query.filters.host })
+      : await service.listWorktreeCandidates(query.filters.project);
+    const page = paginate(candidates, query);
     res.json({ data: page.data.map(candidateView), page: page.page });
   }));
 

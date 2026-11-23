@@ -36,7 +36,7 @@ describe('terminal execution classifier', () => {
     });
   });
 
-  it('treats a visible shell prompt as idle', () => {
+  it('treats a visible shell prompt as idle (both macOS/zsh and Linux user@host:path$ bash prompts)', () => {
     expect(classifyTerminalExecution({
       paneCurrentCommand: 'zsh',
       paneDead: '0',
@@ -51,6 +51,18 @@ describe('terminal execution classifier', () => {
     })).toMatchObject({
       executionStatus: TERMINAL_EXECUTION_IDLE,
       foregroundCommand: 'zsh',
+      executionReason: 'shell_prompt',
+      executionConfidence: 'high',
+    });
+
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'bash',
+      paneDead: '0',
+      subagentPanes: [], quietSeconds: 0,
+      snapshotText: 'sabside@media-server:~/git/mlondolozi/worktrees/when-sending-sos-the-10-seconds--e8b74aed/backend$\n',
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: 'bash',
       executionReason: 'shell_prompt',
       executionConfidence: 'high',
     });
@@ -107,6 +119,74 @@ describe('terminal execution classifier', () => {
       foregroundCommand: 'npm',
       executionReason: 'foreground_command',
       executionConfidence: 'medium',
+    });
+  });
+
+  it('treats an idle agy prompt with only a stale task footer as idle (no live running row)', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'agy',
+      paneDead: '0',
+      subagentPanes: [],
+      quietSeconds: 45,
+      snapshotText: [
+        '  Fixed the cancelGate helper in PanicControllerTest.kt.',
+        '',
+        '────────────────────────────────────────────────────────────────────────────────',
+        '>',
+        '────────────────────────────────────────────────────────────────────────────────',
+        '? for shortcuts                                                                                              Gemini 4 Hydrogen · medium · 1 task(s) · /tasks',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_IDLE,
+      foregroundCommand: 'agy',
+      executionReason: 'agent_prompt_idle',
+      backgroundShells: 0,
+    });
+  });
+
+  it('keeps agy running while a live ● … running row sits below the prompt', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'agy',
+      paneDead: '0',
+      subagentPanes: [],
+      quietSeconds: 45,
+      snapshotText: [
+        '  Waiting for the background check to complete.',
+        '',
+        '────────────────────────────────────────────────────────────────────────────────',
+        '>',
+        '────────────────────────────────────────────────────────────────────────────────',
+        '  ● [19:46:02] cd /home/example/app && ./gradlew :core:jvmTest --tests ... running',
+        '────────────────────────────────────────────────────────────────────────────────',
+        '? for shortcuts                                                                                              Gemini 4 Hydrogen · medium · 1 task(s) · /tasks',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: 'agy',
+      executionReason: 'agent_background_shells',
+      backgroundShells: 1,
+    });
+  });
+
+  it('keeps an agy foreground turn running when the spinner and busy footer are visible', () => {
+    expect(classifyTerminalExecution({
+      paneCurrentCommand: 'agy',
+      paneDead: '0',
+      subagentPanes: [],
+      quietSeconds: 0,
+      snapshotText: [
+        '────────────────────────────────────────────────────────────',
+        '> Run the shell command `sleep 15; echo done` in the foreground.',
+        '⣻  Generating...',
+        '────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────',
+        '>',
+        '────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────',
+        'esc to cancel                                                                                  Gemini 3.8 Flash · medium',
+      ].join('\n'),
+    })).toMatchObject({
+      executionStatus: TERMINAL_EXECUTION_RUNNING,
+      foregroundCommand: 'agy',
+      executionReason: 'agent_working',
     });
   });
 

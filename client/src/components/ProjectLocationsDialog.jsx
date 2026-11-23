@@ -188,10 +188,16 @@ export default function ProjectLocationsDialog({ project, onUpdated, onClose }) 
         showToast({ type: 'error', message: `${hostName}: ${reason}` });
         return;
       }
+      const commitCount = body.commitsPulled || 0;
+      const artifactCount = body.artifactsSynced || 0;
+      const details = [
+        ...(commitCount > 0 ? [`pulled ${commitCount} commit${commitCount === 1 ? '' : 's'}`] : []),
+        ...(artifactCount > 0 ? [`copied ${artifactCount} local file${artifactCount === 1 ? '' : 's'}`] : []),
+      ];
       showToast({
         type: 'success',
-        message: body.updated
-          ? `Synced ${currentProject.name} on ${hostName} (pulled ${body.commitsPulled} commit${body.commitsPulled === 1 ? '' : 's'})`
+        message: details.length > 0
+          ? `Synced ${currentProject.name} on ${hostName} (${details.join(', ')})`
           : `${currentProject.name} on ${hostName} is already up to date`,
       });
     } catch {

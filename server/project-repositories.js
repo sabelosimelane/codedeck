@@ -292,6 +292,7 @@ export function createProjectRepositories({
         host,
         repoPaths: [{ repository: body.repository, repoPath: checkout }],
         runner: tools.runner,
+        resolveRunner: h => resolveHostTools?.(h)?.runner ?? null,
       });
       if (!outcome.ok) {
         throw new RepositoryError(outcome.message, outcome.status, undefined, {

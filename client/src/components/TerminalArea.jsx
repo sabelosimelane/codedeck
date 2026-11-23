@@ -44,6 +44,16 @@ function readWorktreeSelection(projectName) {
   catch (error) { console.warn(`Could not read worktree selection for ${projectName}: ${error.message}`); return 'main'; }
 }
 
+function readHostSelection(projectName, locations, fallbackHost) {
+  try {
+    const saved = localStorage.getItem(`codedeck-host-${projectName}`);
+    if (saved && locations.some(loc => loc.host === saved)) return saved;
+  } catch (error) {
+    console.warn(`Could not read host selection for ${projectName}: ${error.message}`);
+  }
+  return fallbackHost;
+}
+
 function ShortcutHint({ label, keys, children }) {
   const [visible, setVisible] = useState(false);
   const timerRef = useRef(null);
@@ -392,8 +402,15 @@ export default function TerminalArea({
   const { tabs, activeTabId } = state;
   const activeTab = tabs.find(t => t.id === activeTabId);
   // A path is shown in the group it belongs to: any repository of the project in Main, any worktree of a task in that task.
+  const projectLocations = Array.isArray(project.locations) && project.locations.length > 0
+    ? project.locations
+    : [{ host: project.defaultHost || project.host || 'local', path: project.path, repositories: project.repositories || [] }];
+  const isMainLocationPath = (value) => projectLocations.some(
+    loc => loc.path === value || (loc.repositories ?? []).some(repo => repo.path === value),
+  );
   const groupKeyOfPath = (value) => {
     if (value === undefined || value === null) return undefined;
+    if (isMainLocationPath(value)) return 'main';
     const known = (worktreeGroups ?? []).find(group => (group.paths ?? [group.path]).includes(value));
     if (known) return known.key;
     for (const task of createdTasksRef.current.values()) {
@@ -425,25 +442,29 @@ export default function TerminalArea({
     .reduce((newest, run) => (!newest || String(run.createdAt ?? '') > String(newest.createdAt ?? '') ? run : newest), null);
   // Cross-host projects can start tasks and workflows on any bound host.
   const canStartTask = true;
-  const projectLocations = Array.isArray(project.locations) && project.locations.length > 0
-    ? project.locations
-    : [{ host: project.defaultHost || project.host || 'local', path: project.path, repositories: project.repositories || [] }];
   const defaultProjectHost = project.defaultHost || project.host || projectLocations[0]?.host || 'local';
-  const [activeHost, setActiveHost] = useState(defaultProjectHost);
+  const [mainHost, setMainHost] = useState(() => readHostSelection(project.name, projectLocations, defaultProjectHost));
+  const [hostOverride, setHostOverride] = useState(null);
   useEffect(() => {
-    setActiveHost(defaultProjectHost);
+    setMainHost(readHostSelection(project.name, projectLocations, defaultProjectHost));
+    setHostOverride(null);
   }, [project.name, defaultProjectHost]);
+  const visibleTask = groups.find(group => group.key === visibleGroup)?.task ?? null;
+  const viewedHost = visibleGroup !== 'main' ? (visibleTask?.host || visibleRun?.host || null) : null;
+  const validViewedHost = viewedHost && projectLocations.some(loc => loc.host === viewedHost) ? viewedHost : null;
+  const activeHost = hostOverride?.group === visibleGroup && projectLocations.some(loc => loc.host === hostOverride.host)
+    ? hostOverride.host
+    : (validViewedHost ?? mainHost);
+  const chooseHost = useCallback((nextHost) => {
+    setMainHost(nextHost);
+    setHostOverride({ group: visibleGroup, host: nextHost });
+    try { localStorage.setItem(`codedeck-host-${project.name}`, nextHost); }
+    catch (error) { console.warn(`Could not save host selection for ${project.name}: ${error.message}`); }
+  }, [project.name, visibleGroup]);
   const activeLocation = projectLocations.find(loc => loc.host === activeHost) ?? projectLocations[0];
   const createdSessionHostsRef = useRef(new Map());
   const [syncConflict, setSyncConflict] = useState(null);
   const [syncProceeding, setSyncProceeding] = useState(false);
-  const visibleTask = groups.find(group => group.key === visibleGroup)?.task ?? null;
-  const viewedHost = visibleTask?.host || visibleRun?.host || null;
-  useEffect(() => {
-    if (viewedHost && projectLocations.some(loc => loc.host === viewedHost)) {
-      setActiveHost(viewedHost);
-    }
-  }, [project.name, visibleGroup, viewedHost]);
   const lastActiveByGroupRef = useRef(new Map());
   // Opening a terminal reads where the owner is now, without re-creating the callbacks on every poll.
   const groupsRef = useRef(groups);
@@ -466,12 +487,27 @@ export default function TerminalArea({
   const sessionPathOfRef = useRef(sessionPathOf);
   sessionPathOfRef.current = sessionPathOf;
   // Where new terminals open in the group on screen: the repository of the active terminal, unless the owner picked another.
-  const visibleGroupEntry = groups.find(group => group.key === visibleGroup) ?? null;
+  const rawVisibleGroupEntry = groups.find(group => group.key === visibleGroup) ?? null;
+  const visibleGroupEntry = rawVisibleGroupEntry?.isMain && activeLocation && Array.isArray(activeLocation.repositories) && projectLocations.length > 1
+    ? {
+        ...rawVisibleGroupEntry,
+        path: activeLocation.path,
+        repositories: [
+          { name: activeLocation.path.replace(/\/+$/, '').split('/').pop(), path: activeLocation.path, own: true },
+          ...activeLocation.repositories.map(entry => ({ name: entry.name, path: entry.path, own: false })),
+        ],
+      }
+    : rawVisibleGroupEntry;
   const places = visibleGroupEntry ? groupPlaces(visibleGroupEntry) : [];
   const activePaneOfGroup = activeTab && tabGroupKey(activeTab) === visibleGroup
     ? (activeTab.panes.find(pane => pane.id === activePaneId) ?? activeTab.panes[0]) : null;
+  const activePanePath = activePaneOfGroup ? sessionPathOf(activePaneOfGroup.sessionId) : null;
+  const activePaneRepoName = visibleGroupEntry?.isMain && activePanePath
+    ? projectLocations.flatMap(loc => loc.repositories ?? []).find(r => r.path === activePanePath)?.name ?? null
+    : null;
   const chosenPlace = (placeChoice?.group === visibleGroup ? places.find(place => place.id === placeChoice.id) : undefined)
-    ?? (visibleGroupEntry ? placeForPath(visibleGroupEntry, activePaneOfGroup ? sessionPathOf(activePaneOfGroup.sessionId) : null) : null);
+    ?? (activePaneRepoName ? places.find(place => place.id === activePaneRepoName) : undefined)
+    ?? (visibleGroupEntry ? placeForPath(visibleGroupEntry, activePanePath) : null);
   // Only a group with more than one place needs to say which: with one, a terminal opens as it always did.
   const placeForNewTerminalRef = useRef(null);
   placeForNewTerminalRef.current = places.length > 1 ? chosenPlace : null;
@@ -763,10 +799,15 @@ export default function TerminalArea({
     }
 
     // Main reaches every repository of the project: one that is not the project's own is opened by the backend, in that repository's checkout.
+    const targetHost = activeHost || defaultProjectHost;
+    const explicitHost = (projectLocations.length > 1 || (targetHost && targetHost !== 'local')) ? targetHost : undefined;
     if (place && !place.own) {
       try {
-        const opened = await openProjectTerminal(project.name, place.id);
+        const opened = explicitHost
+          ? await openProjectTerminal(project.name, place.id, { host: explicitHost })
+          : await openProjectTerminal(project.name, place.id);
         createdWorktreePathsRef.current.set(`${project.name}:${opened.sessionId}`, opened.path);
+        createdSessionHostsRef.current.set(`${project.name}:${opened.sessionId}`, opened.host || targetHost);
         const number = getSessionNumber(project.name, opened.sessionId);
         if (number !== null) sessionCounter = Math.max(sessionCounter, number);
         unmarkDeletedSessionIds(project.name, [opened.sessionId]);
@@ -779,14 +820,13 @@ export default function TerminalArea({
     }
 
     try {
-      const targetHost = activeHost || defaultProjectHost;
       const runAllocate = async (skipSync = false) => {
         const res = await fetch('/api/terminal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             projectName: project.name,
-            host: targetHost,
+            ...(explicitHost ? { host: explicitHost } : {}),
             ...(skipSync ? { skipSync: true } : {}),
           }),
         });
@@ -1252,7 +1292,7 @@ export default function TerminalArea({
       if (key === 's') {
         e.preventDefault();
         e.stopPropagation();
-        onOpenSessionSearch();
+        onOpenSessionSearch(activeHost);
         return;
       }
 
@@ -1353,7 +1393,7 @@ export default function TerminalArea({
             <select
               aria-label="Target host"
               value={activeHost}
-              onChange={(e) => setActiveHost(e.target.value)}
+              onChange={(e) => chooseHost(e.target.value)}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -1366,7 +1406,7 @@ export default function TerminalArea({
             >
               {projectLocations.map(loc => (
                 <option key={loc.host} value={loc.host} style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)' }}>
-                  {loc.host}
+                  {loc.host === 'local' ? 'local (This Mac)' : loc.host}
                 </option>
               ))}
             </select>
@@ -1389,7 +1429,13 @@ export default function TerminalArea({
             const tabLabel = getTerminalTabLabel(tab.panes, tab.label, sessionTitles);
             // Where there is more than one repository to tell apart, a tab says which it is in.
             const tabGroup = groups.find(group => group.key === tabGroupKey(tab));
-            const tabRepository = tabGroup ? repositoryLabelForPath(tabGroup, sessionPathOf(tab.panes[0]?.sessionId)) : null;
+            const firstPanePath = sessionPathOf(tab.panes[0]?.sessionId);
+            const tabRepository = tabGroup
+              ? (repositoryLabelForPath(tabGroup, firstPanePath)
+                ?? (tabGroup.isMain && firstPanePath
+                  ? projectLocations.flatMap(loc => loc.repositories ?? []).find(r => r.path === firstPanePath)?.name ?? null
+                  : null))
+              : null;
             const isActive = tab.id === activeTabId;
             const waitingKey = getTabWaitingKey(tab);
             const isWaiting = isTabWaiting(tab, waitingSessionIds);
@@ -1509,7 +1555,7 @@ export default function TerminalArea({
           }} >
         {/* Actions */}
         <ShortcutHint label="Session search" keys={IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S']}>
-          <button onClick={onOpenSessionSearch} aria-label="Session search" title={formatShortcutTitle('Session search', IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S'])} style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer' }}>
+          <button onClick={() => onOpenSessionSearch(activeHost)} aria-label="Session search" title={formatShortcutTitle('Session search', IS_MAC ? ['⌘', '⇧', 'S'] : ['Ctrl', '⇧', 'S'])} style={{ padding: 4, borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer' }}>
             <Search size={14} />
           </button>
         </ShortcutHint>
@@ -1533,6 +1579,22 @@ export default function TerminalArea({
             <Columns size={14} />
           </button>
         </ShortcutHint>
+        {visibleGroup === 'main' && projectLocations.length > 1 && (
+          <select
+            aria-label="Open new terminals on host"
+            title={`The host new terminals open on (${activeLocation?.path || ''})`}
+            value={activeHost}
+            onChange={event => chooseHost(event.target.value)}
+            disabled={isTerminalRuntimeBlocked && activeHost === 'local'}
+            style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', padding: '2px 4px', borderRadius: 4, background: 'var(--bg-surface)', color: 'var(--text-secondary)', border: '1px solid var(--border)', maxWidth: 150 }}
+          >
+            {projectLocations.map(loc => (
+              <option key={loc.host} value={loc.host}>
+                {loc.host === 'local' ? 'local (This Mac)' : loc.host}
+              </option>
+            ))}
+          </select>
+        )}
         {places.length > 1 && (
           <select
             aria-label="Open new terminals in"
@@ -1613,7 +1675,33 @@ export default function TerminalArea({
                 ? 'No terminals are open in Main. Open one here, or use New task above to work on something in its own copy of the project.'
                 : `No terminals are open in ${describeWorktreeGroup(groups.find(group => group.key === visibleGroup)).title}. Open one here.`}
             </div>
-            <div className="terminal-empty-actions">
+            <div className="terminal-empty-actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+              {visibleGroup === 'main' && projectLocations.length > 1 && (
+                <select
+                  aria-label="Host for new terminal"
+                  title={`The host new terminals open on (${activeLocation?.path || ''})`}
+                  value={activeHost}
+                  onChange={event => chooseHost(event.target.value)}
+                  style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', padding: '6px 8px', borderRadius: 6, background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                >
+                  {projectLocations.map(loc => (
+                    <option key={loc.host} value={loc.host}>
+                      {loc.host === 'local' ? 'local (This Mac)' : loc.host}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {places.length > 1 && (
+                <select
+                  aria-label="Repository for new terminal"
+                  title="The repository new terminals open in"
+                  value={chosenPlace?.id ?? ''}
+                  onChange={event => setPlaceChoice({ group: visibleGroup, id: event.target.value })}
+                  style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', padding: '6px 8px', borderRadius: 6, background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                >
+                  {places.map(place => <option key={place.id} value={place.id}>{place.label}</option>)}
+                </select>
+              )}
               <button
                 onClick={addTab}
                 className="terminal-empty-cta"
@@ -1642,9 +1730,13 @@ export default function TerminalArea({
             }}
           >
             {tab.panes.map((pane, index) => {
+              const paneHost = sessionLookup.get(pane.sessionId)?.host
+                ?? createdSessionHostsRef.current.get(`${project.name}:${pane.sessionId}`)
+                ?? activeHost;
+              const paneLocation = projectLocations.find(loc => loc.host === paneHost) ?? activeLocation;
               const paneCwd = getTerminalPaneCwd({
                 sessionId: pane.sessionId,
-                projectPath: project.path,
+                projectPath: paneLocation?.path ?? project.path,
                 worktreePath: createdWorktreePathsRef.current.get(`${project.name}:${pane.sessionId}`),
                 sessionLookup,
               });
@@ -1887,7 +1979,7 @@ export default function TerminalArea({
 
       </TaskFrame>
 
-      {showWorktreeDialog && <NewTaskDialog projectName={project.name} host={activeHost} withRepositories={Array.isArray(activeLocation?.repositories) && activeLocation.repositories.length > 0} onCreate={createTaskTab} onClose={() => setShowWorktreeDialog(false)} />}
+      {showWorktreeDialog && <NewTaskDialog projectName={project.name} host={activeHost} locations={projectLocations} withRepositories={Array.isArray(activeLocation?.repositories) && activeLocation.repositories.length > 0} onCreate={createTaskTab} onClose={() => setShowWorktreeDialog(false)} />}
 
       {syncConflict && (
         <SyncConflictDialog

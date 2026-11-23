@@ -786,5 +786,38 @@ describe('terminal workflow — guidance for the pass', () => {
       expect(restored.workflow.snapshot()).toMatchObject({ status: 'running', iteration: 2 });
       expect(restored.write).toHaveBeenCalledTimes(1);
     });
+
+    it('doesNotFabricateMismatchedIdentifier_whenTuiDiffRenderJumpsCursorInsideSignalAndResetsRetriesOnAnswer', () => {
+      const { workflow, write } = setup();
+      workflow.start(request);
+      const firstId = token(write);
+      vi.advanceTimersByTime(100);
+
+      // Full-screen TUI (e.g. Codex/Ratatui) diff-renders a frame where one cell inside the
+      // identifier already matched the previous buffer and was skipped with a cursor jump (\x1b[18;15H),
+      // or where a status timer update (\x1b[25;12H34s\x1b[18;14H) was interleaved between chunks.
+      workflow.output(`[[CDW:${firstId.slice(0, 3)}\x1b[18;15H${firstId.slice(4)}:NEEDS_INPUT]]`);
+      // Must NOT have treated the skipped-cell diff frame as a mistyped identifier or sent a reminder.
+      expect(workflow.snapshot()).toMatchObject({ status: 'running', error: null });
+      vi.advanceTimersByTime(100);
+      expect(write).toHaveBeenCalledTimes(2);
+
+      // When the rendered tmux screen is replayed (or full signal arrives), it transitions cleanly to needs_input.
+      expect(workflow.replayScreen(`• [[CDW:${firstId}:QUESTIONS]]\n1. Defer iOS?\nRecommended: Yes\n[[CDW:${firstId}:NEEDS_INPUT]]`)).toBe(true);
+      expect(workflow.snapshot()).toMatchObject({ status: 'needs_input', error: null });
+
+      // Owner answers -> new identifier is issued for the rest of the pass.
+      const answer = workflow.answerText('Proceed with your recommendations.');
+      const nextId = answer.match(/iteration identifier ([\w-]+)/)[1];
+      workflow.input('Proceed with your recommendations.\r');
+      expect(workflow.snapshot()).toMatchObject({ status: 'running', error: null });
+
+      // Even if a genuine bad-identifier retry had been used before the answer, the new identifier after an answer gets a clean retry budget,
+      // and a diff-rendered frame on the new identifier must not fail the workflow.
+      workflow.output(`[[CDW:${nextId.slice(0, 2)}\x1b[1C${nextId.slice(3)}:NEEDS_INPUT]]`);
+      expect(workflow.snapshot()).toMatchObject({ status: 'running', error: null });
+      expect(workflow.replayScreen(`• [[CDW:${nextId}:QUESTIONS]]\n1. Defer iOS?\nRecommended: Yes\n[[CDW:${nextId}:NEEDS_INPUT]]`)).toBe(true);
+      expect(workflow.snapshot()).toMatchObject({ status: 'needs_input', error: null });
+    });
   });
 });

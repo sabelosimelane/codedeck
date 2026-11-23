@@ -14,6 +14,7 @@ const SPINNER = /^[⠀-⣿]+\s+\S.*\.\.\.$/u;
 // Footer: `? for shortcuts   <model> · <effort>` idle, `esc to cancel   …` mid-turn.
 const FOOTER = /^(?:\? for shortcuts|esc to cancel)\s{2,}\S.* · \S+$/;
 const BUSY_FOOTER = /^esc to cancel\b/;
+const RUNNING_TASK_ROW = /^● \[\d{2}:\d{2}:\d{2}\]\s+.*\brunning$/;
 
 export function matches({ foregroundCommand, lines }) {
   if (foregroundCommand === 'agy') return true;
@@ -33,7 +34,10 @@ export function read(lines) {
   }
 
   const region = promptRegion(lines, line => INPUT_PROMPT.test(line));
+  // Only live `● [hh:mm:ss] … running` rows count — a leftover `N task(s)` footer alone
+  // must not pin an idle agent as waiting forever.
+  const backgroundShells = region.below.filter(line => RUNNING_TASK_ROW.test(line)).length;
   const working = region.above.some(line => SPINNER.test(line))
     && region.below.some(line => BUSY_FOOTER.test(line));
-  return { turn: working ? 'working' : 'idle', backgroundShells: 0 };
+  return { turn: working ? 'working' : 'idle', backgroundShells };
 }

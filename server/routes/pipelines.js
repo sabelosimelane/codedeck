@@ -812,9 +812,10 @@ export function createPipelinesRouter(deps) {
   router.post(`${BASE}/run-plans`, route(async (req, res) => {
     const body = req.body;
     if (body === null || typeof body !== 'object' || Array.isArray(body)) throw fieldError('body', 'A JSON object is required');
-    const errors = Object.keys(body).filter(field => !['workflowId', 'project', 'input'].includes(field)).map(field => ({ field, message: 'Unknown field' }));
+    const errors = Object.keys(body).filter(field => !['workflowId', 'project', 'input', 'host'].includes(field)).map(field => ({ field, message: 'Unknown field' }));
     if (!isUuid(body.workflowId)) errors.push({ field: 'workflowId', message: 'Use a workflow UUID' });
     if (!isText(body.project) || body.project.length > 200) errors.push({ field: 'project', message: 'Use the name of a project' });
+    if (body.host !== undefined && !isText(body.host)) errors.push({ field: 'host', message: 'Use a host name' });
     // Nonempty string first so empty input is named with other field errors; line breaks
     // and controls wait for the workflow's input mode below.
     if (typeof body.input !== 'string' || body.input.length < 1) {
@@ -841,21 +842,22 @@ export function createPipelinesRouter(deps) {
       .filter(reading => isProgressFilePath(reading.file, 512));
     if (readings.length === 0) return res.json(nothing);
 
-    await requireRunnableProject(project, SETUP_AGENT_MISSING);
-    const ownName = path.basename(await resolveHomeRepoPath({ projectPath: project.path, execFile }));
-    const checkouts = [{ repository: ownName, path: project.path }, ...readStoredRepositories(project).map(entry => ({ repository: entry.name, path: entry.path }))];
+    const { location, tools } = await requireRunnableProject(project, SETUP_AGENT_MISSING, { host: body.host });
+    const hostExecFile = tools ? tools.execFile : execFile;
+    const ownName = path.basename(await resolveHomeRepoPath({ projectPath: location.path, execFile: hostExecFile }));
+    const checkouts = [{ repository: ownName, path: location.path }, ...readStoredRepositories({ name: project.name, repositories: location.repositories }).map(entry => ({ repository: entry.name, path: entry.path }))];
 
     let found = null;
     for (const reading of readings) {
       for (const checkout of checkouts) {
-        if (await hasCommittedFile({ repoPath: checkout.path, progressFile: reading.file, execFile })) { found = { ...reading, checkout }; break; }
+        if (await hasCommittedFile({ repoPath: checkout.path, progressFile: reading.file, execFile: hostExecFile })) { found = { ...reading, checkout }; break; }
       }
       if (found) break;
     }
     if (!found) return res.json({ ...nothing, progressFile: readings[0].file, input: readings[0].input });
 
     const plan = { progressFile: found.file, input: found.input, foundIn: found.checkout.repository, problem: null, repositories: null };
-    const header = parseTodoRepositories(await readCommittedFile({ repoPath: found.checkout.path, file: found.file, execFile }));
+    const header = parseTodoRepositories(await readCommittedFile({ repoPath: found.checkout.path, file: found.file, execFile: hostExecFile }));
     if (!header.found) return res.json(plan);
     if (header.problem !== null) return res.json({ ...plan, problem: header.problem });
     const claimed = header.entries.find(entry => entry.role === 'this');
@@ -868,7 +870,7 @@ export function createPipelinesRouter(deps) {
       const checkout = checkouts.find(candidate => candidate.repository === entry.repository) ?? null;
       // The input a run of this workflow takes for another repository's todo; null when its path does not fit the Progress file.
       const input = entry.role !== 'todo' ? null : template === '{input}' ? entry.todo : inputFromProgressFilePath(template, entry.todo);
-      const present = entry.role === 'todo' && checkout ? await hasCommittedFile({ repoPath: checkout.path, progressFile: entry.todo, execFile }) : null;
+      const present = entry.role === 'todo' && checkout ? await hasCommittedFile({ repoPath: checkout.path, progressFile: entry.todo, execFile: hostExecFile }) : null;
       repositories.push({ repository: entry.repository, role: entry.role, todo: entry.todo, input, listed: checkout !== null, present });
     }
     res.json({ ...plan, repositories });
@@ -878,27 +880,38 @@ export function createPipelinesRouter(deps) {
     const query = parseCollectionQuery(req.query, {
       sortFields: WORKTREE_SORT,
       defaultSort: 'path,asc',
-      filters: [{
-        name: 'project',
-        parse: (value) => {
-          if (!isText(value)) throw fieldError('project', 'A project name is required');
-          return value;
+      filters: [
+        {
+          name: 'project',
+          parse: (value) => {
+            if (!isText(value)) throw fieldError('project', 'A project name is required');
+            return value;
+          },
         },
-      }],
+        {
+          name: 'host',
+          parse: (value) => {
+            if (!isText(value)) throw fieldError('host', 'A host name is required');
+            return value;
+          },
+        },
+      ],
     });
     if (query.filters.project === undefined) throw fieldError('project', 'A project name is required');
     const project = findProject(query.filters.project);
     if (!project) throw new PipelineError('Project not found', 404);
-    // Listing worktrees needs a local git repository, not a setup agent.
-    await requireRunnableProject(project, SETUP_AGENT_MISSING);
+    // Listing worktrees needs a git repository, not a setup agent.
+    const { location, tools } = await requireRunnableProject(project, SETUP_AGENT_MISSING, { host: query.filters.host });
+    const hostExecFile = tools ? tools.execFile : execFile;
+    const hostRealpath = tools ? tools.realpath : (realpath ?? fs.promises.realpath);
 
-    const worktrees = await listWorktrees({ projectPath: project.path, execFile });
-    const projectPath = await (realpath ?? fs.promises.realpath)(project.path);
+    const worktrees = await listWorktrees({ projectPath: location.path, execFile: hostExecFile });
+    const projectPath = await hostRealpath(location.path);
     const runs = runStore.list();
     const reserved = reservedElsewhere(null).paths;
     const page = paginate(worktrees.map(worktree => ({ ...worktree, id: worktree.path })), query);
     const data = await Promise.all(page.data.map(async (worktree) => {
-      const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile });
+      const changes = worktree.missing ? null : await readWorktreeChanges({ worktreePath: worktree.path, execFile: hostExecFile });
       const reason = worktreeRefusal(worktree, changes, runs, reserved);
       return {
         path: worktree.path,
@@ -1070,7 +1083,13 @@ export function createPipelinesRouter(deps) {
         const matched = checkouts.find(c => c.path === body.worktreePath);
         if (matched) targetRepoPaths = [{ repository: matched.repository, repoPath: matched.path }];
       }
-      const syncOutcome = await syncLocation({ project, host: runHost, repoPaths: targetRepoPaths, runner: tools.runner });
+      const syncOutcome = await syncLocation({
+        project,
+        host: runHost,
+        repoPaths: targetRepoPaths,
+        runner: tools.runner,
+        resolveRunner: h => resolveHostTools?.(h)?.runner ?? null,
+      });
       if (!syncOutcome.ok) {
         throw new PipelineError(syncOutcome.message, syncOutcome.status, undefined, {
           code: syncOutcome.code,

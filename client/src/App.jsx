@@ -69,6 +69,7 @@ function AppContent() {
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
   const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
   const [showSessionSearch, setShowSessionSearch] = useState(false);
+  const [sessionSearchHost, setSessionSearchHost] = useState(null);
   const [showRunWorkflow, setShowRunWorkflow] = useState(false);
   const [runWorkflowHost, setRunWorkflowHost] = useState(null);
   const [showWorkflowBuilder, setShowWorkflowBuilder] = useState(false);
@@ -565,7 +566,10 @@ function AppContent() {
             onToggleMutedStatusSession={toggleMutedStatusSession}
             waitingSessionIds={waitingSessionIds}
             onToggleWaiting={toggleWaiting}
-            onOpenSessionSearch={() => setShowSessionSearch(true)}
+            onOpenSessionSearch={(targetHost) => {
+              setSessionSearchHost(typeof targetHost === 'string' && targetHost ? targetHost : null);
+              setShowSessionSearch(true);
+            }}
             onOpenRunWorkflow={(targetHost) => {
               setRunWorkflowHost(typeof targetHost === 'string' && targetHost ? targetHost : null);
               setShowRunWorkflow(true);
@@ -623,7 +627,8 @@ function AppContent() {
       {showSessionSearch && activeProject && (
         <SessionSearch
           project={activeProject}
-          onClose={() => setShowSessionSearch(false)}
+          activeHost={sessionSearchHost || activeProject.defaultHost || activeProject.host || 'local'}
+          onClose={() => { setShowSessionSearch(false); setSessionSearchHost(null); }}
           onResumed={(session) => {
             setResumedSession({ sessionId: session.sessionId, project: session.project });
             const destination = projects.find(candidate => candidate.name === session.project);

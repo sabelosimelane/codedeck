@@ -144,11 +144,12 @@ export function parseWorktreeCandidate(value, index = 0) {
     reason: value.reason === null ? null : { code: value.reason.code, message: value.reason.message } };
 }
 
-export async function listWorktreeCandidates(project, { signal } = {}) {
+export async function listWorktreeCandidates(project, { host, signal } = {}) {
   if (!text(project)) throw new TypeError('project must be a nonempty string');
+  const hostQuery = text(host) ? `&host=${encodeURIComponent(host)}` : '';
   const candidates = [];
   for (let page = 0; ; page += 1) {
-    const body = await request(`/worktree-candidates?project=${encodeURIComponent(project)}&page=${page}&size=100&sort=${encodeURIComponent('path,asc')}`, { signal });
+    const body = await request(`/worktree-candidates?project=${encodeURIComponent(project)}${hostQuery}&page=${page}&size=100&sort=${encodeURIComponent('path,asc')}`, { signal });
     const guard = (valid, field) => { if (!valid) throw new Error(`Invalid worktree candidates response field ${field}`); };
     guard(body !== null && typeof body === 'object' && !Array.isArray(body), 'body');
     guard(Array.isArray(body.data), 'data');
@@ -163,11 +164,19 @@ export async function listWorktreeCandidates(project, { signal } = {}) {
   }
 }
 
-export async function makeTaskFromWorktree({ project, worktreePath, title } = {}) {
+export async function makeTaskFromWorktree({ project, worktreePath, title, host } = {}) {
   if (!text(project)) throw new TypeError('project must be a nonempty string');
   if (!absolute(worktreePath)) throw new TypeError('worktreePath must be an absolute path');
   if (title !== undefined && (!text(title) || title.trim().length > 80 || /[\r\n]/.test(title))) throw new TypeError('title must be 1–80 characters on one line');
-  return parseTask(await request('', { method: 'POST', body: { project, worktreePath, ...(title === undefined ? {} : { title: title.trim() }) } }));
+  return parseTask(await request('', {
+    method: 'POST',
+    body: {
+      project,
+      worktreePath,
+      ...(title === undefined ? {} : { title: title.trim() }),
+      ...(host === undefined ? {} : { host }),
+    },
+  }));
 }
 
 /**

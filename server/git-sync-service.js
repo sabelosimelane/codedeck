@@ -7,13 +7,316 @@
  */
 
 import path from 'node:path';
-import { isTransportFailure } from './command-runner.js';
+import nodeFs from 'node:fs/promises';
+import { createCommandRunner, isTransportFailure, shellQuote } from './command-runner.js';
 import { createHostExecFile } from './host-exec.js';
-import { getProjectLocation } from './project-config.js';
+import { createHostFs } from './host-fs.js';
+import { getProjectLocation, normalizeProject } from './project-config.js';
 import { runGit } from './pipelines/run-worktree.js';
 
 const SYNC_TIMEOUT_MS = 30_000;
 const CLONE_TIMEOUT_MS = 120_000;
+export const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024;
+
+const EXCLUDED_ARTIFACT_DIRS = new Set([
+  'node_modules', 'target', 'build', 'dist', 'out',
+  '.next', '.nuxt', '.svelte-kit', '.turbo', '.parcel-cache', '.cache',
+  '.gradle', '.kotlin', '.m2', '.ivy2', '.cargo', 'vendor',
+  'coverage', 'test-results', 'playwright-report', 'logs', 'tmp', 'temp',
+  '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
+  '.venv', 'venv', '.git', '.codedeck', '.claude', '.omx', '.remember',
+  '.issues', '.idea', '.vscode', '.settings', 'xcuserdata',
+  'Pods', 'DerivedData', '.build', '.swiftpm', 'worktrees',
+]);
+
+const EXCLUDED_ARTIFACT_FILES = new Set([
+  '.DS_Store', 'Thumbs.db', '.project', '.classpath', '.factorypath',
+  '.mcp-bash-config.json',
+]);
+
+const EXCLUDED_ARTIFACT_SUFFIXES = [
+  '.hprof', '.log', '.tsbuildinfo', '.pid', '.lock', '.sock', '.swp', '.tmp',
+];
+
+export function isExcludedArtifactPath(relPath) {
+  if (typeof relPath !== 'string') return true;
+  const cleaned = relPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!cleaned || cleaned.startsWith('/') || /[\x00-\x1f\x7f]/.test(cleaned)) return true;
+  const segments = cleaned.split('/');
+  if (segments.some(seg => !seg || seg === '.' || seg === '..' || EXCLUDED_ARTIFACT_DIRS.has(seg))) {
+    return true;
+  }
+  const base = segments[segments.length - 1];
+  if (EXCLUDED_ARTIFACT_FILES.has(base)) return true;
+  if (EXCLUDED_ARTIFACT_SUFFIXES.some(ext => base.toLowerCase().endsWith(ext))) return true;
+  return false;
+}
+
+/**
+ * Discover portable git-ignored local files in `repoPath` (e.g. `.env.local`,
+ * `.local-secrets/*`, `app/google-services.json`, `GoogleService-Info.plist`,
+ * `Local.xcconfig`) while excluding build outputs, dependency caches, IDE/tool
+ * metadata, and files larger than `maxBytes`.
+ */
+export async function discoverIgnoredArtifacts({
+  repoPath,
+  runner,
+  execFile,
+  fs: fsOverride,
+  maxBytes = MAX_ARTIFACT_BYTES,
+} = {}) {
+  if (typeof repoPath !== 'string' || !path.isAbsolute(repoPath)) return [];
+  const exec = execFile ?? createHostExecFile(runner);
+  const fsApi = fsOverride ?? createHostFs(runner);
+
+  let stdout;
+  try {
+    ({ stdout } = await runGit(
+      exec,
+      ['-C', repoPath, 'status', '--porcelain=v1', '-z', '--ignored=traditional', '--untracked-files=normal'],
+      { timeout: 10_000 },
+    ));
+  } catch {
+    return [];
+  }
+
+  const ignoredEntries = stdout
+    .split('\0')
+    .filter(entry => entry.startsWith('!! '))
+    .map(entry => entry.slice(3).replace(/\/+$/, ''))
+    .filter(rel => rel && !isExcludedArtifactPath(rel));
+
+  const results = [];
+
+  async function walkAllowedDir(relDir) {
+    const absDir = path.posix.join(repoPath, relDir);
+    let entries;
+    try {
+      entries = await fsApi.readdir(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const childRel = `${relDir}/${entry.name}`;
+      if (isExcludedArtifactPath(childRel)) continue;
+      if (entry.isDirectory?.()) {
+        await walkAllowedDir(childRel);
+      } else if (entry.isFile?.()) {
+        try {
+          const st = await fsApi.stat(path.posix.join(repoPath, childRel));
+          if (st.isFile() && st.size <= maxBytes) {
+            results.push(childRel);
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    }
+  }
+
+  for (const rel of ignoredEntries) {
+    const absPath = path.posix.join(repoPath, rel);
+    let st;
+    try {
+      st = await fsApi.stat(absPath);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) {
+      await walkAllowedDir(rel);
+    } else if (st.isFile() && st.size <= maxBytes) {
+      results.push(rel);
+    }
+  }
+
+  return [...new Set(results)].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Adapt Android `local.properties` content for a target host so a macOS
+ * `sdk.dir=/Users/.../Library/Android/sdk` is rewritten to the target host's
+ * SDK path (e.g. `/home/.../Android/Sdk`) or omitted if unresolvable.
+ */
+export function adaptLocalPropertiesContent(content, targetSdkDir) {
+  const lines = String(content ?? '').split(/\r?\n/);
+  const out = [];
+  for (const line of lines) {
+    if (/^\s*sdk\.dir\s*=/.test(line)) {
+      if (targetSdkDir) {
+        out.push(`sdk.dir=${targetSdkDir}`);
+      }
+      continue;
+    }
+    out.push(line);
+  }
+  const hasActiveProperty = out.some(line => {
+    const trimmed = line.trim();
+    return trimmed.length > 0 && !trimmed.startsWith('#') && trimmed.includes('=');
+  });
+  if (!hasActiveProperty) return null;
+  return `${out.join('\n').replace(/\n+$/, '')}\n`;
+}
+
+async function detectTargetAndroidSdk(targetRunner, sourceSdkPath) {
+  if (!targetRunner) return null;
+  const candidateCheck = [
+    ...(sourceSdkPath ? [shellQuote(sourceSdkPath)] : []),
+    '"$ANDROID_HOME"',
+    '"$ANDROID_SDK_ROOT"',
+    '"$HOME/Android/Sdk"',
+    '"$HOME/Library/Android/sdk"',
+  ].join(' ');
+  const script = `for d in ${candidateCheck}; do if [ -n "$d" ] && [ -d "$d" ]; then printf '%s\\n' "$d"; exit 0; fi; done`;
+  try {
+    const { stdout } = await targetRunner.run('sh', ['-c', script], { timeout: 5_000 });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the best source checkout on another bound location of `project` to
+ * copy git-ignored artifacts from for `repository`.
+ */
+export function resolveArtifactSourceRepo({ project, targetHost, repository } = {}) {
+  if (!project || !repository) return null;
+  const normalized = normalizeProject(project);
+  const targetLower = String(targetHost || 'local').toLowerCase();
+  const candidates = normalized.locations.filter(loc => loc.host.toLowerCase() !== targetLower && loc.path);
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    const aLocal = a.host.toLowerCase() === 'local' ? 0 : 1;
+    const bLocal = b.host.toLowerCase() === 'local' ? 0 : 1;
+    if (aLocal !== bLocal) return aLocal - bLocal;
+    const aDef = a.host.toLowerCase() === normalized.defaultHost.toLowerCase() ? 0 : 1;
+    const bDef = b.host.toLowerCase() === normalized.defaultHost.toLowerCase() ? 0 : 1;
+    return aDef - bDef;
+  });
+
+  const repoLower = String(repository).toLowerCase();
+  for (const loc of candidates) {
+    if (normalized.workspaceMode !== 'folder') {
+      const ownName = path.basename(loc.path).toLowerCase();
+      if (ownName === repoLower) {
+        return { sourceHost: loc.host, sourceRepoPath: loc.path };
+      }
+    }
+    const matched = (loc.repositories ?? []).find(r => r.name?.toLowerCase() === repoLower);
+    if (matched?.path) {
+      return { sourceHost: loc.host, sourceRepoPath: matched.path };
+    }
+    if (normalized.workspaceMode !== 'folder' && (normalized.repoManifest?.length ?? 0) <= 1 && (loc.repositories ?? []).length === 0) {
+      return { sourceHost: loc.host, sourceRepoPath: loc.path };
+    }
+  }
+  return null;
+}
+
+/**
+ * Sync missing git-ignored local artifacts from `sourceRepoPath` to `targetRepoPath`.
+ */
+export async function syncRepoArtifacts({
+  sourceRepoPath,
+  sourceRunner,
+  sourceExecFile,
+  sourceFs: sourceFsOverride,
+  targetRepoPath,
+  targetRunner,
+  targetFs: targetFsOverride,
+  overwrite = false,
+} = {}) {
+  if (!sourceRepoPath || !targetRepoPath) return { synced: [], skipped: [] };
+  const sRunner = sourceRunner ?? createCommandRunner('local');
+  const tRunner = targetRunner ?? createCommandRunner('local');
+  if (sRunner.host === tRunner.host && sourceRepoPath === targetRepoPath) {
+    return { synced: [], skipped: [] };
+  }
+
+  const sourceFs = sourceFsOverride ?? createHostFs(sRunner);
+  const targetFs = targetFsOverride ?? createHostFs(tRunner);
+
+  const artifacts = await discoverIgnoredArtifacts({
+    repoPath: sourceRepoPath,
+    runner: sRunner,
+    execFile: sourceExecFile,
+    fs: sourceFs,
+  });
+  if (artifacts.length === 0) return { synced: [], skipped: [] };
+
+  let resolvedTargetSdk;
+  const synced = [];
+  const skipped = [];
+
+  for (const rel of artifacts) {
+    const srcFull = path.posix.join(sourceRepoPath, rel);
+    const dstFull = path.posix.join(targetRepoPath, rel);
+
+    if (!overwrite) {
+      try {
+        await targetFs.access(dstFull);
+        skipped.push(rel);
+        continue;
+      } catch {
+        // Missing on target — proceed to copy
+      }
+    }
+
+    let rawBuf;
+    try {
+      rawBuf = await sourceFs.readFile(srcFull);
+    } catch {
+      skipped.push(rel);
+      continue;
+    }
+
+    let mode = null;
+    if (sRunner.kind === 'local') {
+      try {
+        const st = await nodeFs.stat(srcFull);
+        mode = st.mode & 0o777;
+      } catch {
+        mode = null;
+      }
+    }
+
+    let payload = rawBuf;
+    if (path.posix.basename(rel) === 'local.properties') {
+      const text = Buffer.isBuffer(rawBuf) ? rawBuf.toString('utf8') : String(rawBuf);
+      const sdkMatch = text.match(/^\s*sdk\.dir\s*=\s*(.+)$/m);
+      if (sdkMatch) {
+        if (resolvedTargetSdk === undefined) {
+          const rawSdk = sdkMatch[1].trim().replace(/\\:/g, ':');
+          resolvedTargetSdk = await detectTargetAndroidSdk(tRunner, rawSdk);
+        }
+        const adapted = adaptLocalPropertiesContent(text, resolvedTargetSdk);
+        if (adapted === null) {
+          skipped.push(rel);
+          continue;
+        }
+        payload = Buffer.from(adapted, 'utf8');
+      }
+    }
+
+    try {
+      await targetFs.writeFile(dstFull, payload);
+      if (mode !== null && (mode & 0o077) === 0) {
+        const octal = (mode & 0o777).toString(8).padStart(4, '0');
+        if (tRunner.kind === 'local') {
+          await nodeFs.chmod(dstFull, mode);
+        } else if (typeof tRunner.run === 'function') {
+          await tRunner.run('chmod', [octal, '--', dstFull], { timeout: 5_000 });
+        }
+      }
+      synced.push(rel);
+    } catch {
+      skipped.push(rel);
+    }
+  }
+
+  return { synced, skipped };
+}
 
 // Safe Git URLs: https://, http://, ssh://, git://, or SCP-style user@host:path.
 // Must never start with `-` or contain whitespace/shell metacharacters.
@@ -287,6 +590,8 @@ export async function syncProjectLocation({
   repoPaths = null,
   runner,
   execFile,
+  resolveRunner = null,
+  syncArtifacts = true,
   timeout = SYNC_TIMEOUT_MS,
 } = {}) {
   const location = getProjectLocation(project, host);
@@ -334,6 +639,31 @@ export async function syncProjectLocation({
       execFile,
       timeout,
     });
+    if (res.status === 'synced' && syncArtifacts && runner) {
+      const source = resolveArtifactSourceRepo({
+        project,
+        targetHost: location.host,
+        repository: target.repository,
+      });
+      if (source) {
+        try {
+          const sourceRunner = typeof resolveRunner === 'function'
+            ? resolveRunner(source.sourceHost)
+            : (source.sourceHost === 'local' ? createCommandRunner('local') : null);
+          if (sourceRunner) {
+            const artifactRes = await syncRepoArtifacts({
+              sourceRepoPath: source.sourceRepoPath,
+              sourceRunner,
+              targetRepoPath: target.repoPath,
+              targetRunner: runner,
+            });
+            res.artifactsSynced = artifactRes.synced;
+          }
+        } catch {
+          // Non-fatal: git pull already succeeded.
+        }
+      }
+    }
     results.push(res);
   }
 
@@ -353,12 +683,14 @@ export async function syncProjectLocation({
   }
 
   const totalCommits = results.reduce((sum, r) => sum + (r.commitsPulled || 0), 0);
+  const totalArtifacts = results.reduce((sum, r) => sum + (r.artifactsSynced?.length || 0), 0);
   return {
     ok: true,
     status: 200,
     host: location.host,
-    updated: results.some(r => r.updated),
+    updated: results.some(r => r.updated) || totalArtifacts > 0,
     commitsPulled: totalCommits,
+    artifactsSynced: totalArtifacts,
     results,
   };
 }

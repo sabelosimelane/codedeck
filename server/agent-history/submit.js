@@ -7,7 +7,7 @@ export async function submitDetachedCommand(sessionId, command, { execFile, slee
   // Match terminal-runtime's tmux name mapping for detached sessions.
   // The trailing colon makes this a pane target (exact session, active window); without it tmux reports "can't find pane".
   const target = `=${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}:`;
-  execFile('tmux', ['send-keys', '-t', target, '-l', command], { stdio: 'pipe' });
+  await execFile('tmux', ['send-keys', '-t', target, '-l', command], { stdio: 'pipe' });
   await sleep(100);
-  execFile('tmux', ['send-keys', '-t', target, 'Enter'], { stdio: 'pipe' });
+  await execFile('tmux', ['send-keys', '-t', target, 'Enter'], { stdio: 'pipe' });
 }

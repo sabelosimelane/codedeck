@@ -84,7 +84,7 @@ import { resolveEditorCommand } from './editor-command.js';
 import { normalizeProjects, getProjectLocation, listProjectHosts, LOCAL_HOST, normalizeHostName } from './project-config.js';
 import { createTerminalSessionHostStore } from './terminal-session-host-store.js';
 import { syncProjectLocation } from './git-sync-service.js';
-import { createHostExecFile } from './host-exec.js';
+import { createHostExecFile, resolveHostRunner } from './host-exec.js';
 import { createHostFs } from './host-fs.js';
 import { createHostToolsResolver } from './host-tools.js';
 import { createHostsRouter } from './routes/hosts.js';
@@ -122,6 +122,8 @@ import { describeCompanionAccess, readLaunchSettings, resolveLaunchSettings } fr
 import { createMobileStore, MobileError } from './mobile-store.js';
 import { createMobileSessionStarter } from './mobile-session-start.js';
 import { createAgentHistory } from './agent-history/index.js';
+import { createRemoteAgentHistory } from './agent-history/remote.js';
+import { createSessionMaterializer } from './agent-history/transfer.js';
 import { createAgentSessionsRouter } from './routes/agent-sessions.js';
 import { submitDetachedCommand } from './agent-history/submit.js';
 import { createMobileRouter } from './routes/mobile.js';
@@ -671,7 +673,12 @@ async function reserveTerminalSession(projectName, { host: requestedHost, skipSy
   let syncOutcome = null;
   if (project.autoSync !== false && !skipSync) {
     const runner = createReachabilityAwareRunner(projectHost);
-    const outcome = await syncProjectLocation({ project, host: location.host, runner });
+    const outcome = await syncProjectLocation({
+      project,
+      host: location.host,
+      runner,
+      resolveRunner: h => resolveHostTools(h).runner,
+    });
     if (!outcome.ok) {
       return { status: outcome.status, body: outcome };
     }
@@ -1213,7 +1220,7 @@ const pipelineRunEngine = createRunEngine({
     const rt = runtimeForSession(sessionId);
     const snapshot = typeof rt.captureAgentScreenAsync === 'function'
       ? await rt.captureAgentScreenAsync(sessionId, PIPELINE_QUESTION_SCREEN_LINES)
-      : rt.captureAgentScreen(sessionId, PIPELINE_QUESTION_SCREEN_LINES);
+      : await rt.captureAgentScreen(sessionId, PIPELINE_QUESTION_SCREEN_LINES);
     if (snapshot.historyGuaranteed !== true || typeof snapshot.data !== 'string') {
       throw new Error(`The terminal screen of ${sessionId} could not be read.`);
     }
@@ -1319,11 +1326,29 @@ app.use(createPipelinesRouter({
 }));
 
 const agentHistory = createAgentHistory({ home: os.homedir(), fs: fsSync, Database: db.constructor });
+const resolveAgentHostRunner = hostName => resolveHostRunner(hostName, {
+  loadHosts,
+  createRunner: createReachabilityAwareRunner,
+  getReachability: hostReachability.getReachability,
+});
+const remoteAgentHistory = createRemoteAgentHistory({ resolveHostRunner: resolveAgentHostRunner });
+const materializeAgentSession = createSessionMaterializer({ resolveHostRunner: resolveAgentHostRunner });
 app.use(createAgentSessionsRouter({
   loadProjects,
   history: agentHistory,
-  startSession: projectName => startSessionWithWorktree(projectName),
-  submitCommand: (sessionId, command) => submitDetachedCommand(sessionId, command, { execFile: execFileSync, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) }),
+  remoteHistory: remoteAgentHistory,
+  materializeSession: materializeAgentSession,
+  startSession: (projectName, options) => startSessionWithWorktree(projectName, options),
+  submitCommand: (sessionId, command, options) => {
+    const tools = resolveHostTools(options?.host);
+    const execFileAsync = (cmd, args, opts) => new Promise((resolve, reject) => {
+      tools.execFile(cmd, args, opts, (err, stdout, stderr) => (err ? reject(err) : resolve({ stdout, stderr })));
+    });
+    return submitDetachedCommand(sessionId, command, {
+      execFile: execFileAsync,
+      sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    });
+  },
 }));
 app.use(createMobileRouter({
   store: mobileStore, notifications: mobileNotifications,

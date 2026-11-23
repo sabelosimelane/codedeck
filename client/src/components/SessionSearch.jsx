@@ -14,8 +14,14 @@ function relativeTime(timestamp) {
   return `${Math.floor(elapsed / 86400000)}d ago`;
 }
 
-export default function SessionSearch({ project, onClose, onResumed }) {
+function hostLabel(host) {
+  if (!host || host === 'local') return 'Local';
+  return host.split('.')[0] || host;
+}
+
+export default function SessionSearch({ project, activeHost = null, onClose, onResumed }) {
   const [scope, setScope] = useState('project');
+  const [hostFilter, setHostFilter] = useState('');
   const [cli, setCli] = useState('');
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -23,6 +29,7 @@ export default function SessionSearch({ project, onClose, onResumed }) {
   const [page, setPage] = useState(0); // API pages are zero-based
   const [hasNextPage, setHasNextPage] = useState(false);
   const [sources, setSources] = useState([]);
+  const [hosts, setHosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [highlight, setHighlight] = useState(0);
@@ -45,6 +52,7 @@ export default function SessionSearch({ project, onClose, onResumed }) {
     setError(null);
     const params = new URLSearchParams({ page: String(page), size: String(PAGE_SIZE), sort: '-updatedAt' });
     if (scope === 'project') params.set('project', project.name);
+    if (hostFilter) params.set('host', hostFilter);
     if (cli) params.set('cli', cli);
     if (debouncedQuery.trim()) params.set('q', debouncedQuery.trim());
 
@@ -59,7 +67,8 @@ export default function SessionSearch({ project, onClose, onResumed }) {
         if (requestId.current !== currentId) return;
         setRows(previous => page === 0 ? data.data : [...previous, ...data.data]);
         setHasNextPage(data.page.hasNextPage);
-        setSources(data.sources);
+        setSources(data.sources ?? []);
+        setHosts(data.hosts ?? []);
       } catch (cause) {
         if (requestId.current !== currentId) return;
         setError(cause.message);
@@ -68,7 +77,7 @@ export default function SessionSearch({ project, onClose, onResumed }) {
       }
     })();
     return () => { requestId.current++; };
-  }, [project.name, scope, cli, debouncedQuery, page]);
+  }, [project.name, scope, hostFilter, cli, debouncedQuery, page]);
 
   const resetSearch = () => {
     requestId.current++;
@@ -81,12 +90,19 @@ export default function SessionSearch({ project, onClose, onResumed }) {
   const resume = async (row) => {
     if (pendingResume.current) return;
     pendingResume.current = true;
-    setResuming(`${row.cli}:${row.conversationId}`);
+    const rowKey = `${row.cli}:${row.conversationId}`;
+    setResuming(rowKey);
     try {
+      const payload = { cli: row.cli, conversationId: row.conversationId, project: row.project };
+      if (row.project === project.name && activeHost) {
+        payload.host = activeHost;
+      } else if (hostFilter) {
+        payload.host = hostFilter;
+      }
       const res = await fetch('/api/agent-sessions/resume', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cli: row.cli, conversationId: row.conversationId, project: row.project }),
+        body: JSON.stringify(payload),
       }).catch(() => { throw new Error('Server unreachable'); });
       if (!res.ok) {
         const problem = await res.json();
@@ -94,7 +110,8 @@ export default function SessionSearch({ project, onClose, onResumed }) {
       }
       const data = await res.json();
       onResumed(data);
-      showToast({ type: 'success', message: `Resumed ${CLI_NAMES[row.cli]} conversation` });
+      const verb = data.synced ? 'Synced and resumed' : 'Resumed';
+      showToast({ type: 'success', message: `${verb} ${CLI_NAMES[row.cli]} conversation` });
       onClose();
     } catch (cause) {
       showToast({ type: 'error', message: cause.message });
@@ -112,6 +129,9 @@ export default function SessionSearch({ project, onClose, onResumed }) {
   };
 
   const unavailable = sources.filter(source => !source.available).map(source => CLI_NAMES[source.cli]);
+  const unreachableHosts = hosts.filter(entry => !entry.available);
+  const showHostFilter = hosts.length > 1 || Boolean(hostFilter);
+  const showHostBadge = hosts.length > 1 || rows.some(row => row.host && row.host !== 'local');
 
   return (
     <div className="session-search-overlay" data-testid="session-search-overlay" onClick={event => { if (event.target === event.currentTarget) onClose(); }} onKeyDown={handleKeyDown}>
@@ -123,9 +143,19 @@ export default function SessionSearch({ project, onClose, onResumed }) {
             <button type="button" aria-pressed={scope === 'project'} onClick={() => { resetSearch(); setScope('project'); }}>This project</button>
             <button type="button" aria-pressed={scope === 'all'} onClick={() => { resetSearch(); setScope('all'); }}>All projects</button>
           </div>
-          <select aria-label="CLI" value={cli} onChange={event => { resetSearch(); setCli(event.target.value); }}>
-            <option value="">All CLIs</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="agy">Antigravity</option>
-          </select>
+          <div className="session-search-filters">
+            {showHostFilter && (
+              <select aria-label="Host" value={hostFilter} onChange={event => { resetSearch(); setHostFilter(event.target.value); }}>
+                <option value="">All hosts</option>
+                {hosts.map(entry => (
+                  <option key={entry.host} value={entry.host}>{hostLabel(entry.host)}</option>
+                ))}
+              </select>
+            )}
+            <select aria-label="CLI" value={cli} onChange={event => { resetSearch(); setCli(event.target.value); }}>
+              <option value="">All CLIs</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="agy">Antigravity</option>
+            </select>
+          </div>
         </div>
         <div className="session-search-list" role="listbox" aria-label="Conversations">
           {rows.map((row, index) => {
@@ -134,7 +164,12 @@ export default function SessionSearch({ project, onClose, onResumed }) {
             const rowKey = `${row.cli}:${row.conversationId}`;
             return <button type="button" aria-current={index === highlight} disabled={Boolean(resuming)} className="session-search-row" key={rowKey} onMouseEnter={() => setHighlight(index)} onClick={() => resume(row)} aria-label={`${label}, ${CLI_NAMES[row.cli]}`}>
               <span className={`session-search-label ${firstPrompt ? 'first-prompt' : ''}`} title={label}>{firstPrompt ? `“${label}”` : label}</span>
-              <span className="session-search-meta"><span>{CLI_NAMES[row.cli]}</span>{scope === 'all' && <span>{row.project}</span>}<time dateTime={new Date(row.updatedAt).toISOString()}>{relativeTime(row.updatedAt)}</time></span>
+              <span className="session-search-meta">
+                <span>{CLI_NAMES[row.cli]}</span>
+                {scope === 'all' && <span>{row.project}</span>}
+                {showHostBadge && row.host && <span className="session-search-host-badge" title={row.host}>{hostLabel(row.host)}</span>}
+                <time dateTime={new Date(row.updatedAt).toISOString()}>{relativeTime(row.updatedAt)}</time>
+              </span>
               {resuming === rowKey && <span className="session-search-progress">Resuming…</span>}
             </button>;
           })}
@@ -142,6 +177,11 @@ export default function SessionSearch({ project, onClose, onResumed }) {
           {error && <div className="session-search-state" role="alert">{error}</div>}
           {!loading && !error && rows.length === 0 && <div className="session-search-state">No conversations found</div>}
         </div>
+        {unreachableHosts.length > 0 && (
+          <div className="session-search-note session-search-note-warn" role="status">
+            Could not reach {unreachableHosts.map(h => hostLabel(h.host)).join(', ')} — showing results from available hosts.
+          </div>
+        )}
         {unavailable.length > 0 && <div className="session-search-note">{unavailable.join(' and ')} have no history on this machine.</div>}
         {!loading && !error && hasNextPage && <button type="button" className="session-search-more" onClick={() => setPage(value => value + 1)}>Load more</button>}
       </div>

@@ -761,9 +761,9 @@ function normalizeCapturedSnapshot(output, windowLines = TERMINAL_SNAPSHOT_WINDO
 }
 
 /** The main pane of a session: the lowest pane of window 0, the one the status reader reads. */
-async function mainPaneTarget(sessionId, caller, run = execFileAsync) {
+async function mainPaneTarget(runTmux, sessionId, caller) {
   const tmuxName = sanitizeTmuxName(sessionId);
-  const { stdout } = await run('tmux', ['list-panes', '-t', `${tmuxName}:0`, '-F', '#{pane_index}'], { encoding: 'utf8' });
+  const { stdout } = await runTmux(['list-panes', '-t', `${tmuxName}:0`, '-F', '#{pane_index}']);
   const indexes = stdout.split('\n').filter(Boolean).map(Number);
   if (!indexes.length || indexes.some(index => !Number.isSafeInteger(index) || index < 0)) {
     throw new Error(`${caller}: no main pane found in ${sessionId}`);
@@ -771,13 +771,25 @@ async function mainPaneTarget(sessionId, caller, run = execFileAsync) {
   return `${tmuxName}:0.${Math.min(...indexes)}`;
 }
 
-async function inspectPane(sessionId, run = execFileAsync) {
+async function typeLineWithTmux(runTmux, sessionId, text) {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    throw new Error(`typeLineAsync: sessionId must be a non-empty string, got ${sessionId}`);
+  }
+  if (typeof text !== 'string' || !text.trim() || /[\r\n]/.test(text)) {
+    throw new Error('typeLineAsync: text must be one non-empty line');
+  }
+  const target = await mainPaneTarget(runTmux, sessionId, 'typeLineAsync');
+  await runTmux(['send-keys', '-t', target, '-l', '--', text]);
+  await runTmux(['send-keys', '-t', target, 'Enter']);
+}
+
+async function inspectPaneWithTmux(runTmux, sessionId) {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     throw new Error(`inspectPaneAsync: sessionId must be a non-empty string, got ${sessionId}`);
   }
-  const target = await mainPaneTarget(sessionId, 'inspectPaneAsync', run);
-  const { stdout } = await run('tmux', [TABS, 'display-message', '-p', '-t', target,
-    '#{pane_index}\t#{pane_in_mode}\t#{pane_input_off}\t#{pane_dead}\t#{pane_current_command}\t#{pane_mode}\t#{pane_current_path}'], { encoding: 'utf8' });
+  const target = await mainPaneTarget(runTmux, sessionId, 'inspectPaneAsync');
+  const { stdout } = await runTmux([TABS, 'display-message', '-p', '-t', target,
+    '#{pane_index}\t#{pane_in_mode}\t#{pane_input_off}\t#{pane_dead}\t#{pane_current_command}\t#{pane_mode}\t#{pane_current_path}']);
   const fields = stdout.replace(/\r?\n$/, '').split('\t');
   if (fields.length < 7) throw new Error(`inspectPaneAsync: unexpected tmux pane state for ${sessionId}: ${JSON.stringify(stdout)}`);
   // The path is last: it is the one field that could itself hold a tab.
@@ -786,47 +798,21 @@ async function inspectPane(sessionId, run = execFileAsync) {
   return { paneIndex: Number(index), inMode: inMode === '1', inputOff: inputOff === '1', dead: dead === '1', currentCommand, mode, currentPath };
 }
 
-function workflowPaneMethods(run) {
-  return {
-    /**
-     * Types one line into the main pane of a session and presses Enter, through tmux itself rather
-     * than through an attached client, for input that did not arrive the usual way.
-     */
-    async typeLineAsync(sessionId, text) {
-      if (typeof sessionId !== 'string' || !sessionId.trim()) {
-        throw new Error(`typeLineAsync: sessionId must be a non-empty string, got ${sessionId}`);
-      }
-      if (typeof text !== 'string' || !text.trim() || /[\r\n]/.test(text)) {
-        throw new Error('typeLineAsync: text must be one non-empty line');
-      }
-      const target = await mainPaneTarget(sessionId, 'typeLineAsync', run);
-      await run('tmux', ['send-keys', '-t', target, '-l', '--', text], { encoding: 'utf8' });
-      await run('tmux', ['send-keys', '-t', target, 'Enter'], { encoding: 'utf8' });
-    },
-
-    /** What the main pane of a session is doing: its mode, whether it takes input, its command, its folder. */
-    inspectPaneAsync: sessionId => inspectPane(sessionId, run),
-
-    /**
-     * Starts the main pane of a session again with a fresh shell in `cwd`, for an agent that
-     * takes no input: whatever runs there is ended and the pane's terminal modes are reset.
-     * The main pane is the lowest pane of window 0, the one the status reader reads as the agent.
-     */
-    async respawnMainPaneAsync(sessionId, cwd) {
-      if (typeof sessionId !== 'string' || !sessionId.trim()) {
-        throw new Error(`respawnMainPaneAsync: sessionId must be a non-empty string, got ${sessionId}`);
-      }
-      if (typeof cwd !== 'string' || !isAbsolute(cwd) || cwd.includes('\0')) {
-        throw new Error(`respawnMainPaneAsync: cwd must be an absolute path, got ${cwd}`);
-      }
-      const target = await mainPaneTarget(sessionId, 'respawnMainPaneAsync', run);
-      // respawn-pane keeps the modes the agent switched on (mouse reporting, …): reset them first,
-      // so the reset cannot clear the prompt of the new shell.
-      await run('tmux', ['send-keys', '-R', '-t', target], { encoding: 'utf8' });
-      await run('tmux', ['respawn-pane', '-k', '-c', cwd, '-t', target], { encoding: 'utf8' });
-    },
-  };
+async function respawnMainPaneWithTmux(runTmux, sessionId, cwd) {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    throw new Error(`respawnMainPaneAsync: sessionId must be a non-empty string, got ${sessionId}`);
+  }
+  if (typeof cwd !== 'string' || !isAbsolute(cwd) || cwd.includes('\0')) {
+    throw new Error(`respawnMainPaneAsync: cwd must be an absolute path, got ${cwd}`);
+  }
+  const target = await mainPaneTarget(runTmux, sessionId, 'respawnMainPaneAsync');
+  // respawn-pane keeps the modes the agent switched on (mouse reporting, …): reset them first,
+  // so the reset cannot clear the prompt of the new shell.
+  await runTmux(['send-keys', '-R', '-t', target]);
+  await runTmux(['respawn-pane', '-k', '-c', cwd, '-t', target]);
 }
+
+const runLocalTmux = args => execFileAsync('tmux', args, { encoding: 'utf8' });
 
 function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess = process.kill.bind(process), excludePids = [process.pid, process.ppid] } = {}) {
   let ptySpawnStatus = null;
@@ -973,7 +959,27 @@ function createTmuxRuntime({ now = Date.now, sleep = processSleep, signalProcess
       }
     },
 
-    ...workflowPaneMethods(execFileAsync),
+    /**
+     * Types one line into the main pane of a session and presses Enter, through tmux itself rather
+     * than through an attached client, for input that did not arrive the usual way.
+     */
+    async typeLineAsync(sessionId, text) {
+      return typeLineWithTmux(runLocalTmux, sessionId, text);
+    },
+
+    /** What the main pane of a session is doing: its mode, whether it takes input, its command, its folder. */
+    async inspectPaneAsync(sessionId) {
+      return inspectPaneWithTmux(runLocalTmux, sessionId);
+    },
+
+    /**
+     * Starts the main pane of a session again with a fresh shell in `cwd`, for an agent that
+     * takes no input: whatever runs there is ended and the pane's terminal modes are reset.
+     * The main pane is the lowest pane of window 0, the one the status reader reads as the agent.
+     */
+    async respawnMainPaneAsync(sessionId, cwd) {
+      return respawnMainPaneWithTmux(runLocalTmux, sessionId, cwd);
+    },
 
     async killAsync(entry, sessionId) {
       if (this.isAvailable()) {
@@ -1363,7 +1369,6 @@ export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sl
   return {
     type: 'tmux',
     host: hostName,
-    ...workflowPaneMethods(runner.run.bind(runner)),
 
     /** Host counterpart of the local getSessionActivityAsync. */
     async getSessionActivityAsync(sessionId) {
@@ -1491,6 +1496,18 @@ export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sl
       }
     },
 
+    async typeLineAsync(sessionId, text) {
+      return typeLineWithTmux(tmux, sessionId, text);
+    },
+
+    async inspectPaneAsync(sessionId) {
+      return inspectPaneWithTmux(tmux, sessionId);
+    },
+
+    async respawnMainPaneAsync(sessionId, cwd) {
+      return respawnMainPaneWithTmux(tmux, sessionId, cwd);
+    },
+
     /** Runner-routed equivalent of the local snapshot capture — same shape, same clamping. */
     async captureAgentScreen(sessionId, windowLines = TERMINAL_SNAPSHOT_WINDOW_LINES) {
       const tmuxName = sanitizeTmuxName(sessionId);
@@ -1510,6 +1527,10 @@ export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sl
       } catch {
         return normalizeCapturedSnapshot('', windowLines, { historyGuaranteed: false });
       }
+    },
+
+    async captureAgentScreenAsync(sessionId, windowLines = TERMINAL_SNAPSHOT_WINDOW_LINES) {
+      return this.captureAgentScreen(sessionId, windowLines);
     },
 
     async captureSessionSnapshotAsync(sessionId, windowLines = TERMINAL_SNAPSHOT_WINDOW_LINES) {

@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useState } from 'react';
-import { Button, Dialog, Field, Note, SegmentedControl } from '../ui/index.jsx';
+import { Button, Dialog, Field, Note, SegmentedControl, Select } from '../ui/index.jsx';
 import { listProjectRepositories } from '../../utils/projectRepositoriesApi.js';
 import { listWorktreeCandidates, makeTaskFromWorktree } from '../../utils/tasksApi.js';
 import { useToast } from '../ToastContext';
@@ -13,8 +13,10 @@ const FALLBACK = 'Something went wrong. Please try again.';
  * with several repositories (`withRepositories`) the owner also ticks the ones the task
  * includes; the rest stay readable and can be added to the task later.
  */
-export default function NewTaskDialog({ projectName, host, withRepositories = false, onCreate, onClose }) {
+export default function NewTaskDialog({ projectName, host, locations = [], withRepositories = false, onCreate, onClose }) {
   const { showToast } = useToast();
+  const [selectedHost, setSelectedHost] = useState(host || 'local');
+  const explicitHost = selectedHost && (selectedHost !== 'local' || locations.length > 1) ? selectedHost : undefined;
   const [title, setTitle] = useState('');
   const [source, setSource] = useState('new');
   const [candidates, setCandidates] = useState(null);
@@ -29,20 +31,21 @@ export default function NewTaskDialog({ projectName, host, withRepositories = fa
 
   useEffect(() => {
     let alive = true;
-    listWorktreeCandidates(projectName).then(list => {
+    const req = explicitHost ? listWorktreeCandidates(projectName, { host: explicitHost }) : listWorktreeCandidates(projectName);
+    req.then(list => {
       if (alive) setCandidates(list);
     }).catch(failure => {
       if (alive) setError(failure instanceof Error ? failure.message : FALLBACK);
     });
     return () => { alive = false; };
-  }, [projectName]);
+  }, [projectName, explicitHost]);
 
   useEffect(() => {
     if (!withRepositories) return undefined;
     let alive = true;
     const load = async () => {
       try {
-        const list = await listProjectRepositories(projectName);
+        const list = explicitHost ? await listProjectRepositories(projectName, { host: explicitHost }) : await listProjectRepositories(projectName);
         if (!alive) return;
         setRepositories(list);
         // A task starts in the project's own repository unless the owner says otherwise.
@@ -53,7 +56,7 @@ export default function NewTaskDialog({ projectName, host, withRepositories = fa
     };
     load();
     return () => { alive = false; };
-  }, [projectName, withRepositories]);
+  }, [projectName, withRepositories, explicitHost]);
 
   // The repository the task starts in comes first: the project's own when it is ticked.
   const chosen = repositories === null ? [] : [...repositories.filter(entry => entry.own), ...repositories.filter(entry => !entry.own)]
@@ -76,15 +79,19 @@ export default function NewTaskDialog({ projectName, host, withRepositories = fa
     setError(null);
     try {
       if (source === 'existing') {
-        const task = madeTask ?? await makeTaskFromWorktree({ project: projectName, worktreePath: candidate.path,
-          ...(title.trim() ? { title: title.trim() } : {}) });
+        const task = madeTask ?? await makeTaskFromWorktree({
+          project: projectName,
+          worktreePath: candidate.path,
+          ...(title.trim() ? { title: title.trim() } : {}),
+          ...(explicitHost ? { host: explicitHost } : {}),
+        });
         if (madeTask === null) {
           setMadeTask(task);
           showToast({ type: 'success', message: `Task “${task.title}” made from ${candidate.name}` });
         }
         await onCreate({ adoptedTask: task });
       } else {
-        await onCreate({ project: projectName, ...(host && host !== 'local' ? { host } : {}), title: title.trim(), ...(withRepositories ? { repositories: chosen } : {}) });
+        await onCreate({ project: projectName, ...(explicitHost ? { host: explicitHost } : {}), title: title.trim(), ...(withRepositories ? { repositories: chosen } : {}) });
       }
       onClose();
     } catch (failure) {
@@ -104,6 +111,15 @@ export default function NewTaskDialog({ projectName, host, withRepositories = fa
         <Button variant="primary" type="submit" form={formId} disabled={!ready}>{pending ? 'Creating…' : madeTask ? 'Open task' : source === 'existing' ? 'Make task' : 'Create task'}</Button>
       </>}>
       <form id={formId} onSubmit={submit} style={{ display: 'contents' }}>
+        {locations.length > 1 && (
+          <Field label="Host" hint="Which host creates the task worktree and opens its terminal.">
+            <Select label="Host" value={selectedHost} onChange={setSelectedHost} disabled={madeTask !== null || pending}>
+              {locations.map(loc => (
+                <option key={loc.host} value={loc.host}>{loc.host === 'local' ? 'local (This Mac)' : loc.host} — {loc.path}</option>
+              ))}
+            </Select>
+          </Field>
+        )}
         {candidates?.length > 0 && <SegmentedControl label="Task source" value={source} onChange={setSource} options={[
           { value: 'new', label: 'A new task', disabled: madeTask !== null },
           { value: 'existing', label: 'Use an existing worktree', disabled: madeTask !== null },

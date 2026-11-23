@@ -129,8 +129,17 @@ export function previewPrompt({ workflow, nodeIndex, input }, { signal } = {}) {
 }
 
 /** What a run of this workflow with this input would work from: where its todo is and which repositories it names. Reads only. */
-export function planRun({ workflowId, project, input }, { signal } = {}) {
-  return request('/run-plans', { method: 'POST', body: { workflowId, project, input }, signal });
+export function planRun({ workflowId, project, input, host }, { signal } = {}) {
+  return request('/run-plans', {
+    method: 'POST',
+    body: {
+      workflowId,
+      project,
+      input,
+      ...(host === undefined ? {} : { host }),
+    },
+    signal,
+  });
 }
 
 /** Workflow templates the owner saved; the built-in ones are shared code, not records. */
@@ -173,8 +182,8 @@ export function preflightProject(project, { host, signal } = {}) {
 }
 
 /** Every working tree of the project's repository: its home checkout and linked worktrees. */
-export function listWorktrees(project, { signal } = {}) {
-  return listAll('/worktrees', { signal, query: { project } });
+export function listWorktrees(project, { host, signal } = {}) {
+  return listAll('/worktrees', { signal, query: { project, ...(host ? { host } : {}) } });
 }
 
 export function listOpenRuns({ project, signal } = {}) {

@@ -191,6 +191,11 @@ export function createLocalRunner(deps = {}) {
     copyTo(localPath, remotePath) {
       return copyFileFn(localPath, remotePath);
     },
+
+    /** Copy a file from a local source path to a local destination path. */
+    copyFrom(remotePath, localPath) {
+      return copyFileFn(remotePath, localPath);
+    },
   };
 }
 
@@ -298,6 +303,20 @@ export function createSshRunner(host, deps = {}) {
         ...baseFlags(opts.connectTimeout),
         '--', localPath,
         `${sshTarget}:${remotePath}`,
+      ];
+      return runLimited(() => runExecFile('scp', argv, {
+        timeout: opts.timeout ?? DEFAULT_RUN_TIMEOUT_MS,
+        maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
+        encoding: 'utf8',
+      }));
+    },
+
+    copyFrom(remotePath, localPath, opts = {}) {
+      ensureSocketDir();
+      const argv = [
+        ...baseFlags(opts.connectTimeout),
+        '--', `${sshTarget}:${remotePath}`,
+        localPath,
       ];
       return runLimited(() => runExecFile('scp', argv, {
         timeout: opts.timeout ?? DEFAULT_RUN_TIMEOUT_MS,

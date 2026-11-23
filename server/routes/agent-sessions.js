@@ -8,7 +8,7 @@ export function createAgentSessionsRouter(deps) {
   router.use(BASE, (req, res, next) => { req.agentSessionsTraceId = randomUUID(); res.set('X-Trace-Id', req.agentSessionsTraceId); next(); });
   router.use(BASE, express.json({ limit: '4kb' }));
   const route = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch(next);
-  router.get(BASE, route((req, res) => res.json(service.list(req.query))));
+  router.get(BASE, route(async (req, res) => res.json(await service.list(req.query))));
   router.post(`${BASE}/resume`, route(async (req, res) => res.status(201).json(await service.resume(req.body))));
   router.use(BASE, (_req, _res, next) => next(new SessionError('Agent sessions endpoint not found', 404)));
   router.use((error, req, res, next) => {

@@ -60,6 +60,69 @@ describe('agy idle with its mode shown in the input line', () => {
       expect(agy.read(screen('agy', name)).turn).toBe('needs_input');
     }
   });
+
+  it('keeps agy waiting (agent_background_shells) while background tasks are running below the prompt', () => {
+    const lines = [
+      '  Fixed the cancelGate helper in PanicControllerTest.kt. Waiting for the running :app:testDebugUnitTest TDD failure check (task-53) to complete.',
+      '',
+      '────────────────────────────────────────────────────────────────────────────────',
+      '>',
+      '────────────────────────────────────────────────────────────────────────────────',
+      '  ● [19:46:02] cd /home/sabside/git/mlondolozi/worktrees/when-sending-sos-the-10-seconds--e8b74aed/mobile-app && ./gradlew :core:jvmTest --tests ... running',
+      '────────────────────────────────────────────────────────────────────────────────',
+      '? for shortcuts                                                                                              Gemini 4 Hydrogen · medium · 1 task(s) · /tasks',
+    ];
+    expect(agy.read(lines)).toEqual({ turn: 'idle', backgroundShells: 1 });
+    const execution = classifyTerminalExecution({
+      paneCurrentCommand: 'agy',
+      paneDead: '0',
+      snapshotText: lines.join('\n'),
+      subagentPanes: [],
+      quietSeconds: 45,
+    });
+    expect(execution).toMatchObject({
+      executionStatus: 'running',
+      executionReason: 'agent_background_shells',
+      backgroundShells: 1,
+    });
+    expect(classify({
+      executionReason: execution.executionReason,
+      foregroundCommand: 'agy',
+      lines,
+      profile: agy,
+      ...alive,
+    })).toBe('waiting');
+  });
+
+  it('treats an idle agy prompt with only a stale task footer as ready (no live running row)', () => {
+    const lines = [
+      '  Fixed the cancelGate helper in PanicControllerTest.kt.',
+      '',
+      '────────────────────────────────────────────────────────────────────────────────',
+      '>',
+      '────────────────────────────────────────────────────────────────────────────────',
+      '? for shortcuts                                                                                              Gemini 4 Hydrogen · medium · 1 task(s) · /tasks',
+    ];
+    expect(agy.read(lines)).toEqual({ turn: 'idle', backgroundShells: 0 });
+    const execution = classifyTerminalExecution({
+      paneCurrentCommand: 'agy',
+      paneDead: '0',
+      snapshotText: lines.join('\n'),
+      subagentPanes: [],
+      quietSeconds: 45,
+    });
+    expect(execution).toMatchObject({
+      executionStatus: 'idle',
+      executionReason: 'agent_prompt_idle',
+    });
+    expect(classify({
+      executionReason: execution.executionReason,
+      foregroundCommand: 'agy',
+      lines,
+      profile: agy,
+      ...alive,
+    })).toBe('ready');
+  });
 });
 
 // Codex hides its `• Working (…)` line while it writes text, between tools and for its final

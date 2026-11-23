@@ -59,6 +59,8 @@ function requireStarted(run) {
 export default function RunWorkflowDialog({ projectName, host = 'local', locations = [], repositories = [], tasks = [], defaultTaskId = null, initialInput = '', initialRequestId, planDelay = PLAN_DELAY_MS, onClose, onStart }) {
   const { showToast } = useToast();
   const [selectedHost, setSelectedHost] = useState(host || 'local');
+  const explicitHost = selectedHost && (selectedHost !== 'local' || locations.length > 1) ? selectedHost : undefined;
+  const hostOption = explicitHost ? { host: explicitHost } : undefined;
   const [syncConflict, setSyncConflict] = useState(null);
   const [syncProceeding, setSyncProceeding] = useState(false);
   const [workflows, setWorkflows] = useState([]);
@@ -127,9 +129,9 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
         const nextPreflight = parsePreflight(preflightResponse);
         // Worktrees exist only for a local git project; a missing setup agent does not change that.
         const listable = nextPreflight.reasons.every(reason => reason.code === SETUP_AGENT_MISSING);
-        const nextWorktrees = listable ? (await listWorktrees(projectName)).map(parseWorktree) : [];
+        const nextWorktrees = listable ? (await listWorktrees(projectName, hostOption)).map(parseWorktree) : [];
         const [nextRepositories, nextCandidates] = listable ? await Promise.all([
-          repositories.length > 0 ? listProjectRepositories(projectName) : [], listWorktreeCandidates(projectName),
+          repositories.length > 0 ? listProjectRepositories(projectName, hostOption) : [], listWorktreeCandidates(projectName, hostOption),
         ]) : [[], []];
         if (cancelled) return;
         setWorkflows(nextWorkflows.map(parseWorkflow));
@@ -215,7 +217,12 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
-        const next = parseRunPlan(await planRun({ workflowId, project: projectName, input }, { signal: controller.signal }));
+        const next = parseRunPlan(await planRun({
+          workflowId,
+          project: projectName,
+          input,
+          ...(explicitHost ? { host: explicitHost } : {}),
+        }, { signal: controller.signal }));
         if (controller.signal.aborted) return;
         setPlan(next);
         if (next.repositories !== null) {
@@ -255,10 +262,10 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
         }
           : where === OPEN_TASK ? { taskId: chosenTask.id, ...(start ? { startIn: start.name } : {}) }
             : { worktreePath: chosenWorktree.path }),
-        ...(selectedHost && selectedHost !== 'local' ? { host: selectedHost } : {}),
+        ...(explicitHost ? { host: explicitHost } : {}),
       },
       extras: extraRuns.map(entry => ({ ...assignment, requestId: newRequestId(), workflowId, input: entry.input,
-        ...(selectedHost && selectedHost !== 'local' ? { host: selectedHost } : {}),
+        ...(explicitHost ? { host: explicitHost } : {}),
         newTask: { repositories: [entry.repository] }, startIn: entry.repository })),
     };
   }
@@ -273,7 +280,8 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
       if (where === EXISTING_WORKTREE && submission === null) {
         try {
           const made = await makeTaskFromWorktree({ project: projectName, worktreePath: candidate.path,
-            ...(typedTitle ? { title: typedTitle } : {}) });
+            ...(typedTitle ? { title: typedTitle } : {}),
+            ...(explicitHost ? { host: explicitHost } : {}) });
           setAdoptedTask(made);
           showToast({ type: 'success', message: `Task “${made.title}” made from ${candidate.name}` });
           attempt = { ...attempt, primary: { ...attempt.primary, taskId: made.id,
@@ -376,7 +384,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
             <Field label="Host" hint="Which host runs this workflow and holds its worktree.">
               <Select label="Host" value={selectedHost} onChange={setSelectedHost}>
                 {locations.map(loc => (
-                  <option key={loc.host} value={loc.host}>{loc.host} — {loc.path}</option>
+                  <option key={loc.host} value={loc.host}>{loc.host === 'local' ? 'local (This Mac)' : loc.host} — {loc.path}</option>
                 ))}
               </Select>
             </Field>

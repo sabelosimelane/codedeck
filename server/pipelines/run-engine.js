@@ -673,6 +673,9 @@ export function createRunEngine({
           return;
         }
         exitedReadings = 0;
+        if (screen && workflow.snapshot().status === 'running' && typeof workflow.replayScreen === 'function') {
+          if (workflow.replayScreen(screen)) return;
+        }
         idleTurnReadings = readiness === 'ready' ? idleTurnReadings + 1 : 0;
         settledIdleReadings = readiness === 'ready' && screen === lastIdleScreen ? settledIdleReadings + 1 : (readiness === 'ready' ? 1 : 0);
         lastIdleScreen = readiness === 'ready' ? screen : null;

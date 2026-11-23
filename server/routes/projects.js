@@ -34,7 +34,9 @@ import {
   detectGitOriginUrl,
   isValidGitUrl,
   repoFolderNameFromGitUrl,
+  resolveArtifactSourceRepo,
   syncProjectLocation,
+  syncRepoArtifacts,
 } from '../git-sync-service.js';
 
 function isKnownUnreachable(getReachability, hostName) {
@@ -98,7 +100,34 @@ export function createProjectsRouter(deps = {}) {
     detectOrigin = detectGitOriginUrl,
     syncLocation = syncProjectLocation,
     cloneRepo = cloneToHost,
+    syncArtifacts = syncRepoArtifacts,
   } = deps;
+
+  function runnerForHostName(rawHost) {
+    const hostName = normalizeHostName(rawHost);
+    if (hostName === LOCAL_HOST) return createRunner(null);
+    const hostObj = findHostByName(loadHosts(), hostName);
+    return hostObj ? createRunner(hostObj) : null;
+  }
+
+  async function syncClonedRepoArtifacts(project, targetHost, repository, targetRepoPath, targetRunner) {
+    if (typeof syncArtifacts !== 'function') return [];
+    const source = resolveArtifactSourceRepo({ project, targetHost, repository });
+    if (!source) return [];
+    const sourceRunner = runnerForHostName(source.sourceHost);
+    if (!sourceRunner) return [];
+    try {
+      const res = await syncArtifacts({
+        sourceRepoPath: source.sourceRepoPath,
+        sourceRunner,
+        targetRepoPath,
+        targetRunner,
+      });
+      return res?.synced ?? [];
+    } catch {
+      return [];
+    }
+  }
 
   /**
    * Validate that `projectPath` exists on `hostName`'s filesystem.
@@ -517,11 +546,14 @@ export function createProjectsRouter(deps = {}) {
       }
 
       const clonedEntries = [];
+      let totalArtifactsSynced = 0;
       try {
         for (const entry of toClone) {
           const dest = path.posix.join(baseDir, entry.name);
           await cloneRepo({ gitUrl: entry.gitUrl, targetPath: dest, runner: resolved.runner });
-          clonedEntries.push({ name: entry.name, path: dest, primary: entry.primary });
+          const syncedArtifacts = await syncClonedRepoArtifacts(existing, resolved.hostName, entry.name, dest, resolved.runner);
+          totalArtifactsSynced += syncedArtifacts.length;
+          clonedEntries.push({ name: entry.name, path: dest, primary: entry.primary, artifactsSynced: syncedArtifacts });
         }
       } catch (err) {
         return res.status(err.status || 500).json({
@@ -559,6 +591,7 @@ export function createProjectsRouter(deps = {}) {
         cloneSummary: {
           cloned: clonedEntries.map(e => e.name),
           skipped,
+          ...(totalArtifactsSynced > 0 ? { artifactsSynced: totalArtifactsSynced } : {}),
         },
       });
     }
@@ -598,11 +631,15 @@ export function createProjectsRouter(deps = {}) {
       });
     }
 
+    const syncedArtifacts = await syncClonedRepoArtifacts(existing, resolved.hostName, path.basename(targetPath), targetPath, resolved.runner);
     const withUrl = existing.gitUrl ? existing : { ...existing, gitUrl };
     const updated = upsertProjectLocation(withUrl, { host: resolved.hostName, path: targetPath, repositories: [] });
     projects[idx] = updated;
     saveProjects(projects);
-    res.status(201).json(formatProjectResponse(updated, getReachability));
+    res.status(201).json({
+      ...formatProjectResponse(updated, getReachability),
+      ...(syncedArtifacts.length > 0 ? { artifactsSynced: syncedArtifacts.length } : {}),
+    });
   });
 
   // Clone missing manifest repositories onto an already-bound host location.
@@ -643,6 +680,7 @@ export function createProjectsRouter(deps = {}) {
 
     const clonedEntries = [];
     const skipped = [];
+    let totalArtifactsSynced = 0;
     try {
       for (const entry of missing) {
         if (!entry.gitUrl || !isValidGitUrl(entry.gitUrl)) {
@@ -651,6 +689,8 @@ export function createProjectsRouter(deps = {}) {
         }
         const dest = path.posix.join(baseDir, entry.name);
         await cloneRepo({ gitUrl: entry.gitUrl, targetPath: dest, runner: resolved.runner });
+        const syncedArtifacts = await syncClonedRepoArtifacts(existing, resolved.hostName, entry.name, dest, resolved.runner);
+        totalArtifactsSynced += syncedArtifacts.length;
         clonedEntries.push({ name: entry.name, path: dest });
       }
     } catch (err) {
@@ -669,6 +709,7 @@ export function createProjectsRouter(deps = {}) {
       cloneSummary: {
         cloned: clonedEntries.map(e => e.name),
         skipped,
+        ...(totalArtifactsSynced > 0 ? { artifactsSynced: totalArtifactsSynced } : {}),
       },
     });
   });
@@ -725,6 +766,7 @@ export function createProjectsRouter(deps = {}) {
       host: resolved.hostName,
       repoPaths,
       runner: resolved.runner,
+      resolveRunner: runnerForHostName,
     });
     return res.status(outcome.status).json(outcome);
   });

@@ -12,7 +12,9 @@ const result = (executionStatus, foregroundCommand, executionReason, executionCo
   executionStatus, foregroundCommand, executionReason, executionConfidence,
   agentCli, backgroundAgents, backgroundShells, needsInput,
 });
-const shellPrompt = line => /^[\w.-]+@[\w.-]+\s+.+\s[%$#]$/.test(line) || /^[^ ]+\s+.+\s[%$#]$/.test(line);
+const shellPrompt = line =>
+  /^[\w.-]+@[\w.-]+(?:\s+.+\s|:[^\s]+?\s*)[%$#]$/.test(line)
+  || /^[^ ]+\s+.+\s[%$#]$/.test(line);
 
 export function classifyTerminalExecution({ paneCurrentCommand, paneDead, snapshotText, subagentPanes, quietSeconds }) {
   if (!Array.isArray(subagentPanes)) throw new Error('subagentPanes must be an array');
