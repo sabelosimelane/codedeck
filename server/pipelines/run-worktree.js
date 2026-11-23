@@ -404,6 +404,26 @@ export async function remove({ homePath, worktreePath, execFile } = {}) {
 }
 
 /**
+ * Setup's fifth instruction: show that the worktree can be tested and leave a record of how, so
+ * that no later step asks the owner for a test environment. `several` is a task with more than
+ * one worktree.
+ */
+function proveStep(several) {
+  const where = several ? "the repository's worktree" : 'the worktree';
+  return `5. Prove that ${where} can be tested, and record how. Run one quick test (a single test
+   file, not the whole suite). If there is an app or a server, start it from ${where} on ports
+   nothing else is using (the home checkout's own instance may be running on the usual ports:
+   leave it alone), confirm that it answers, and stop it. Find out how a test user signs in without
+   the owner (seed data, a development login, a code readable from local logs or the local
+   database) and which emulators, simulators and browsers this machine has. Remove anything this
+   leaves behind in ${where}.
+   Write what you found to environment.md in this run's notes folder, whose path is given with
+   these instructions${several ? ', one section per repository' : ''}: how to run one test and the whole suite, how to start and stop the app
+   and on which ports, how to sign in as a test user, which devices are available, and what you
+   could not make work, with its output. Record names and commands, never the value of a secret.`;
+}
+
+/**
  * Built-in Setup prompt with home/worktree paths substituted (Spec §8.5).
  */
 export function buildSetupPrompt(homePath, worktreePath) {
@@ -420,9 +440,12 @@ Worktree (your current directory, the only place you may change): ${worktreePath
 3. Never print, summarise or log the contents of a copied file. Copy with file operations only.
 4. Do not create, modify or delete tracked files, do not commit, and change nothing in the home
    checkout.
-5. Finish by running \`git status --short\` in the worktree. It must print nothing.
+${proveStep(false)}
+6. Finish by running \`git status --short\` in the worktree. It must print nothing.
 
-If you cannot tell what the project needs, or a step fails, report NEEDS_INPUT and say what is missing.`;
+If you cannot install the dependencies or copy the local files, report NEEDS_INPUT and say what is
+missing. Do not ask about step 5: what you could not make work goes in the file, and later steps
+read it.`;
 }
 
 /**
@@ -450,7 +473,10 @@ Do the following for each repository, in its own worktree:
 3. Never print, summarise or log the contents of a copied file. Copy with file operations only.
 4. Do not create, modify or delete tracked files, do not commit, and change nothing in any home
    checkout.
-5. Finish by running \`git status --short\` in every worktree. Each must print nothing.
+${proveStep(true)}
+6. Finish by running \`git status --short\` in every worktree. Each must print nothing.
 
-If you cannot tell what a repository needs, or a step fails, report NEEDS_INPUT and say which repository and what is missing.`;
+If you cannot install the dependencies or copy the local files,
+report NEEDS_INPUT and say which repository and what is missing. Do not ask about step 5: what you
+could not make work goes in the file, and later steps read it.`;
 }

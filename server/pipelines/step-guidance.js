@@ -9,6 +9,15 @@ const DECIDE = 'The owner is not available during this run. Do not stop for a de
 
 const SUMMARY = "This is the run's last step, and the owner reads your note in their list of changes. Start the note with one line that says what this run changed, in plain words, then summarize what changed and why before anything else you record.";
 
+// The agent, not the owner, provides whatever a check needs that the machine can give.
+const OWN_ENVIRONMENT = 'You own the test environment: whatever a check needs that this machine can give (the app running from this worktree on ports nothing else uses, test data, a test sign-in, an emulator or simulator, a browser), set it up yourself and stop what you started. Do not ask the owner for an environment, a test harness or evidence you can produce yourself: use NEEDS_INPUT for one only after you tried, and say what you tried and what failed.';
+
+/** The record of how a run's worktree is tested and run: Setup writes it, later steps read and correct it. */
+export function environmentPath(notesDir) {
+  if (typeof notesDir !== 'string' || !NOTES_DIR.test(notesDir)) throw new TypeError('step guidance: notesDir must be a run notes path to hold the test environment record');
+  return `${notesDir}/environment.md`;
+}
+
 /** One-line pointer to the Attachments section and managed folder for Setup and every node. */
 export function attachmentStepGuidance(notesDir) {
   if (typeof notesDir !== 'string' || !NOTES_DIR.test(notesDir)) {
@@ -102,6 +111,14 @@ export function buildStepGuidance(definition, stepIndex, options) {
     if (options.attempt !== undefined && options.attempt > 1 && inLoop) {
       parts.push(`Pass ${options.attempt} of ${step.name} in this loop: read your previous note in ${definition.notesDir} and focus on what changed since that pass instead of re-auditing already-verified work.`);
     }
+  }
+  // A step that may change the worktree sets up what its checks need; a read-only step only reads what is recorded.
+  if (step.kind === 'node' && step.readOnly !== true) parts.push(OWN_ENVIRONMENT);
+  if (definition.notesDir !== null) {
+    const record = environmentPath(definition.notesDir);
+    if (step.kind === 'setup') parts.push(`Write the test environment record your instructions ask for to ${record}.`);
+    else if (step.kind === 'node' && step.readOnly === true) parts.push(`What can be tested and run in this worktree is recorded in ${record}, when that file exists.`);
+    else if (step.kind === 'node') parts.push(`How this worktree is tested and run is recorded in ${record}; when that file is missing or wrong, work it out and write it there.`);
   }
   // Setup and every node are pointed at the attachment manifest when the run has files.
   if (hasAttachments) parts.push(attachmentStepGuidance(definition.notesDir));

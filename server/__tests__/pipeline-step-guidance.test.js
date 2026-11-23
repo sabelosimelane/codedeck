@@ -11,6 +11,10 @@ const loop = toStepIndex => ({ mode: 'loop_back', toStepIndex, max: 20 });
 const LOOP = 'This step closes a loop: CodeDeck repeats the steps from "Develop" to "Test" in order, round after round. Use COMPLETE only when the whole task is finished and no step of the loop has work left; use CONTINUE when another round is needed.';
 const DECIDE = 'The owner is not available during this run. Do not stop for a decision you can make yourself: choose the option you would recommend, write down the decision and your reason where this project keeps such notes, and continue. Use NEEDS_INPUT only when you cannot continue at all.';
 const OPTIONS = { worktreePath: '/tmp/worktrees/run' };
+const OWN = 'You own the test environment: whatever a check needs that this machine can give (the app running from this worktree on ports nothing else uses, test data, a test sign-in, an emulator or simulator, a browser), set it up yourself and stop what you started. Do not ask the owner for an environment, a test harness or evidence you can produce yourself: use NEEDS_INPUT for one only after you tried, and say what you tried and what failed.';
+const RECIPE = 'How this worktree is tested and run is recorded in .codedeck/runs/abcdef12/environment.md; when that file is missing or wrong, work it out and write it there.';
+const RECORDED = 'What can be tested and run in this worktree is recorded in .codedeck/runs/abcdef12/environment.md, when that file exists.';
+const SETUP_RECORD = 'Write the test environment record your instructions ask for to .codedeck/runs/abcdef12/environment.md.';
 const BOUNDARY = "Work only inside this run's worktree, /tmp/worktrees/run, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing.";
 
 describe('buildStepGuidance', () => {
@@ -22,37 +26,53 @@ describe('buildStepGuidance', () => {
   });
   it('places run notes directly after the worktree boundary', () => {
     const def = { ...definition(true, step('Setup', { mode: 'once' }, 'setup'), step('Build')), notesDir: '.codedeck/runs/abcdef12' };
-    expect(buildStepGuidance(def, 0, OPTIONS)).toBeUndefined();
-    expect(buildStepGuidance(def, 1, OPTIONS)).toContain(`${BOUNDARY} Run notes: read .codedeck/runs/abcdef12/README.md before you start, and before your final signal write your note to .codedeck/runs/abcdef12/01-build.md.`);
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(SETUP_RECORD);
+    expect(buildStepGuidance(def, 1, OPTIONS)).toContain(`${BOUNDARY} Run notes: read .codedeck/runs/abcdef12/README.md before you start, and before your final signal write your note to .codedeck/runs/abcdef12/01-build.md. ${OWN} ${RECIPE}`);
     expect(() => buildStepGuidance({ ...def, notesDir: undefined }, 1, OPTIONS)).toThrow(/notesDir/);
   });
   it('tells the last step of a run with notes that its note is the summary of the change', () => {
     const SUMMARY = "This is the run's last step, and the owner reads your note in their list of changes. Start the note with one line that says what this run changed, in plain words, then summarize what changed and why before anything else you record.";
     const def = { ...definition(false, step('Setup', { mode: 'once' }, 'setup'), step('Build'), step('Commit')), notesDir: '.codedeck/runs/abcdef12' };
-    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} Run notes: read .codedeck/runs/abcdef12/README.md before you start, and before your final signal write your note to .codedeck/runs/abcdef12/02-commit.md. ${SUMMARY}`);
+    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} Run notes: read .codedeck/runs/abcdef12/README.md before you start, and before your final signal write your note to .codedeck/runs/abcdef12/02-commit.md. ${OWN} ${RECIPE} ${SUMMARY}`);
     expect(buildStepGuidance(def, 1, OPTIONS)).not.toContain('list of changes');
     // Without run notes there is no note to read the summary from.
-    expect(buildStepGuidance({ ...def, notesDir: null }, 2, OPTIONS)).toBe(BOUNDARY);
+    expect(buildStepGuidance({ ...def, notesDir: null }, 2, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
   });
   it('does not tell a step that always asks the owner to decide for them', () => {
     const def = definition(true, { ...step('Clarify'), askOwner: true }, step('Fix'));
-    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(BOUNDARY);
-    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${DECIDE}`);
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
+    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${OWN} ${DECIDE}`);
+  });
+  it('makes the test environment the agent\'s own in every step that may change the worktree', () => {
+    const def = definition(false, step('Develop'), { ...step('Review'), readOnly: true }, step('Setup', { mode: 'once' }, 'setup'));
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
+    // A read-only step sets nothing up, and Setup follows its own instructions.
+    expect(buildStepGuidance(def, 1, OPTIONS)).not.toContain('You own the test environment');
+    expect(buildStepGuidance(def, 2, OPTIONS)).toBeUndefined();
+  });
+  it('names the record of the test environment in the run notes: Setup writes it, a working step keeps it right, a read-only step reads it', () => {
+    const def = { ...definition(false, step('Setup', { mode: 'once' }, 'setup'), { ...step('Plan'), readOnly: true }, step('Test')), notesDir: '.codedeck/runs/abcdef12' };
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(SETUP_RECORD);
+    expect(buildStepGuidance(def, 1, OPTIONS)).toContain(`write your note to .codedeck/runs/abcdef12/01-plan.md. ${RECORDED} This step is read-only`);
+    expect(buildStepGuidance(def, 1, OPTIONS)).not.toContain(RECIPE);
+    expect(buildStepGuidance(def, 2, OPTIONS)).toContain(`write your note to .codedeck/runs/abcdef12/02-test.md. ${OWN} ${RECIPE}`);
+    // Without run notes there is nowhere to keep the record.
+    expect(buildStepGuidance({ ...def, notesDir: null }, 2, OPTIONS)).not.toContain('environment.md');
   });
   it('gives boundary guidance to a plain node', () => {
     const def = definition(false, step('Develop'), step('Test', { mode: 'until_complete', max: 5 }));
-    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(BOUNDARY);
-    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(BOUNDARY);
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
+    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
     expect(BOUNDARY).not.toContain('do not look for it elsewhere');
     expect(BOUNDARY.startsWith("Work only inside this run's worktree")).toBe(true);
   });
 
   it('tells the step that closes a loop what COMPLETE and CONTINUE mean for the loop', () => {
     const def = definition(false, step('Setup', { mode: 'until_complete', max: 3 }, 'setup'), step('Develop'), step('Test', loop(1)), step('Review'));
-    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} ${LOOP}`);
+    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} ${OWN} ${LOOP}`);
     // The steps inside and after the loop get nothing.
-    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(BOUNDARY);
-    expect(buildStepGuidance(def, 3, OPTIONS)).toBe(BOUNDARY);
+    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
+    expect(buildStepGuidance(def, 3, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
   });
 
   it('tells a loop step on a repeat pass to read its previous note and focus on what changed', () => {
@@ -72,13 +92,13 @@ describe('buildStepGuidance', () => {
   it('tells every node, but not Setup, to decide for itself when agents decide', () => {
     const def = definition(true, step('Setup', { mode: 'until_complete', max: 3 }, 'setup'), step('Develop'), step('Review'));
     expect(buildStepGuidance(def, 0, OPTIONS)).toBeUndefined();
-    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${DECIDE}`);
-    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} ${DECIDE}`);
+    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${OWN} ${DECIDE}`);
+    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} ${OWN} ${DECIDE}`);
   });
 
   it('gives both to a step that closes a loop in a workflow whose agents decide', () => {
     const def = definition(true, step('Develop'), step('Test', loop(0)));
-    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${LOOP} ${DECIDE}`);
+    expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${OWN} ${LOOP} ${DECIDE}`);
   });
 
   it('stays on one line and within what the loop engine accepts, whatever the step names', () => {
@@ -87,8 +107,7 @@ describe('buildStepGuidance', () => {
     const guidance = buildStepGuidance(def, 1, OPTIONS);
     expect(guidance.length).toBeLessThanOrEqual(2000);
     const fixedLength = guidance.length - OPTIONS.worktreePath.length;
-    expect(fixedLength).toBe(1000);
-    expect(2000 - fixedLength).toBe(1000); // characters left for the worktree path
+    expect(fixedLength).toBe(1000 + OWN.length + 1);
     expect(guidance).not.toMatch(/[\x00-\x1f\x7f]/);
   });
   it('includes read-only and feedback text in the worst-case guidance budget', () => {
@@ -98,8 +117,7 @@ describe('buildStepGuidance', () => {
     expect(worst.length).toBeGreaterThan(plain.length);
     expect(worst.length).toBeLessThanOrEqual(2000);
     const fixedLength = worst.length - OPTIONS.worktreePath.length;
-    expect(fixedLength).toBe(1251);
-    expect(2000 - fixedLength).toBe(749); // room left for the worktree path
+    expect(fixedLength).toBe(1251 + RECORDED.length + 1);
     expect(worst).not.toMatch(/[\x00-\x1f\x7f]/);
   });
 
@@ -129,15 +147,15 @@ describe('buildStepGuidance attachment instructions', () => {
 
   it('points Setup and every node at the attachment manifest when the run has files', () => {
     const def = { ...definition(true, step('Setup', { mode: 'once' }, 'setup'), step('Build')), notesDir: NOTES };
-    expect(buildStepGuidance(def, 0, { ...OPTIONS, attachments })).toBe(POINT);
+    expect(buildStepGuidance(def, 0, { ...OPTIONS, attachments })).toBe(`${SETUP_RECORD} ${POINT}`);
     expect(buildStepGuidance(def, 1, { ...OPTIONS, attachments })).toContain(POINT);
     expect(buildStepGuidance(def, 1, { ...OPTIONS, attachments })).toContain(BOUNDARY);
   });
 
-  it('leaves Setup silent and omits the instruction for attachment-free runs', () => {
+  it('omits the instruction for attachment-free runs', () => {
     const def = { ...definition(true, step('Setup', { mode: 'once' }, 'setup'), step('Build')), notesDir: NOTES };
-    expect(buildStepGuidance(def, 0, OPTIONS)).toBeUndefined();
-    expect(buildStepGuidance(def, 0, { ...OPTIONS, attachments: [] })).toBeUndefined();
+    expect(buildStepGuidance(def, 0, OPTIONS)).toBe(SETUP_RECORD);
+    expect(buildStepGuidance(def, 0, { ...OPTIONS, attachments: [] })).toBe(SETUP_RECORD);
     expect(buildStepGuidance(def, 1, OPTIONS)).not.toContain('Attachments for this run');
     expect(buildStepGuidance(def, 1, { ...OPTIONS, attachments: [] })).not.toContain('Attachments for this run');
   });
@@ -172,7 +190,8 @@ describe('buildStepGuidance for a task or a project with several repositories', 
       + 'Each is a separate Git repository on its own branch: run Git inside the worktree it concerns, commit each separately and switch no branch. '
       + 'Do not create, change or delete files anywhere else. '
       + 'These repositories of the project are not part of this task: frontend at /group/worktrees/frontend-main. Read them there when a document refers to them and never change them. '
-      + 'If a repository that is not part of this task must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.',
+      + 'If a repository that is not part of this task must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.'
+      + ` ${OWN}`,
     );
   });
 
@@ -181,7 +200,8 @@ describe('buildStepGuidance for a task or a project with several repositories', 
     expect(one).toBe(
       "Work only inside this run's worktree, /group/backend, which is your current directory and the backend repository. Do not create, change or delete files outside it. "
       + 'These repositories of the project are not part of this run: mobile-app at /group/mobile-app. Read them there when a document refers to them and never change them. '
-      + 'If a repository that is not part of this run must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.',
+      + 'If a repository that is not part of this run must change, or the files of the task are in none of these places, use NEEDS_INPUT and say what is missing.'
+      + ` ${OWN}`,
     );
     const several = buildStepGuidance(def, 0, { ...options, places: { ...places, readOnly: [] } });
     expect(several).not.toContain('are not part of this task:');
@@ -190,8 +210,8 @@ describe('buildStepGuidance for a task or a project with several repositories', 
 
   it('keeps the sentence a run always had where there is one repository and nothing else to name', () => {
     const single = { current: 'demo', worktrees: [{ repository: 'demo', path: '/tmp/worktrees/run' }], readOnly: [] };
-    expect(buildStepGuidance(def, 0, { worktreePath: '/tmp/worktrees/run', places: single })).toBe(BOUNDARY);
-    expect(buildStepGuidance(def, 0, { worktreePath: '/tmp/worktrees/run' })).toBe(BOUNDARY);
+    expect(buildStepGuidance(def, 0, { worktreePath: '/tmp/worktrees/run', places: single })).toBe(`${BOUNDARY} ${OWN}`);
+    expect(buildStepGuidance(def, 0, { worktreePath: '/tmp/worktrees/run' })).toBe(`${BOUNDARY} ${OWN}`);
   });
 
   it('tells a read-only step to change nothing in any of the task\'s worktrees', () => {

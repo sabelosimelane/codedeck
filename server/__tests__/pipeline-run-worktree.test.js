@@ -554,6 +554,30 @@ describe('buildSetupPromptForRepositories', () => {
     expect(prompt).toContain('report NEEDS_INPUT and say which repository and what is missing');
   });
 
+  it.each([['one worktree', [pairs[0]]], ['several worktrees', pairs]])('has Setup prove that %s can be tested and record how, without asking the owner', (_name, value) => {
+    const prompt = buildSetupPromptForRepositories(value).replace(/\s+/g, ' ');
+    expect(prompt).toContain('Run one quick test');
+    expect(prompt).toContain('not the whole suite');
+    expect(prompt).toContain('on ports nothing else is using');
+    expect(prompt).toContain("the home checkout's own instance may be running on the usual ports: leave it alone");
+    expect(prompt).toContain('how a test user signs in without the owner');
+    expect(prompt).toContain('which emulators, simulators and browsers this machine has');
+    expect(prompt).toContain("environment.md in this run's notes folder");
+    expect(prompt).toContain('never the value of a secret');
+    expect(prompt).toContain('Remove anything this leaves behind');
+    // Installing and copying may stop the run; what could not be made to run is written down instead.
+    expect(prompt).toContain('If you cannot install the dependencies or copy the local files, report NEEDS_INPUT');
+    expect(prompt).toContain('Do not ask about step 5');
+    expect(prompt).not.toContain('or a step fails');
+    expect(prompt.indexOf('5. Prove')).toBeGreaterThan(prompt.indexOf('4. Do not create'));
+    expect(prompt.indexOf('6. Finish by running `git status --short`')).toBeGreaterThan(prompt.indexOf('5. Prove'));
+  });
+
+  it('asks for one section per repository in the record of a task with several', () => {
+    expect(buildSetupPromptForRepositories(pairs)).toContain('one section per repository');
+    expect(buildSetupPromptForRepositories([pairs[0]])).not.toContain('one section per repository');
+  });
+
   it.each([[[]], ['x'], [[{ repository: 'a', homePath: 'relative', worktreePath: '/x' }]], [[{ repository: '', homePath: '/a', worktreePath: '/x' }]], [[{ repository: 'a', homePath: '/a' }]]])('refuses %j', (value) => {
     expect(() => buildSetupPromptForRepositories(value)).toThrow(/pairs/);
   });

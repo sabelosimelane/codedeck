@@ -3,6 +3,11 @@ import Database from 'better-sqlite3';
 import { createAgentStore } from '../pipelines/agent-store.js';
 import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
+import { readFileSync } from 'node:fs';
+import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
+
+// The built-in prompts as they were before agents owned the test environment, and the older ones that led to them.
+const STOCK_BEFORE_OWNER_CHECKS = JSON.parse(readFileSync(new URL('./fixtures/stock-prompts-before-owner-checks.json', import.meta.url), 'utf8'));
 
 const AGENT_UUID = 'c410a1b2-3456-4789-8abc-def012345678';
 const databases = [];
@@ -415,6 +420,26 @@ describe('workflow progress file persistence', () => {
     expect(reopened.nodes[1].prompt).toMatch(/do not run broad test suites that the Test step will run next/);
     expect(reopened.nodes[2].prompt).toBe(customReview);
     expect(reopened.nodes[3].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 3 });
+  });
+
+  it.each([...STOCK_BEFORE_OWNER_CHECKS.previous, ...STOCK_BEFORE_OWNER_CHECKS.older].map(entry => [`${entry.template} / ${entry.node}`, entry]))('brings an unmodified built-in %s prompt to the one that leaves only owner-only checks to the owner', (_label, entry) => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const custom = `${entry.previous} And one thing of my own.`;
+    const created = workflows.create({
+      name: 'Saved workflow',
+      agentsDecide: false,
+      nodes: [
+        { ...node(agent.id), name: 'Stock', prompt: entry.previous },
+        { ...node(agent.id), name: 'Edited', prompt: custom },
+      ],
+    });
+    const current = WORKFLOW_TEMPLATES.find(template => template.id === entry.template).nodes.find(item => item.name === entry.node).prompt;
+    expect(current).not.toBe(entry.previous);
+    const reopened = createWorkflowStore(db).get(created.id);
+    expect(reopened.nodes[0].prompt).toBe(current);
+    // A prompt the owner changed is theirs.
+    expect(reopened.nodes[1].prompt).toBe(custom);
   });
 
   it('folds unmodified stock Specify + Plan in Feature from requirements and persists disabled nodes', () => {

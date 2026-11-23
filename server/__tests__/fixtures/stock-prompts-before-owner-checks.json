@@ -1,0 +1,111 @@
+{
+  "previous": [
+    {
+      "template": "bug-fix",
+      "node": "Specify",
+      "previous": "Read the Analyse note. In your run note specify the fix for {input}: the behaviour to change, what must stay the same, likely files, and tests that will prove it. Change no code. Record the agreed acceptance checks in your note, including how each outcome will be verified and which checks need external evidence."
+    },
+    {
+      "template": "bug-fix",
+      "node": "Test",
+      "previous": "Run tests covering the change and the agreed checks from the Specify note. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. When implementation exists but proof needs a device, account or other external access, use NEEDS_INPUT. Say what passed, what is pending and exactly what would verify it (for example, \"Backend verified. Phone prompt pending.\"). Only the owner may explicitly defer a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence or an explicit owner-approved scope change."
+    },
+    {
+      "template": "bug-fix",
+      "node": "Commit",
+      "previous": "Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message describing the fix for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD."
+    },
+    {
+      "template": "quick-change",
+      "node": "Scope",
+      "previous": "Read {input} and the code it touches. Change nothing. Check whether any referenced or read-only repository must change, what behaviour must change, what must stay the same, likely files, and tests that will prove it. First look for each of these yourself in the code and documents. For anything you could not find and cannot safely assume, or if a repository is missing from this task's worktrees, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the scope and likely files. Record the agreed acceptance checks in your note, including how each outcome will be verified and which checks need external evidence."
+    },
+    {
+      "template": "quick-change",
+      "node": "Review & Test",
+      "previous": "Review the changes on this branch against the Scope note, fix any defect you find, and run tests covering the change and the agreed checks from the Scope note. On a repeat pass, read your previous note and focus on what changed since that pass. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. When implementation exists but proof needs a device, account or other external access, use NEEDS_INPUT. Say what passed, what is pending and exactly what would verify it (for example, \"Backend verified. Phone prompt pending.\"). Only the owner may explicitly defer a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence or an explicit owner-approved scope change."
+    },
+    {
+      "template": "quick-change",
+      "node": "Commit",
+      "previous": "Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message describing the change for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD."
+    },
+    {
+      "template": "feature-build",
+      "node": "Plan",
+      "previous": "Read what {input} asks for and the code it touches. Change no code. Write plan.md in the run notes folder named by its README. Size the plan to the change: work one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each acceptance check as a task in the phase that builds what it checks. Use ## Phase N: <title> sections with - [ ] tasks. In your run note summarise the plan and say why it has as many phases as it has."
+    },
+    {
+      "template": "feature-build",
+      "node": "Test",
+      "previous": "Test the phase just built. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. If an unticked check is waiting for owner evidence or an artifact from a later step, use NEEDS_INPUT with the evidence collected so far to obtain the owner evidence or an explicit owner deferral instead of repeating passing tests on an unchanged diff. When none is left, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    },
+    {
+      "template": "feature-build",
+      "node": "Commit",
+      "previous": "Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD."
+    },
+    {
+      "template": "feature-from-requirements",
+      "node": "Specify",
+      "previous": "Read the Requirements note and the code it touches. Write the specification for {input} as a Markdown file beside the specifications this project already keeps, following their conventions; if it keeps none, put the file in its docs folder. Cover the behaviour in each case, the rules and their edge cases, changes to data and interfaces, what must stay the same, what is out of scope, and acceptance checks that can be tested. Then write plan.md in the run notes folder named by its README. Size the plan to the change: work one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each acceptance check as a task in the phase that builds what it checks. Use ## Phase N: <title> sections with - [ ] tasks. The phases together must cover every acceptance check. Change no code. In your run note give the path of the file, summarise the specification and the plan, say why it has as many phases as it has, and list every decision you made that the requirements did not settle."
+    },
+    {
+      "template": "feature-from-requirements",
+      "node": "Test",
+      "previous": "Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. If an unticked check is waiting for owner evidence or an artifact from a later step, use NEEDS_INPUT with the evidence collected so far to obtain the owner evidence or an explicit owner deferral instead of repeating passing tests on an unchanged diff. When none is left, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    },
+    {
+      "template": "feature-from-requirements",
+      "node": "Commit",
+      "previous": "Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message describing the feature for {input}. Include the specification and untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD."
+    },
+    {
+      "template": "troubleshoot",
+      "node": "Clarify",
+      "previous": "Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. Check whether any referenced or read-only repository must change; if a repository is missing from this task's worktrees, ask to add it in this same NEEDS_INPUT pass. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown. Record the agreed acceptance checks in your note, including how each outcome will be verified and which checks need external evidence."
+    },
+    {
+      "template": "troubleshoot",
+      "node": "Verify",
+      "previous": "Read the agreed checks in the Clarify note. Repeat the original symptom check from the Investigate note, run the Prove test and tests around the change. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. When implementation exists but proof needs a device, account or other external access, use NEEDS_INPUT. Say what passed, what is pending and exactly what would verify it (for example, \"Backend verified. Phone prompt pending.\"). Only the owner may explicitly defer a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence or an explicit owner-approved scope change."
+    },
+    {
+      "template": "troubleshoot",
+      "node": "Commit",
+      "previous": "Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD."
+    }
+  ],
+  "older": [
+    {
+      "template": "feature-build",
+      "node": "Test",
+      "previous": "Test the phase just built. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    },
+    {
+      "template": "feature-build",
+      "node": "Test",
+      "previous": "Test the phase just built. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. If an unticked check is waiting for owner evidence or an artifact from a later step, use NEEDS_INPUT with the evidence collected so far to obtain the owner evidence or an explicit owner deferral instead of repeating passing tests on an unchanged diff. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    },
+    {
+      "template": "feature-from-requirements",
+      "node": "Specify",
+      "previous": "Read the Requirements note. Write the specification for {input} as a Markdown file beside the specifications this project already keeps, following their conventions; if it keeps none, put the file in its docs folder. Cover the behaviour in each case, the rules and their edge cases, changes to data and interfaces, what must stay the same, what is out of scope, and acceptance checks that can be tested. Change no code. In your run note give the path of the file, summarise the specification, and list every decision you made that the requirements did not settle."
+    },
+    {
+      "template": "feature-from-requirements",
+      "node": "Test",
+      "previous": "Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    },
+    {
+      "template": "feature-from-requirements",
+      "node": "Test",
+      "previous": "Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. If an unticked check is waiting for owner evidence or an artifact from a later step, use NEEDS_INPUT with the evidence collected so far to obtain the owner evidence or an explicit owner deferral instead of repeating passing tests on an unchanged diff. When none is left, run the full test suite once, across the whole project. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    },
+    {
+      "template": "troubleshoot",
+      "node": "Clarify",
+      "previous": "Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown. Record the agreed acceptance checks in your note, including how each outcome will be verified and which checks need external evidence."
+    }
+  ]
+}

@@ -73,6 +73,37 @@ describe('workflow templates', () => {
     expect(nodes.at(-1).prompt).toMatch(/owner-approved/);
   });
 
+  it.each([['bug-fix', 'Specify', 'Test'], ['quick-change', 'Scope', 'Review & Test'], ['troubleshoot', 'Clarify', 'Verify']])('has %s agree how an agent verifies each check, and leaves only owner-only checks to the owner without waiting for them', (id, source, check) => {
+    const { nodes } = buildTemplateDraft(id);
+    const agreed = nodes.find(node => node.name === source).prompt;
+    expect(agreed).toContain('say how an agent will verify it itself on this machine');
+    expect(agreed).toContain('Mark a check owner-only only when it needs what no agent here can have (a physical device, a real account or recipient, production)');
+    expect(agreed).toContain('under the heading Owner checks');
+    expect(agreed).toContain('no step waits for them');
+    expect(agreed).not.toContain('need external evidence');
+    const verify = nodes.find(node => node.name === check).prompt;
+    expect(verify).toContain('Set up what a check needs yourself');
+    expect(verify).toContain('do not ask the owner for an environment or for evidence you can produce');
+    expect(verify).toContain('An owner-only check does not wait');
+    expect(verify).toContain('use NEEDS_INPUT once, say what you tried, and ask whether it becomes an owner check');
+    expect(verify).toContain('was marked owner-only when the checks were agreed or by the owner since');
+    expect(verify).not.toContain('proof needs a device, account or other external access');
+    expect(nodes.at(-1).prompt).toContain('under the heading Owner checks, every check the owner still has to carry out');
+  });
+
+  it.each(['feature-build', 'feature-from-requirements'])('%s keeps owner-only checks out of the plan\'s tasks and never waits for them', (id) => {
+    const byName = Object.fromEntries(WORKFLOW_TEMPLATES.find(item => item.id === id).nodes.map(node => [node.name, node]));
+    const planner = (byName.Plan ?? byName.Specify).prompt;
+    expect(planner).toContain('Say in each such task how an agent will verify it itself on this machine');
+    expect(planner).toContain('is owner-only and is not a task: list it under ## Owner checks at the end of plan.md as a plain bullet without a box');
+    expect(planner).toContain('no step waits for them');
+    expect(byName.Test.prompt).toContain('Set up what a check needs yourself');
+    expect(byName.Test.prompt).toContain('The Owner checks in plan.md do not wait');
+    expect(byName.Test.prompt).toContain('use NEEDS_INPUT once');
+    expect(byName.Test.prompt).not.toContain('waiting for owner evidence');
+    expect(byName.Commit.prompt).toContain('under the heading Owner checks, every check the owner still has to carry out');
+  });
+
   it('opens the fix and troubleshoot workflows by checking the report and required repositories, asking the owner only for what is missing', () => {
     for (const id of ['bug-fix', 'troubleshoot']) {
       const first = WORKFLOW_TEMPLATES.find(item => item.id === id).nodes[0];

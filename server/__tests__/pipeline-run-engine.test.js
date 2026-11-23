@@ -25,7 +25,8 @@ import { createReviewStore } from '../pipelines/review-store.js';
 const WORKFLOW_ID = 'a2d0b1c2-3456-4789-8abc-def012345678';
 const AGENT_ID = 'c410a1b2-3456-4789-8abc-def012345678';
 const BASE_COMMIT = 'a'.repeat(40);
-const BOUNDARY = "Work only inside this run's worktree, /tmp/worktrees/home-feature-abcd1234, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing.";
+// What every step that may change the worktree is told: where it may work, and that the test environment is its own.
+const BOUNDARY = "Work only inside this run's worktree, /tmp/worktrees/home-feature-abcd1234, which is your current directory. Do not create, change or delete files outside it. You may read files outside it that your instructions, your skills or the project's documents refer to. If the files of the task itself are not in the worktree, do not look for them in other repositories: use NEEDS_INPUT and say what is missing." + ' You own the test environment: whatever a check needs that this machine can give (the app running from this worktree on ports nothing else uses, test data, a test sign-in, an emulator or simulator, a browser), set it up yourself and stop what you started. Do not ask the owner for an environment, a test harness or evidence you can produce yourself: use NEEDS_INPUT for one only after you tried, and say what you tried and what failed.';
 const databases = [];
 
 function definition(overrides = {}) {

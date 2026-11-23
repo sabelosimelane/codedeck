@@ -191,6 +191,26 @@ starts with Setup, which must leave that copy clean before the workflow's nodes 
 begin; uncommitted changes in Main are not in it. A run in an open task or in Main
 uses the place as it is: there is no Setup step and no setup agent is needed.
 
+**Testing is the agents' job.** Setup does more than install: it runs one quick test, starts the
+app from the task's copy on free ports and stops it, finds out how a test user signs in and which
+emulators, simulators and browsers the machine has, and writes all of it to `environment.md` in
+the run notes. What it could not make work is written there too, not asked about. Every later
+step that may change files is told that the test environment is its own: it starts the app, makes
+test data, signs in and uses an emulator itself, keeps `environment.md` right, and asks you for an
+environment only after it tried, saying what failed. A run in an open task or in Main has no
+Setup, so its first working step writes the file.
+
+Some checks no agent on your machine can do: a physical phone, a real account or recipient,
+production. In the built-in workflows the step that agrees the checks (Specify, Scope, Plan,
+Clarify) says for each check how an agent will verify it, and lists the rest as **Owner checks**
+with what you should do and expect; where that step waits for your approval, you see the list
+there and can send it back. Owner checks do not pause the run. The test step verifies what it can
+of each, and the last step's note, the one shown under **Changes**, repeats them as your list. A
+run can therefore read **Complete** with owner checks still open. If a check turns out to need you
+after all, the test step asks once whether it becomes an owner check. A saved workflow whose
+prompts are still the built-in ones gets this wording at the next start of CodeDeck; a prompt you
+edited is left as you wrote it.
+
 **A todo can say which repositories its work touches.** Among its header lines, before the first section, a todo may carry one line:
 
 ```
