@@ -220,6 +220,8 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
   and the agents' decisions they make up the run's brief, which `run-notes.js` `writeBrief` writes to
   `brief.md` in the run notes whenever a question is answered. `shared/workflow-templates.mjs` also exports
   `BUILT_IN_STEPS` (Clarify, Requirements), offered beside the owner's saved steps.
+- `server/pipelines/workflow-seed.js`: on the first start with an empty workflow list, saves the built-in
+  templates as workflows whose steps are assigned by team role; once per database (`pipeline_workflow_seed`).
 - `server/pipelines/library-store.js`: owner-saved workflow templates (`pipeline_workflow_templates`)
   and saved steps (`pipeline_step_presets`); both are copied when used and never referenced by a run.
 - `shared/pipeline-definitions.mjs` also holds the workflow kinds, the template mode of the

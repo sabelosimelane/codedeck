@@ -28,6 +28,7 @@ import { createTerminalWorkflow } from './terminal-workflow.js';
 import { findAgentProfile } from './agent-profiles/index.js';
 import { createAgentStore } from './pipelines/agent-store.js';
 import { createWorkflowStore } from './pipelines/workflow-store.js';
+import { seedBuiltInWorkflows } from './pipelines/workflow-seed.js';
 import { createSettingsStore } from './pipelines/settings-store.js';
 import { createRunStore } from './pipelines/run-store.js';
 import { createRequestStore } from './pipelines/request-store.js';
@@ -1063,6 +1064,9 @@ app.use(createTasksRouter({ service: taskService, taskStore, landing: taskLandin
 const PIPELINE_QUESTION_SCREEN_LINES = 400;
 const pipelineAgentStore = createAgentStore(db);
 const pipelineWorkflowStore = createWorkflowStore(db);
+// A new install starts with the built-in workflows saved, their steps left to team roles.
+const seededWorkflows = seedBuiltInWorkflows({ db, workflows: pipelineWorkflowStore });
+if (seededWorkflows.seeded.length) console.log(`[pipelines] saved the built-in workflows for this new install: ${seededWorkflows.seeded.join(', ')}`);
 const pipelineSettingsStore = createSettingsStore(db);
 const pipelineRunStore = createRunStore(db, { interruptOnStart: false });
 const pipelineRequestStore = createRequestStore(db);
