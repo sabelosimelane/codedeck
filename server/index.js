@@ -110,6 +110,7 @@ import { createTaskNaming } from './tasks/task-naming.js';
 import { createTasksRouter } from './routes/tasks.js';
 import { adoptWorktrees } from './tasks/task-adoption.js';
 import { createTaskLanding } from './tasks/task-landing.js';
+import { createShutdown } from './shutdown.js';
 import { createTaskChanges } from './tasks/task-changes.js';
 import { createTaskTerminalCloser } from './tasks/task-terminals.js';
 import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
@@ -1402,6 +1403,17 @@ const PORT = process.env.PORT || 43001;
 const clientDist = fileURLToPath(new URL('../client/dist/', import.meta.url));
 app.use(express.static(clientDist));
 app.get('/', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+// A landing changes Git, the task's folder and the task's record in turn. Merging a task of CodeDeck
+// itself changes this backend's files, and the watcher then stops it in the middle: let it finish first.
+const shutdown = createShutdown({
+  pending: () => taskLanding.idle(),
+  timeoutMs: 60_000,
+  exit: code => process.exit(code),
+  log: message => console.log(message),
+});
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`CodeDeck server running on http://localhost:${PORT}`);
 });

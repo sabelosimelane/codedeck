@@ -202,6 +202,34 @@ describe('task landing — commit', () => {
 });
 
 describe('task landing — merge', () => {
+  it('says when it is idle only once a merge under way has been finished and recorded', async () => {
+    const { landing, repo, wt, task, taskStore } = await setup();
+    write(wt, 'feature.txt', 'work\n');
+    commitAll(wt, 'feature');
+    await landing.idle();
+    const merging = landing.merge(ID);
+    // The backend is told to stop while the merge is under way: what it waits for is the whole landing.
+    await landing.idle();
+    expect(taskStore.get(ID).state).toBe('merged');
+    expect(existsSync(wt)).toBe(false);
+    expect(git(repo, ['branch', '--list', task.branch])).toBe('');
+    await merging;
+  });
+
+  it('is idle after a landing action that failed, and waits for one queued behind another', async () => {
+    const { landing, wt, taskStore } = await setup();
+    // Nothing to merge yet: the first action is refused.
+    const refused = rejection(landing.merge(ID));
+    write(wt, 'feature.txt', 'work\n');
+    const committed = landing.commit(ID, { message: 'feature' });
+    const merged = landing.merge(ID);
+    await landing.idle();
+    expect(taskStore.get(ID).state).toBe('merged');
+    expect((await refused).status).toBe(409);
+    await committed;
+    await merged;
+  });
+
   it('merges the task into its base branch, removes its files and deletes the merged branch', async () => {
     const { landing, repo, wt, task, taskStore, onTaskFinished, closeTerminals, state } = await setup();
     write(wt, 'feature.txt', 'work\n');

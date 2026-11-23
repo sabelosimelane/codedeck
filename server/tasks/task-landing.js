@@ -484,6 +484,15 @@ export function createTaskLanding({
   };
 
   return {
+    /** Resolves once no landing action is running or waiting, including ones queued while this waited. */
+    async idle() {
+      let seen;
+      do {
+        seen = queue;
+        await seen;
+      } while (seen !== queue);
+    },
+
     /** How one repository of the task stands: the one named, or the one the task started in. */
     async status(id, { worktreeId } = {}) {
       return (await inspect(id, worktreeId)).view;

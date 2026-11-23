@@ -66,6 +66,7 @@ codedeck/
 │   │   └── agent-sessions.js     # Paginated local agent conversations + resume API
 │   ├── project-repositories.js # A project's other repositories: rules, Git check, the repositories beside it, terminals in them
 │   ├── launch-settings.js # Companion settings read from ~/.codedeck/launch.env at startup
+│   ├── shutdown.js       # On SIGTERM/SIGINT, lets landing actions finish before the backend exits
 │   ├── db.js             # SQLite connection, schema, WAL mode
 │   ├── vitest.config.js  # Server-side test configuration
 │   └── __tests__/
