@@ -145,3 +145,29 @@ it('still times out a disposition 24s after the agent last worked', () => {
   vi.advanceTimersByTime(2000);
   expect(workflow.snapshot()).toMatchObject({status:'error',error:expect.stringMatching(/handoff/i)});
 });
+
+it('failsRun_whenTheSameUnrecognisedSignalIsRedrawnBeforeTheAgentCanAnswer', () => {
+  // Equinox run 9d814171, Review attempts 6 and 8: the correction was requested and the run failed
+  // 4ms and 190ms later, while the agent was still working or had printed the right signal.
+  const { workflow } = setup();
+  const record = vi.fn();
+  workflow.setAudit(record);
+  workflow.start(request);
+  workflow.observeTurn('working', '');
+  workflow.output('[[CDW:deadbeef-9:CONTINUE]]');
+  vi.advanceTimersByTime(4);
+  workflow.output('[[CDW:deadbeef-9:CONTINUE]]');
+  expect(workflow.snapshot().status).toBe('running');
+  workflow.output(`[[CDW:${workflow.signalIdentifier()}:COMPLETE]]`);
+  expect(workflow.snapshot().status).toBe('complete');
+  expect(record.mock.calls.find(([kind]) => kind === 'disposition_requested')?.[1]).toContain('deadbeef-9');
+});
+
+it('still fails a pass whose agent never gives the right identifier, naming the one it gave', () => {
+  const { workflow } = setup();
+  workflow.start(request);
+  workflow.observeTurn('working', '');
+  workflow.output('[[CDW:deadbeef-9:CONTINUE]]');
+  vi.advanceTimersByTime(25000);
+  expect(workflow.snapshot()).toMatchObject({status:'error', error: expect.stringContaining('deadbeef-9')});
+});

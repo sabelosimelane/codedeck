@@ -116,19 +116,24 @@ export function createTerminalWorkflow({ write, notify }) {
   let acceptedSignal = null;
   let handoffDeadline = null;
   let handoffTimer;
+  // The last unrecognised signal identifier seen in this pass, so a failure can name it.
+  let unrecognisedIdentifier = null;
   let audit = null;
   function armHandoffDeadline() {
     clearTimeout(handoffTimer);
-    handoffTimer = setTimeout(() => finish('error', 'Handoff timed out after the agent finished. Check its final disposition before resuming.'), Math.max(0, handoffDeadline - Date.now()));
+    handoffTimer = setTimeout(() => finish('error', 'Handoff timed out after the agent finished. Check its final disposition before resuming.'
+      + (unrecognisedIdentifier === null ? '' : ` The last signal it gave used identifier ${unrecognisedIdentifier}, not ${identifier}.`)), Math.max(0, handoffDeadline - Date.now()));
   }
-  function requestDisposition() {
+  function requestDisposition(seenIdentifier = null) {
     workObserved = true;
     badIdentifierRetries = 1;
     rawOutput = '';
     clearTimeout(enterTimer);
     handoffDeadline = Date.now() + HANDOFF_IDLE_MS;
     armHandoffDeadline();
-    audit?.('disposition_requested', 'Idle or invalid final signal; requested disposition only');
+    audit?.('disposition_requested', seenIdentifier === null
+      ? 'Idle or invalid final signal; requested disposition only'
+      : `Unrecognised signal identifier ${seenIdentifier}; requested disposition only`);
     publish();
     pasteAndSubmit(buildBadIdentifierPrompt(identifier));
   }
@@ -197,6 +202,7 @@ export function createTerminalWorkflow({ write, notify }) {
     acceptedSignal = null;
     handoffDeadline = null;
     badIdentifierRetries = 0;
+    unrecognisedIdentifier = null;
     identifier = issueIdentifier();
     passIdentifiers = new Set([identifier]);
     pendingIdentifier = null;
@@ -488,11 +494,20 @@ export function createTerminalWorkflow({ write, notify }) {
         .find(candidate => (candidate[2] === 'NEEDS_INPUT' ? candidate[1] === identifier : passIdentifiers.has(candidate[1])) || !issuedIdentifiers.has(candidate[1]));
       if (!match) return;
       if (!issuedIdentifiers.has(match[1])) {
+        const repeated = match[1] === unrecognisedIdentifier;
+        unrecognisedIdentifier = match[1];
         if (status === 'running' && identifier !== null && badIdentifierRetries < MAX_BAD_IDENTIFIER_RETRIES) {
-          requestDisposition();
+          requestDisposition(match[1]);
           return;
         }
-        finish('error', 'Workflow signal identifier does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.');
+        // The terminal redraws what is on screen, so the same text can arrive again before the
+        // agent has read the correction. The handoff deadline decides once the agent stays idle;
+        // a different wrong identifier is the agent's answer, and fails below.
+        if (repeated && status === 'running' && handoffDeadline !== null) {
+          rawOutput = '';
+          return;
+        }
+        finish('error', `Workflow signal identifier ${match[1]} does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.`);
         return;
       }
       clearTimeout(enterTimer);

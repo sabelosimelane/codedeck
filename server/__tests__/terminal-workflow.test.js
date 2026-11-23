@@ -303,7 +303,7 @@ describe('terminal workflow', () => {
     workflow.output(signal(secondWrongId, status));
     expect(workflow.snapshot()).toMatchObject({
       status: 'error', active: false,
-      error: 'Workflow signal identifier does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.',
+      error: `Workflow signal identifier ${secondWrongId} does not match the current iteration. The agent may have copied it incorrectly. Check the terminal, then start the workflow again.`,
     });
     expect(notify).toHaveBeenLastCalledWith(workflow.snapshot());
     workflow.output(signal(id, 'CONTINUE'));
