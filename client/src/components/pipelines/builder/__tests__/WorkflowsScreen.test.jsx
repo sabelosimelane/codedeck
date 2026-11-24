@@ -12,8 +12,9 @@ const A1 = '11111111-1111-4111-8111-111111111111';
 const W1 = '33333333-3333-4333-8333-333333333333';
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z' };
 const agent = { id: A1, name: 'codex-high', launchCommand: 'command codex', resetCommand: '/clear', revision: 1, ...STAMPS };
+const localSource = { kind: 'local', id: null, version: null, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null };
 const feature = () => ({
-  id: W1, name: 'Feature', kind: 'build', description: 'Plan, build, test', agentsDecide: false, progressFile: null, revision: 3, ...STAMPS,
+  id: W1, name: 'Feature', kind: 'build', description: 'Plan, build, test', agentsDecide: false, progressFile: null, revision: 3, source: { ...localSource }, ...STAMPS,
   nodes: [
     { name: 'Plan', role: 'Planner', agentId: A1, prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true, askOwner: false },
     { name: 'Develop', role: 'Developer', agentId: A1, prompt: 'Build it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },

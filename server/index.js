@@ -1067,6 +1067,11 @@ const pipelineWorkflowStore = createWorkflowStore(db);
 // A new install starts with the built-in workflows saved, their steps left to team roles.
 const seededWorkflows = seedBuiltInWorkflows({ db, workflows: pipelineWorkflowStore });
 if (seededWorkflows.seeded.length) console.log(`[pipelines] saved the built-in workflows for this new install: ${seededWorkflows.seeded.join(', ')}`);
+// Workflows saved before sources were remembered link to the built-in they were copied from (§5.4),
+// then unchanged linked workflows take a newer shipped version without being asked (§5.2).
+const linkedSources = pipelineWorkflowStore.linkBuiltinSources();
+if (linkedSources.linked.length) console.log(`[pipelines] linked existing workflows to built-ins: ${linkedSources.linked.join(', ')}`);
+pipelineWorkflowStore.applyBuiltinUpdates();
 const pipelineSettingsStore = createSettingsStore(db);
 const pipelineRunStore = createRunStore(db, { interruptOnStart: false });
 const pipelineRequestStore = createRequestStore(db);

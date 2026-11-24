@@ -1,0 +1,34 @@
+{
+  "bug-fix": {
+    "version": 1,
+    "hash": "0c2407cd017f830b8006bec69836a0687509842a86b08cc174292b7ff09238b9"
+  },
+  "quick-change": {
+    "version": 1,
+    "hash": "b4f8b15309d3a86b0f8a9f5c97e990c45a4381bafc0c18e6cc718182ff5253f1"
+  },
+  "feature-build": {
+    "version": 1,
+    "hash": "4535ab456c445f1369f5abed0bebabed1dc903c47375bc44422e0773e1041152"
+  },
+  "feature-build-from-spec": {
+    "version": 1,
+    "hash": "c7fcc5efea7ef8f55804fc46f3962cf3f7108ffcbc0e4050945aea5c1186b13c"
+  },
+  "feature-from-requirements": {
+    "version": 1,
+    "hash": "3b685f09be9f940dc272ea97420239db02ab50fc21117ad071f8356aa7ac9776"
+  },
+  "troubleshoot": {
+    "version": 1,
+    "hash": "a9b7a8c974c80197c19a48148efc71ce22d4ea201ec95a87fda402b95b874eae"
+  },
+  "review-only": {
+    "version": 1,
+    "hash": "7ffe1929e97e2e750a494050a887805386a91e3ceb1f41d5bda1be8786952ff0"
+  },
+  "brainstorm-to-spec": {
+    "version": 1,
+    "hash": "9a7dc8e0497cdb0898330cfec732bfed49c485ad10228bc63f208ba9cc82c0f5"
+  }
+}

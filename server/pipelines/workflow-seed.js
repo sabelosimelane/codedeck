@@ -8,6 +8,7 @@
  * workflows when this was introduced gets nothing added.
  */
 import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
+import { builtinTemplateDefinition } from './workflow-store.js';
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 
@@ -35,13 +36,17 @@ export function seedBuiltInWorkflows({ db, workflows, now = () => new Date().toI
     // An install with workflows of its own keeps exactly those.
     if (workflows.list().length === 0) {
       for (const template of WORKFLOW_TEMPLATES) {
+        // Seeded workflows are linked built-ins: version and base from the template (§5.1).
+        const definition = builtinTemplateDefinition(template);
         workflows.create({
-          name: template.name,
-          kind: template.kind,
-          description: template.description,
-          agentsDecide: template.agentsDecide,
-          progressFile: template.progressFile,
-          nodes: template.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, agentId: null, prompt, repeat: { ...repeat }, readOnly, approval, askOwner })),
+          name: definition.name,
+          kind: definition.kind,
+          description: definition.description,
+          agentsDecide: definition.agentsDecide,
+          progressFile: definition.progressFile,
+          nodes: definition.nodes.map(node => ({ ...node, agentId: null })),
+        }, {
+          source: { kind: 'builtin', id: template.id, version: template.version, base: definition, updatedAt: null },
         });
         seeded.push(template.name);
       }

@@ -1,5 +1,6 @@
 import { validateTeamBody, isBranchName, isUuid, loopTargetIndex, WORKFLOW_KINDS } from '../../../shared/pipeline-definitions.mjs';
-import { PipelineApiError, getPipelineSettings, listAgents, listStepPresets, listTemplates, listWorkflows } from './pipelinesApi';
+import { isUuidV4 } from '../../../shared/workflow-package.mjs';
+import { PipelineApiError, getPipelineSettings, isImportTimestamp as isTimestamp, listAgents, listStepPresets, listTemplates, listWorkflows } from './pipelinesApi';
 
 // Responses are an edge: every field of an agent, workflow and settings response is checked before use.
 // Failures name the record and field, never a command's or prompt's content.
@@ -20,10 +21,46 @@ function isRevision(value) {
   return Number.isInteger(value) && value >= 1;
 }
 
-const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+const SOURCE_KINDS = ['local', 'builtin', 'imported'];
+const BUILT_IN_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-function isTimestamp(value) {
-  return typeof value === 'string' && ISO_UTC.test(value) && !Number.isNaN(Date.parse(value));
+/** The read-only source of a workflow response (§4.4): where its definition came from. */
+function parseSource(record, id) {
+  const source = record.source;
+  if (!isObject(source)) throw invalid('workflow', 'source', id);
+  const { kind, id: sourceId, version, latestVersion, updateAvailable, updatedToVersionAt, shipped } = source;
+  if (!SOURCE_KINDS.includes(kind)) throw invalid('workflow', 'source.kind', id);
+  if (kind === 'local') {
+    if (sourceId !== null) throw invalid('workflow', 'source.id', id);
+    if (version !== null) throw invalid('workflow', 'source.version', id);
+    if (latestVersion !== null) throw invalid('workflow', 'source.latestVersion', id);
+    if (updateAvailable !== false) throw invalid('workflow', 'source.updateAvailable', id);
+    if (shipped !== null) throw invalid('workflow', 'source.shipped', id);
+  } else if (kind === 'imported') {
+    if (!isUuidV4(sourceId)) throw invalid('workflow', 'source.id', id);
+    if (!Number.isInteger(version) || version < 1 || version > 2 ** 31 - 1) throw invalid('workflow', 'source.version', id);
+    if (latestVersion !== null) throw invalid('workflow', 'source.latestVersion', id);
+    if (updateAvailable !== false) throw invalid('workflow', 'source.updateAvailable', id);
+    if (shipped !== null) throw invalid('workflow', 'source.shipped', id);
+  } else {
+    if (typeof sourceId !== 'string' || sourceId.length < 1 || sourceId.length > 64 || !BUILT_IN_ID.test(sourceId)) {
+      throw invalid('workflow', 'source.id', id);
+    }
+    if (!Number.isInteger(version) || version < 1 || version > 2 ** 31 - 1) throw invalid('workflow', 'source.version', id);
+    if (typeof shipped !== 'boolean') throw invalid('workflow', 'source.shipped', id);
+    if (typeof updateAvailable !== 'boolean') throw invalid('workflow', 'source.updateAvailable', id);
+    if (!shipped) {
+      if (latestVersion !== null) throw invalid('workflow', 'source.latestVersion', id);
+      if (updateAvailable !== false) throw invalid('workflow', 'source.updateAvailable', id);
+    } else {
+      if (!Number.isInteger(latestVersion) || latestVersion < 1 || latestVersion > 2 ** 31 - 1) {
+        throw invalid('workflow', 'source.latestVersion', id);
+      }
+      if (updateAvailable !== (latestVersion > version)) throw invalid('workflow', 'source.updateAvailable', id);
+    }
+  }
+  if (updatedToVersionAt !== null && !isTimestamp(updatedToVersionAt)) throw invalid('workflow', 'source.updatedToVersionAt', id);
+  return { kind, id: sourceId, version, latestVersion, updateAvailable, updatedToVersionAt, shipped };
 }
 
 export function parseTeam(record) {
@@ -102,7 +139,8 @@ function parseDefinition(record, kind, withAgent) {
   if (!isTimestamp(createdAt)) throw invalid(kind, 'createdAt', id);
   if (!isTimestamp(updatedAt)) throw invalid(kind, 'updatedAt', id);
   if (!Array.isArray(nodes) || nodes.length < 1) throw invalid(kind, 'nodes', id);
-  return { id, name, kind: record.kind, description, agentsDecide, progressFile, revision, nodes: nodes.map((_node, index) => parseNode(nodes, index, id, kind, withAgent)), createdAt, updatedAt };
+  const source = withAgent ? parseSource(record, id) : undefined;
+  return { id, name, kind: record.kind, description, agentsDecide, progressFile, revision, nodes: nodes.map((_node, index) => parseNode(nodes, index, id, kind, withAgent)), ...(withAgent ? { source } : {}), createdAt, updatedAt };
 }
 
 export function parseWorkflow(record) {

@@ -29,7 +29,21 @@ describe('seedBuiltInWorkflows', () => {
         .toEqual(template.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, prompt, repeat, readOnly, approval, askOwner })));
       // No agent is chosen: the owner's team supplies one for each role when a run starts.
       expect(workflow.nodes.every(node => node.agentId === null && node.role.trim() !== '')).toBe(true);
-      const { id, revision, createdAt, updatedAt, ...body } = workflow;
+      // `source` is read-only metadata: bodies never carry it (the unknown-field rule refuses it).
+      const { id, revision, createdAt, updatedAt, source, ...body } = workflow;
+      // Seeded workflows are linked built-ins: the template's id, version and definition (§5.1).
+      expect(source.kind).toBe('builtin');
+      expect(source.id).toBe(template.id);
+      expect(source.version).toBe(template.version);
+      expect(source.updatedAt).toBe(null);
+      expect(source.base).toEqual({
+        name: template.name,
+        kind: template.kind,
+        description: template.description,
+        agentsDecide: template.agentsDecide,
+        progressFile: template.progressFile,
+        nodes: template.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, prompt, repeat: { ...repeat }, readOnly, approval, askOwner })),
+      });
       expect(validateWorkflowBody(body)).toEqual([]);
     }
   });

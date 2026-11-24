@@ -11,7 +11,8 @@ const agent = (patch = {}) => ({
 });
 const node = (patch = {}) => ({ name: 'Develop', role: '', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false, ...patch });
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T12:30:00.000Z' };
-const workflow = (patch = {}) => ({ id: W1, name: 'Feature', kind: 'other', description: '', agentsDecide: false, progressFile: null, revision: 2, nodes: [node()], ...STAMPS, ...patch });
+const localSource = () => ({ kind: 'local', id: null, version: null, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null });
+const workflow = (patch = {}) => ({ id: W1, name: 'Feature', kind: 'other', description: '', agentsDecide: false, progressFile: null, revision: 2, nodes: [node()], source: localSource(), ...STAMPS, ...patch });
 
 function rejects(parse, record, field) {
   let failure;
@@ -102,6 +103,12 @@ describe('parseWorkflow', () => {
     ['nodes[1].repeat.max', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Develop' } })] }],
     ['nodes[1].repeat.max', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Develop', max: 0 } })] }],
     ['nodes[1].repeat.max', { nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Develop', max: 101 } })] }],
+    ['source.latestVersion', { source: { kind: 'builtin', id: 'bug-fix', version: 1, latestVersion: null, updateAvailable: true, updatedToVersionAt: null, shipped: true } }],
+    ['source.updateAvailable', { source: { kind: 'builtin', id: 'bug-fix', version: 1, latestVersion: 1, updateAvailable: true, updatedToVersionAt: null, shipped: true } }],
+    ['source.updateAvailable', { source: { kind: 'builtin', id: 'bug-fix', version: 1, latestVersion: 2, updateAvailable: false, updatedToVersionAt: null, shipped: true } }],
+    ['source.updateAvailable', { source: { kind: 'builtin', id: 'bug-fix', version: 1, latestVersion: null, updateAvailable: true, updatedToVersionAt: null, shipped: false } }],
+    ['source.latestVersion', { source: { kind: 'builtin', id: 'bug-fix', version: 1, latestVersion: 2, updateAvailable: false, updatedToVersionAt: null, shipped: false } }],
+    ['source.updatedToVersionAt', { source: { kind: 'builtin', id: 'bug-fix', version: 1, latestVersion: 1, updateAvailable: false, updatedToVersionAt: '2026-02-30T00:00:00.000Z', shipped: true } }],
   ])('rejects a workflow with a bad %s', (field, patch) => {
     rejects(parseWorkflow, workflow(patch), field);
   });
@@ -112,6 +119,32 @@ describe('parseWorkflow', () => {
       nodes: [node(), node({ name: 'Test', repeat: { mode: 'loop_back', to: 'Develop', max: 20 } }), node({ name: 'Review' })],
     });
     expect(parseWorkflow(record)).toEqual(record);
+  });
+
+  it('keeps an imported source with its version', () => {
+    const record = workflow({ source: { ...localSource(), kind: 'imported', id: A1, version: 3 } });
+    expect(parseWorkflow(record)).toEqual(record);
+  });
+
+  it.each([
+    ['source', { source: null }],
+    ['source', { source: 'imported' }],
+    ['source', { source: {} }],
+    ['source.kind', { source: { ...localSource(), kind: 'forked' } }],
+    ['source.id', { source: { ...localSource(), kind: 'imported', id: null, version: 3 } }],
+    ['source.id', { source: { ...localSource(), kind: 'imported', id: 'nope', version: 3 } }],
+    ['source.id', { source: { ...localSource(), kind: 'imported', id: '11111111-1111-1111-8111-111111111111', version: 3 } }],
+    ['source.version', { source: { ...localSource(), kind: 'imported', id: A1, version: 0 } }],
+    ['source.version', { source: { ...localSource(), kind: 'imported', id: A1, version: 2 ** 31 } }],
+    ['source.id', { source: { ...localSource(), id: A1 } }],
+    ['source.version', { source: { ...localSource(), version: 2 } }],
+    ['source.updateAvailable', { source: { ...localSource(), updateAvailable: true } }],
+    ['source.latestVersion', { source: { ...localSource(), latestVersion: 2 } }],
+    ['source.shipped', { source: { ...localSource(), shipped: false } }],
+    ['source.updatedToVersionAt', { source: { ...localSource(), updatedToVersionAt: 'yesterday' } }],
+    ['source.id', { source: { ...localSource(), kind: 'builtin', id: 'Bad_ID', version: 1 } }],
+  ])('rejects a workflow with a bad %s', (field, patch) => {
+    rejects(parseWorkflow, workflow(patch), field);
   });
 });
 
@@ -294,7 +327,12 @@ describe('parsePreflight', () => {
 
 describe('kind, description, roles and what the owner saved', () => {
   const { agentId, ...templateNode } = node({ role: 'Developer' });
-  const template = (patch = {}) => ({ ...workflow({ kind: 'build', description: 'Mine', nodes: [templateNode] }), ...patch });
+  // Saved templates carry no source: only workflows remember where they came from.
+  const template = (patch = {}) => {
+    const { source, ...record } = workflow({ kind: 'build', description: 'Mine', nodes: [templateNode] });
+    void source;
+    return { ...record, ...patch };
+  };
   const preset = (patch = {}) => ({ id: W1, name: 'Review', role: 'Reviewer', prompt: 'Review', repeat: { mode: 'until_complete', max: 3 }, readOnly: true, approval: false, askOwner: false, revision: 1, ...STAMPS, ...patch });
 
   it('keeps a workflow’s kind, description and step roles', () => {
@@ -313,7 +351,7 @@ describe('kind, description, roles and what the owner saved', () => {
     rejects(parseTemplate, template({ nodes: [node()] }), 'nodes[0].agentId');
     rejects(parseTemplate, template({ name: '' }), 'name');
     rejects(parseTemplate, null, 'template');
-    rejects(parseWorkflow, template(), 'nodes[0].agentId');
+    rejects(parseWorkflow, { ...template(), source: localSource() }, 'nodes[0].agentId');
   });
 
   it('reads a saved step and returns exactly its fields', () => {

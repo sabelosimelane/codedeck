@@ -15,6 +15,7 @@ const STALE = 'revision does not match the stored revision';
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z' };
 const codex = () => ({ id: A1, name: 'codex-high', launchCommand: 'command codex --model gpt-6-sol', resetCommand: '/clear', revision: 1, ...STAMPS });
 const cursor = () => ({ id: A2, name: 'cursor-fable', launchCommand: 'command agent --model fable', resetCommand: '/new', revision: 4, ...STAMPS });
+const localSource = { kind: 'local', id: null, version: null, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null };
 const feature = () => ({
   id: W1,
   name: 'Feature',
@@ -23,6 +24,7 @@ const feature = () => ({
   agentsDecide: false,
   progressFile: null,
   revision: 3,
+  source: { ...localSource },
   ...STAMPS,
   nodes: [
     { name: 'Develop', role: '', agentId: A1, prompt: '/feature-dev {input}', repeat: { mode: 'until_complete', max: 20 }, readOnly: false, approval: false, askOwner: false },
@@ -46,12 +48,42 @@ function createBackend(seed = {}) {
   const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
   const problem = (status, message, errors) => json({ status, message, ...(errors ? { errors } : {}) }, status);
   const newId = () => `99999999-9999-4999-8999-${String(++created).padStart(12, '0')}`;
+  const builtinSource = (template, version = template.version) => ({
+    kind: 'builtin', id: template.id, version, latestVersion: version,
+    updateAvailable: false, updatedToVersionAt: null, shipped: true,
+  });
+
+  /** Stand-in for the built-in endpoints: rows from the seed, additions link, dismissals hide. */
+  function builtinCollection(method, id, op) {
+    if (method === 'GET' && !id) return json({ data: state.builtIns ?? [], page: { hasNextPage: false } });
+    const template = WORKFLOW_TEMPLATES.find(candidate => candidate.id === id);
+    if (!template || (method !== 'POST' || (op !== 'additions' && op !== 'dismissals'))) {
+      return problem(404, 'Built-in workflow not found');
+    }
+    state.builtIns = (state.builtIns ?? []).filter(row => row.id !== id || row.status !== 'new');
+    if (op === 'dismissals') return { ok: true, status: 204, json: async () => ({}) };
+    if (state.workflows.some(record => record.source?.kind === 'builtin' && record.source?.id === id)) {
+      return problem(409, `"${template.name}" is already linked to the built-in ${template.name}`);
+    }
+    if (state.workflows.some(record => record.name.trim().toLowerCase() === template.name.trim().toLowerCase())) {
+      return problem(409, `A workflow with this name already exists: ${template.name}`);
+    }
+    const record = {
+      id: newId(), name: template.name, kind: template.kind, description: template.description,
+      agentsDecide: template.agentsDecide, progressFile: template.progressFile, revision: 1, ...STAMPS,
+      nodes: template.nodes.map(node => ({ ...node, agentId: null })),
+      source: builtinSource(template),
+    };
+    state.workflows.push(record);
+    return json(record, 201);
+  }
 
   function collection(name, method, id, body) {
     const records = state[name];
     if (method === 'GET' && !id) return json({ data: [...records], page: { hasNextPage: false } });
     if (method === 'POST') {
-      const record = { id: newId(), ...body, revision: 1, ...STAMPS };
+      // Saved workflows answer with their source, like the real endpoint.
+      const record = { id: newId(), ...body, revision: 1, ...STAMPS, ...(name === 'workflows' ? { source: { ...localSource } } : {}) };
       records.push(record);
       return json(record, 201);
     }
@@ -64,14 +96,16 @@ function createBackend(seed = {}) {
     }
     if (body.revision !== records[index].revision) return problem(409, STALE);
     records[index] = { ...records[index], ...body, revision: body.revision + 1 };
+    if (name === 'workflows' && !records[index].source) records[index] = { ...records[index], source: { ...localSource } };
     return json(records[index]);
   }
 
   const fetch = vi.fn(async (url, options = {}) => {
     const method = options.method ?? 'GET';
-    const [, name, id] = new URL(url, 'http://codedeck.test').pathname.replace('/api/pipelines', '').split('/');
+    const [, name, id, op] = new URL(url, 'http://codedeck.test').pathname.replace('/api/pipelines', '').split('/');
     const body = options.body === undefined ? undefined : JSON.parse(options.body);
-    requests.push({ method, path: id ? `/${name}/${id}` : `/${name}`, body });
+    requests.push({ method, path: op ? `/${name}/${id}/${op}` : id ? `/${name}/${id}` : `/${name}`, body });
+    if (name === 'builtin-workflows') return builtinCollection(method, id, op);
     const failureIndex = failures.findIndex(failure => failure.method === method && failure.name === name);
     if (failureIndex !== -1) {
       const [failure] = failures.splice(failureIndex, 1);

@@ -52,6 +52,7 @@ export const PREVIOUS_BUG_FIX_PROMPTS = Object.freeze({
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
   Object.freeze({
+    version: 1,
     id: 'bug-fix', name: 'Bug fix', kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       clarify(),
@@ -64,6 +65,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
     ]),
   }),
   Object.freeze({
+    version: 1,
     id: 'quick-change', name: 'Quick change', kind: 'build', description: 'Scope a small change, implement it, review and test in one pass, and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       node('Scope', 'Analyst', 'Read {input} and the code it touches. Change nothing. Check whether any referenced or read-only repository must change, what behaviour must change, what must stay the same, likely files, and tests that will prove it. First look for each of these yourself in the code and documents. For anything you could not find and cannot safely assume, or if a repository is missing from this task\'s worktrees, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the scope and likely files. ' + acceptance, once(), true, false, true),
@@ -73,6 +75,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
     ]),
   }),
   Object.freeze({
+    version: 1,
     id: 'feature-build', name: 'Feature build', kind: 'build', description: 'Plan phases, build each one, review, test and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       node('Plan', 'Planner', 'Read what {input} asks for and the code it touches. Change no code. Write plan.md in the run notes folder named by its README. Size the plan to the change: work one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each acceptance check as a task in the phase that builds what it checks. ' + planOwnerChecks + ' Use ## Phase N: <title> sections with - [ ] tasks. In your run note summarise the plan and say why it has as many phases as it has.', once(), true, true),
@@ -84,6 +87,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   }),
   // Builds from a todo file that already exists: the todo is the plan and the place progress is read from, so there is no planning step.
   Object.freeze({
+    version: 1,
     id: 'feature-build-from-spec', name: 'Feature Build from Spec', kind: 'build', description: 'Build a feature from a todo file that already exists, one phase per round: develop, review and test until every task is ticked.', agentsDecide: true, progressFile: 'docs/{input}',
     nodes: Object.freeze([
       node('Develop', 'Developer', 'Read the todo file docs/{input}, its session notes and the specification it names. Build the first phase in it with unticked tasks, and only that phase. Write failing tests first, make them pass, tick each task when done, add to the todo\'s session notes what the next round needs to know, leave changes uncommitted for Review and Test (do not run git commit), and record what changed.'),
@@ -92,6 +96,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
     ]),
   }),
   Object.freeze({
+    version: 1,
     id: 'feature-from-requirements', name: 'Feature from requirements', kind: 'build', description: 'Settle the requirements, agree a specification, plan phases, build each one, review, test and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       requirements(),
@@ -104,6 +109,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
     ]),
   }),
   Object.freeze({
+    version: 1,
     id: 'troubleshoot', name: 'Troubleshoot', kind: 'troubleshoot', description: 'Gather evidence, agree on a cause, prove it with a failing test, fix and verify.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       node('Clarify', 'Investigator', CLARIFY_PROMPT + ' ' + acceptance, once(), true, false, true),
@@ -115,6 +121,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
     ]),
   }),
   Object.freeze({
+    version: 1,
     id: 'review-only', name: 'Review only', kind: 'review', description: 'Read a change and report findings. Changes nothing and commits nothing.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       node('Survey', 'Investigator', 'Work out what {input} covers: the branch, commits or files to review, and what the change is meant to do. Change nothing. In your run note list the files and behaviours in scope and anything you could not find.', once(), true),
@@ -125,6 +132,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   // An idea still being shaped: a conversation with the owner, one question per pause, until it lands; then a
   // specification and a phased todo that Feature Build from Spec can build from once they are merged.
   Object.freeze({
+    version: 1,
     id: 'brainstorm-to-spec', name: 'Brainstorm to spec', kind: 'build', description: 'Talk an idea through with you one question at a time until it lands, then write its specification and a phased todo for Feature Build from Spec.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       node('Brainstorm', 'Thinking partner', 'You are the owner\'s thinking partner for the idea in {input}. Change nothing. First read the code and documents the idea touches, so that you can talk about it concretely. Then talk it through with the owner one question at a time: each time, use NEEDS_INPUT with exactly one question, with the answer you would recommend and why and, where it helps, two or three options with their trade-offs. Ask first the question whose answer changes the idea most. Build on each answer: say in a sentence what you took from it, challenge it when it conflicts with the code, with an earlier answer or with a simpler way, raise what the owner has not considered, then ask the next question. Do not ask what you can find out yourself from the code, the documents or the history. Between you, settle who it is for and what they need, what it does in each case including errors and empty states, what is out of scope, what must stay the same, and how it will be shown to work; follow the conversation rather than this list. When you believe the idea has landed, use NEEDS_INPUT once more with a short summary of what was agreed and ask whether it is ready to be specified; if the owner wants to keep going, keep going. Finish only when the owner agrees. In your run note record the idea as agreed, each decision and why, the options set aside, what is out of scope, and anything still open.', once(), true, false, true),

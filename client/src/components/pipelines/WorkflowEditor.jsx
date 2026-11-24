@@ -3,7 +3,8 @@ import { Button, IconButton } from '../ui/index.jsx';
 import { ArrowDown, ArrowUp, BookmarkPlus, Plus, Trash2 } from 'lucide-react';
 import { BUILT_IN_STEPS } from '../../../../shared/workflow-templates.mjs';
 import { loopTargetIndex, validateWorkflowBody, validateStepPresetBody, WORKFLOW_KINDS, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
-import { createStepPreset, createTemplate, createWorkflow, getWorkflow, previewPrompt, updateWorkflow } from '../../utils/pipelinesApi';
+import { createStepPreset, createTemplate, createWorkflow, exportWorkflow, getWorkflow, previewPrompt, updateWorkflow } from '../../utils/pipelinesApi';
+import { packageFileName } from '../../../../shared/workflow-package.mjs';
 import { parseWorkflow } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
 import { OtherErrors, SelectField, TextField, diagnoseSaveFailure, errorsByField, failureMessage } from './definitionForm';
@@ -339,6 +340,33 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
           );
   };
 
+  // Exporting writes the saved workflow to a package file; the endpoint refuses a stale
+  // draft or a step without a role, so the button says why instead of calling it.
+  const roleLessSteps = draft.nodes.filter(node => !node.role.trim()).map(node => node.name.trim() || '(no name yet)');
+  const exportReason = dirty ? 'Save before exporting' : roleLessSteps.length > 0 ? `Give every step a role before exporting: ${roleLessSteps.join(', ')}.` : null;
+
+  const downloadExport = async () => {
+    if (exportReason !== null) return;
+    setBusy(true);
+    try {
+      const pkg = await exportWorkflow(draft.id);
+      const blob = new Blob([JSON.stringify(pkg, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = packageFileName(pkg.workflow.name);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast({ type: 'success', message: `Workflow "${draft.name.trim() || 'Untitled'}" exported` });
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className={builder ? 'pipeline-form workflow-builder' : 'pipeline-form'} aria-label="Workflow editor">
       <h4>{draft.id === null ? 'New workflow' : 'Edit workflow'}</h4>
@@ -402,6 +430,12 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
         )}
         <span className="pipeline-spacer" />
         <Button disabled={busy} onClick={saveAsTemplate} title="Save this workflow without its agents, to start others from">Save as template</Button>
+        {draft.id !== null && (
+          <>
+            <Button disabled={busy || exportReason !== null} title={exportReason ?? 'Download this workflow as a package file'} onClick={downloadExport}>Export</Button>
+            {exportReason !== null && <span className="pipeline-hint">{exportReason}</span>}
+          </>
+        )}
         <Button variant="primary" disabled={busy} onClick={save}>Save workflow</Button>
         <Button disabled={busy} onClick={onCancel}>Cancel</Button>
       </div>

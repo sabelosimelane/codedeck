@@ -16,7 +16,9 @@ const agents = ['Default', 'Team dev', 'Trial'].map((name, index) => ({
   ...stamp, id: `11111111-1111-4111-8111-11111111111${index}`, name, launchCommand: 'agent', resetCommand: '/clear',
 }));
 const team = { ...stamp, name: 'Daily', id: '11111111-1111-4111-8111-222222222222', members: [{ role: 'Developer', agentId: agents[1].id }] };
+const localSource = { kind: 'local', id: null, version: null, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null };
 const workflowFields = { ...stamp, kind: 'other', description: '', agentsDecide: false, progressFile: null,
+  source: { ...localSource },
   nodes: ['Develop', 'Fix'].map(name => ({ name, role: 'Developer', prompt: 'Work', repeat: { mode: 'once' }, agentId: agents[0].id, askOwner: false, approval: false, readOnly: false })) };
 const workflows = [
   { ...workflowFields, id: '11111111-1111-4111-8111-111111111111', name: 'Feature' },

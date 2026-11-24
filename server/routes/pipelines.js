@@ -28,6 +28,10 @@ import {
   isUuid,
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
+import { buildPackage, packageFileName, validatePackage } from '../../shared/workflow-package.mjs';
+import { canonicalDefinition } from '../../shared/workflow-changes.mjs';
+import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
+import { builtinTemplateDefinition } from '../pipelines/workflow-store.js';
 import { computeActions, progressForAgent } from '../pipelines/run-machine.js';
 import { publicAttachments } from '../pipelines/attachments.js';
 import { cleanupAttempt, parsePipelineStartMultipart } from '../pipelines/multipart-start.js';
@@ -243,6 +247,9 @@ function mapMutationError(err, entity) {
   }
   if (/revision conflict/i.test(message)) {
     throw new PipelineError('revision does not match the stored revision', 409);
+  }
+  if (/source already linked/i.test(message)) {
+    throw new PipelineError('This file was already imported', 409);
   }
   if (/name already exists/i.test(message)) {
     throw new PipelineError(`A ${entity.toLowerCase()} with this name already exists`, 409);
@@ -568,6 +575,114 @@ export function createPipelinesRouter(deps) {
 
   // --- Workflows ---
 
+  // The API view of a workflow's source (§4.4): read-only metadata the client shows but never sends.
+  function workflowSourceView(record) {
+    const { kind, id, version, updatedAt } = record.source;
+    let latestVersion = null;
+    let shipped = null;
+    if (kind === 'builtin') {
+      const template = WORKFLOW_TEMPLATES.find(item => item.id === id);
+      shipped = template !== undefined;
+      latestVersion = template?.version ?? null;
+    }
+    return {
+      kind,
+      id,
+      version,
+      latestVersion,
+      updateAvailable: kind === 'builtin' && latestVersion !== null && version !== null && latestVersion > version,
+      updatedToVersionAt: updatedAt,
+      shipped,
+    };
+  }
+
+  function workflowView(record) {
+    const { source, ...rest } = record;
+    void source;
+    return { ...rest, source: workflowSourceView(record) };
+  }
+
+  // Roles of a package file no team on this install gives an agent to yet.
+  function missingPackageRoles(workflow) {
+    const covered = new Set();
+    for (const team of teamStore.list()) {
+      for (const member of team.members ?? []) {
+        if (typeof member?.role === 'string' && member.role.trim()) covered.add(member.role.trim().toLowerCase());
+      }
+    }
+    const missing = [];
+    const seen = new Set();
+    for (const node of workflow.nodes) {
+      const role = typeof node?.role === 'string' ? node.role.trim() : '';
+      if (!role || seen.has(role.toLowerCase())) continue;
+      seen.add(role.toLowerCase());
+      if (!covered.has(role.toLowerCase())) missing.push(role);
+    }
+    return missing;
+  }
+
+  function requirePackage(body) {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      throw fieldError('body', 'A JSON object with a package is required');
+    }
+    for (const key of Object.keys(body)) {
+      if (!['package', 'target'].includes(key)) throw fieldError(key, 'Unknown field');
+    }
+    const pkg = body.package ?? null;
+    if (pkg === null || typeof pkg !== 'object' || Array.isArray(pkg)) {
+      throw fieldErrors([{ field: 'package', message: 'A workflow package object is required' }]);
+    }
+    const errors = validatePackage(pkg);
+    if (errors.length) {
+      throw fieldErrors(errors.map(error => ({ field: `package.${error.field}`, message: error.message })));
+    }
+    return pkg;
+  }
+
+  function sameDefinition(record, definition) {
+    return JSON.stringify(canonicalDefinition(record)) === JSON.stringify(canonicalDefinition(definition));
+  }
+
+  // Prefill "<name> (imported)", then " (imported) 2"… until free; the owner can still edit it.
+  function suggestedImportName(name, taken) {
+    const suffix = ' (imported)';
+    const stem = name.slice(0, 64 - suffix.length).trimEnd() || 'Workflow';
+    const base = `${stem}${suffix}`;
+    if (!taken.has(base.toLowerCase())) return base;
+    for (let number = 2; number < 1000; number += 1) {
+      const numbered = ` ${number}`;
+      const candidate = `${base.slice(0, 64 - numbered.length)}${numbered}`;
+      if (!taken.has(candidate.toLowerCase())) return candidate;
+    }
+    throw new PipelineError('Could not choose a unique import name', 409);
+  }
+
+  function previewImportTarget(pkg) {
+    const workflows = workflowStore.list();
+    const linked = workflows.find(item => item.source.kind === 'imported' && item.source.id === pkg.source.id);
+    const sameName = workflows.find(item => item.name.trim().toLowerCase() === pkg.workflow.name.trim().toLowerCase());
+    if (!linked && !sameName) return { mode: 'new' };
+    if (!linked) {
+      const taken = new Set(workflows.map(item => item.name.trim().toLowerCase()));
+      return {
+        mode: 'name-clash',
+        workflowId: sameName.id,
+        revision: sameName.revision,
+        suggestedName: suggestedImportName(pkg.workflow.name, taken),
+      };
+    }
+    if (pkg.source.version > linked.source.version) {
+      return { mode: 'update', workflowId: linked.id, revision: linked.revision, fromVersion: linked.source.version };
+    }
+    if (pkg.source.version === linked.source.version && sameDefinition(linked, pkg.workflow)) {
+      return { mode: 'up-to-date', workflowId: linked.id };
+    }
+    throw new PipelineError(
+      `This file is version ${pkg.source.version}; ${linked.name} already took version ${linked.source.version} from it.`,
+      409,
+    );
+  }
+
   router.get(`${BASE}/workflows`, route((req, res) => {
     const query = parseCollectionQuery(req.query, {
       sortFields: WORKFLOW_SORT,
@@ -584,7 +699,8 @@ export function createPipelinesRouter(deps) {
     if (query.filters.name !== undefined) {
       records = records.filter(record => record.name === query.filters.name);
     }
-    res.json(paginate(records, query));
+    const page = paginate(records, query);
+    res.json({ ...page, data: page.data.map(workflowView) });
   }));
 
   router.post(`${BASE}/workflows`, route((req, res) => {
@@ -593,7 +709,7 @@ export function createPipelinesRouter(deps) {
     requireExistingAgents(agentStore, req.body.nodes);
     try {
       const created = workflowStore.create(req.body);
-      res.status(201).json(created);
+      res.status(201).json(workflowView(created));
     } catch (err) {
       mapMutationError(err, 'Workflow');
     }
@@ -603,7 +719,81 @@ export function createPipelinesRouter(deps) {
     if (!isUuid(req.params.id)) throw new PipelineError('Workflow not found', 404);
     const workflow = workflowStore.get(req.params.id);
     if (!workflow) throw new PipelineError('Workflow not found', 404);
-    res.json(workflow);
+    res.json(workflowView(workflow));
+  }));
+
+  router.get(`${BASE}/workflows/:id/export`, route((req, res) => {
+    if (!isUuid(req.params.id)) throw new PipelineError('Workflow not found', 404);
+    const workflow = workflowStore.get(req.params.id);
+    if (!workflow) throw new PipelineError('Workflow not found', 404);
+    const roleLess = workflow.nodes.filter(node => !node.role || !node.role.trim()).map(node => node.name);
+    if (roleLess.length) {
+      throw new PipelineError(`Give every step a role before exporting: ${roleLess.join(', ')}.`, 409);
+    }
+    res.set('Content-Disposition', `attachment; filename="${packageFileName(workflow.name)}"`);
+    res.json(buildPackage(workflow));
+  }));
+
+  router.post(`${BASE}/workflow-imports/previews`, route((req, res) => {
+    if (req.body !== null && typeof req.body === 'object' && !Array.isArray(req.body)) {
+      for (const key of Object.keys(req.body)) {
+        if (key !== 'package') throw fieldError(key, 'Unknown field');
+      }
+    }
+    const pkg = requirePackage(req.body);
+    res.json({
+      target: previewImportTarget(pkg),
+      workflow: pkg.workflow,
+      // The per-change comparison of §6.2 arrives with updates in Phase 3; a new file has nothing to compare.
+      changes: [],
+      missingRoles: missingPackageRoles(pkg.workflow),
+    });
+  }));
+
+  router.post(`${BASE}/workflow-imports`, route((req, res) => {
+    if (req.body !== null && typeof req.body === 'object' && !Array.isArray(req.body)) {
+      for (const key of Object.keys(req.body)) {
+        if (!['package', 'target'].includes(key)) throw fieldError(key, 'Unknown field');
+      }
+    }
+    const pkg = requirePackage(req.body);
+    const target = req.body.target ?? null;
+    if (target === null || typeof target !== 'object' || Array.isArray(target)) {
+      throw fieldError('target', 'A target object with a mode is required');
+    }
+    // Spec §7: a malformed choice is a 400 naming target.mode, not a 409.
+    // Mode is checked before the Phase-1 key allowlist so a Spec-shaped replace/update
+    // body (workflowId, revision, take) still gets the Phase-3 "not offered" 409.
+    if (typeof target.mode !== 'string' || !['new', 'replace', 'update'].includes(target.mode)) {
+      throw fieldError('target.mode', 'Use one of new, replace or update');
+    }
+    // Update and replace modes arrive with the §6 comparison in Phase 3.
+    if (target.mode !== 'new') {
+      throw new PipelineError(`Importing with mode "${target.mode}" is not offered in this release.`, 409);
+    }
+    for (const key of Object.keys(target)) {
+      if (!['mode', 'name'].includes(key)) throw fieldError(`target.${key}`, 'Unknown field');
+    }
+    let name = pkg.workflow.name;
+    if (target.name !== undefined) {
+      if (typeof target.name !== 'string') throw fieldError('target.name', 'Use a workflow name');
+      const trimmed = target.name.trim();
+      const nameError = validateWorkflowBody({ ...pkg.workflow, name: trimmed }, { template: true })
+        .find(error => error.field === 'name');
+      if (nameError) throw fieldError('target.name', nameError.message);
+      name = trimmed;
+    }
+    const clash = workflowStore.list().find(item => item.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (clash) throw new PipelineError('A workflow with this name already exists', 409);
+    try {
+      const created = workflowStore.create(
+        { ...pkg.workflow, name, nodes: pkg.workflow.nodes.map(node => ({ ...node, agentId: null })) },
+        { source: { kind: 'imported', id: pkg.source.id, version: pkg.source.version, base: pkg.workflow, updatedAt: null } },
+      );
+      res.status(201).json(workflowView(created));
+    } catch (err) {
+      mapMutationError(err, 'Workflow');
+    }
   }));
 
   router.put(`${BASE}/workflows/:id`, route((req, res) => {
@@ -612,7 +802,7 @@ export function createPipelinesRouter(deps) {
     if (errors.length) throw fieldErrors(errors);
     requireExistingAgents(agentStore, req.body.nodes);
     try {
-      res.json(workflowStore.update(req.params.id, req.body));
+      res.json(workflowView(workflowStore.update(req.params.id, req.body)));
     } catch (err) {
       mapMutationError(err, 'Workflow');
     }
@@ -623,6 +813,92 @@ export function createPipelinesRouter(deps) {
     const workflow = workflowStore.get(req.params.id);
     if (!workflow) throw new PipelineError('Workflow not found', 404);
     workflowStore.remove(workflow.id);
+    res.status(204).end();
+  }));
+
+  // --- Built-in workflows (§5.3) ---
+
+  const BUILTIN_SORT = ['name'];
+  const BUILTIN_STATUS = ['new', 'linked', 'dismissed'];
+
+  function builtinLinkage() {
+    const linkedByTemplate = new Map();
+    for (const workflow of workflowStore.list()) {
+      if (workflow.source.kind === 'builtin' && workflow.source.id) {
+        linkedByTemplate.set(workflow.source.id, workflow.id);
+      }
+    }
+    const dismissed = new Set(workflowStore.builtinDismissals().map(row => row.templateId));
+    return { linkedByTemplate, dismissed };
+  }
+
+  router.get(`${BASE}/builtin-workflows`, route((req, res) => {
+    const query = parseCollectionQuery(req.query, {
+      sortFields: BUILTIN_SORT,
+      defaultSort: 'name,asc',
+      filters: [{
+        name: 'status',
+        parse: value => {
+          if (!BUILTIN_STATUS.includes(value)) throw fieldError('status', 'Use one of new, linked or dismissed');
+          return value;
+        },
+      }],
+    });
+    const { linkedByTemplate, dismissed } = builtinLinkage();
+    let rows = WORKFLOW_TEMPLATES.map(template => ({
+      id: template.id,
+      name: template.name,
+      kind: template.kind,
+      description: template.description,
+      version: template.version,
+      status: linkedByTemplate.has(template.id) ? 'linked' : dismissed.has(template.id) ? 'dismissed' : 'new',
+      workflowId: linkedByTemplate.get(template.id) ?? null,
+    }));
+    if (query.filters.status !== undefined) {
+      rows = rows.filter(row => row.status === query.filters.status);
+    }
+    res.json(paginate(rows, query));
+  }));
+
+  router.post(`${BASE}/builtin-workflows/:id/additions`, route((req, res) => {
+    const template = WORKFLOW_TEMPLATES.find(item => item.id === req.params.id);
+    if (!template) throw new PipelineError('Built-in workflow not found', 404);
+    const linked = workflowStore.list().find(workflow => workflow.source.kind === 'builtin' && workflow.source.id === template.id);
+    if (linked) {
+      throw new PipelineError(`"${linked.name}" is already linked to the built-in ${template.name}`, 409);
+    }
+    const clash = workflowStore.list().find(workflow => workflow.name.trim().toLowerCase() === template.name.trim().toLowerCase());
+    if (clash) {
+      throw new PipelineError(`A workflow with this name already exists: ${clash.name}`, 409);
+    }
+    try {
+      const definition = builtinTemplateDefinition(template);
+      const created = workflowStore.create({
+        name: definition.name,
+        kind: definition.kind,
+        description: definition.description,
+        agentsDecide: definition.agentsDecide,
+        progressFile: definition.progressFile,
+        nodes: definition.nodes.map(node => ({ ...node, agentId: null })),
+      }, {
+        source: { kind: 'builtin', id: template.id, version: template.version, base: definition, updatedAt: null },
+      });
+      // Adding a dismissed built-in links it again and lifts the dismissal (§4.2).
+      workflowStore.undismissBuiltinTemplate(template.id);
+      res.status(201).json(workflowView(created));
+    } catch (err) {
+      mapMutationError(err, 'Workflow');
+    }
+  }));
+
+  router.post(`${BASE}/builtin-workflows/:id/dismissals`, route((req, res) => {
+    const template = WORKFLOW_TEMPLATES.find(item => item.id === req.params.id);
+    if (!template) throw new PipelineError('Built-in workflow not found', 404);
+    const linked = workflowStore.list().find(workflow => workflow.source.kind === 'builtin' && workflow.source.id === template.id);
+    if (linked) {
+      throw new PipelineError(`"${linked.name}" is already linked to the built-in ${template.name}`, 409);
+    }
+    workflowStore.dismissBuiltinTemplate(template.id);
     res.status(204).end();
   }));
 
@@ -1796,13 +2072,17 @@ export function createPipelinesRouter(deps) {
         : status === 413 ? 'Request body too large'
           : 'Pipelines request failed';
     const traceId = req.pipelinesTraceId ?? randomUUID();
-    // Echo only a safe field already present on the problem errors (never raw part names).
-    const safeField = typeof error.errors?.[0]?.field === 'string' ? error.errors[0].field : '';
-    const fieldSuffix = safeField ? ` field=${safeField}` : '';
+    const route = `${req.method} ${String(req.originalUrl).split('?')[0]}`;
+    // A refusal logs once with the route and the offending field names, never values.
+    const fieldNames = Array.isArray(error.errors)
+      ? [...new Set(error.errors.map(item => item?.field).filter(field => typeof field === 'string' && field !== ''))]
+      : [];
     if (status >= 500) {
-      console.error(`[pipelines] request failed status=${status} traceId=${traceId}${fieldSuffix}`, error);
+      console.error(`[pipelines] request failed status=${status} traceId=${traceId} route=${route}`, error);
+    } else if (fieldNames.length) {
+      console.warn(`[pipelines] request refused status=${status} traceId=${traceId} route=${route} fields=${fieldNames.join(',')}`);
     } else {
-      console.warn(`[pipelines] request failed status=${status} traceId=${traceId}${fieldSuffix}`);
+      console.warn(`[pipelines] request failed status=${status} traceId=${traceId} route=${route}`);
     }
     const fieldErrorsList = error.errors?.length
       ? error.errors

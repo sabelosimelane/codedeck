@@ -1,16 +1,39 @@
 import { randomUUID } from 'node:crypto';
 import { validateWorkflowBody, isProgressFileTemplate, isUuid, loopTargetIndex, WORKFLOW_KINDS, DESCRIPTION_MAX } from '../../shared/pipeline-definitions.mjs';
 import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workflow-templates.mjs';
+import { canonicalDefinition } from '../../shared/workflow-changes.mjs';
+import { isUuidV4 } from '../../shared/workflow-package.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
+const SOURCE_KINDS = ['local', 'builtin', 'imported'];
+const BUILT_IN_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SOURCE_VERSION_MAX = 2 ** 31 - 1;
 
 function fieldError(id, field, message) {
   throw new Error(`pipeline_workflows row ${id} field ${field}: ${message}`);
 }
 
-function requireIso(id, field, value) {
+const ISO_PARTS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function isIsoTimestamp(value) {
   if (typeof value !== 'string' || !ISO_TIMESTAMP.test(value) || Number.isNaN(Date.parse(value))) {
+    return false;
+  }
+  // Date.parse rolls an impossible date over (Feb 30 becomes Mar 2), so the
+  // calendar components must form a real date on their own.
+  const parts = ISO_PARTS.exec(value);
+  const year = Number(parts[1]);
+  const month = Number(parts[2]);
+  const day = Number(parts[3]);
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  return Boolean(daysInMonth) && day >= 1 && day <= daysInMonth
+    && Number(parts[4]) <= 23 && Number(parts[5]) <= 59 && Number(parts[6]) <= 59;
+}
+
+function requireIso(id, field, value) {
+  if (!isIsoTimestamp(value)) {
     fieldError(id, field, 'must be an ISO-8601 timestamp');
   }
   return value;
@@ -55,6 +78,59 @@ function requireDescription(id, value) {
   return value;
 }
 
+function requireSourceKind(id, value) {
+  if (!SOURCE_KINDS.includes(value)) fieldError(id, 'source_kind', `must be one of ${SOURCE_KINDS.join(', ')}`);
+  return value;
+}
+
+function requireSourceId(id, kind, value) {
+  if (kind === 'local') {
+    if (value !== null) fieldError(id, 'source_id', 'must be null for a local workflow');
+    return null;
+  }
+  if (kind === 'builtin') {
+    if (typeof value !== 'string' || value.length < 1 || value.length > 64 || !BUILT_IN_ID.test(value)) {
+      fieldError(id, 'source_id', 'must be a 1–64 character slug of lower-case letters, digits and dashes');
+    }
+    return value;
+  }
+  if (!isUuidV4(value)) fieldError(id, 'source_id', 'must be a UUID v4');
+  return value;
+}
+
+function requireSourceVersion(id, kind, value) {
+  if (kind === 'local') {
+    if (value !== null) fieldError(id, 'source_version', 'must be null for a local workflow');
+    return null;
+  }
+  if (!Number.isInteger(value) || value < 1 || value > SOURCE_VERSION_MAX) {
+    fieldError(id, 'source_version', `must be an integer 1–${SOURCE_VERSION_MAX}`);
+  }
+  return value;
+}
+
+function requireSourceBase(id, kind, value) {
+  if (kind === 'local') {
+    if (value !== null) fieldError(id, 'source_base', 'must be null for a local workflow');
+    return null;
+  }
+  if (value === null) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    fieldError(id, 'source_base', 'must be valid JSON');
+  }
+  const errors = validateWorkflowBody(parsed, { template: true });
+  if (errors.length) fieldError(id, 'source_base', errors[0].message);
+  return parsed;
+}
+
+function requireSourceUpdatedAt(id, value) {
+  if (value === null) return null;
+  return requireIso(id, 'source_updated_at', value);
+}
+
 function parseNodes(id, raw) {
   let nodes;
   try {
@@ -86,7 +162,7 @@ function assertValidBody(body, { revisionRequired }) {
 function hydrate(row) {
   const id = row.id;
   if (!isUuid(id)) fieldError(id ?? 'unknown', 'id', 'must be a UUID v4');
-  return {
+  const record = {
     id,
     name: requireName(id, row.name),
     description: requireDescription(id, row.description),
@@ -97,7 +173,20 @@ function hydrate(row) {
     revision: requireRevision(id, row.revision),
     createdAt: requireIso(id, 'created_at', row.created_at),
     updatedAt: requireIso(id, 'updated_at', row.updated_at),
+    source: {
+      kind: requireSourceKind(id, row.source_kind),
+      id: null,
+      version: null,
+      base: null,
+      updatedAt: null,
+    },
   };
+  const kind = record.source.kind;
+  record.source.id = requireSourceId(id, kind, row.source_id);
+  record.source.version = requireSourceVersion(id, kind, row.source_version);
+  record.source.base = requireSourceBase(id, kind, row.source_base);
+  record.source.updatedAt = requireSourceUpdatedAt(id, row.source_updated_at);
+  return record;
 }
 
 function isUniqueConflict(err) {
@@ -110,6 +199,47 @@ function normalizeRepeat(nodes, index) {
   if (repeat.mode === 'until_complete') return { mode: 'until_complete', max: repeat.max };
   // A loop is stored under the name of the node it returns to, as that node is stored.
   return { mode: 'loop_back', to: nodes[loopTargetIndex(nodes, index)].name.trim(), max: repeat.max };
+}
+
+/**
+ * The definition a built-in workflow is saved, linked and compared from (Spec §5.1):
+ * the template's body without agents. Every step travels with its role; the team
+ * supplies the agent when a run starts.
+ */
+export function builtinTemplateDefinition(template) {
+  if (template === null || typeof template !== 'object' || Array.isArray(template)) {
+    throw new TypeError('builtinTemplateDefinition: a template object is required');
+  }
+  if (!Number.isInteger(template.version) || template.version < 1) {
+    throw new TypeError(`builtinTemplateDefinition: template ${template.id ?? 'unknown'} needs an integer version ≥ 1`);
+  }
+  const definition = {
+    name: template.name,
+    description: template.description,
+    kind: template.kind,
+    agentsDecide: template.agentsDecide,
+    progressFile: template.progressFile,
+    nodes: (template.nodes ?? []).map(node => ({
+      name: node?.name,
+      role: node?.role,
+      prompt: node?.prompt,
+      repeat: node?.repeat === undefined ? undefined : { ...node.repeat },
+      readOnly: node?.readOnly,
+      approval: node?.approval,
+      askOwner: node?.askOwner,
+      ...(node?.enabled === undefined ? {} : { enabled: node.enabled }),
+    })),
+  };
+  const errors = validateWorkflowBody(definition, { template: true });
+  if (errors.length) {
+    throw new TypeError(`builtinTemplateDefinition: template ${template.id ?? 'unknown'} is not a valid definition: ${errors[0].field} ${errors[0].message}`);
+  }
+  return definition;
+}
+
+/** Definitions compare without the workflow's own name: the name is the owner's (§6.2). */
+function canonicalWithoutName(definition) {
+  return JSON.stringify({ ...canonicalDefinition(definition), name: '' });
 }
 
 function normalizeNodes(nodes) {
@@ -159,6 +289,41 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
   if (!db.prepare('PRAGMA table_info(pipeline_workflows)').all().some(column => column.name === 'description')) {
     db.exec("ALTER TABLE pipeline_workflows ADD COLUMN description TEXT NOT NULL DEFAULT ''");
   }
+
+  // Workflows saved before sources were remembered have none: they are local.
+  const workflowColumns = () => db.prepare('PRAGMA table_info(pipeline_workflows)').all().map(column => column.name);
+  if (!workflowColumns().includes('source_kind')) {
+    db.exec("ALTER TABLE pipeline_workflows ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'local'");
+  }
+  if (!workflowColumns().includes('source_id')) {
+    db.exec('ALTER TABLE pipeline_workflows ADD COLUMN source_id TEXT');
+  }
+  if (!workflowColumns().includes('source_version')) {
+    db.exec('ALTER TABLE pipeline_workflows ADD COLUMN source_version INTEGER');
+  }
+  if (!workflowColumns().includes('source_base')) {
+    db.exec('ALTER TABLE pipeline_workflows ADD COLUMN source_base TEXT');
+  }
+  if (!workflowColumns().includes('source_updated_at')) {
+    db.exec('ALTER TABLE pipeline_workflows ADD COLUMN source_updated_at TEXT');
+  }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS pipeline_workflows_source
+    ON pipeline_workflows (source_kind, source_id) WHERE source_kind <> 'local'`);
+  // A dismissed built-in is never offered as new again — not even when the linked
+  // workflow that caused the dismissal is deleted (§4.2, §5.1).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_builtin_dismissals (
+      template_id TEXT PRIMARY KEY,
+      dismissed_at TEXT NOT NULL
+    );
+  `);
+  // The one-time linking of saved workflows to built-ins (§5.4) runs once per database.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_workflow_source_link (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      linked_at TEXT NOT NULL
+    );
+  `);
 
   const STOCK_PROMPT_UPGRADES = new Map([
     [
@@ -345,14 +510,43 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
 
   const read = db.prepare('SELECT * FROM pipeline_workflows WHERE id = ?');
   const readAll = db.prepare('SELECT * FROM pipeline_workflows ORDER BY lower(name), id');
+  function prepareSourceForWrite(id, source) {
+    if (source === undefined) return { kind: 'local', sourceId: null, version: null, base: null, updatedAt: null };
+    if (source === null || typeof source !== 'object' || Array.isArray(source)) {
+      fieldError(id, 'source_kind', 'must be an object with kind, id, version, base and updatedAt');
+    }
+    const kind = requireSourceKind(id, source.kind);
+    const sourceId = requireSourceId(id, kind, source.id ?? null);
+    const version = requireSourceVersion(id, kind, source.version ?? null);
+    // Every hydrate guard is mirrored here so a refused write throws before the
+    // insert and never leaves a row the next read would fail on.
+    if (kind === 'local' && (source.base ?? null) !== null) {
+      fieldError(id, 'source_base', 'must be null for a local workflow');
+    }
+    let base = null;
+    if ((source.base ?? null) !== null) {
+      if (typeof source.base !== 'object' || Array.isArray(source.base)) {
+        fieldError(id, 'source_base', 'must be a workflow definition or null');
+      }
+      const errors = validateWorkflowBody(source.base, { template: true });
+      if (errors.length) fieldError(id, 'source_base', errors[0].message);
+      base = JSON.stringify(source.base);
+    } else if (kind !== 'local') {
+      base = null;
+    }
+    const updatedAt = source.updatedAt ?? null;
+    if (updatedAt !== null) requireIso(id, 'source_updated_at', updatedAt);
+    return { kind, sourceId, version, base, updatedAt };
+  }
+
   const insert = db.prepare(`
     INSERT INTO pipeline_workflows
-      (id, name, nodes, revision, created_at, updated_at, agents_decide, progress_file, kind, description)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, name, nodes, revision, created_at, updated_at, agents_decide, progress_file, kind, description, source_kind, source_id, source_version, source_base, source_updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
     UPDATE pipeline_workflows
-    SET name = ?, nodes = ?, revision = ?, updated_at = ?, agents_decide = ?, progress_file = ?, kind = ?, description = ?
+    SET name = ?, nodes = ?, revision = ?, updated_at = ?, agents_decide = ?, progress_file = ?, kind = ?, description = ?, source_updated_at = NULL
     WHERE id = ? AND revision = ?
   `);
   const removeStmt = db.prepare('DELETE FROM pipeline_workflows WHERE id = ?');
@@ -368,22 +562,48 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     return record;
   };
 
+  const dismissBuiltin = db.prepare(`
+    INSERT OR IGNORE INTO pipeline_builtin_dismissals (template_id, dismissed_at) VALUES (?, ?)
+  `);
+
+  function requireTemplateId(templateId) {
+    if (typeof templateId !== 'string' || templateId.length < 1 || templateId.length > 64 || !BUILT_IN_ID.test(templateId)) {
+      throw new Error(`pipeline_builtin_dismissals row ${String(templateId ?? 'unknown')} field template_id: must be a 1–64 character slug of lower-case letters, digits and dashes`);
+    }
+    return templateId;
+  }
+
+  function requireDismissedAt(templateId, value) {
+    if (!isIsoTimestamp(value)) {
+      throw new Error(`pipeline_builtin_dismissals row ${templateId} field dismissed_at: must be an ISO-8601 timestamp`);
+    }
+    return value;
+  }
+
+  function writeDismissal(templateId, dismissedAt) {
+    const validId = requireTemplateId(templateId);
+    const validAt = requireDismissedAt(validId, dismissedAt);
+    dismissBuiltin.run(validId, validAt);
+  }
+
   return {
     get,
     list() {
       return readAll.all().map(hydrate);
     },
-    create(body) {
+    create(body, { source } = {}) {
       assertValidBody(body, { revisionRequired: false });
       const id = randomUUID();
+      const prepared = prepareSourceForWrite(id, source);
       const stamp = now();
       const name = body.name.trim();
       const nodes = normalizeNodes(body.nodes);
       try {
-        insert.run(id, name, JSON.stringify(nodes), 1, stamp, stamp, body.agentsDecide ? 1 : 0, body.progressFile?.trim() ?? null, body.kind ?? 'other', (body.description ?? '').trim());
+        insert.run(id, name, JSON.stringify(nodes), 1, stamp, stamp, body.agentsDecide ? 1 : 0, body.progressFile?.trim() ?? null, body.kind ?? 'other', (body.description ?? '').trim(),
+          prepared.kind, prepared.sourceId, prepared.version, prepared.base, prepared.updatedAt);
       } catch (err) {
         if (isUniqueConflict(err)) {
-          throw new Error('pipeline_workflows: name already exists');
+          throw new Error(`pipeline_workflows: ${String(err.message).includes('pipeline_workflows_source') ? 'source already linked' : 'name already exists'}`);
         }
         throw err;
       }
@@ -416,7 +636,124 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     },
     remove(id) {
       if (!isUuid(id)) throw new Error('pipeline_workflows: id must be a UUID');
-      removeStmt.run(id);
+      db.transaction(() => {
+        const row = read.get(id);
+        if (!row) return;
+        // Deleting a linked built-in dismisses it, so it does not come back as new (§5.1).
+        if (row.source_kind === 'builtin' && typeof row.source_id === 'string' && row.source_id) {
+          writeDismissal(row.source_id, now());
+        }
+        removeStmt.run(id);
+      })();
+    },
+    /** Dismissed built-ins with when they were dismissed, oldest first. */
+    builtinDismissals() {
+      return db.prepare('SELECT template_id AS templateId, dismissed_at AS dismissedAt FROM pipeline_builtin_dismissals ORDER BY dismissed_at, template_id')
+        .all()
+        .map(row => ({
+          templateId: requireTemplateId(row.templateId),
+          dismissedAt: requireDismissedAt(row.templateId, row.dismissedAt),
+        }));
+    },
+    /** Dismiss a shipped built-in without linking it; repeating it changes nothing (§5.3). */
+    dismissBuiltinTemplate(templateId) {
+      writeDismissal(templateId, now());
+    },
+    /** Adding a dismissed built-in links it again and lifts the dismissal (§4.2). */
+    undismissBuiltinTemplate(templateId) {
+      db.prepare('DELETE FROM pipeline_builtin_dismissals WHERE template_id = ?').run(requireTemplateId(templateId));
+    },
+    /**
+     * One-time linking of saved workflows to built-ins (§5.4). A `local` workflow
+     * whose name equals a shipped template's name (case-insensitive) and whose kind
+     * equals its kind becomes `builtin` for that template — unless another workflow
+     * already links it. An identical definition keeps its base (up to date);
+     * otherwise the base is unknown (null) and the builder offers a comparison.
+     */
+    linkBuiltinSources({ templates = WORKFLOW_TEMPLATES } = {}) {
+      const marker = db.prepare('SELECT linked_at FROM pipeline_workflow_source_link WHERE id = 1').get();
+      if (marker) {
+        if (!isIsoTimestamp(marker.linked_at)) {
+          throw new Error('pipeline_workflow_source_link row 1 field linked_at: must be an ISO-8601 timestamp');
+        }
+        return { linked: [] };
+      }
+      const linkedAt = now();
+      if (!isIsoTimestamp(linkedAt)) {
+        throw new Error('pipeline_workflow_source_link row 1 field linked_at: must be an ISO-8601 timestamp');
+      }
+      const linked = [];
+      db.transaction(() => {
+        const saved = readAll.all().map(hydrate);
+        const taken = new Set(saved
+          .filter(workflow => workflow.source.kind === 'builtin' && workflow.source.id)
+          .map(workflow => workflow.source.id));
+        for (const template of templates) {
+          if (taken.has(template.id)) continue;
+          const candidate = saved.find(workflow => workflow.source.kind === 'local'
+            && workflow.name.trim().toLowerCase() === String(template.name).trim().toLowerCase()
+            && workflow.kind === template.kind);
+          if (!candidate) continue;
+          const definition = builtinTemplateDefinition(template);
+          const identical = canonicalWithoutName(candidate) === canonicalWithoutName(definition);
+          db.prepare(`UPDATE pipeline_workflows
+            SET source_kind = 'builtin', source_id = ?, source_version = ?, source_base = ?
+            WHERE id = ?`).run(template.id, template.version, identical ? JSON.stringify(definition) : null, candidate.id);
+          taken.add(template.id);
+          linked.push(candidate.name);
+        }
+        db.prepare('INSERT INTO pipeline_workflow_source_link (id, linked_at) VALUES (1, ?)').run(linkedAt);
+      })();
+      return { linked };
+    },
+    /**
+     * On start, after the hand-written upgrades and the first-start seed (§5.2): every
+     * `builtin` workflow whose template ships a higher version and whose current
+     * definition still equals its base takes the new definition. Nodes keep the
+     * `agentId` of the node with the same name; a new node gets `agentId: null`
+     * (assigned by team role when a run starts). `revision` goes up by one and the
+     * update is logged; an edited workflow or an invalid new definition is left as
+     * it is (the invalid one logged with the workflow id) and the start goes on.
+     */
+    applyBuiltinUpdates({ templates = WORKFLOW_TEMPLATES, now: clock = now, log = (...args) => console.log(...args) } = {}) {
+      if (typeof clock !== 'function') throw new TypeError('applyBuiltinUpdates: now must be a function');
+      const shipped = new Map(templates.map(template => [template.id, template]));
+      const updated = [];
+      for (const workflow of readAll.all().map(hydrate)) {
+        if (workflow.source.kind !== 'builtin' || !workflow.source.id) continue;
+        const template = shipped.get(workflow.source.id);
+        if (!template) continue; // No longer shipped: an ordinary workflow (§5.5).
+        if (!Number.isInteger(template.version) || template.version <= workflow.source.version) continue;
+        // Edited or unknown-base workflows are left alone with no log (§5.2); only an
+        // unchanged linked copy is a candidate, and only then is an invalid new
+        // definition refused and logged with the workflow id.
+        const unchanged = workflow.source.base !== null
+          && canonicalWithoutName(workflow) === canonicalWithoutName(workflow.source.base);
+        if (!unchanged) continue;
+        try {
+          const definition = builtinTemplateDefinition(template);
+          const kept = new Map(workflow.nodes.map(node => [node.name.trim().toLowerCase(), node.agentId]));
+          const nodes = normalizeNodes(definition.nodes.map(node => ({
+            ...node,
+            agentId: kept.get(node.name.trim().toLowerCase()) ?? null,
+          })));
+          const stamp = requireIso(workflow.id, 'updated_at', clock());
+          const applied = db.prepare(`UPDATE pipeline_workflows
+            SET description = ?, kind = ?, agents_decide = ?, progress_file = ?,
+              nodes = ?, revision = revision + 1, updated_at = ?,
+              source_version = ?, source_base = ?, source_updated_at = ?
+            WHERE id = ? AND revision = ?`).run(
+            definition.description, definition.kind, definition.agentsDecide ? 1 : 0, definition.progressFile,
+            JSON.stringify(nodes), stamp, template.version, JSON.stringify(definition), stamp, workflow.id, workflow.revision,
+          );
+          if (applied.changes !== 1) throw new Error('revision conflict');
+          updated.push(workflow.name);
+          log(`[workflows] ${workflow.name} updated to built-in version ${template.version}`);
+        } catch (err) {
+          log(`[workflows] ${workflow.id}: built-in update refused: ${err.message}`);
+        }
+      }
+      return { updated };
     },
   };
 }
