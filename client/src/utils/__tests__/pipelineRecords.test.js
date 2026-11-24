@@ -357,9 +357,20 @@ describe('a step that always asks the owner', () => {
 });
 
 describe('parseTeam', () => {
+  it('retains a valid team role fallback and accepts legacy members', () => {
+    const base = { id: W1, name: 'Daily', revision: 1, ...STAMPS };
+    for (const patch of [{}, { fallbackAgentId: 'c410a1b2-3456-4789-8abc-def012345679' }]) {
+      const members = [{ role: 'Developer', agentId: A1, ...patch }];
+      expect(parseTeam({ ...base, members }).members).toEqual(members);
+    }
+  });
+
   it.each([
     ['id', { id: null }], ['name', { name: '' }], ['members', { members: [] }],
     ['role', { members: [{ role: null, agentId: A1 }] }], ['agentId', { members: [{ role: 'Developer', agentId: null }] }],
+    ['fallbackAgentId', { members: [{ role: 'Developer', agentId: A1, fallbackAgentId: {} }] }],
+    ['fallbackAgentId', { members: [{ role: 'Developer', agentId: A1, fallbackAgentId: null }] }],
+    ['fallbackAgentId', { members: [{ role: 'Developer', agentId: A1, fallbackAgentId: A1 }] }],
     ['createdAt', { createdAt: null }], ['updatedAt', { updatedAt: 'invalid' }], ['revision', { revision: null }],
   ])('refuses an invalid %s from the teams API', (field, patch) => {
     rejects(parseTeam, { id: W1, name: 'Daily', members: [{ role: 'Developer', agentId: A1 }], revision: 1, ...STAMPS, ...patch }, field);

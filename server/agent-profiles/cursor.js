@@ -44,3 +44,23 @@ export function read(lines) {
   const region = promptRegion(lines, isPrompt);
   return { turn: WORKING_HINT.test(region.prompt) ? 'working' : 'idle', backgroundShells: 0 };
 }
+
+const FOLLOW_UP = '→ Add a follow-up';
+const LIMIT_HEADING = "Error: You've hit your usage limit";
+const UPGRADE_ADVICE = 'Get Cursor Pro for more Agent usage, unlimited Tab, and more.';
+const PLAN_DETAILS = /^fallbackModel: spendLimitHit: (?:false|true) chatMessage: \*Your usage limits will reset when your monthly cycle ends on \d{1,2}\/\d{1,2}\/\d{4}\.\* spendLimits: \[\d+(?:,\s?\d+)*\]$/;
+
+export function usageLimit(lines) {
+  const text = screenLines(lines);
+  const { above, below, prompt } = promptRegion(lines, promptTest(text), 9);
+  if (prompt !== FOLLOW_UP || below.length !== 2 || !FOOTER.test(below[0]) || !/^\S+ · \S+$/.test(below[1])) return null;
+
+  const heading = above.lastIndexOf(LIMIT_HEADING);
+  if (heading < 0) return null;
+  const details = above.slice(heading + 1).join(' ');
+  if (details === UPGRADE_ADVICE || (details.startsWith(UPGRADE_ADVICE + ' ')
+    && PLAN_DETAILS.test(details.slice(UPGRADE_ADVICE.length + 1)))) {
+    return "You've hit your Cursor usage limit.";
+  }
+  return null;
+}

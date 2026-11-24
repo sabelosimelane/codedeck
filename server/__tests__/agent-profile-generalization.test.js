@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { classifyTerminalExecution } from '../terminal-execution-classifier.js';
+import { quotaNegatives, quotaScreens } from './fixtures/quota-screens.js';
+import * as agy from '../agent-profiles/agy.js';
 
 const screen = name => readFileSync(
   new URL(`./fixtures/agent-screens/${name}`, import.meta.url),
@@ -23,6 +25,90 @@ function edited(name, from, to) {
   if (changed === original) throw new Error(`fixture ${name} does not contain ${from}`);
   return changed;
 }
+
+describe('Antigravity quota refusal', () => {
+  const refusal = [
+    '⚠ Individual quota reached. Please upgrade your subscription to increase your',
+    'limits. Resets in 118h12m56s.',
+    'Error ID: 05e31602-daa9-494e-8b02-31f32545a6d7-56',
+  ];
+  const prompt = ['────────────────', '>', '────────────────', '? for shortcuts    auto · Gemini 4 Hydrogen · medium'];
+
+  it('reads the wrapped refusal in the live idle region, excluding the Error ID', () => {
+    expect(agy.usageLimit(['● Ran (cd ~/work) (ctrl+o to expand)', ...refusal, ...prompt]))
+      .toBe('Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 118h12m56s.');
+  });
+
+  it('reads a short refusal with the duration and the mode hint', () => {
+    const modePrompt = prompt.map(line => line === '>' ? '> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)' : line);
+    expect(agy.usageLimit(['⚠ Individual quota reached. Resets in 2h5m.', ...modePrompt]))
+      .toBe('Individual quota reached. Resets in 2h5m.');
+  });
+
+  it.each([
+    ['later transcript', [...refusal, 'New prompt echo', 'More work completed', ...prompt]],
+    ['working footer', [...refusal, ...prompt.slice(0, -1), 'esc to cancel     Gemini 4 Hydrogen · medium']],
+    ['background command', [...refusal, ...prompt, '● [12:30:00] npm running']],
+    ['draft below an older prompt', [...refusal, ...prompt.slice(0, -1), '> typed command', prompt.at(-1)]],
+    ['quoted refusal', ['> ⚠ Individual quota reached. Resets in 118h12m56s.', ...prompt]],
+    ['command output', ['│ ⚠ Individual quota reached. Resets in 118h12m56s.', ...prompt]],
+    ['ordinary prompt', ['Ready for input', ...prompt]],
+    ['threshold warning', ['⚠ Individual quota almost reached. Resets in 4h.', ...prompt]],
+    ['malformed reset', ['⚠ Individual quota reached. Resets in someday.', ...prompt]],
+    ['unrecognized diagnostic', ['⚠ Individual quota reached. user@example.test', ...prompt]],
+    ['transient throttling', ['Error: 429 Too many requests', ...prompt]],
+  ])('ignores %s', (_, lines) => {
+    expect(agy.usageLimit(lines)).toBeNull();
+  });
+});
+
+describe.each(quotaScreens)('$profile.id quota screen evidence', fixture => {
+  const { profile, refusal, idle } = fixture;
+
+  it('identifies a settled refusal at the idle input', () => {
+    expect(profile.usageLimit?.([...refusal, ...idle])).toEqual(expect.stringMatching(/quota|limit/));
+  });
+
+  it.each(Object.entries(quotaNegatives(fixture)))('rejects %s output', (_, screen) => {
+    expect(profile.usageLimit?.(screen)).toBeNull();
+  });
+});
+
+it.each([
+  '■ You’ve hit your usage limit for GPT-6.2. Switch to another model now, or try again at Nov 25th, 2026 9:00 PM.',
+  '■ You’ve hit your usage limit. Try again later.',
+  '■ You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again later.',
+])('recognizes Codex formatter variants: %s', refusal => {
+  const { profile, idle } = quotaScreens.find(({ profile }) => profile.id === 'codex');
+  const split = refusal.split(' ');
+  expect(profile.usageLimit?.([split.slice(0, 11).join(' '), split.slice(11).join(' '), ...idle]))
+    .toBe('You’ve hit your usage limit.');
+});
+
+// Claude Code 2.1.330 builds `You've hit your ${limitName}${' · resets ' + time}${' · progress saved'}`
+// with limit names from its rate-limit table, a time within a day ("9pm", "9:30pm") or a date
+// beyond it ("Nov 28, 9pm"), and advice lines from its upsell table, which use a curly apostrophe.
+it.each([
+  ["You've hit your 5-hour limit · resets 9:30pm (Africa/Johannesburg)"],
+  ["You've hit your weekly limit · resets Nov 28, 9pm (Africa/Johannesburg) · progress saved"],
+  ["You've hit your Opus limit · resets Dec 1, 2027, 10am (UTC)"],
+  ["You've hit your Sonnet limit · resets 9pm (UTC)", '/upgrade or /usage-credits to finish what you’re working on.'],
+  ["You've hit your Fable limit · resets 9pm (UTC)", '/usage-credits to finish what you’re working on.'],
+  ["You've hit your usage limit · resets 9pm (UTC)", '/usage-credits to request more usage from your admin.'],
+  ["You've hit your limit · resets 9pm (UTC)", '/login to switch to an API usage-billed account.'],
+  ["You've hit your session limit · resets 9pm (UTC)", '/usage-credits to adjust your monthly spend limit.'],
+])('recognizes the installed Claude Code refusal: %s', (...refusal) => {
+  const { profile, idle } = quotaScreens.find(({ profile }) => profile.id === 'claude');
+  expect(profile.usageLimit?.([...refusal, ...idle])).toBe("You've hit your usage limit.");
+});
+
+it.each([
+  ["You've hit your 5-hour limit · resets someday (UTC)"],
+  ["You've hit your weekly limit · resets Nov 28, 9pm (UTC)", 'Try this other thing instead.'],
+])('rejects an unfamiliar Claude Code refusal: %s', (...refusal) => {
+  const { profile, idle } = quotaScreens.find(({ profile }) => profile.id === 'claude');
+  expect(profile.usageLimit?.([...refusal, ...idle])).toBeNull();
+});
 
 describe('agent profiles beyond the exact captured frame', () => {
   it('keeps a Codex turn running once its elapsed counter passes an hour', () => {

@@ -348,9 +348,19 @@ describe('pipeline run store', () => {
       worktreeState: 'present',
       baseCommit: 'a'.repeat(40),
       createdAt: created.createdAt,
-      updatedAt: times[1],
+      updatedAt: '2026-11-13T12:00:01.001Z',
     });
     expect(updated.steps[0].sessionId).toBe('Demo-1');
+  });
+
+  it('advances the edit revision on interruption even when the clock is frozen', () => {
+    const { store } = setup({ now: () => '2026-11-13T12:00:00.000Z' });
+    const created = store.create(validRun());
+    const updated = store.update(created.id, { status: 'running' });
+    const interrupted = store.markInterrupted(created.id);
+    expect(interrupted.status).toBe('interrupted');
+    expect(interrupted.updatedAt > updated.updatedAt).toBe(true);
+    expect(store.update(created.id, {}, { expectedUpdatedAt: updated.updatedAt })).toBeNull();
   });
 
   it('requires error exactly when status is error', () => {

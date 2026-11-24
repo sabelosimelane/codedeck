@@ -1,4 +1,4 @@
-import { attributedAgent, workloadKey } from '../pipelines/team-attribution.js';
+import { attributedAgent, publicRoleFallback, workloadKey } from '../pipelines/team-attribution.js';
 import { mountTeamScoring } from './team-scoring.js';
 import { mountImprovements } from './improvements.js';
 import express from 'express';
@@ -9,9 +9,12 @@ import path from 'node:path';
 import {
   validateAgentBody,
   validateTeamBody,
+  teamMemberFallbackId,
   validateTeamChange,
   firstReassignableStep,
+  liveAgentChangeTiming,
   assignedAgentId,
+  teamMemberForRole,
   validateWorkflowBody,
   validateStepPresetBody,
   validateSettingsBody,
@@ -158,7 +161,15 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
         readOnly: defStep.readOnly,
         approval: defStep.approval,
         agentName: defStep.agent.name,
-        ...(defStep.nextAgent && { nextAgentName: defStep.nextAgent.name }),
+        agentId: defStep.agent.id,
+        ...(defStep.agent.assignment && { agentSource: defStep.agent.assignment.source }),
+        ...(defStep.agent.fallbackAgent && { fallbackAgent: publicRoleFallback(defStep.agent.fallbackAgent) }),
+        ...(defStep.nextAgent && {
+          nextAgentId: defStep.nextAgent.id,
+          nextAgentName: defStep.nextAgent.name,
+          ...(defStep.nextAgent.assignment && { nextAgentSource: defStep.nextAgent.assignment.source }),
+          ...(defStep.nextAgent.fallbackAgent && { nextFallbackAgent: publicRoleFallback(defStep.nextAgent.fallbackAgent) }),
+        }),
         notePath: notePath(run.definition, index),
         note: latestNotes.get(index) === undefined ? null : (({ status, summary, attempt, pass, createdAt }) => ({ status, summary, attempt, pass, createdAt }))(latestNotes.get(index)),
         repeat: defStep.repeat,
@@ -265,6 +276,16 @@ function agentUsedByWorkflows(workflowStore, agentId) {
   return workflowStore.list().some(workflow => workflow.nodes.some(node => node.agentId === agentId));
 }
 
+function snapshotNodeAgent(agent, source, team, role, agentStore) {
+  if (source !== 'team') return attributedAgent(agent, source, null);
+  const snapshot = attributedAgent(agent, source, team);
+  const { fallbackAgentId } = teamMemberForRole(team, role);
+  if (fallbackAgentId === undefined) return snapshot;
+  const fallback = agentStore.get(fallbackAgentId);
+  if (!fallback) throw new Error(`team ${team.id}: fallbackAgentId must identify a saved agent`);
+  return { ...snapshot, fallbackAgent: attributedAgent(fallback, 'fallback', team) };
+}
+
 function buildDefinitionSnapshot({
   workflow,
   agentStore,
@@ -330,7 +351,7 @@ function buildDefinitionSnapshot({
       approval: node.approval,
       prompt,
       repeat: repeatSnapshot(index),
-      agent: attributedAgent(agent, source, source === 'team' ? team : null),
+      agent: snapshotNodeAgent(agent, source, team, node.role, agentStore),
     };
   });
 
@@ -559,7 +580,7 @@ export function createPipelinesRouter(deps) {
     if (agentUsedByWorkflows(workflowStore, agent.id)) {
       throw new PipelineError('Cannot delete an agent used by a workflow', 409);
     }
-    if (teamStore.list().some(team => team.members.some(member => member.agentId === agent.id))) {
+    if (teamStore.list().some(team => team.members.some(member => member.agentId === agent.id || member.fallbackAgentId === agent.id))) {
       throw new PipelineError('Cannot delete an agent used by a team', 409);
     }
     agentStore.remove(agent.id);
@@ -648,7 +669,7 @@ export function createPipelinesRouter(deps) {
     }));
     router.put(`${BASE}/${segment}/:id`, route((req, res) => {
       if (!isUuid(req.params.id)) throw notFound();
-      const errors = validate(req.body, { revisionRequired: true });
+      const errors = validate(req.body, { revisionRequired: true, id: req.params.id });
       if (errors.length) throw fieldErrors(errors);
       try { res.json(store.update(req.params.id, req.body)); }
       catch (err) { mapMutationError(err, entity); }
@@ -661,10 +682,19 @@ export function createPipelinesRouter(deps) {
     }));
   }
   mountLibrary('teams', teamStore, 'Team', (body, options) => {
-    const errors = validateTeamBody(body, options);
+    const existing = options.id ? teamStore.get(options.id) : null;
+    const current = existing && existing.revision === body?.revision ? existing : null;
+    const errors = validateTeamBody(body, { ...options, current });
     if (Array.isArray(body?.members)) body.members.forEach((member, index) => {
       if (isUuid(member?.agentId) && !agentStore.get(member.agentId)) {
         errors.push({ field: `members[${index}].agentId`, message: 'Choose an existing agent' });
+      }
+      const fallbackAgentId = typeof member?.role === 'string'
+        ? teamMemberFallbackId(member, current?.members)
+        : member?.fallbackAgentId;
+      const field = `members[${index}].fallbackAgentId`;
+      if (isUuid(fallbackAgentId) && !errors.some(error => error.field === field) && !agentStore.get(fallbackAgentId)) {
+        errors.push({ field, message: 'Choose an existing agent' });
       }
     });
     return errors;
@@ -1586,9 +1616,42 @@ export function createPipelinesRouter(deps) {
     const run = loadRun(req.params.id);
     const errors = validateTeamChange(req.body);
     if (errors.length) throw fieldErrors(errors);
-    if (!computeActions(run).resume) throw new PipelineError('Stop the run before changing assignments', 409);
     const { expectedUpdatedAt, teamId, stepOverrides = {} } = req.body;
-    if (run.updatedAt !== expectedUpdatedAt) throw new PipelineError('The run changed. Reopen Change team.', 409);
+    const conflict = () => new PipelineError('The run changed. Review its current assignments before trying again.', 409);
+    if (run.updatedAt !== expectedUpdatedAt) throw conflict();
+    if (!computeActions(run).resume) {
+      const names = Object.keys(stepOverrides);
+      if (!['pending', 'running', 'needs_input', 'awaiting_approval', 'limit_paused'].includes(run.status)
+        || teamId !== undefined || names.length !== 1) {
+        throw new PipelineError('Only one step can change agents while the run is active', 409);
+      }
+      const [name] = names;
+      const index = run.definition.steps.findIndex(step => step.name === name);
+      const timing = liveAgentChangeTiming(run.status, run.definition.steps, run.steps, run.currentStepIndex, index);
+      if (timing === null) throw fieldError('stepOverrides', 'Choose a workflow step with work remaining');
+      const agent = agentStore.get(stepOverrides[name]);
+      if (!agent) throw fieldError('stepOverrides', 'Choose an existing agent for the step');
+      const { nextAgent, ...step } = run.definition.steps[index];
+      if (agent.id === (nextAgent ?? step.agent).id) return res.json(await asRunView(run));
+
+      const progress = [...run.steps];
+      const replacement = attributedAgent(agent, 'override', null);
+      let assignment = step;
+      if (agent.id !== step.agent.id) {
+        if (timing === 'dispatch') {
+          progress[index] = progressForAgent(progress[index], step.agent, replacement);
+          assignment = { ...step, agent: replacement };
+        } else {
+          assignment = { ...step, nextAgent: replacement };
+        }
+      }
+      const label = run.definition.team ? { ...run.definition.team, changed: true } : null;
+      const steps = run.definition.steps.map((item, i) => i === index ? assignment : item);
+      const updated = runStore.update(run.id, { definition: { ...run.definition, team: label, steps }, steps: progress },
+        { expectedUpdatedAt, mixed: agent.id !== step.agent.id, team: null });
+      if (!updated) throw conflict();
+      return res.json(await asRunView(updated));
+    }
     const team = teamId === undefined ? null : teamStore.get(teamId);
     if (teamId !== undefined && !team) throw fieldError('teamId', 'Choose an existing team');
     const first = firstReassignableStep(run.definition.steps, run.currentStepIndex);
@@ -1605,10 +1668,11 @@ export function createPipelinesRouter(deps) {
       const agent = id && agentStore.get(id);
       if (!agent) throw fieldError('stepOverrides', `Choose an agent for ${step.name}`);
       const source = Object.hasOwn(stepOverrides, step.name) ? 'override' : 'team';
-      const replacement = attributedAgent(agent, step.agent.assignment ? source : null, source === 'team' ? team : null);
+      const replacement = snapshotNodeAgent(agent, source, team, step.role, agentStore);
       if (index < run.currentStepIndex) return { ...step, nextAgent: replacement };
       progress[index] = progressForAgent(progress[index], step.agent, replacement);
-      return { ...step, agent: replacement };
+      const { nextAgent, ...previous } = step;
+      return { ...previous, agent: replacement };
     });
     const selected = team && steps.some((step, index) => step !== run.definition.steps[index]
       && (step.nextAgent ?? step.agent).assignment?.teamId === team.id);
@@ -1616,7 +1680,8 @@ export function createPipelinesRouter(deps) {
     const label = team ? { name: team.name, changed: true }
       : run.definition.team ? { name: run.definition.team.name, changed: true } : null;
     const updated = runStore.update(run.id, { definition: { ...run.definition, team: label, steps }, steps: progress },
-      { mixed: true, team: selected ? team : null });
+      { expectedUpdatedAt, mixed: true, team: selected ? team : null });
+    if (!updated) throw conflict();
     res.json(await asRunView(updated));
   }));
 

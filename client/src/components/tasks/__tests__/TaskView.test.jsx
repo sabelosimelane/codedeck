@@ -37,6 +37,63 @@ const view = (props = {}) => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('TaskView', () => {
+  it('lets the owner cancel a draft, then save one queued agent with the displayed revision', async () => {
+    const active = run();
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true, json: async () => ({ data: [{ id: 'c410a1b2-3456-4789-8abc-def012345678',
+        name: 'Replacement', launchCommand: 'codex', resetCommand: '/clear', revision: 1,
+        createdAt: active.updatedAt, updatedAt: active.updatedAt }], page: { hasNextPage: false } }),
+    });
+    const onChangeAgent = vi.fn().mockResolvedValue({});
+    view({ run: active, onChangeAgent });
+    fireEvent.click(screen.getByRole('button', { name: 'Change agent' }));
+    await screen.findByRole('option', { name: 'Replacement' });
+    const picker = screen.getByRole('combobox', { name: 'Saved agent' });
+    fireEvent.change(picker, { target: { value: picker.options[1].value } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onChangeAgent).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Change agent' }));
+    await screen.findByRole('option', { name: 'Replacement' });
+    expect(screen.getByRole('button', { name: 'Save' }).disabled).toBe(true);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved agent' }), { target: { value: 'c410a1b2-3456-4789-8abc-def012345678' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onChangeAgent).toHaveBeenCalledWith(active.id, {
+      expectedUpdatedAt: active.updatedAt, stepOverrides: { Develop: 'c410a1b2-3456-4789-8abc-def012345678' },
+    }));
+    expect(fetch).toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'running', 'needs_input', 'awaiting_approval', 'limit_paused'])('offers one step edit while %s', async status => {
+    const active = run({ status });
+    if (status === 'awaiting_approval') {
+      active.approvalRequest = { stepIndex: 1, stepName: 'Develop', note: null };
+    }
+    await act(async () => { view({ run: active, onChangeAgent: vi.fn() }); });
+    expect(screen.getByRole('button', { name: 'Change agent' })).toBeTruthy();
+    const rail = screen.getByRole('navigation', { name: 'Steps' });
+    fireEvent.click(within(rail).getByRole('button', { name: /^Plan:/ }));
+    expect(screen.queryByRole('button', { name: 'Change agent' })).toBeNull();
+    fireEvent.click(within(rail).getByRole('button', { name: /^Test:/ }));
+    expect(screen.getByRole('button', { name: 'Change agent' })).toBeTruthy();
+  });
+
+  it.each(['stopped', 'interrupted', 'error', 'complete'])('leaves live editing unavailable while %s', status => {
+    view({ run: run({ status }), onChangeAgent: vi.fn() });
+    expect(screen.queryByRole('button', { name: 'Change agent' })).toBeNull();
+  });
+
+  it('shows the effective agent and the next-round choice on a completed node', () => {
+    const active = run();
+    active.currentStepIndex = 2;
+    active.steps[1] = { ...active.steps[1], status: 'complete', nextAgentName: 'Replacement' };
+    view({ run: active, onChangeAgent: vi.fn() });
+    fireEvent.click(screen.getByRole('button', { name: /^Develop:/ }));
+    const detail = screen.getByRole('region', { name: 'Step Develop' });
+    expect(within(detail).getByText('codex')).toBeTruthy();
+    expect(within(detail).getByText('Next round · Replacement')).toBeTruthy();
+    expect(within(detail).getByRole('button', { name: 'Change agent' })).toBeTruthy();
+  });
+
   it('names the task and its workflow, shows the status in words and keeps the terminals inside', () => {
     view();
     expect(screen.getByText('WhatsApp replies · Feature build').getAttribute('title')).toContain('task/x');
@@ -345,6 +402,24 @@ it('shows durable handoff evidence when the operator opens the audit timeline', 
   fireEvent.click(screen.getByRole('button',{name:'Audit timeline'}));
   expect(await screen.findByText(/Malformed signal/)).toBeTruthy();
   expect(fetch.mock.calls[0][0]).toContain('stepIndex=1');
+});
+
+it('shows the quota takeover reason with the exhausted terminal and the effective successor', async () => {
+  const current = run();
+  current.steps[1] = { ...current.steps[1], sessionId: 'Demo-3', priorSessionIds: ['Demo-2'], attempt: 2, agentName: 'Fallback' };
+  const detail = 'Develop: Antigravity reached its usage limit. Individual quota reached. Resets in 2h. Restarting on Fallback.';
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+    data: [{ id: 1, runId: current.id, stepIndex: 1, attempt: 1, pass: 1, host: 'worker', worktreePath: '/tmp/wt', sessionId: 'Demo-2', agentName: 'Antigravity', model: null, effort: null, kind: 'quota_takeover', detail, createdAt: '2026-11-23T00:00:00Z' }],
+    page: { hasNextPage: false },
+  })));
+  view({ run: current, openSessionIds: new Set(['Demo-1', 'Demo-2', 'Demo-3']) });
+  const stepDetail = within(screen.getByRole('region', { name: 'Step Develop' }));
+  expect(stepDetail.getByText('Fallback')).toBeTruthy();
+  fireEvent.click(stepDetail.getByRole('button', { name: 'Audit timeline' }));
+  const audit = within(await stepDetail.findByRole('list', { name: 'Audit timeline' }));
+  expect(audit.getByText('Attempt 1 · Usage limit takeover')).toBeTruthy();
+  expect(audit.getByText(detail)).toBeTruthy();
+  expect(audit.getByText(/Demo-2 · Antigravity/)).toBeTruthy();
 });
 
 it('labels the active attempt and its cumulative elapsed time on the rail', () => {

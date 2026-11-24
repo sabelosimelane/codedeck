@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { createAgentStore } from '../pipelines/agent-store.js';
 import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
+import { createTeamStore } from '../pipelines/library-store.js';
 import { readFileSync } from 'node:fs';
 import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workflow-templates.mjs';
 
@@ -10,6 +11,7 @@ import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workf
 const STOCK_BEFORE_OWNER_CHECKS = JSON.parse(readFileSync(new URL('./fixtures/stock-prompts-before-owner-checks.json', import.meta.url), 'utf8'));
 
 const AGENT_UUID = 'c410a1b2-3456-4789-8abc-def012345678';
+const FALLBACK_UUID = 'c410a1b2-3456-4789-8abc-def012345679';
 const databases = [];
 
 function setup() {
@@ -43,6 +45,38 @@ function node(agentId = AGENT_UUID) {
     approval: false,
   };
 }
+
+describe('team role fallback persistence', () => {
+  const member = { role: 'Developer', agentId: AGENT_UUID };
+  const body = { name: 'Daily', members: [member] };
+
+  it('persists and hydrates a fallback, preserves legacy omission by role and clears with null', () => {
+    const { db } = setup();
+    const teams = createTeamStore(db);
+    const created = teams.create({ ...body, members: [{ ...member, fallbackAgentId: FALLBACK_UUID }] });
+    expect(createTeamStore(db).get(created.id).members).toEqual([{ ...member, fallbackAgentId: FALLBACK_UUID }]);
+    const edited = teams.update(created.id, { ...body, revision: 1, members: [{ ...member, role: ' developer ' }] });
+    expect(edited.members).toEqual([{ ...member, role: 'developer', fallbackAgentId: FALLBACK_UUID }]);
+    expect(teams.update(created.id, { ...body, revision: 2, members: [{ ...member, fallbackAgentId: null }] }).members).toEqual([member]);
+  });
+
+  it('rejects a merged self fallback before storing the new primary', () => {
+    const { db } = setup();
+    const teams = createTeamStore(db);
+    const created = teams.create({ ...body, members: [{ ...member, fallbackAgentId: FALLBACK_UUID }] });
+    expect(() => teams.update(created.id, { ...body, revision: 1, members: [{ ...member, agentId: FALLBACK_UUID }] })).toThrow(/members\[0\]\.fallbackAgentId/);
+    expect(teams.get(created.id)).toEqual(created);
+  });
+
+  it.each(['secret', null])('accepts an old row and identifies invalid persisted fallback data %j', invalidFallback => {
+    const { db } = setup();
+    const teams = createTeamStore(db);
+    const created = teams.create(body);
+    expect(teams.get(created.id).members).toEqual([member]);
+    db.prepare('UPDATE pipeline_teams SET body = ? WHERE id = ?').run(JSON.stringify({ ...body, members: [{ ...member, fallbackAgentId: invalidFallback }] }), created.id);
+    expect(() => teams.get(created.id)).toThrow(`pipeline_teams row ${created.id} field body.members[0].fallbackAgentId: Choose an existing agent`);
+  });
+});
 
 describe('pipeline agent store', () => {
   it('creates an agent with a UUID, revision 1 and timestamps', () => {

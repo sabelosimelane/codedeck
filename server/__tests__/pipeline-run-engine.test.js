@@ -2,11 +2,15 @@ import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { findAgentProfileById } from '../agent-profiles/index.js';
 import { classifyTerminalExecution } from '../terminal-execution-classifier.js';
 import { classify as classifyReadiness } from '../pipelines/agent-readiness.js';
 import { findAgentProfile } from '../agent-profiles/index.js';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as muse from '../agent-profiles/muse.js';
+import { quotaNegatives, quotaScreens } from './fixtures/quota-screens.js';
+import { classifyTerminalExecution } from '../terminal-execution-classifier.js';
+import * as agy from '../agent-profiles/agy.js';
 import { notePath } from '../pipelines/run-notes.js';
 import { remove as removeGitWorktree } from '../pipelines/run-worktree.js';
 import { buildTemplateDraft } from '../../shared/workflow-templates.mjs';
@@ -111,7 +115,7 @@ function executionState(overrides = {}) {
 }
 
 function setupEngine(overrides = {}) {
-  const db = new Database(':memory:');
+  const db = new Database(overrides.databasePath ?? ':memory:');
   databases.push(db);
   const runStore = createRunStore(db, {
     now: overrides.now ?? (() => new Date().toISOString()),
@@ -1061,6 +1065,476 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       })),
     });
   }
+
+  const quotaMessage = 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 118h12m56s.';
+  function quotaFixture({ databasePath, mode, launchGate, readNote } = {}) {
+    const team = { id: randomUUID(), name: 'Builders', revision: 1 };
+    const assignment = { source: 'team', agentRevision: 1, teamId: team.id, teamRevision: 1 };
+    const primary = { id: AGENT_ID, name: 'Primary', launchCommand: 'agy', resetCommand: '/clear', assignment };
+    const backup = name => ({ id: randomUUID(), name, launchCommand: 'agy', resetCommand: '/clear', assignment: { ...assignment, source: 'fallback' } });
+    const developer = backup('Developer backup');
+    const reviewer = backup('Reviewer backup');
+    const override = { ...backup('Owner choice'), assignment: { source: 'override', agentRevision: 1, teamId: null, teamRevision: null } };
+    const steps = [
+      { name: 'Develop', role: 'Developer', agent: { ...primary, fallbackAgent: developer }, approval: true, repeat: { mode: 'until_complete', max: 3 } },
+      { name: 'Review', role: 'Reviewer', agent: { ...primary, fallbackAgent: reviewer }, repeat: { mode: 'loop_back', toStepIndex: 0, max: 3 } },
+      { name: 'Ship', role: 'Release', agent: primary, repeat: { mode: 'once' } },
+      { name: 'Report', role: 'Reporter', agent: { ...primary, assignment: override.assignment }, repeat: { mode: 'once' } },
+    ].map(item => ({ ...definition().steps[0], ...item, approval: item.approval === true }));
+    if (mode === 'absent') delete steps[0].agent.fallbackAgent;
+    if (mode === 'self') steps[0].agent.fallbackAgent.id = primary.id;
+    const screens = new Map();
+    const quota = executionState({
+      lines: ['⚠ Individual quota reached. Please upgrade your subscription to increase your',
+        'limits. Resets in 118h12m56s.', 'Error ID: 05e31602-daa9-494e-8b02-31f32545a6d7-56', '>', '? for shortcuts   auto · Gemini 4 Hydrogen · medium'],
+      profile: agy,
+    });
+    const terminals = [];
+    const inputs = [];
+    const ctx = setupEngine({
+      databasePath,
+      readExecutionState: vi.fn(async id => screens.get(id) ?? executionState()),
+      attachBackground: vi.fn(id => ({ write: data => inputs.push([id, data]), release() {} })),
+      createWorkflow: options => {
+        const workflow = createTerminalWorkflow(options);
+        terminals.push(workflow);
+        return workflow;
+      },
+      engineExtras: { listRunPlaces: launchGate, ...(readNote && { readNote, prepareNotes: vi.fn(async () => {}) }) },
+    });
+    const run = ctx.runStore.create(validRun({ definition: definition({
+      steps, team: { name: team.name, changed: false },
+      ...(readNote && { notesDir: '.codedeck/runs/aabbccdd' }),
+    }) }), {
+      team, mixed: false, workload: 'a'.repeat(64),
+    });
+    const audit = store => store.auditPage(run.id, { page: 0, size: 100, direction: 'asc', stepIndex: null }).data.filter(entry => entry.kind === 'quota_takeover');
+    const refuse = (session = 'Demo-1') => screens.set(session, quota);
+    const signal = (workflow, kind) => workflow.output('[[CDW:' + workflow.exportState().identifier + ':' + kind + ']]');
+    const settleReset = async workflow => {
+      await vi.advanceTimersByTimeAsync(1100);
+      workflow.output('Ready for input');
+      await vi.advanceTimersByTimeAsync(1100);
+    };
+    const prompts = id => inputs.filter(([session, data]) => session === id && data.includes('Iteration identifier:'));
+    return { ...ctx, run, audit, developer, reviewer, override, refuse, settleReset, signal, terminals, prompts, screens };
+  }
+
+  it('restarts a settled quota refusal once, preserving a completed pass, attribution, and role-specific successors', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'quota-reopen-'));
+    const databasePath = path.join(dir, 'run.db');
+    try {
+      let note = '# Baseline verified';
+      const ctx = quotaFixture({ databasePath, readNote: async () => ({ status: 'present', content: note }) });
+      const done = ctx.engine.start(ctx.run.id);
+      await advanceReadiness();
+      const first = ctx.terminals[0];
+      ctx.signal(first, 'CONTINUE');
+      await ctx.settleReset(first);
+      expect(first.snapshot().iteration).toBe(2);
+      const oldPassId = first.exportState().identifier;
+      ctx.refuse();
+      await vi.advanceTimersByTimeAsync(13000);
+      expect(ctx.terminals).toHaveLength(2);
+      const replacement = ctx.terminals[1];
+      expect(replacement.snapshot().iteration).toBe(2);
+      expect(replacement.exportState().request.maxIterations).toBe(3);
+      expect(replacement.exportState().identifier).not.toBe(oldPassId);
+      first.output('[[CDW:' + oldPassId + ':COMPLETE]]');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(ctx.runStore.get(ctx.run.id).status).toBe('running');
+      expect(ctx.prompts('Demo-1')).toHaveLength(2);
+      expect(ctx.prompts('Demo-2')).toHaveLength(1);
+      note = '# Verification completed by the fallback';
+      ctx.signal(replacement, 'COMPLETE');
+      await done;
+      const reopened = new Database(databasePath);
+      try {
+        const store = createRunStore(reopened);
+        const stored = store.get(ctx.run.id);
+        expect(stored.status).toBe('awaiting_approval');
+        expect(stored.steps[0]).toMatchObject({ attempt: 2, iteration: 2, sessionId: 'Demo-2', priorSessionIds: ['Demo-1'], roundsCompleted: 0 });
+        expect(stored.steps[0].elapsedMs).toBeGreaterThan(10000);
+        expect(stored.definition.team.changed).toBe(true);
+        expect(stored.definition.steps.map(item => item.agent.name)).toEqual(['Developer backup', 'Reviewer backup', 'Primary', 'Primary']);
+        expect(store.attribution(stored.id)).toMatchObject({ mixed: true, attempts: [
+          { attempt: 1, agentId: AGENT_ID, source: 'team' }, { attempt: 2, agentId: ctx.developer.id, source: 'fallback' },
+        ] });
+        const audit = ctx.audit(store);
+        expect(audit).toHaveLength(1);
+        expect(audit[0]).toMatchObject({ agentName: 'Primary', attempt: 1, pass: 2, sessionId: 'Demo-1' });
+        expect(audit[0].detail).toContain('Develop');
+        expect(audit[0].detail).toContain('Developer backup');
+        expect(audit[0].detail).toContain(quotaMessage);
+        const notes = createNoteStore(reopened);
+        expect(notes.hasPass(stored.id, 0, 1, 1)).toBe(true);
+        expect(notes.hasPass(stored.id, 0, 1, 2)).toBe(false);
+        expect(notes.hasPass(stored.id, 0, 2, 2)).toBe(true);
+        expect(notes.lastContent(stored.id, 0)).toBe(note);
+      } finally {
+        reopened.close();
+      }
+      await ctx.engine.approve(ctx.run.id);
+      await advanceReadiness();
+      ctx.signal(ctx.terminals[2], 'CONTINUE');
+      await advanceReadiness();
+      await ctx.settleReset(ctx.terminals[3]);
+      expect(ctx.runStore.get(ctx.run.id).steps[1].roundsCompleted).toBe(1);
+      expect(ctx.startSession).toHaveBeenCalledTimes(3);
+      expect(ctx.prompts('Demo-2')).toHaveLength(2);
+      await ctx.engine.stop(ctx.run.id);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it.each(['absent', 'self', 'exhausted successor', 'blocked later role'])('reports a recoverable quota error for %s', async mode => {
+    const ctx = quotaFixture({ mode });
+    const done = ctx.engine.start(ctx.run.id);
+    await advanceReadiness();
+    if (mode === 'absent') {
+      const current = ctx.runStore.get(ctx.run.id);
+      current.definition.steps[0].nextAgent = ctx.override;
+      ctx.runStore.update(ctx.run.id, { definition: current.definition });
+    }
+    ctx.refuse();
+    await vi.advanceTimersByTimeAsync(13000);
+    if (mode === 'exhausted successor') {
+      expect(ctx.terminals).toHaveLength(2);
+      ctx.refuse('Demo-2');
+      await vi.advanceTimersByTimeAsync(12000);
+    }
+    if (mode === 'blocked later role') {
+      expect(ctx.terminals).toHaveLength(2);
+      ctx.signal(ctx.terminals[1], 'COMPLETE');
+      await done;
+      await ctx.engine.approve(ctx.run.id);
+      await advanceReadiness();
+      ctx.signal(ctx.terminals[2], 'COMPLETE');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.prompts('Demo-1')).toHaveLength(1);
+      expect(ctx.startSession).toHaveBeenCalledTimes(3);
+    }
+    const stored = ctx.runStore.get(ctx.run.id);
+    expect(stored.status).toBe('error');
+    expect(stored.error).toContain(mode === 'blocked later role' ? 'during step Ship' : 'during step Develop');
+    expect(stored.error).toContain(mode === 'exhausted successor' ? 'The agent Developer backup' : 'The agent Primary');
+    expect(stored.error).toContain(quotaMessage);
+    expect(stored.error).toContain('Change team, or Resume once the limit resets');
+    expect(ctx.audit(ctx.runStore)).toHaveLength(['absent', 'self'].includes(mode) ? 0 : 1);
+    if (mode === 'absent') expect(stored.definition.steps[0].nextAgent).toEqual(ctx.override);
+    await done;
+  });
+
+  it('gives a queued owner override precedence at the eligible quota restart boundary', async () => {
+    const ctx = quotaFixture();
+    const done = ctx.engine.start(ctx.run.id);
+    await advanceReadiness();
+    const current = ctx.runStore.get(ctx.run.id);
+    current.definition.steps[0].nextAgent = ctx.override;
+    ctx.runStore.update(ctx.run.id, { definition: current.definition });
+    ctx.refuse();
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(ctx.runStore.get(ctx.run.id).definition.steps[0]).toMatchObject({ agent: ctx.override });
+    expect(ctx.audit(ctx.runStore)[0].detail).toContain('Owner choice');
+    expect(ctx.prompts('Demo-2')).toHaveLength(1);
+    await ctx.engine.stop(ctx.run.id);
+    await done;
+  });
+
+  it('carries an owner answer into a quota restart of the unfinished logical pass', async () => {
+    const ctx = quotaFixture();
+    const done = ctx.engine.start(ctx.run.id);
+    await advanceReadiness();
+    await vi.advanceTimersByTimeAsync(100);
+    ctx.signal(ctx.terminals[0], 'NEEDS_INPUT');
+    await vi.advanceTimersByTimeAsync(0);
+    const answer = ctx.engine.answer(ctx.run.id, 'Keep the existing test data.');
+    await vi.advanceTimersByTimeAsync(100);
+    await answer;
+    ctx.refuse();
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(ctx.prompts('Demo-2')).toEqual([['Demo-2', expect.stringContaining('Keep the existing test data.')]]);
+    expect(ctx.answerStore.list(ctx.run.id)).toHaveLength(1);
+    await ctx.engine.stop(ctx.run.id);
+    await done;
+  });
+
+  it('queues earlier role takeovers for reachable loop revisits and preserves a separate future choice', async () => {
+    const ctx = quotaFixture();
+    const done = ctx.engine.start(ctx.run.id);
+    await advanceReadiness();
+    ctx.signal(ctx.terminals[0], 'COMPLETE');
+    await done;
+    await ctx.engine.approve(ctx.run.id);
+    await advanceReadiness();
+    await ctx.settleReset(ctx.terminals[1]);
+    const current = ctx.runStore.get(ctx.run.id);
+    current.definition.steps[2].nextAgent = ctx.override;
+    ctx.runStore.update(ctx.run.id, { definition: current.definition });
+    ctx.refuse();
+    await vi.advanceTimersByTimeAsync(13000);
+    const restarted = ctx.runStore.get(ctx.run.id);
+    expect(restarted.definition.steps[0]).toMatchObject({ agent: { id: AGENT_ID }, nextAgent: ctx.developer });
+    expect(restarted.steps[0]).toMatchObject({ status: 'complete', sessionId: 'Demo-1' });
+    expect(restarted.definition.steps[1].agent).toEqual(ctx.reviewer);
+    expect(restarted.definition.steps[2].nextAgent).toEqual(ctx.override);
+    expect(restarted.steps[2].quotaBlocked).toBeUndefined();
+    ctx.signal(ctx.terminals[2], 'CONTINUE');
+    await advanceReadiness();
+    const revisited = ctx.runStore.get(ctx.run.id);
+    expect(revisited.definition.steps[0].agent).toEqual(ctx.developer);
+    expect(revisited.steps[0]).toMatchObject({ sessionId: 'Demo-3', priorSessionIds: ['Demo-1'], attempt: 2 });
+    await ctx.engine.stop(ctx.run.id);
+  });
+
+  it.each(['stop', 'complete'])('lets %s win over the final refusal reading', async action => {
+    const ctx = quotaFixture();
+    const done = ctx.engine.start(ctx.run.id);
+    await advanceReadiness();
+    ctx.refuse();
+    await vi.advanceTimersByTimeAsync(8500);
+    expect(ctx.runStore.get(ctx.run.id).status).toBe('running');
+    if (action === 'stop') await ctx.engine.stop(ctx.run.id);
+    else ctx.signal(ctx.terminals[0], 'COMPLETE');
+    await vi.advanceTimersByTimeAsync(4000);
+    await done;
+    expect(ctx.runStore.get(ctx.run.id).status).toBe(action === 'stop' ? 'stopped' : 'awaiting_approval');
+    expect(ctx.audit(ctx.runStore)).toHaveLength(0);
+    expect(ctx.startSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a settled quota refusal on a legacy run with no fallback', async () => {
+    const screens = new Map();
+    const ctx = setupEngine({
+      readExecutionState: async id => screens.get(id) ?? executionState(),
+      createWorkflow: createTerminalWorkflow,
+    });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await advanceReadiness();
+    screens.set('Demo-1', executionState({
+      lines: ['Refusal', '>'],
+      profile: { promptVisible: () => true, usageLimit: () => quotaMessage },
+    }));
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(ctx.runStore.get(run.id)).toMatchObject({
+      status: 'error', error: expect.stringContaining('codex reached its usage limit during step Develop'),
+    });
+    await done;
+  });
+
+  it('resumes the persisted quota restart after interruption before the successor launches', async () => {
+    let releaseLaunch;
+    const awaitingLaunch = new Promise(resolve => { releaseLaunch = resolve; });
+    const listRunPlaces = vi.fn().mockResolvedValueOnce(undefined).mockImplementationOnce(() => awaitingLaunch);
+    const ctx = quotaFixture({ launchGate: listRunPlaces });
+    const done = ctx.engine.start(ctx.run.id);
+    await advanceReadiness();
+    ctx.signal(ctx.terminals[0], 'CONTINUE');
+    await ctx.settleReset(ctx.terminals[0]);
+    ctx.refuse();
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(listRunPlaces).toHaveBeenCalledTimes(2);
+    const stored = ctx.runStore.get(ctx.run.id);
+    expect(stored.steps[0]).toMatchObject({ attempt: 2, iteration: 1, status: 'launching', priorSessionIds: ['Demo-1'] });
+    expect(stored.workflowState).toBeNull();
+    expect(await ctx.engine.reconcileOnStartup()).toEqual({ reattached: [], interrupted: [ctx.run.id] });
+    releaseLaunch();
+    await done;
+    await ctx.engine.resume(ctx.run.id);
+    await advanceReadiness();
+    expect(ctx.terminals[1].snapshot().iteration).toBe(2);
+    expect(ctx.runStore.get(ctx.run.id).steps[0].attempt).toBe(2);
+    expect(ctx.audit(ctx.runStore)).toHaveLength(1);
+    expect(ctx.prompts('Demo-2')).toHaveLength(1);
+    await ctx.engine.stop(ctx.run.id);
+  });
+
+  describe.each(quotaScreens)('$profile.id quota monitoring', fixture => {
+    const { command, profile, refusal, idle } = fixture;
+    function screenState(lines, subagentPanes = []) {
+      const state = classifyTerminalExecution({
+        paneCurrentCommand: command, paneDead: '0', snapshotText: lines.join('\n'),
+        subagentPanes, quietSeconds: 10,
+      });
+      return executionState({ ...state, lines, profile: findAgentProfileById(state.agentCli) });
+    }
+
+    it.each(['takeover', 'absent'])('settles exactly one quota outcome with %s', async mode => {
+      const ctx = quotaFixture({ mode });
+      const done = ctx.engine.start(ctx.run.id);
+      await advanceReadiness();
+      expect(ctx.prompts('Demo-1')).toHaveLength(1);
+
+      const refused = screenState([...refusal, ...idle]);
+      expect(refused.profile).toBe(profile);
+      ctx.screens.set('Demo-1', refused);
+      await vi.advanceTimersByTimeAsync(13000);
+      try {
+        const stored = ctx.runStore.get(ctx.run.id);
+        if (mode === 'takeover') {
+          expect(stored.steps[0]).toMatchObject({ attempt: 2, sessionId: 'Demo-2', priorSessionIds: ['Demo-1'] });
+          expect(ctx.prompts('Demo-2')).toHaveLength(1);
+          expect(ctx.audit(ctx.runStore)).toHaveLength(1);
+        } else {
+          expect(stored.status).toBe('error');
+          expect(stored.error).toMatch(/The agent Primary reached its usage limit during step Develop/);
+          expect(ctx.startSession).toHaveBeenCalledTimes(1);
+          expect(ctx.audit(ctx.runStore)).toHaveLength(0);
+        }
+      } finally {
+        if (ctx.runStore.get(ctx.run.id).status === 'running') await ctx.engine.stop(ctx.run.id);
+        await done;
+      }
+    });
+
+    it('keeps monitoring every ambiguous or busy screen and a pre-dispatch refusal', async () => {
+      const ctx = quotaFixture();
+      ctx.screens.set('Demo-1', screenState([...refusal, ...idle]));
+      const done = ctx.engine.start(ctx.run.id);
+      try {
+        await vi.advanceTimersByTimeAsync(13000);
+        expect(ctx.prompts('Demo-1')).toHaveLength(1);
+        expect(ctx.audit(ctx.runStore)).toHaveLength(0);
+        const delegated = screenState([...refusal, ...idle], [{
+          paneCurrentCommand: 'codex',
+          paneDead: '0',
+          snapshotText: '• Working (27s • esc to interrupt)\n› Ask Codex to do anything',
+        }]);
+        expect(delegated.executionReason).toBe('agent_delegated');
+        ctx.screens.set('Demo-1', delegated);
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(ctx.audit(ctx.runStore)).toHaveLength(0);
+        for (const [kind, lines] of Object.entries(quotaNegatives(fixture))) {
+          ctx.screens.set('Demo-1', screenState(lines));
+          await vi.advanceTimersByTimeAsync(5000);
+          expect(ctx.runStore.get(ctx.run.id).status, kind).toBe('running');
+          expect(ctx.audit(ctx.runStore), kind).toHaveLength(0);
+          expect(ctx.startSession, kind).toHaveBeenCalledTimes(1);
+        }
+      } finally {
+        await ctx.engine.stop(ctx.run.id);
+        await done;
+      }
+    });
+  });
+
+  it('ignores an unchanged Antigravity quota screen present before dispatch', async () => {
+    const ctx = quotaFixture();
+    ctx.refuse();
+    const done = ctx.engine.start(ctx.run.id);
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(ctx.runStore.get(ctx.run.id).status).toBe('running');
+    expect(ctx.audit(ctx.runStore)).toHaveLength(0);
+    expect(ctx.startSession).toHaveBeenCalledTimes(1);
+    await ctx.engine.stop(ctx.run.id);
+    await done;
+  });
+
+  it('keeps an answered pass on its original terminal, then dispatches the next pass to the queued agent', async () => {
+    const terminals = [];
+    const inputs = [];
+    const replacement = { id: randomUUID(), name: 'Replacement', launchCommand: 'codex --model replacement', resetCommand: '/new' };
+    const def = definition();
+    def.steps[0].repeat = { mode: 'until_complete', max: 2 };
+    const team = { id: randomUUID(), name: 'Builders', revision: 1 };
+    def.steps[0].role = 'Developer';
+    def.steps[0].agent.assignment = { agentRevision: 1, source: 'team', teamId: team.id, teamRevision: 1 };
+    replacement.assignment = { agentRevision: 2, source: 'override', teamId: null, teamRevision: null };
+    const ctx = setupEngine({
+      attachBackground: vi.fn(sessionId => ({ write: data => inputs.push([sessionId, data]), release() {} })),
+      createWorkflow: options => {
+        const workflow = createTerminalWorkflow(options);
+        terminals.push(workflow);
+        return workflow;
+      },
+    });
+    const run = ctx.runStore.create(validRun({ definition: def }), { team, workload: 'a'.repeat(64), mixed: false });
+    const done = ctx.engine.start(run.id);
+    await advanceReadiness();
+    const active = ctx.runStore.get(run.id);
+    expect(active.steps[0].sessionId).toBe('Demo-1');
+    ctx.runStore.update(run.id, { definition: { ...def, steps: [{ ...def.steps[0], nextAgent: replacement }] } });
+    const old = terminals[0];
+    old.output('[[CDW:' + old.exportState().identifier + ':NEEDS_INPUT]]');
+    await vi.advanceTimersByTimeAsync(0);
+    const answer = ctx.engine.answer(run.id, 'Use the example.');
+    await vi.advanceTimersByTimeAsync(100);
+    await answer;
+    expect(inputs).toEqual(expect.arrayContaining([['Demo-1', expect.stringContaining('Use the example.')]]));
+    expect(terminals).toHaveLength(1);
+    old.output('[[CDW:' + old.exportState().identifier + ':CONTINUE]]');
+    await vi.advanceTimersByTimeAsync(3300);
+    expect(inputs).toContainEqual(['Demo-2', 'codex --model replacement']);
+    expect(inputs.filter(([id, data]) => id === 'Demo-1' && data.includes('Iteration identifier:'))).toHaveLength(1);
+    expect(terminals[1].snapshot().iteration).toBe(2);
+    expect(inputs).toContainEqual(['Demo-2', expect.stringContaining('Use the example.')]);
+    terminals[1].output('[[CDW:' + terminals[1].exportState().identifier + ':COMPLETE]]');
+    await done;
+    expect(ctx.runStore.get(run.id).steps[0]).toMatchObject({ status: 'complete', sessionId: 'Demo-2', priorSessionIds: ['Demo-1'], attempt: 2 });
+    expect(ctx.runStore.attribution(run.id).attempts).toMatchObject([
+      { attempt: 1, source: 'team', agentRevision: 1, agentId: AGENT_ID },
+      { attempt: 2, source: 'override', agentRevision: 2, agentId: replacement.id },
+    ]);
+  });
+
+  it.each([
+    ['awaiting_approval', 'awaiting_approval', 'sendBack'],
+    ['stopped', 'stopped', 'resume'],
+    ['limit_paused', 'limit_reached', 'continue'],
+  ])('uses a fresh terminal for a queued agent on %s + %s + %s', async (status, stepStatus, action) => {
+    const def = definition();
+    def.steps[0].approval = status === 'awaiting_approval';
+    def.steps[0].repeat = { mode: 'until_complete', max: 2 };
+    const replacement = { id: randomUUID(), name: 'Replacement', launchCommand: 'codex --model trial', resetCommand: '/new' };
+    def.steps[0].nextAgent = replacement;
+    const ctx = setupEngine();
+    const stopped = status === 'stopped';
+    const run = ctx.runStore.create(validRun({ definition: def, status, stopReason: stopped ? 'user' : null,
+      worktreeState: 'present', finishedAt: stopped ? new Date().toISOString() : null,
+      steps: [step({ status: stepStatus, sessionId: 'Demo-9', attempt: 1, iteration: 1 })] }));
+    await ctx.engine[action](run.id, 'Include the missing evidence.');
+    await advanceReadiness();
+
+    const finished = ctx.runStore.get(run.id);
+    expect(finished.definition.steps[0].agent.name).toBe(replacement.name);
+    expect(finished.steps[0]).toMatchObject({ sessionId: 'Demo-1', priorSessionIds: ['Demo-9'], attempt: 2 });
+    expect(ctx.writes).toContain(replacement.launchCommand);
+    expect(ctx.attachBackground).toHaveBeenCalledTimes(1);
+    if (action === 'sendBack') {
+      expect(ctx.reviewStore.list(run.id)).toMatchObject([{ attempt: 1, verdict: 'sent_back', comment: 'Include the missing evidence.' }]);
+      expect(ctx.getWorkflowStartArgs().ownerContext).toContain('Include the missing evidence.');
+    }
+  });
+
+  it('does not restore an archived future terminal when dispatch finishes after an override', async () => {
+    let launch;
+    const startSession = vi.fn(() => new Promise(resolve => { launch = resolve; }));
+    const ctx = setupEngine({ startSession });
+    const def = multiNodeDefinition(['Setup', 'Verify']);
+    const run = ctx.runStore.create(validRun({ definition: def, steps: [step(), step({ sessionId: 'Demo-9' })] }));
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(startSession).toHaveBeenCalledTimes(1);
+    const active = ctx.runStore.get(run.id);
+    const replacement = { ...def.steps[1].agent, id: randomUUID(), name: 'Replacement' };
+    ctx.runStore.update(run.id, {
+      definition: { ...def, steps: [def.steps[0], { ...def.steps[1], agent: replacement }] },
+      steps: [active.steps[0], { ...active.steps[1], sessionId: null, priorSessionIds: ['Demo-9'] }],
+    }, { expectedUpdatedAt: active.updatedAt });
+    launch('Demo-1');
+    await vi.advanceTimersByTimeAsync(1100);
+    const dispatched = ctx.runStore.get(run.id);
+    expect(dispatched.definition.steps[1].agent).toEqual(replacement);
+    expect(dispatched.steps[1]).toMatchObject({ sessionId: null, priorSessionIds: ['Demo-9'] });
+    expect(ctx.runStore.update(run.id, { steps: active.steps }, { expectedUpdatedAt: active.updatedAt })).toBeNull();
+    expect(startSession).toHaveBeenCalledTimes(2);
+    launch('Demo-2');
+    await vi.advanceTimersByTimeAsync(1100);
+    await done;
+    expect(ctx.runStore.get(run.id).steps[1]).toMatchObject({ sessionId: 'Demo-2', priorSessionIds: ['Demo-9'] });
+  });
 
   it('advances through three steps with a new terminal each when each has its own agent', async () => {
     const ctx = setupEngine({ readinessQueue: [executionState(), executionState(), executionState()] });
@@ -3942,7 +4416,8 @@ describe('createRunEngine attachment verification', () => {
     });
     const run = ctx.runStore.create(validRun({ worktreeState: 'present', baseCommit: BASE_COMMIT }));
     await driveReady(ctx.engine.start(run.id));
-    expect(startOptions).toEqual([[]]);
+    // No attachment check; only the dispatch hook that applies a queued agent change.
+    expect(startOptions).toEqual([[{ beforeDispatch: expect.any(Function) }]]);
   });
 
   it('keeps a run-owned checkout whose attachment copies no longer match, and names them', async () => {

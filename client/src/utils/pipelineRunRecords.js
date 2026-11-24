@@ -1,4 +1,4 @@
-import { isUuid, isProgressFilePath } from '../../../shared/pipeline-definitions.mjs';
+import { AGENT_ASSIGNMENT_SOURCES, isUuid, isProgressFilePath } from '../../../shared/pipeline-definitions.mjs';
 import { PipelineApiError } from './pipelinesApi';
 
 const RUN_STATUSES = ['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval', 'interrupted', 'stopped', 'error', 'complete'];
@@ -88,6 +88,26 @@ export function parseInputRequest(run, index = 0) {
   return { questions: request.questions, truncated: request.truncated };
 }
 
+function checkAgentAssignment(step, guard, field) {
+  // Older backends supply display names and can have a queued name without its identity.
+  if (Object.hasOwn(step, 'agentId')) guard(isUuid(step.agentId), field('agentId'));
+  if (Object.hasOwn(step, 'nextAgentId')) guard(isUuid(step.nextAgentId), field('nextAgentId'));
+  if (Object.hasOwn(step, 'nextAgentId') || Object.hasOwn(step, 'nextAgentName')) {
+    guard(text(step.nextAgentName) && step.nextAgentName.length <= 64, field('nextAgentName'));
+  }
+  if (Object.hasOwn(step, 'nextAgentSource')) guard(isUuid(step.nextAgentId), field('nextAgentId'));
+  for (const [source, fallback] of [['agentSource', 'fallbackAgent'], ['nextAgentSource', 'nextFallbackAgent']]) {
+    if (Object.hasOwn(step, source)) guard(AGENT_ASSIGNMENT_SOURCES.includes(step[source]), field(source));
+    if (!Object.hasOwn(step, fallback)) continue;
+    const agent = step[fallback];
+    guard(step.kind === 'node' && step[source] === 'team' && object(agent)
+      && Object.keys(agent).every(key => ['id', 'name', 'agentRevision'].includes(key)), field(fallback));
+    guard(isUuid(agent.id), field(`${fallback}.id`));
+    guard(text(agent.name) && agent.name.length <= 64 && !/[\x00-\x1f\x7f]/.test(agent.name), field(`${fallback}.name`));
+    guard(integer(agent.agentRevision) && agent.agentRevision >= 1, field(`${fallback}.agentRevision`));
+  }
+}
+
 /**
  * The fields the runs bar reads about loops and decisions: whether the run's agents decide,
  * how many requests they settled, and for each step its repeat and completed rounds.
@@ -106,6 +126,7 @@ export function parseRunAutonomy(run, index = 0) {
   guard(Array.isArray(run.steps), 'steps');
   run.steps.forEach((step, i) => {
     guard(object(step), `steps[${i}]`);
+    checkAgentAssignment(step, guard, name => `steps[${i}].${name}`);
     guard(object(step.repeat), `steps[${i}].repeat`);
     const loops = step.repeat.mode === 'loop_back';
     if (loops) guard(integer(step.repeat.max) && step.repeat.max >= 1 && step.repeat.max <= 100, `steps[${i}].repeat.max`);
@@ -166,6 +187,7 @@ export function parseRun(run, index = 0) {
     guard(run.notesDir === null || step.kind === 'setup' ? step.notePath === null : step.notePath !== null, field('notePath'));
     parseNoteMeta(step.note, guard, field('note'));
     guard(text(step.agentName) && step.agentName.length <= 64, field('agentName'));
+    checkAgentAssignment(step, guard, field);
     guard(object(step.repeat), field('repeat'));
     guard(['once', 'until_complete', 'loop_back'].includes(step.repeat.mode), field('repeat.mode'));
     const loops = step.repeat.mode === 'loop_back';

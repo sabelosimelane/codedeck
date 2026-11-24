@@ -50,6 +50,11 @@ function createBackend(seed = {}) {
   function collection(name, method, id, body) {
     const records = state[name];
     if (method === 'GET' && !id) return json({ data: [...records], page: { hasNextPage: false } });
+    if (name === 'teams' && ['POST', 'PUT'].includes(method)) {
+      body = { ...body, members: body.members.map(({ fallbackAgentId, ...member }) => ({
+        ...member, ...(fallbackAgentId != null && { fallbackAgentId }),
+      })) };
+    }
     if (method === 'POST') {
       const record = { id: newId(), ...body, revision: 1, ...STAMPS };
       records.push(record);
@@ -665,7 +670,7 @@ describe('PipelineSettings workflows', () => {
     for (let index = 1; index <= 7; index++) type(`Node ${index} agent`, A1);
     click('Save workflow');
     await waitFor(() => expect(backend.mutations()).toHaveLength(1));
-    expect(backend.mutations()[0].body.nodes[5].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 3 });
+    expect(backend.mutations()[0].body.nodes[5].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 8 });
     expect(backend.mutations()[0].body.nodes.map(node => node.askOwner)).toEqual([true, false, false, false, false, true, false]);
     expect(backend.mutations()[0].body.nodes[0].role).toBe('Investigator');
     expect(backend.mutations()[0].body).toMatchObject({ kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.' });
@@ -1342,4 +1347,51 @@ it('creates, edits and deletes a team from workflow settings', async () => {
   await waitFor(() => expect(backend.state.teams[0]).toMatchObject({ revision: 2, members: [{ role: 'Developer', agentId: A2 }] }));
   click('Delete Daily');
   await waitFor(() => expect(backend.state.teams).toEqual([]));
+});
+
+it('sets, displays, reopens, and clears a team role fallback in workflow settings', async () => {
+  await renderSettings({ agents: [codex(), cursor()] });
+  click('Add team');
+  type('Team name', 'Daily');
+  type('Member 1 role', 'Developer');
+  type('Member 1 agent', A1);
+  const picker = screen.getByRole('combobox', { name: 'Member 1 fallback agent' });
+  expect(within(picker).getAllByRole('option').map(option => option.textContent)).toEqual(['None', 'cursor-fable']);
+  type('Member 1 fallback agent', A2);
+  click('Save team');
+  expect(await screen.findByText('Developer: codex-high · Fallback: cursor-fable')).toBeTruthy();
+  expect(backend.state.teams[0].members).toEqual([{ role: 'Developer', agentId: A1, fallbackAgentId: A2 }]);
+  click('Edit Daily');
+  expect(screen.getByRole('combobox', { name: 'Member 1 fallback agent' }).value).toBe(A2);
+  type('Member 1 fallback agent', '');
+  click('Save team');
+  expect(await screen.findByText('Developer: codex-high')).toBeTruthy();
+  expect(backend.mutations().at(-1).body.members).toEqual([{ role: 'Developer', agentId: A1, fallbackAgentId: null }]);
+  expect(backend.state.teams[0].members).toEqual([{ role: 'Developer', agentId: A1 }]);
+});
+
+it('sends None for a re-added role, so the server does not keep the removed role fallback', async () => {
+  await renderSettings({ agents: [codex(), cursor()] });
+  click('Add team');
+  type('Team name', 'Daily');
+  type('Member 1 role', 'Developer');
+  type('Member 1 agent', A1);
+  type('Member 1 fallback agent', A2);
+  click('Add role');
+  type('Member 2 role', 'Reviewer');
+  type('Member 2 agent', A2);
+  click('Save team');
+  await screen.findByRole('button', { name: 'Edit Daily' });
+  click('Edit Daily');
+  click('Remove member 1');
+  click('Add role');
+  type('Member 2 role', 'Developer');
+  type('Member 2 agent', A1);
+  expect(screen.getByRole('combobox', { name: 'Member 2 fallback agent' }).value).toBe('');
+  click('Save team');
+  await waitFor(() => expect(backend.mutations()).toHaveLength(2));
+  expect(backend.mutations().at(-1).body.members).toEqual([
+    { role: 'Reviewer', agentId: A2, fallbackAgentId: null },
+    { role: 'Developer', agentId: A1, fallbackAgentId: null },
+  ]);
 });

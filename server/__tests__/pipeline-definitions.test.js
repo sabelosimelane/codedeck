@@ -10,6 +10,7 @@ import {
   validateRunStartBody,
   validateSettingsBody,
   validateStepPresetBody,
+  validateTeamBody,
   validateWorkflowBody,
 } from '../../shared/pipeline-definitions.mjs';
 
@@ -19,6 +20,26 @@ const UUID2 = '6f1c0000-0000-4000-8000-000000000002';
 function fields(errors) {
   return errors.map(e => e.field);
 }
+
+describe('team role fallback validation', () => {
+  const team = members => ({ name: 'Daily', members, revision: 1 });
+  const developer = { role: 'Developer', agentId: UUID };
+
+  it('accepts omission, null clear, and distinct fallback UUIDs shared across roles', () => {
+    for (const member of [developer, { ...developer, fallbackAgentId: null }, { ...developer, fallbackAgentId: UUID2 }]) {
+      expect(validateTeamBody(team([member, { role: 'Reviewer', agentId: UUID, fallbackAgentId: UUID2 }]), { revisionRequired: true })).toEqual([]);
+    }
+  });
+
+  it.each(['', [], {}, 1, '"; DROP TABLE pipeline_teams;', UUID, UUID.toUpperCase()])('rejects invalid or self fallback %j', fallbackAgentId => {
+    expect(fields(validateTeamBody(team([{ ...developer, fallbackAgentId }])))).toEqual(['members[0].fallbackAgentId']);
+  });
+
+  it('reports unknown team and member keys without reflecting a hostile field name', () => {
+    const errors = validateTeamBody({ ...team([{ ...developer, '<script>': 'x' }]), '<script>': 'x' });
+    expect(fields(errors)).toEqual(['body', 'members[0]']);
+  });
+});
 
 describe('validateAgentBody', () => {
   const valid = { name: 'codex-sol', launchCommand: 'codex --model gpt', resetCommand: '/clear' };

@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { isUuid, validateTeamBody, validateWorkflowBody, validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
+import { isUuid, teamMemberFallbackId, validateTeamBody, validateWorkflowBody, validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const isIso = value => typeof value === 'string' && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value));
@@ -36,7 +36,7 @@ function createLibraryStore(db, { table, validate, normalize, now }) {
     if (!isUuid(id)) rowError(id ?? 'unknown', 'id', 'must be a UUID');
     let body;
     try { body = JSON.parse(row.body); } catch { rowError(id, 'body', 'must be valid JSON'); }
-    const errors = validate(body, { revisionRequired: false });
+    const errors = validate(body, { revisionRequired: false, allowFallbackClear: false });
     if (errors.length) rowError(id, `body.${errors[0].field}`, errors[0].message);
     const fields = normalize(body);
     if (fields.name !== row.name) rowError(id, 'name', 'does not match the stored definition');
@@ -45,8 +45,8 @@ function createLibraryStore(db, { table, validate, normalize, now }) {
     if (!isIso(row.updated_at)) rowError(id, 'updated_at', 'must be an ISO-8601 timestamp');
     return { id, ...fields, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at };
   };
-  const requireValid = (body, revisionRequired) => {
-    const errors = validate(body, { revisionRequired });
+  const requireValid = (body, revisionRequired, current) => {
+    const errors = validate(body, { revisionRequired, current });
     if (errors.length) throw new Error(`${table}: ${errors[0].field}: ${errors[0].message}`);
   };
   const get = (id) => {
@@ -68,14 +68,18 @@ function createLibraryStore(db, { table, validate, normalize, now }) {
       return get(id);
     },
     update(id, body) {
-      requireValid(body, true);
       const current = get(id);
       if (!current) throw new Error(`${table} row ${id}: not found`);
-      const fields = normalize(body);
+      if (current.revision !== body?.revision) {
+        requireValid(body, true);
+        throw new Error(`${table} row ${id}: revision conflict`);
+      }
+      requireValid(body, true, current);
+      const fields = normalize(body, current);
       let result;
       try { result = updateStmt.run(fields.name, JSON.stringify(fields), now(), id, body.revision); }
       catch (err) { if (isUniqueConflict(err)) throw new Error(`${table}: name already exists`); throw err; }
-      if (current.revision !== body.revision || result.changes !== 1) throw new Error(`${table} row ${id}: revision conflict`);
+      if (result.changes !== 1) throw new Error(`${table} row ${id}: revision conflict`);
       return get(id);
     },
     remove(id) {
@@ -126,9 +130,12 @@ export function createStepPresetStore(db, { now = () => new Date().toISOString()
 export function createTeamStore(db, { now = () => new Date().toISOString() } = {}) {
   return createLibraryStore(db, {
     table: 'pipeline_teams', now, validate: validateTeamBody,
-    normalize: body => ({
+    normalize: (body, current) => ({
       name: body.name.trim(),
-      members: body.members.map(({ role, agentId }) => ({ role: role.trim(), agentId })),
+      members: body.members.map(member => {
+        const fallbackAgentId = teamMemberFallbackId(member, current?.members);
+        return { role: member.role.trim(), agentId: member.agentId, ...(fallbackAgentId && { fallbackAgentId }) };
+      }),
     }),
   });
 }

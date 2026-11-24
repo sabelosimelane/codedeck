@@ -2,6 +2,40 @@ import { describe, expect, it } from 'vitest';
 import { parseAnswerPage as parseAnswers, parseDecision, parseDecisionPage, parseInputRequest, parseRun, parseRunAutonomy, parseNotePage } from '../pipelineRunRecords';
 import { validRun } from './pipelineRunFixture';
 it('accepts the complete run response', () => { expect(parseRun(validRun())).toEqual(validRun()); });
+it('checks optional saved agent identities and queued names in both run projections', () => {
+  const run = validRun();
+  const id = 'c410a1b2-3456-4789-8abc-def012345678';
+  run.steps[0] = { ...run.steps[0], agentId: id, nextAgentId: id, nextAgentName: 'Replacement' };
+  expect(parseRun(run)).toEqual(run);
+  for (const [field, value] of [['agentId', null], ['nextAgentId', 'invalid'], ['nextAgentName', '']]) {
+    const bad = { ...run, steps: [{ ...run.steps[0], [field]: value }] };
+    expect(() => parseRun(bad)).toThrow(field);
+    expect(() => parseRunAutonomy(bad)).toThrow(field);
+  }
+});
+it('validates both current and queued public role fallback records', () => {
+  const run = validRun();
+  const id = 'c410a1b2-3456-4789-8abc-def012345678';
+  const fallback = { id, name: 'Second', agentRevision: 2 };
+  run.steps[0] = {
+    ...run.steps[0], kind: 'node', agentSource: 'team', fallbackAgent: fallback,
+    nextAgentId: id, nextAgentName: 'Queued', nextAgentSource: 'team', nextFallbackAgent: fallback,
+  };
+  expect(parseRun(run)).toEqual(run);
+  for (const [field, value, invalid] of [
+    ['agentSource', null, 'agentSource'],
+    ['nextAgentSource', 'trial', 'nextFallbackAgent'],
+    ['fallbackAgent', null, 'fallbackAgent'],
+    ['fallbackAgent', { ...fallback, id: 'bad' }, 'fallbackAgent.id'],
+    ['fallbackAgent', { ...fallback, name: '\nSecond' }, 'fallbackAgent.name'],
+    ['nextFallbackAgent', { ...fallback, agentRevision: 0 }, 'nextFallbackAgent.agentRevision'],
+    ['fallbackAgent', { ...fallback, launchCommand: 'hidden' }, 'fallbackAgent'],
+  ]) {
+    const bad = { ...run, steps: [{ ...run.steps[0], [field]: value }] };
+    expect(() => parseRun(bad)).toThrow(invalid);
+    expect(() => parseRunAutonomy(bad)).toThrow(invalid);
+  }
+});
 it('accepts no_progress on a stopped run and rejects an unknown reason', () => {
   const run = validRun(); run.status = 'stopped'; run.stopReason = 'no_progress'; run.steps[0].status = 'stopped'; run.finishedAt = '2026-11-13T12:00:00.000Z';
   expect(parseRun(run).stopReason).toBe('no_progress');
