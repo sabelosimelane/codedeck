@@ -20,6 +20,7 @@ describe('workflow templates', () => {
       ['feature-from-requirements', 'Feature from requirements', 'build', ['Requirements', 'Specify', 'Develop', 'Review', 'Test', 'Commit']],
       ['troubleshoot', 'Troubleshoot', 'troubleshoot', ['Clarify', 'Investigate', 'Prove', 'Fix', 'Verify', 'Commit']],
       ['review-only', 'Review only', 'review', ['Survey', 'Review', 'Report']],
+      ['brainstorm-to-spec', 'Brainstorm to spec', 'build', ['Brainstorm', 'Specify', 'Commit']],
     ]);
     expect(Object.isFrozen(WORKFLOW_TEMPLATES)).toBe(true);
     for (const template of WORKFLOW_TEMPLATES) {
@@ -207,6 +208,37 @@ describe('workflow templates', () => {
     expect(template.nodes.filter(node => node.askOwner).map(node => node.name)).toEqual(['Requirements']);
   });
 
+  it('brainstorms an idea with the owner one question at a time, then specifies it as a todo Feature Build from Spec can build', () => {
+    const template = WORKFLOW_TEMPLATES.find(item => item.id === 'brainstorm-to-spec');
+    expect(template).toMatchObject({ agentsDecide: false, progressFile: null });
+    expect(template.nodes.map(({ name, role, repeat, readOnly, approval, askOwner }) => ({ name, role, repeat, readOnly, approval, askOwner }))).toEqual([
+      { name: 'Brainstorm', role: 'Thinking partner', repeat: { mode: 'once' }, readOnly: true, approval: false, askOwner: true },
+      { name: 'Specify', role: 'Planner', repeat: { mode: 'once' }, readOnly: false, approval: true, askOwner: false },
+      { name: 'Commit', role: 'Committer', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
+    ]);
+    const byName = Object.fromEntries(template.nodes.map(node => [node.name, node.prompt]));
+    // A conversation, not a questionnaire: one question per pause, built on the last answer, until the owner agrees it has landed.
+    expect(byName.Brainstorm).toMatch(/one question at a time/);
+    expect(byName.Brainstorm).toMatch(/use NEEDS_INPUT with exactly one question/);
+    expect(byName.Brainstorm).toMatch(/the answer you would recommend/);
+    expect(byName.Brainstorm).toMatch(/challenge it/);
+    expect(byName.Brainstorm).toMatch(/Do not ask what you can find out yourself/);
+    expect(byName.Brainstorm).toMatch(/ask whether it is ready to be specified/);
+    expect(byName.Brainstorm).toMatch(/Finish only when the owner agrees/);
+    expect(byName.Brainstorm).toMatch(/Change nothing/);
+    // The specification and a phased todo are files in the repository, shaped for Feature Build from Spec.
+    expect(byName.Specify).toMatch(/Read the Brainstorm note/);
+    expect(byName.Specify).toMatch(/## Phase N: <title> sections with - \[ \] tasks/);
+    expect(byName.Specify).toMatch(/at most 4 phases/);
+    expect(byName.Specify).toMatch(/## Session notes/);
+    expect(byName.Specify).toMatch(/\*\*Repositories\*\*:/);
+    expect(byName.Specify).toMatch(/Change no code/);
+    expect(byName.Specify).toMatch(/Feature Build from Spec/);
+    expect(byName.Commit).toMatch(/Commit nothing else/);
+    expect(byName.Commit).toMatch(/Do not push/);
+    expect(byName.Commit).toMatch(/Start your note with one line/);
+  });
+
   it('reviews without changing or committing anything', () => {
     const template = WORKFLOW_TEMPLATES.find(item => item.id === 'review-only');
     expect(template.nodes.every(node => node.readOnly && !node.approval && node.repeat.mode === 'once')).toBe(true);
@@ -248,7 +280,8 @@ describe('workflow templates', () => {
       'feature-build': ['Plan', 'Commit'],
       'feature-build-from-spec': ['Develop', 'Review', 'Test'],
       'feature-from-requirements': ['Requirements', 'Specify', 'Commit'],
-      troubleshoot: ['Clarify', 'Investigate', 'Prove', 'Commit'], 'review-only': ['Survey'] };
+      troubleshoot: ['Clarify', 'Investigate', 'Prove', 'Commit'], 'review-only': ['Survey'],
+      'brainstorm-to-spec': ['Brainstorm', 'Specify', 'Commit'] };
     for (const template of WORKFLOW_TEMPLATES) {
       for (const node of template.nodes) {
         expect(node.prompt.includes('{input}'), `${template.name} / ${node.name}`).toBe(inputSteps[template.id].includes(node.name));
