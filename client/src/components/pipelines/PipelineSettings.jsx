@@ -4,6 +4,7 @@ import { BRANCH_NAME_RULE, isBranchName } from '../../../../shared/pipeline-defi
 import { listTeams, updatePipelineSettings } from '../../utils/pipelinesApi';
 import { loadDefinitions, parseTeam, parseSettings } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
+import RoleList from './RoleList';
 import TeamList from './TeamList';
 import AgentList from './AgentList';
 import WorkflowList from './WorkflowList';
@@ -23,6 +24,7 @@ export default function PipelineSettings({ onDirtyChange }) {
   // What the owner is typing as the default base branch; null while it is the saved value.
   const [baseDraft, setBaseDraft] = useState(null);
   const [savingBase, setSavingBase] = useState(false);
+  const [rolesDirty, setRolesDirty] = useState(false);
   const [teamDirty, setTeamDirty] = useState(false);
   const [agentsDirty, setAgentsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
@@ -40,7 +42,7 @@ export default function PipelineSettings({ onDirtyChange }) {
   }, [showToast]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { onDirtyChange(agentsDirty || workflowsDirty || teamDirty); }, [agentsDirty, workflowsDirty, teamDirty, onDirtyChange]);
+  useEffect(() => { onDirtyChange(rolesDirty || agentsDirty || workflowsDirty || teamDirty); }, [rolesDirty, agentsDirty, workflowsDirty, teamDirty, onDirtyChange]);
 
   const changeSetupAgent = async (value) => {
     setSavingSetupAgent(true);
@@ -98,6 +100,7 @@ export default function PipelineSettings({ onDirtyChange }) {
       {definitions !== null && (
         <>
           <TeamList definitions={definitions} onChanged={load} onDirtyChange={setTeamDirty} />
+          <RoleList definitions={definitions} onChanged={load} onDirtyChange={setRolesDirty} />
           <AgentList agents={definitions.agents} onChanged={load} onDirtyChange={setAgentsDirty} />
 
           <section className="pipeline-section">
@@ -139,7 +142,7 @@ export default function PipelineSettings({ onDirtyChange }) {
             <Button variant="accent" onClick={openWorkflowBuilder}>Open the workflow builder</Button>
           </section>
 
-          <WorkflowList workflows={definitions.workflows} agents={definitions.agents} templates={definitions.templates} stepPresets={definitions.stepPresets} onChanged={load} onDirtyChange={setWorkflowsDirty} />
+          <WorkflowList workflows={definitions.workflows} roles={definitions.roles} templates={definitions.templates} stepPresets={definitions.stepPresets} onChanged={load} onDirtyChange={setWorkflowsDirty} />
         </>
       )}
     </div>

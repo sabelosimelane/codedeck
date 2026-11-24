@@ -11,7 +11,7 @@ import { createRequestStore } from '../pipelines/request-store.js';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createReviewStore } from '../pipelines/review-store.js';
 import { createAnswerStore } from '../pipelines/answer-store.js';
-import { createTeamStore, createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
+import { createRoleStore, createTeamStore, createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
@@ -26,7 +26,9 @@ async function setup() {
   const db = new Database(':memory:');
   cleanup.push(() => db.close());
   const stores = {
+    db,
     agentStore: createAgentStore(db),
+    roleStore: createRoleStore(db),
     workflowStore: createWorkflowStore(db),
     settingsStore: createSettingsStore(db),
     runStore: createRunStore(db),
@@ -61,11 +63,7 @@ async function setup() {
 const template = WORKFLOW_TEMPLATES.find(item => item.id === 'bug-fix');
 
 function builtinBody(fromTemplate = template) {
-  const definition = builtinTemplateDefinition(fromTemplate);
-  return {
-    ...definition,
-    nodes: definition.nodes.map(node => ({ ...node, agentId: null })),
-  };
+  return builtinTemplateDefinition(fromTemplate);
 }
 
 describe('built-in source view', () => {
@@ -86,7 +84,7 @@ describe('built-in source view', () => {
     const ctx = await setup();
     const created = ctx.workflowStore.create({
       name: 'Retired', description: '', kind: 'other', agentsDecide: false, progressFile: null,
-      nodes: [{ name: 'Do', role: 'Maker', agentId: null, prompt: 'Do it', repeat: { mode: 'once' } }],
+      nodes: [{ name: 'Do', role: 'Maker', prompt: 'Do it', repeat: { mode: 'once' } }],
     }, {
       source: { kind: 'builtin', id: 'retired-thing', version: 3, base: null, updatedAt: null },
     });
@@ -131,7 +129,7 @@ describe('POST /builtin-workflows/:id/additions', () => {
     const added = await request(ctx.app).post(`${base}/builtin-workflows/bug-fix/additions`);
     expect(added.status).toBe(201);
     expect(added.body.source).toMatchObject({ kind: 'builtin', id: 'bug-fix', version: template.version });
-    expect(added.body.nodes.every(node => node.agentId === null)).toBe(true);
+    expect(added.body.nodes.every(node => !('agentId' in node) && node.role.trim() !== '')).toBe(true);
     expect(added.body.revision).toBe(1);
     expect((await request(ctx.app).post(`${base}/builtin-workflows/retired-thing/additions`)).status).toBe(404);
     const again = await request(ctx.app).post(`${base}/builtin-workflows/bug-fix/additions`);

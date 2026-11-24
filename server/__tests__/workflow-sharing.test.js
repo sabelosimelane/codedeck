@@ -11,7 +11,7 @@ import { createRequestStore } from '../pipelines/request-store.js';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createReviewStore } from '../pipelines/review-store.js';
 import { createAnswerStore } from '../pipelines/answer-store.js';
-import { createTeamStore, createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
+import { createRoleStore, createTeamStore, createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
@@ -28,9 +28,13 @@ async function setup() {
   const db = new Database(':memory:');
   cleanup.push(() => db.close());
   const agentStore = createAgentStore(db);
+  const roleStore = createRoleStore(db);
+  roleStore.ensureRole('Developer');
   const workflowStore = createWorkflowStore(db);
   const stores = {
+    db,
     agentStore,
+    roleStore,
     workflowStore,
     settingsStore: createSettingsStore(db),
     runStore: createRunStore(db),
@@ -69,14 +73,13 @@ function agentBody() {
 }
 
 function storedWorkflow(ctx, overrides = {}) {
-  const agent = ctx.agentStore.create(agentBody());
   return ctx.workflowStore.create({
     name: 'Bug fix',
     description: 'Investigate and fix.',
     kind: 'bugfix',
     agentsDecide: false,
     progressFile: null,
-    nodes: [{ name: 'Develop', agentId: agent.id, role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: true, approval: false, askOwner: false }],
+    nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: true, approval: false, askOwner: false }],
     ...overrides,
   });
 }
@@ -95,30 +98,18 @@ describe('workflow export', () => {
     expect(res.body.workflow).toMatchObject({ name: 'Bug fix', kind: 'bugfix' });
   });
 
-  it('404s an unknown workflow and 409s a workflow with role-less steps, naming them', async () => {
+  it('404s an unknown workflow', async () => {
     const ctx = await setup();
     expect((await request(ctx.app).get(`${base}/workflows/${randomUUID()}/export`)).status).toBe(404);
-    const agent = ctx.agentStore.create(agentBody());
-    const workflow = ctx.workflowStore.create({
-      name: 'Mixed', agentsDecide: false,
-      nodes: [
-        { name: 'Develop', agentId: agent.id, role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' } },
-        { name: 'Test', agentId: agent.id, role: '', prompt: 'Check it', repeat: { mode: 'once' } },
-      ],
-    });
-    const res = await request(ctx.app).get(`${base}/workflows/${workflow.id}/export`);
-    expect(res.status).toBe(409);
-    expect(res.body.message).toMatch(/Test/);
   });
 });
 
 describe('workflow source view', () => {
   it('appears in list, get, create and update responses; bodies refuse source', async () => {
     const ctx = await setup();
-    const agent = ctx.agentStore.create(agentBody());
     const fields = {
       name: 'Bug fix', agentsDecide: false,
-      nodes: [{ name: 'Develop', agentId: agent.id, role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' } }],
+      nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' } }],
     };
     const created = await request(ctx.app).post(`${base}/workflows`).send(fields);
     expect(created.status).toBe(201);
@@ -169,7 +160,8 @@ describe('workflow imports', () => {
     const applied = await request(ctx.app).post(`${base}/workflow-imports`).send({ package: pkg, target: { mode: 'new' } });
     expect(applied.status).toBe(201);
     expect(applied.body.source).toMatchObject({ kind: 'imported', id: pkg.source.id, version: pkg.source.version });
-    expect(applied.body.nodes.at(0)).toMatchObject({ role: 'Developer', agentId: null });
+    expect(applied.body.nodes.at(0)).toMatchObject({ role: 'Developer' });
+    expect(applied.body.nodes.at(0)).not.toHaveProperty('agentId');
     expect(applied.body.revision).toBe(1);
   });
 

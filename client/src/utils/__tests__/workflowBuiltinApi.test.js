@@ -16,7 +16,7 @@ const builtinRow = (patch = {}) => ({
 const builtinWorkflow = (patch = {}) => ({
   id: '11111111-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: 'Fix things.',
   agentsDecide: false, progressFile: null, revision: 1, source: builtinSource(), ...STAMPS,
-  nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+  nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
   ...patch,
 });
 

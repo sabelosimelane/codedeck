@@ -140,7 +140,7 @@ describe('importWorkflow', () => {
   it('posts the package with its target and returns the created workflow', async () => {
     const created = {
       id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: '', agentsDecide: false,
-      progressFile: null, revision: 1, nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+      progressFile: null, revision: 1, nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
       source: { kind: 'imported', id: W1, version: 2, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null },
       createdAt: '2026-11-24T13:05:52.000Z', updatedAt: '2026-11-24T13:05:52.000Z',
     };
@@ -161,7 +161,7 @@ describe('importWorkflow', () => {
     const receipt = () => ({
       id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: '', agentsDecide: false,
       progressFile: null, revision: 1,
-      nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+      nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
       source: { kind: 'imported', id: W1, version: 2, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null },
       createdAt: '2026-11-24T13:05:52.000Z', updatedAt: '2026-11-24T13:05:52.000Z',
     });
@@ -173,7 +173,7 @@ describe('importWorkflow', () => {
       without(body => { delete body.nodes[0].readOnly; }),
       without(body => { delete body.nodes[0].approval; }),
       without(body => { delete body.nodes[0].askOwner; }),
-      without(body => { delete body.nodes[0].agentId; }),
+      without(body => { body.nodes[0].agentId = null; }),
     ];
     for (const body of cases) {
       global.fetch = vi.fn(async () => jsonResponse(body, { status: 201 }));
@@ -185,7 +185,7 @@ describe('importWorkflow', () => {
     const receipt = () => ({
       id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: '', agentsDecide: false,
       progressFile: null, revision: 1,
-      nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+      nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
       source: { kind: 'imported', id: W1, version: 2, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null },
       createdAt: '2026-11-24T13:05:52.000Z', updatedAt: '2026-11-24T13:05:52.000Z',
     });
@@ -205,7 +205,7 @@ describe('importWorkflow', () => {
     const body = {
       id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: '', agentsDecide: false,
       progressFile: null, revision: 1,
-      nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+      nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
       source: { kind: 'imported', id: W1, version: 2, latestVersion: null, updateAvailable: false, updatedToVersionAt: '2026-02-28T13:05:52.000Z', shipped: null },
       createdAt: '2026-11-24T13:05:52.000Z', updatedAt: '2026-11-24T13:05:52.000Z',
     };
@@ -217,7 +217,7 @@ describe('importWorkflow', () => {
     const linked = () => ({
       id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: '', agentsDecide: false,
       progressFile: null, revision: 1,
-      nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+      nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
       source: { kind: 'imported', id: W1, version: 2, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null },
       createdAt: '2026-11-24T13:05:52.000Z', updatedAt: '2026-11-24T13:05:52.000Z',
     });
@@ -253,7 +253,7 @@ describe('importWorkflow', () => {
     const receipt = () => ({
       id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: '', agentsDecide: false,
       progressFile: null, revision: 1,
-      nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+      nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
       source: { kind: 'imported', id: W1, version: 2, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null },
       createdAt: '2026-11-24T13:05:52.000Z', updatedAt: '2026-11-24T13:05:52.000Z',
     });

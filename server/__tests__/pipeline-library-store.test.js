@@ -17,8 +17,8 @@ describe('saved workflow templates', () => {
     name: ' My build ', description: ' Plan then build ', kind: 'build', agentsDecide: true, progressFile: null,
     nodes: [
       { name: ' Plan ', role: ' Planner ', prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true },
-      { name: 'Develop', prompt: 'Build', repeat: { mode: 'once' } },
-      { name: 'Test', prompt: 'Test', repeat: { mode: 'loop_back', to: ' develop ', max: 3 } },
+      { name: 'Develop', role: 'Developer', prompt: 'Build', repeat: { mode: 'once' } },
+      { name: 'Test', role: 'Tester', prompt: 'Test', repeat: { mode: 'loop_back', to: ' develop ', max: 3 } },
     ],
     ...extra,
   });
@@ -31,21 +31,21 @@ describe('saved workflow templates', () => {
       id: saved.id, name: 'My build', description: 'Plan then build', kind: 'build', agentsDecide: true, progressFile: null,
       nodes: [
         { name: 'Plan', role: 'Planner', prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true, askOwner: false },
-        { name: 'Develop', role: '', prompt: 'Build', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
-        { name: 'Test', role: '', prompt: 'Test', repeat: { mode: 'loop_back', to: 'develop', max: 3 }, readOnly: false, approval: false, askOwner: false },
+        { name: 'Develop', role: 'Developer', prompt: 'Build', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
+        { name: 'Test', role: 'Tester', prompt: 'Test', repeat: { mode: 'loop_back', to: 'develop', max: 3 }, readOnly: false, approval: false, askOwner: false },
       ],
       revision: 1, createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z',
     });
     expect(store.get(saved.id)).toEqual(saved);
     expect(store.get(OTHER)).toBeNull();
-    expect(store.create({ name: 'Bare', agentsDecide: false, nodes: [{ name: 'A', prompt: 'p', repeat: { mode: 'once' } }] })).toMatchObject({ kind: 'other', description: '' });
+    expect(store.create({ name: 'Bare', agentsDecide: false, nodes: [{ name: 'A', role: 'Developer', prompt: 'p', repeat: { mode: 'once' } }] })).toMatchObject({ kind: 'other', description: '' });
   });
 
   it('refuses agents, invalid definitions and a taken name', () => {
     const { store } = setup();
     store.create(body());
     expect(() => store.create(body({ name: 'my BUILD' }))).toThrow('pipeline_workflow_templates: name already exists');
-    expect(() => store.create(body({ name: 'With agent', nodes: [{ name: 'A', agentId: OTHER, prompt: 'p', repeat: { mode: 'once' } }] }))).toThrow('nodes[0].agentId');
+    expect(() => store.create(body({ name: 'With agent', nodes: [{ name: 'A', role: 'Developer', agentId: OTHER, prompt: 'p', repeat: { mode: 'once' } }] }))).toThrow('nodes[0].agentId');
     expect(() => store.create(body({ name: '' }))).toThrow('pipeline_workflow_templates: name');
     expect(() => store.create(body({ name: 'Bad kind', kind: 'deploy' }))).toThrow('kind');
     expect(() => store.create(null)).toThrow('body');
@@ -97,8 +97,8 @@ describe('saved steps', () => {
     const saved = store.create(body());
     expect(saved).toEqual({ id: saved.id, name: 'Review', role: 'Reviewer', prompt: 'Review the changes', repeat: { mode: 'until_complete', max: 3 }, readOnly: true, approval: false, askOwner: false,
       revision: 1, createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z' });
-    expect(store.create({ name: 'Plain', prompt: 'p', repeat: { mode: 'once' } })).toMatchObject({ role: '', readOnly: false, approval: false, askOwner: false, repeat: { mode: 'once' } });
-    expect(store.create({ name: 'Clarify', prompt: 'p', repeat: { mode: 'once' }, askOwner: true }).askOwner).toBe(true);
+    expect(store.create({ name: 'Plain', role: 'Reviewer', prompt: 'p', repeat: { mode: 'once' } })).toMatchObject({ role: 'Reviewer', readOnly: false, approval: false, askOwner: false, repeat: { mode: 'once' } });
+    expect(store.create({ name: 'Clarify', role: 'Reviewer', prompt: 'p', repeat: { mode: 'once' }, askOwner: true }).askOwner).toBe(true);
   });
 
   it('refuses a loop, an agent, a bad prompt and a taken name; updates and removes', () => {
@@ -117,7 +117,7 @@ describe('saved steps', () => {
   it('fails loudly on a stored step that is no longer valid', () => {
     const { db, store } = setup();
     const saved = store.create(body());
-    db.prepare('UPDATE pipeline_step_presets SET body = ? WHERE id = ?').run(JSON.stringify({ name: 'Review', prompt: '', repeat: { mode: 'once' } }), saved.id);
+    db.prepare('UPDATE pipeline_step_presets SET body = ? WHERE id = ?').run(JSON.stringify({ name: 'Review', role: 'Reviewer', prompt: '', repeat: { mode: 'once' } }), saved.id);
     expect(() => store.list()).toThrow(/pipeline_step_presets row .* field body\.prompt/);
   });
 });

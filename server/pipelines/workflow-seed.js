@@ -44,7 +44,7 @@ export function seedBuiltInWorkflows({ db, workflows, now = () => new Date().toI
           description: definition.description,
           agentsDecide: definition.agentsDecide,
           progressFile: definition.progressFile,
-          nodes: definition.nodes.map(node => ({ ...node, agentId: null })),
+          nodes: definition.nodes,
         }, {
           source: { kind: 'builtin', id: template.id, version: template.version, base: definition, updatedAt: null },
         });

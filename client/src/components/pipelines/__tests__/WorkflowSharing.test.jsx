@@ -19,7 +19,7 @@ const importedSource = (id, version) => ({ kind: 'imported', id, version, latest
 const workflow = (patch = {}) => ({
   id: '11111111-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: 'Fix things.',
   agentsDecide: false, progressFile: null, revision: 1, source: localSource(),
-  nodes: [{ name: 'Develop', role: 'Developer', agentId: 'a1b2c3d4-1111-4111-8111-111111111111', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+  nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
   ...STAMPS, ...patch,
 });
 
@@ -60,7 +60,7 @@ describe('workflow import', () => {
         return jsonResponse({ target: { mode: 'new' }, workflow: pkg().workflow, changes: [], missingRoles: ['Developer'] });
       }
       if (target.endsWith('/workflow-imports')) {
-        return jsonResponse({ ...workflow({ name: 'Bug fix', source: importedSource('123e4567-e89b-42d3-a456-426614174000', 2), nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }] }), revision: 1 }, { status: 201 });
+        return jsonResponse({ ...workflow({ name: 'Bug fix', source: importedSource('123e4567-e89b-42d3-a456-426614174000', 2), nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }] }), revision: 1 }, { status: 201 });
       }
       throw new Error(`unexpected request ${target}`);
     });
@@ -83,7 +83,7 @@ describe('workflow import', () => {
         return jsonResponse({ target: { mode: 'name-clash', workflowId: workflow().id, revision: 1, suggestedName: 'Bug fix (imported)' }, workflow: pkg().workflow, changes: [], missingRoles: [] });
       }
       if (target.endsWith('/workflow-imports')) {
-        return jsonResponse({ ...workflow({ name: 'Bug fix (imported)', source: importedSource('123e4567-e89b-42d3-a456-426614174000', 2), nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }] }), revision: 1 }, { status: 201 });
+        return jsonResponse({ ...workflow({ name: 'Bug fix (imported)', source: importedSource('123e4567-e89b-42d3-a456-426614174000', 2), nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }] }), revision: 1 }, { status: 201 });
       }
       throw new Error(`unexpected request ${target}`);
     });
@@ -230,7 +230,7 @@ describe('workflow export', () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/exported/i) })));
   });
 
-  it('disables export with its reason on unsaved edits or a role-less step', async () => {
+  it('disables export with its reason on unsaved edits', async () => {
     renderEditor();
     const button = screen.getByRole('button', { name: /export/i });
     expect(button.disabled).toBe(false);
@@ -239,13 +239,6 @@ describe('workflow export', () => {
     const dirty = screen.getByRole('button', { name: /export/i });
     expect(dirty.disabled).toBe(true);
     expect(dirty.title).toMatch(/save before exporting/i);
-    cleanup();
-
-    renderEditor({ nodes: [{ name: 'Develop', role: '', agentId: 'a1b2c3d4-1111-4111-8111-111111111111', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }] });
-    const roleLess = screen.getByRole('button', { name: /export/i });
-    expect(roleLess.disabled).toBe(true);
-    expect(roleLess.title).toMatch(/give every step a role/i);
-    expect(screen.getByText(/give every step a role/i)).toBeTruthy();
   });
 
   it('toasts failure when the export is refused', async () => {

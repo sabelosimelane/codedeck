@@ -22,14 +22,13 @@ function localBody(overrides = {}) {
     kind: 'bugfix',
     agentsDecide: false,
     progressFile: null,
-    nodes: [{ name: 'Develop', role: 'Developer', agentId: null, prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+    nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
     ...overrides,
   };
 }
 
-/** A stored definition has agents; a base does not — strip them for the base. */
 function definitionOf(body) {
-  return { ...body, nodes: body.nodes.map(({ agentId, ...node }) => node) };
+  return { ...body, nodes: body.nodes.map(node => ({ ...node })) };
 }
 
 /** A definition with the shape of a shipped template, at a chosen version. */
@@ -94,14 +93,14 @@ describe('one-time source linking', () => {
     const identical = workflows.create({
       name: bugFix.name, description: bugFix.description, kind: bugFix.kind,
       agentsDecide: bugFix.agentsDecide, progressFile: bugFix.progressFile,
-      nodes: bugFix.nodes.map(node => ({ ...node, agentId: null })),
+      nodes: bugFix.nodes.map(node => ({ ...node })),
     });
     const edited = workflows.create({
       name: feature.name, description: feature.description, kind: feature.kind,
       agentsDecide: feature.agentsDecide, progressFile: feature.progressFile,
       nodes: feature.nodes.map((node, index) => index === 0
-        ? { ...node, agentId: null, prompt: `${node.prompt} Extra owner words.` }
-        : { ...node, agentId: null }),
+        ? { ...node, prompt: `${node.prompt} Extra owner words.` }
+        : { ...node }),
     });
     const result = workflows.linkBuiltinSources();
     expect(result.linked.sort()).toEqual([bugFix.name, feature.name].sort());
@@ -122,7 +121,7 @@ describe('one-time source linking', () => {
     workflows.create({
       name: `${bugFix.name} (old)`, description: bugFix.description, kind: bugFix.kind,
       agentsDecide: bugFix.agentsDecide, progressFile: bugFix.progressFile,
-      nodes: bugFix.nodes.map(node => ({ ...node, agentId: null })),
+      nodes: bugFix.nodes.map(node => ({ ...node })),
     }, { source: { kind: 'builtin', id: 'bug-fix', version: 1, base: null, updatedAt: null } });
     const other = workflows.create(localBody({ name: 'Bug fix' }));
     expect(workflows.linkBuiltinSources()).toEqual({ linked: [] });
@@ -148,9 +147,8 @@ describe('one-time source linking', () => {
 });
 
 describe('startup update to a newer built-in', () => {
-  it('takes the newer definition for an unchanged workflow, keeping agents by step name', () => {
+  it('takes the newer definition for an unchanged workflow', () => {
     const { workflows } = setup();
-    const agent = 'c410a1b2-3456-4789-8abc-def012345678';
     const oldTemplate = templateLike('bug-fix', 1);
     const base = {
       name: oldTemplate.name, description: oldTemplate.description, kind: oldTemplate.kind,
@@ -159,7 +157,7 @@ describe('startup update to a newer built-in', () => {
     const keptName = base.nodes[1].name;
     const created = workflows.create({
       ...base,
-      nodes: base.nodes.map((node, index) => ({ ...node, agentId: index === 1 ? agent : null })),
+      nodes: base.nodes.map(node => ({ ...node })),
     }, { source: { kind: 'builtin', id: 'bug-fix', version: 1, base, updatedAt: null } });
     const renamedNode = `${base.nodes[0].name} v2`;
     const log = vi.fn();
@@ -185,9 +183,9 @@ describe('startup update to a newer built-in', () => {
     expect(updated.source.updatedAt).toBe(NOW());
     expect(JSON.stringify(canonicalDefinition(updated.source.base)))
       .toBe(JSON.stringify(canonicalDefinition({ ...updated, name: updated.source.base.name })));
-    expect(updated.nodes.find(node => node.name === keptName).agentId).toBe(agent);
-    expect(updated.nodes.find(node => node.name === renamedNode).agentId).toBe(null);
-    expect(updated.nodes.find(node => node.name === 'Verify new').agentId).toBe(null);
+    expect(updated.nodes.find(node => node.name === keptName)).not.toHaveProperty('agentId');
+    expect(updated.nodes.find(node => node.name === renamedNode)).not.toHaveProperty('agentId');
+    expect(updated.nodes.find(node => node.name === 'Verify new').role).toBe('Tester');
     expect(log).toHaveBeenCalledWith(`[workflows] ${base.name} updated to built-in version 2`);
   });
 
@@ -200,12 +198,12 @@ describe('startup update to a newer built-in', () => {
     };
     const edited = workflows.create({
       ...base,
-      nodes: base.nodes.map((node, index) => index === 0 ? { ...node, agentId: null, prompt: 'Owner words.' } : { ...node, agentId: null }),
+      nodes: base.nodes.map((node, index) => index === 0 ? { ...node, prompt: 'Owner words.' } : { ...node }),
     }, { source: { kind: 'builtin', id: 'bug-fix', version: 1, base, updatedAt: null } });
     const unchanged = workflows.create({
       ...base,
       name: 'Bug fix kept',
-      nodes: base.nodes.map(node => ({ ...node, agentId: null })),
+      nodes: base.nodes.map(node => ({ ...node })),
     }, { source: { kind: 'builtin', id: 'quick-change', version: 1, base: { ...base, name: 'Bug fix kept' }, updatedAt: null } });
     const log = vi.fn();
     expect(workflows.applyBuiltinUpdates({ templates: [templateLike('bug-fix', 2)], now: NOW, log })).toEqual({ updated: [] });
@@ -233,7 +231,7 @@ describe('startup update to a newer built-in', () => {
     };
     const created = workflows.create({
       ...base,
-      nodes: base.nodes.map(node => ({ ...node, agentId: null })),
+      nodes: base.nodes.map(node => ({ ...node })),
     }, { source: { kind: 'builtin', id: 'bug-fix', version: 1, base, updatedAt: null } });
 
     const disabledStepName = base.nodes[1].name;
@@ -268,7 +266,7 @@ describe('startup update to a newer built-in', () => {
     };
     const created = workflows.create({
       ...base,
-      nodes: base.nodes.map(node => ({ ...node, agentId: null })),
+      nodes: base.nodes.map(node => ({ ...node })),
     }, { source: { kind: 'builtin', id: 'bug-fix', version: 1, base, updatedAt: null } });
 
     const log = vi.fn();

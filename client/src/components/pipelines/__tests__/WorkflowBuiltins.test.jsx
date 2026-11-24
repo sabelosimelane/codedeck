@@ -21,7 +21,7 @@ const builtinSource = (patch = {}) => ({
 const workflow = (patch = {}) => ({
   id: '11111111-1111-4111-8111-111111111111', name: 'Bug fix', kind: 'bugfix', description: 'Fix things.',
   agentsDecide: false, progressFile: null, revision: 1, source: localSource(), ...STAMPS,
-  nodes: [{ name: 'Develop', role: 'Developer', agentId: 'a1b2c3d4-1111-4111-8111-111111111111', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
+  nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }],
   ...patch,
 });
 
@@ -33,7 +33,7 @@ const builtinRow = (patch = {}) => ({
 const builtinReceipt = () => ({
   id: '33333333-3333-4333-8333-333333333333', name: 'Bug fix', kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.',
   agentsDecide: false, progressFile: null, revision: 1, source: builtinSource(), ...STAMPS,
-  nodes: [{ name: 'Clarify', role: 'Investigator', agentId: null, prompt: 'Read', repeat: { mode: 'once' }, readOnly: true, approval: false, askOwner: true }],
+  nodes: [{ name: 'Clarify', role: 'Investigator', prompt: 'Read', repeat: { mode: 'once' }, readOnly: true, approval: false, askOwner: true }],
 });
 
 const jsonResponse = (body, { ok = true, status = 200 } = {}) => ({ ok, status, json: async () => body });

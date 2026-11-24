@@ -37,7 +37,8 @@ import { createDecisionStore } from './pipelines/decision-store.js';
 import { createNoteStore } from './pipelines/note-store.js';
 import { createReviewStore } from './pipelines/review-store.js';
 import { createAnswerStore } from './pipelines/answer-store.js';
-import { createTeamStore, createTemplateStore, createStepPresetStore } from './pipelines/library-store.js';
+import { createRoleStore, createTeamStore, createTemplateStore, createStepPresetStore } from './pipelines/library-store.js';
+import { migrateRolesAndWorkflows } from './pipelines/role-migration.js';
 import {
   create as createPipelineWorktree,
   remove as removePipelineWorktree,
@@ -1063,7 +1064,15 @@ app.use(createTasksRouter({ service: taskService, taskStore, landing: taskLandin
 
 const PIPELINE_QUESTION_SCREEN_LINES = 400;
 const pipelineAgentStore = createAgentStore(db);
+const pipelineRoleStore = createRoleStore(db);
 const pipelineWorkflowStore = createWorkflowStore(db);
+const pipelineTeamStore = createTeamStore(db);
+const pipelineTemplateStore = createTemplateStore(db);
+const pipelineStepPresetStore = createStepPresetStore(db);
+const roleMigration = migrateRolesAndWorkflows({ db, roleStore: pipelineRoleStore });
+if (roleMigration.seededRoles.length) console.log(`[pipelines] seeded built-in roles: ${roleMigration.seededRoles.join(', ')}`);
+if (roleMigration.harvestedRoles.length) console.log(`[pipelines] registered existing roles: ${roleMigration.harvestedRoles.join(', ')}`);
+if (roleMigration.migratedWorkflows) console.log(`[pipelines] migrated ${roleMigration.migratedWorkflows} workflow(s) to role-only definitions`);
 // A new install starts with the built-in workflows saved, their steps left to team roles.
 const seededWorkflows = seedBuiltInWorkflows({ db, workflows: pipelineWorkflowStore });
 if (seededWorkflows.seeded.length) console.log(`[pipelines] saved the built-in workflows for this new install: ${seededWorkflows.seeded.join(', ')}`);
@@ -1093,7 +1102,6 @@ const improvements = createImprovements({
     throw Object.assign(new Error('Review model unavailable. Check the configured Claude or Codex model and CLI login.'), {status:503});
   }),
 });
-const pipelineTeamStore = createTeamStore(db);
 const teamObservations = createTeamObservations({
   db, runs: pipelineRunStore, teams: pipelineTeamStore, notes: pipelineNoteStore, answers: pipelineAnswerStore,
   reviews: pipelineReviewStore, improvements,
@@ -1303,11 +1311,16 @@ if (reconciledRuns.reattached.length || reconciledRuns.interrupted.length) {
   console.log(`[pipelines] reconciled startup runs reattached=${reconciledRuns.reattached.length} interrupted=${reconciledRuns.interrupted.length}`);
 }
 app.use(createPipelinesRouter({
+  db,
   attachmentStagingRoot: pipelineAttachmentStagingRoot,
   improvements,
   teamScoring,
   agentStore: pipelineAgentStore,
+  roleStore: pipelineRoleStore,
   workflowStore: pipelineWorkflowStore,
+  teamStore: pipelineTeamStore,
+  templateStore: pipelineTemplateStore,
+  stepPresetStore: pipelineStepPresetStore,
   settingsStore: pipelineSettingsStore,
   runStore: pipelineRunStore,
   requestStore: pipelineRequestStore,
@@ -1315,9 +1328,6 @@ app.use(createPipelinesRouter({
   noteStore: pipelineNoteStore,
   reviewStore: pipelineReviewStore,
   answerStore: pipelineAnswerStore,
-  teamStore: pipelineTeamStore,
-  templateStore: createTemplateStore(db),
-  stepPresetStore: createStepPresetStore(db),
   taskStore,
   taskService,
   findProject: name => loadProjects().find(project => project.name === name) ?? null,

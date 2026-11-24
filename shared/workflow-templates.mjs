@@ -13,6 +13,18 @@ const clarify = () => node('Clarify', 'Investigator', CLARIFY_PROMPT, once(), tr
 const REQUIREMENTS_PROMPT = 'Read {input} and restate what is being asked for in your own words. Change nothing. Check that you know who it is for and what they need to do with it, what it must do in each case including errors and empty states, what is out of scope, what existing behaviour must stay the same, and how it will be shown to work. Check whether any referenced or read-only repository must change; if a repository is missing from this task\'s worktrees, ask to add it in this same NEEDS_INPUT pass. First look for each of these yourself in the code, the documents and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the requirements as you now understand them, what you found yourself, what the owner told you, and what is still open.';
 const requirements = () => node('Requirements', 'Analyst', REQUIREMENTS_PROMPT, once(), true, false, true);
 
+/** Built-in structured roles shipped with CodeDeck and referenced by the built-in workflows and steps. */
+export const BUILT_IN_ROLES = Object.freeze([
+  Object.freeze({ name: 'Investigator', description: 'Clarifies problems, reproduces issues, and surveys code without editing.' }),
+  Object.freeze({ name: 'Analyst', description: 'Gathers requirements, clarifies scope, and identifies acceptance checks.' }),
+  Object.freeze({ name: 'Planner', description: 'Designs specifications and phased implementation plans.' }),
+  Object.freeze({ name: 'Developer', description: 'Implements planned changes and fixes with tests.' }),
+  Object.freeze({ name: 'Reviewer', description: 'Audits diffs against specifications and fixes defects.' }),
+  Object.freeze({ name: 'Tester', description: 'Verifies acceptance checks and runs targeted and full test suites.' }),
+  Object.freeze({ name: 'Committer', description: 'Writes release notes and commits clean worktree changes.' }),
+  Object.freeze({ name: 'Thinking partner', description: 'Explores and challenges ideas one question at a time before specification.' }),
+]);
+
 /** Steps that ship with CodeDeck and can be inserted into any workflow, beside the owner's saved steps. */
 export const BUILT_IN_STEPS = Object.freeze([
   Object.freeze({ id: 'clarify', ...clarify() }),
@@ -152,6 +164,6 @@ export function buildTemplateDraft(templateId) {
     kind: template.kind,
     agentsDecide: template.agentsDecide,
     progressFile: template.progressFile,
-    nodes: template.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, agentId: '', prompt, repeat: { ...repeat }, readOnly, approval, askOwner })),
+    nodes: template.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, prompt, repeat: { ...repeat }, readOnly, approval, askOwner })),
   };
 }

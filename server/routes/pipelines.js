@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   validateAgentBody,
+  validateRoleBody,
   validateTeamBody,
   teamMemberFallbackId,
   validateTeamChange,
@@ -15,6 +16,8 @@ import {
   liveAgentChangeTiming,
   assignedAgentId,
   teamMemberForRole,
+  requiredWorkflowRoles,
+  missingTeamRoles,
   validateWorkflowBody,
   validateStepPresetBody,
   validateSettingsBody,
@@ -31,6 +34,7 @@ import {
   isUuid,
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
+import { renameRoleEverywhere } from '../pipelines/role-migration.js';
 import { buildPackage, packageFileName, validatePackage } from '../../shared/workflow-package.mjs';
 import { canonicalDefinition } from '../../shared/workflow-changes.mjs';
 import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
@@ -268,19 +272,25 @@ function mapMutationError(err, entity) {
   throw err;
 }
 
-function requireExistingAgents(agentStore, nodes) {
+function resolveExistingRoles(roleStore, items, fieldPrefix) {
   const errors = [];
-  nodes.forEach((node, index) => {
-    if (!isUuid(node.agentId)) return;
-    if (!agentStore.get(node.agentId)) {
-      errors.push({ field: `nodes[${index}].agentId`, message: 'Use a UUID of an existing agent' });
+  const normalized = items.map((item, index) => {
+    const raw = typeof item?.role === 'string' ? item.role.trim() : '';
+    const found = raw ? roleStore.findByName(raw) : null;
+    if (!found) {
+      errors.push({ field: `${fieldPrefix}[${index}].role`, message: 'Choose an existing role' });
+      return item;
     }
+    return { ...item, role: found.name };
   });
   if (errors.length) throw fieldErrors(errors);
+  return normalized;
 }
 
-function agentUsedByWorkflows(workflowStore, agentId) {
-  return workflowStore.list().some(workflow => workflow.nodes.some(node => node.agentId === agentId));
+function resolveExistingRoleField(roleStore, role) {
+  const found = typeof role === 'string' && role.trim() ? roleStore.findByName(role.trim()) : null;
+  if (!found) throw fieldError('role', 'Choose an existing role');
+  return found.name;
 }
 
 function snapshotNodeAgent(agent, source, team, role, agentStore) {
@@ -340,14 +350,24 @@ function buildDefinitionSnapshot({
     return { mode: 'loop_back', toStepIndex: firstNodeStep + loopTargetIndex(activeNodes, index), max: repeat.max };
   };
 
+  const missingRoles = missingTeamRoles(activeNodes, team);
+  if (missingRoles.length > 0) {
+    errors.push({
+      field: 'teamId',
+      message: `Team "${team.name}" is missing required roles: ${missingRoles.join(', ')}`,
+    });
+  }
+
   const nodeSteps = activeNodes.map((node, index) => {
     const id = assignedAgentId(node, team, stepOverrides);
     const agent = id && agentStore.get(id);
     if (!agent) {
-      errors.push({ field: 'stepOverrides', message: `Choose an agent for ${node.name} or assign its role in the team` });
+      if (missingRoles.length === 0) {
+        errors.push({ field: 'stepOverrides', message: `Choose an existing agent for ${node.name}` });
+      }
       return null;
     }
-    const source = Object.hasOwn(stepOverrides ?? {}, node.name) ? 'override' : team && node.role ? 'team' : 'workflow';
+    const source = Object.hasOwn(stepOverrides ?? {}, node.name) ? 'override' : 'team';
     const prompt = composePrompt(node.prompt, input, errors, 'input');
     return {
       kind: 'node',
@@ -440,7 +460,9 @@ function mapEngineActionError(err) {
  */
 export function createPipelinesRouter(deps) {
   const {
+    db = null,
     agentStore,
+    roleStore,
     workflowStore,
     settingsStore,
     runStore,
@@ -492,6 +514,7 @@ export function createPipelinesRouter(deps) {
   if (typeof templateStore?.list !== 'function') throw new Error('pipelines router: templateStore is required');
   if (typeof stepPresetStore?.list !== 'function') throw new Error('pipelines router: stepPresetStore is required');
   if (typeof teamStore?.list !== 'function') throw new Error('pipelines router: teamStore is required');
+  if (typeof roleStore?.list !== 'function') throw new Error('pipelines router: roleStore is required');
   if (typeof taskStore?.get !== 'function') throw new Error('pipelines router: taskStore is required');
   if (typeof taskService?.plan !== 'function' || typeof taskService?.createPlanned !== 'function') throw new Error('pipelines router: taskService is required');
   if (['get', 'reserve', 'setTaskId', 'release', 'assertMatchingParams', 'assignRunId', 'setPlacement', 'transition', 'getByRunId', 'listUnpublished'].some(method => typeof requestStore?.[method] !== 'function')) {
@@ -584,9 +607,6 @@ export function createPipelinesRouter(deps) {
     if (settings.setupAgentId === agent.id) {
       throw new PipelineError('Cannot delete the current setup agent', 409);
     }
-    if (agentUsedByWorkflows(workflowStore, agent.id)) {
-      throw new PipelineError('Cannot delete an agent used by a workflow', 409);
-    }
     if (teamStore.list().some(team => team.members.some(member => member.agentId === agent.id || member.fallbackAgentId === agent.id))) {
       throw new PipelineError('Cannot delete an agent used by a team', 409);
     }
@@ -640,6 +660,18 @@ export function createPipelinesRouter(deps) {
       if (!covered.has(role.toLowerCase())) missing.push(role);
     }
     return missing;
+  }
+
+  // Roles named in a package file that do not yet exist in the install's structured role catalog.
+  function newPackageRoles(workflow) {
+    return requiredWorkflowRoles(workflow.nodes).filter(role => !roleStore.findByName(role));
+  }
+
+  function ensureWorkflowRoles(nodes) {
+    return nodes.map(node => {
+      const ensured = roleStore.ensureRole(node.role);
+      return { ...node, role: ensured.name };
+    });
   }
 
   function requirePackage(body) {
@@ -727,9 +759,9 @@ export function createPipelinesRouter(deps) {
   router.post(`${BASE}/workflows`, route((req, res) => {
     const errors = validateWorkflowBody(req.body, { revisionRequired: false });
     if (errors.length) throw fieldErrors(errors);
-    requireExistingAgents(agentStore, req.body.nodes);
+    const nodes = resolveExistingRoles(roleStore, req.body.nodes, 'nodes');
     try {
-      const created = workflowStore.create(req.body);
+      const created = workflowStore.create({ ...req.body, nodes });
       res.status(201).json(workflowView(created));
     } catch (err) {
       mapMutationError(err, 'Workflow');
@@ -768,6 +800,7 @@ export function createPipelinesRouter(deps) {
       // The per-change comparison of §6.2 arrives with updates in Phase 3; a new file has nothing to compare.
       changes: [],
       missingRoles: missingPackageRoles(pkg.workflow),
+      newRoles: newPackageRoles(pkg.workflow),
     });
   }));
 
@@ -807,9 +840,10 @@ export function createPipelinesRouter(deps) {
     const clash = workflowStore.list().find(item => item.name.trim().toLowerCase() === name.trim().toLowerCase());
     if (clash) throw new PipelineError('A workflow with this name already exists', 409);
     try {
+      const nodes = ensureWorkflowRoles(pkg.workflow.nodes);
       const created = workflowStore.create(
-        { ...pkg.workflow, name, nodes: pkg.workflow.nodes.map(node => ({ ...node, agentId: null })) },
-        { source: { kind: 'imported', id: pkg.source.id, version: pkg.source.version, base: pkg.workflow, updatedAt: null } },
+        { ...pkg.workflow, name, nodes },
+        { source: { kind: 'imported', id: pkg.source.id, version: pkg.source.version, base: { ...pkg.workflow, nodes }, updatedAt: null } },
       );
       res.status(201).json(workflowView(created));
     } catch (err) {
@@ -821,9 +855,9 @@ export function createPipelinesRouter(deps) {
     if (!isUuid(req.params.id)) throw new PipelineError('Workflow not found', 404);
     const errors = validateWorkflowBody(req.body, { revisionRequired: true });
     if (errors.length) throw fieldErrors(errors);
-    requireExistingAgents(agentStore, req.body.nodes);
+    const nodes = resolveExistingRoles(roleStore, req.body.nodes, 'nodes');
     try {
-      res.json(workflowView(workflowStore.update(req.params.id, req.body)));
+      res.json(workflowView(workflowStore.update(req.params.id, { ...req.body, nodes })));
     } catch (err) {
       mapMutationError(err, 'Workflow');
     }
@@ -894,15 +928,16 @@ export function createPipelinesRouter(deps) {
     }
     try {
       const definition = builtinTemplateDefinition(template);
+      const nodes = ensureWorkflowRoles(definition.nodes);
       const created = workflowStore.create({
         name: definition.name,
         kind: definition.kind,
         description: definition.description,
         agentsDecide: definition.agentsDecide,
         progressFile: definition.progressFile,
-        nodes: definition.nodes.map(node => ({ ...node, agentId: null })),
+        nodes,
       }, {
-        source: { kind: 'builtin', id: template.id, version: template.version, base: definition, updatedAt: null },
+        source: { kind: 'builtin', id: template.id, version: template.version, base: { ...definition, nodes }, updatedAt: null },
       });
       // Adding a dismissed built-in links it again and lifts the dismissal (§4.2).
       workflowStore.undismissBuiltinTemplate(template.id);
@@ -923,9 +958,85 @@ export function createPipelinesRouter(deps) {
     res.status(204).end();
   }));
 
+  // --- Structured Roles ---
+
+  function roleUsageParts(roleName) {
+    const key = roleName.trim().toLowerCase();
+    const parts = [];
+    const workflows = workflowStore.list().filter(w => w.nodes.some(n => n.role.toLowerCase() === key)).length;
+    if (workflows) parts.push(`${workflows} ${workflows === 1 ? 'workflow' : 'workflows'}`);
+    const teams = teamStore.list().filter(t => t.members.some(m => m.role.toLowerCase() === key)).length;
+    if (teams) parts.push(`${teams} ${teams === 1 ? 'team' : 'teams'}`);
+    const templates = templateStore.list().filter(t => t.nodes.some(n => n.role.toLowerCase() === key)).length;
+    if (templates) parts.push(`${templates} ${templates === 1 ? 'template' : 'templates'}`);
+    const presets = stepPresetStore.list().filter(p => p.role.toLowerCase() === key).length;
+    if (presets) parts.push(`${presets} ${presets === 1 ? 'saved step' : 'saved steps'}`);
+    return parts;
+  }
+
+  router.get(`${BASE}/roles`, route((req, res) => {
+    const query = parseCollectionQuery(req.query, {
+      sortFields: WORKFLOW_SORT,
+      defaultSort: 'name,asc',
+      filters: [{
+        name: 'name',
+        parse: value => {
+          if (!isText(value)) throw fieldError('name', 'A name filter is required');
+          return value;
+        },
+      }],
+    });
+    const records = roleStore.list().filter(record => Object.entries(query.filters).every(([field, value]) => record[field] === value));
+    res.json(paginate(records, query));
+  }));
+
+  router.post(`${BASE}/roles`, route((req, res) => {
+    const errors = validateRoleBody(req.body, { revisionRequired: false });
+    if (errors.length) throw fieldErrors(errors);
+    try { res.status(201).json(roleStore.create(req.body)); }
+    catch (err) { mapMutationError(err, 'Role'); }
+  }));
+
+  router.get(`${BASE}/roles/:id`, route((req, res) => {
+    const record = isUuid(req.params.id) ? roleStore.get(req.params.id) : null;
+    if (!record) throw new PipelineError('Role not found', 404);
+    res.json(record);
+  }));
+
+  router.put(`${BASE}/roles/:id`, route((req, res) => {
+    if (!isUuid(req.params.id)) throw new PipelineError('Role not found', 404);
+    const errors = validateRoleBody(req.body, { revisionRequired: true });
+    if (errors.length) throw fieldErrors(errors);
+    const current = roleStore.get(req.params.id);
+    if (!current) throw new PipelineError('Role not found', 404);
+    try {
+      const applyUpdate = () => {
+        const updated = roleStore.update(req.params.id, req.body);
+        if (db && current.name !== updated.name) {
+          renameRoleEverywhere(db, current.name, updated.name);
+        }
+        return updated;
+      };
+      res.json(db ? db.transaction(applyUpdate)() : applyUpdate());
+    } catch (err) {
+      mapMutationError(err, 'Role');
+    }
+  }));
+
+  router.delete(`${BASE}/roles/:id`, route((req, res) => {
+    const record = isUuid(req.params.id) ? roleStore.get(req.params.id) : null;
+    if (!record) throw new PipelineError('Role not found', 404);
+    const usedBy = roleUsageParts(record.name);
+    if (usedBy.length) {
+      throw new PipelineError(`Cannot delete role "${record.name}" while it is used by ${usedBy.join(', ')}`, 409);
+    }
+    roleStore.remove(record.id);
+    res.status(204).end();
+  }));
+
   // Team, template and step definitions share revision-checked library operations.
 
-  function mountLibrary(segment, store, entity, validate, filters = []) {
+  function mountLibrary(segment, store, entity, validate, filters = [], prepare = body => body) {
     const notFound = () => new PipelineError(`${entity} not found`, 404);
     router.get(`${BASE}/${segment}`, route((req, res) => {
       const query = parseCollectionQuery(req.query, { sortFields: WORKFLOW_SORT, defaultSort: 'name,asc', filters });
@@ -935,7 +1046,8 @@ export function createPipelinesRouter(deps) {
     router.post(`${BASE}/${segment}`, route((req, res) => {
       const errors = validate(req.body, { revisionRequired: false });
       if (errors.length) throw fieldErrors(errors);
-      try { res.status(201).json(store.create(req.body)); }
+      const prepared = prepare(req.body);
+      try { res.status(201).json(store.create(prepared)); }
       catch (err) { mapMutationError(err, entity); }
     }));
     router.get(`${BASE}/${segment}/:id`, route((req, res) => {
@@ -947,7 +1059,8 @@ export function createPipelinesRouter(deps) {
       if (!isUuid(req.params.id)) throw notFound();
       const errors = validate(req.body, { revisionRequired: true, id: req.params.id });
       if (errors.length) throw fieldErrors(errors);
-      try { res.json(store.update(req.params.id, req.body)); }
+      const prepared = prepare(req.body);
+      try { res.json(store.update(req.params.id, prepared)); }
       catch (err) { mapMutationError(err, entity); }
     }));
     router.delete(`${BASE}/${segment}/:id`, route((req, res) => {
@@ -962,6 +1075,11 @@ export function createPipelinesRouter(deps) {
     const current = existing && existing.revision === body?.revision ? existing : null;
     const errors = validateTeamBody(body, { ...options, current });
     if (Array.isArray(body?.members)) body.members.forEach((member, index) => {
+      if (typeof member?.role === 'string' && member.role.trim()
+        && !errors.some(error => error.field === `members[${index}].role`)
+        && !roleStore.findByName(member.role)) {
+        errors.push({ field: `members[${index}].role`, message: 'Choose an existing role' });
+      }
       if (isUuid(member?.agentId) && !agentStore.get(member.agentId)) {
         errors.push({ field: `members[${index}].agentId`, message: 'Choose an existing agent' });
       }
@@ -977,9 +1095,17 @@ export function createPipelinesRouter(deps) {
   }, [{ name: 'name', parse: value => {
     if (!isText(value)) throw fieldError('name', 'A name filter is required');
     return value;
-  } }]);
-  mountLibrary('templates', templateStore, 'Template', (body, options) => validateWorkflowBody(body, { ...options, template: true }));
-  mountLibrary('step-presets', stepPresetStore, 'Saved step', validateStepPresetBody);
+  } }], body => ({ ...body, members: resolveExistingRoles(roleStore, body.members, 'members') }));
+  mountLibrary('templates', templateStore, 'Template',
+    (body, options) => validateWorkflowBody(body, { ...options, template: true }),
+    [],
+    body => ({ ...body, nodes: resolveExistingRoles(roleStore, body.nodes, 'nodes') }),
+  );
+  mountLibrary('step-presets', stepPresetStore, 'Saved step',
+    validateStepPresetBody,
+    [],
+    body => ({ ...body, role: resolveExistingRoleField(roleStore, body.role) }),
+  );
 
   // --- What a step's agent is sent, for a workflow that may not be saved yet ---
   // Built with the same functions a run uses. What only a real run knows is shown as a
@@ -1342,8 +1468,8 @@ export function createPipelinesRouter(deps) {
     if (!rawProject) throw new PipelineError('Project not found', 404);
     const project = normalizeProject(rawProject);
 
-    const team = body.teamId === undefined ? null : teamStore.get(body.teamId);
-    if (body.teamId !== undefined && !team) throw fieldError('teamId', 'Choose an existing team');
+    const team = teamStore.get(body.teamId);
+    if (!team) throw fieldError('teamId', 'Choose an existing team');
     if (Object.keys(body.stepOverrides ?? {}).some(name => !workflow.nodes.some(node => node.name === name))) {
       throw fieldError('stepOverrides', 'An overridden step no longer exists in this workflow');
     }
@@ -1934,6 +2060,12 @@ export function createPipelinesRouter(deps) {
     const eligible = run.definition.steps.slice(first).filter(step => step.kind === 'node');
     if (Object.keys(stepOverrides).some(name => !eligible.some(step => step.name === name))) {
       throw fieldError('stepOverrides', 'Choose a current or later workflow step');
+    }
+    if (team) {
+      const missing = missingTeamRoles(eligible, team);
+      if (missing.length > 0) {
+        throw fieldError('teamId', `Team "${team.name}" is missing required roles: ${missing.join(', ')}`);
+      }
     }
 
     const progress = [...run.steps];

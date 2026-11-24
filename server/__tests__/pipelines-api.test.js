@@ -3,7 +3,7 @@ import { loopbackTestServer } from './helpers/loopback-test-server.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import express from 'express';
-import request from 'supertest';
+import supertest from 'supertest';
 import { existsSync, mkdtempSync, mkdirSync, promises as fsPromises, readdirSync, readFileSync, realpathSync, statSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -18,7 +18,8 @@ import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService, TaskError } from '../tasks/task-service.js';
 import { createReviewStore } from '../pipelines/review-store.js';
 import { createAnswerStore } from '../pipelines/answer-store.js';
-import { createTeamStore, createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
+import { createRoleStore, createTeamStore, createTemplateStore, createStepPresetStore } from '../pipelines/library-store.js';
+import { BUILT_IN_ROLES } from '../../shared/workflow-templates.mjs';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createTeamObservations } from '../pipelines/team-observations.js';
@@ -33,6 +34,33 @@ import { reconcileAttachmentStarts } from '../pipelines/attachment-reconcile.js'
 const base = '/api/pipelines';
 const cleanup = [];
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); });
+const fixtureTeams = new WeakMap();
+
+function request(app) {
+  const api = supertest(app);
+  const post = api.post.bind(api);
+  api.post = url => {
+    const req = post(url);
+    if (url !== `${base}/runs`) return req;
+    const send = req.send.bind(req);
+    req.send = body => {
+      const teamId = fixtureTeams.get(app);
+      return teamId && body && !Array.isArray(body) && typeof body === 'object' && !Object.hasOwn(body, 'teamId')
+        ? send({ teamId, ...body }) : send(body);
+    };
+    const field = req.field.bind(req);
+    req.field = (name, value) => {
+      const teamId = fixtureTeams.get(app);
+      if (name === 'run' && teamId && typeof value === 'string') {
+        const body = JSON.parse(value);
+        if (!Object.hasOwn(body, 'teamId')) value = JSON.stringify({ teamId, ...body });
+      }
+      return field(name, value);
+    };
+    return req;
+  };
+  return api;
+}
 
 const PROJECT = {
   name: 'Demo',
@@ -53,7 +81,7 @@ function agentBody(overrides = {}) {
 function node(agentId, overrides = {}) {
   return {
     name: 'Develop',
-    agentId,
+    role: 'Developer',
     prompt: 'Implement {input}',
     repeat: { mode: 'once' },
     ...overrides,
@@ -209,6 +237,7 @@ async function setup(overrides = {}) {
 
   const scheduled = [];
   const scheduleStart = fn => { scheduled.push(fn); };
+  let fixtureTeamId = null;
 
   // Tasks: the real store; planning and creating a worktree are replaced, as Git is elsewhere here.
   const taskStore = createTaskStore(db);
@@ -233,11 +262,15 @@ async function setup(overrides = {}) {
   // Closing a run's terminals is the terminal layer's work; here it reports that none was open.
   const closeRunTerminals = overrides.closeRunTerminals ?? vi.fn(async () => ({ closed: [], notClosed: [] }));
 
-  const openApp = () => {
+  const openApp = async () => {
     const app = express();
     if (overrides.onRequest) app.use(express.json(), overrides.onRequest);
+    const roleStore = createRoleStore(db);
+    for (const role of BUILT_IN_ROLES) roleStore.ensureRole(role.name, role.description);
     app.use(createPipelinesRouter({
+      db,
       agentStore,
+      roleStore,
       workflowStore,
       settingsStore,
       runStore,
@@ -260,11 +293,14 @@ async function setup(overrides = {}) {
       scheduleStart,
       ...overrides.routerDeps,
     }));
-    return loopbackTestServer(app);
+    const server = await loopbackTestServer(app);
+    if (fixtureTeamId) fixtureTeams.set(server, fixtureTeamId);
+    return server;
   };
 
+  const server = await openApp();
   return {
-    app: await openApp(),
+    app: server,
     openApp,
     db,
     agentStore,
@@ -284,7 +320,14 @@ async function setup(overrides = {}) {
     projects,
     preflight,
     flushStart: () => { while (scheduled.length) scheduled.shift()(); },
+    setFixtureTeam: teamId => { fixtureTeamId = teamId; fixtureTeams.set(server, teamId); },
   };
+}
+
+function staff(ctx, agent) {
+  const team = createTeamStore(ctx.db).create({ name: 'Feature team', members: BUILT_IN_ROLES.map(role => ({ role: role.name, agentId: agent.id })) });
+  ctx.setFixtureTeam(team.id);
+  return team;
 }
 
 async function seedReady(ctx, { withInput = true } = {}) {
@@ -294,7 +337,8 @@ async function seedReady(ctx, { withInput = true } = {}) {
     name: 'Feature', agentsDecide: false,
     nodes: [node(agent.id, withInput ? {} : { prompt: 'No placeholder' })],
   });
-  return { agent, workflow };
+  const team = staff(ctx, agent);
+  return { agent, workflow, team };
 }
 
 describe('pipelines API — agents', () => {
@@ -348,9 +392,9 @@ describe('pipelines API — agents', () => {
     expect(stale.status).toBe(409);
   });
 
-  it('returns 409 when deleting the setup agent or an agent used by a workflow', async () => {
+  it('blocks deletion while an agent is staffed on a team, then permits it while the workflow keeps its role', async () => {
     const ctx = await setup();
-    const { agent, workflow } = await seedReady(ctx);
+    const { agent, workflow, team } = await seedReady(ctx);
 
     const setupDelete = await request(ctx.app).delete(`${base}/agents/${agent.id}`);
     expect(setupDelete.status).toBe(409);
@@ -359,8 +403,9 @@ describe('pipelines API — agents', () => {
     const usedDelete = await request(ctx.app).delete(`${base}/agents/${agent.id}`);
     expect(usedDelete.status).toBe(409);
 
-    ctx.workflowStore.remove(workflow.id);
+    createTeamStore(ctx.db).remove(team.id);
     expect((await request(ctx.app).delete(`${base}/agents/${agent.id}`)).status).toBe(204);
+    expect(ctx.workflowStore.get(workflow.id).nodes[0].role).toBe('Developer');
   });
 
   it.each([
@@ -404,7 +449,6 @@ describe('pipelines API — run notes', () => {
     const ctx = await setup();
     await seedReady(ctx);
     const draft = buildTemplateDraft(id);
-    for (const node of draft.nodes) node.agentId = ctx.agentStore.list()[0].id;
     if (extra) draft.nodes.at(-1).prompt += ' ' + extra;
     const workflow = ctx.workflowStore.create(draft);
     const response = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'snapshot', workflowId: workflow.id, project: 'Demo', input: 'Watch' });
@@ -460,6 +504,7 @@ describe('pipelines API — progress file start boundary', () => {
   async function ready(overrides = {}) {
     const ctx = await setup(overrides);
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     const body = { requestId: 'progress-boundary', workflowId: workflow.id, project: 'Demo', input: 'feature' };
@@ -694,15 +739,15 @@ describe('pipelines API — workflows and settings', () => {
     expect(unnamed.body.errors.map(error => error.field)).toEqual(['defaultBaseBranch']);
   });
 
-  it('rejects a workflow node that points at a missing agent', async () => {
+  it('rejects a workflow node whose role is absent from the catalog', async () => {
     const { app } = await setup();
     const response = await request(app).post(`${base}/workflows`).send({
       name: 'Feature', agentsDecide: false,
-      nodes: [node('c410a1b2-3456-4789-8abc-def012345678')],
+      nodes: [node(null, { role: 'Unlisted role' })],
     });
     expect(response.status).toBe(400);
     expect(response.body.errors).toEqual([
-      { field: 'nodes[0].agentId', message: expect.any(String) },
+      { field: 'nodes[0].role', message: 'Choose an existing role' },
     ]);
   });
 
@@ -782,7 +827,7 @@ describe('pipelines API — preflight and runs', () => {
     });
     expect(started.body.steps[1]).toMatchObject({
       index: 1,
-      kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
+      kind: 'node', role: 'Developer', askOwner: false, readOnly: false, approval: false,
       name: 'Develop',
       agentName: 'codex-sol-high',
       status: 'pending',
@@ -957,7 +1002,7 @@ describe('pipelines API — preflight and runs', () => {
       callback(null, args.at(-1) === 'docs/todo.md' ? '100644 blob abc\tdocs/todo.md\0' : '', '');
     });
     const fixedCtx = await setup({ routerDeps: { execFile } });
-    fixedCtx.agentStore.create(agentBody());
+    staff(fixedCtx, fixedCtx.agentStore.create(agentBody()));
     fixedCtx.settingsStore.update({ setupAgentId: fixedCtx.agentStore.list()[0].id, defaultBaseBranch: null, revision: 1 });
     const fixedWorkflow = fixedCtx.workflowStore.create({
       name: 'FixedProgress', agentsDecide: false, progressFile: 'docs/todo.md',
@@ -1111,8 +1156,12 @@ describe('pipelines API — preflight and runs', () => {
     }
 
     const app = express();
+    const roleStore = createRoleStore(db);
+    for (const role of BUILT_IN_ROLES) roleStore.ensureRole(role.name, role.description);
     app.use(createPipelinesRouter({
+      db,
       agentStore,
+      roleStore,
       workflowStore,
       settingsStore,
       runStore,
@@ -1761,7 +1810,9 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
 
     const app = express();
     app.use(createPipelinesRouter({
+      db: ctx.db,
       agentStore: ctx.agentStore,
+      roleStore: createRoleStore(ctx.db),
       workflowStore: ctx.workflowStore,
       settingsStore: ctx.settingsStore,
       runStore: reopenedStore,
@@ -2017,6 +2068,7 @@ describe('pipelines API — worktrees', () => {
       })),
     });
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     const workflow = ctx.workflowStore.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
 
     const existing = await request(ctx.app).post(`${base}/runs`).send(startBody(workflow));
@@ -2031,6 +2083,7 @@ describe('pipelines API — worktrees', () => {
   it('points a loop at the step it returns to when the run has no Setup step', async () => {
     const ctx = await setupWorktrees();
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     const workflow = ctx.workflowStore.create({
       name: 'Build',
       agentsDecide: true,
@@ -2313,6 +2366,7 @@ describe('pipelines API — loops and who decides', () => {
 
   async function seedLoop(ctx, { agentsDecide = true } = {}) {
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
     const body = {
       name: 'Build',
@@ -2709,7 +2763,8 @@ describe('pipelines API — decisions agents made', () => {
     const withAnswers = { ...base, reviewStore: { list() {} }, answerStore: { list() {} } };
     expect(() => createPipelinesRouter(withAnswers)).toThrow('pipelines router: templateStore is required');
     expect(() => createPipelinesRouter({ ...withAnswers, templateStore: { list() {} } })).toThrow('pipelines router: stepPresetStore is required');
-    const stores = { ...withAnswers, teamStore: { list() {} }, templateStore: { list() {} }, stepPresetStore: { list() {} } };
+    const stores = { ...withAnswers, teamStore: { list() {} }, roleStore: { list() {} }, templateStore: { list() {} }, stepPresetStore: { list() {} } };
+    expect(() => createPipelinesRouter({ ...withAnswers, teamStore: { list() {} }, templateStore: { list() {} }, stepPresetStore: { list() {} } })).toThrow('pipelines router: roleStore is required');
     expect(() => createPipelinesRouter(stores)).toThrow('pipelines router: taskStore is required');
     expect(() => createPipelinesRouter({ ...stores, taskStore: { get() {} } })).toThrow('pipelines router: taskService is required');
     const withTasks = { ...stores, taskStore: { get() {} }, taskService: { plan() {}, createPlanned() {} } };
@@ -2794,6 +2849,7 @@ describe('pipelines API — progress file', () => {
       : { file: progressFile, status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Review', tasksDone: 0, tasksTotal: 1 } });
     const ctx = await setup({ routerDeps: { progressReader: { read } } });
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
     const body = { name: 'Progress', agentsDecide: false, nodes: [node(agent.id, { prompt: 'Work' })] };
     const workflow = ctx.workflowStore.create(body);
@@ -2840,6 +2896,7 @@ describe('pipelines API — progress file', () => {
     const execFile = vi.fn((_command, _args, _options, callback) => callback(null, '100644 blob abc\tdocs/todo.md\0', ''));
     const ctx = await setup({ routerDeps: { progressReader: { read }, execFile } });
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
     const body = { name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] };
     const created = await request(ctx.app).post(`${base}/workflows`).send(body);
@@ -2865,6 +2922,7 @@ describe('pipelines API — progress file', () => {
     const execFile = vi.fn((_command, _args, _options, callback) => callback(null, '100644 blob abc\tdocs/todos/x.md\0', ''));
     const ctx = await setup({ routerDeps: { progressReader: { read }, execFile } });
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
     const workflowBody = { name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}', nodes: [node(agent.id)] };
     const created = await request(ctx.app).post(`${base}/workflows`).send(workflowBody);
@@ -2899,6 +2957,7 @@ describe('pipelines API — progress file', () => {
   it('requires input for a progress placeholder and validates composed path', async () => {
     const ctx = await setup();
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     for (const input of ['', '../bad', 'x'.repeat(510)]) {
@@ -3345,6 +3404,7 @@ describe('pipelines API — kind, description and step roles', () => {
   it('saves and returns them on a workflow, and shows the role on a run step', async () => {
     const ctx = await setup();
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
     const created = await request(ctx.app).post(`${base}/workflows`).send({
       name: 'Hunt', kind: 'troubleshoot', description: ' Find the cause ', agentsDecide: false, nodes: [node(agent.id, { role: ' Investigator ' })],
@@ -3355,7 +3415,7 @@ describe('pipelines API — kind, description and step roles', () => {
 
     const plain = await request(ctx.app).post(`${base}/workflows`).send({ name: 'Plain', agentsDecide: false, nodes: [node(agent.id)] });
     expect(plain.body).toMatchObject({ kind: 'other', description: '' });
-    expect(plain.body.nodes[0].role).toBe('');
+    expect(plain.body.nodes[0].role).toBe('Developer');
 
     const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'role-run', workflowId: created.body.id, project: 'Demo', input: 'x' });
     expect(started.status).toBe(201);
@@ -3434,9 +3494,9 @@ describe('pipelines API — what a step\'s agent is sent', () => {
   const workflow = (extra = {}) => ({
     name: 'Draft', agentsDecide: false,
     nodes: [
-      { name: 'Plan', prompt: '/feature-spec {input}', repeat: { mode: 'once' }, readOnly: true, approval: true },
-      { name: 'Develop', prompt: 'Build what the plan says', repeat: { mode: 'once' } },
-      { name: 'Test', prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 3 } },
+      { name: 'Plan', role: 'Planner', prompt: '/feature-spec {input}', repeat: { mode: 'once' }, readOnly: true, approval: true },
+      { name: 'Develop', role: 'Developer', prompt: 'Build what the plan says', repeat: { mode: 'once' } },
+      { name: 'Test', role: 'Tester', prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 3 } },
     ],
     ...extra,
   });
@@ -3483,12 +3543,12 @@ describe('pipelines API — what a step\'s agent is sent', () => {
 
   it('names the invalid field of the draft, refuses agents in it, and accepts the limits', async () => {
     const ctx = await setup();
-    const bad = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', prompt: '', repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x' });
+    const bad = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', role: 'Planner', prompt: '', repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x' });
     expect(bad.body.errors.map(error => error.field)).toEqual(['workflow.nodes[0].prompt']);
-    const withAgent = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', agentId: '7c000000-0000-4000-8000-000000000009', prompt: 'p', repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x' });
+    const withAgent = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', role: 'Planner', agentId: '7c000000-0000-4000-8000-000000000009', prompt: 'p', repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x' });
     expect(withAgent.body.errors.map(error => error.field)).toEqual(['workflow.nodes[0].agentId']);
     expect((await request(ctx.app).post(url).send({ workflow: workflow(), nodeIndex: 2, input: 'x'.repeat(4096) })).status).toBe(200);
-    const tooLong = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', prompt: `${'p'.repeat(8000)} {input} {input} {input}`, repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x'.repeat(4096) });
+    const tooLong = await request(ctx.app).post(url).send({ workflow: workflow({ nodes: [{ name: 'Plan', role: 'Planner', prompt: `${'p'.repeat(8000)} {input} {input} {input}`, repeat: { mode: 'once' } }] }), nodeIndex: 0, input: 'x'.repeat(4096) });
     expect(tooLong.status).toBe(400);
     expect(tooLong.body.errors.map(error => error.field)).toEqual(['input']);
     expect((await request(ctx.app).post(url).send([])).status).toBe(400);
@@ -3526,6 +3586,7 @@ describe('POST /api/pipelines/runs — one worktree, two starts at once', () => 
       listWorktrees: async () => [{ path: wt, branch: 'task/x', head: 'a'.repeat(40), missing: false }], readWorktreeChanges,
     } });
     const agent = ctx.agentStore.create(agentBody());
+    staff(ctx, agent);
     ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Occupancy', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     const post = id => request(ctx.app).post(`${base}/runs`).send({ requestId: `start-${id}`, workflowId: workflow.id, project: 'Demo', input: 'feature', worktreePath: wt });
@@ -3988,7 +4049,7 @@ describe('workflow teams', () => {
     const projectedFallback = item => ({ id: item.id, name: item.name, agentRevision: item.revision });
     expect(started.steps.map(step => [step.agentSource, step.fallbackAgent])).toEqual([
       ['setup', undefined], ['team', projectedFallback(first)], ['team', projectedFallback(second)],
-      ['override', undefined], ['workflow', undefined],
+      ['override', undefined], ['team', projectedFallback(first)],
     ]);
     const snapshotted = item => ({
       id: item.id, name: item.name, launchCommand: item.launchCommand, resetCommand: item.resetCommand,
@@ -4003,7 +4064,7 @@ describe('workflow teams', () => {
     };
     const [saved, attribution] = read();
     expect(saved.definition.steps.map(step => step.agent.fallbackAgent)).toEqual([
-      undefined, snapshotted(first), snapshotted(second), undefined, undefined,
+      undefined, snapshotted(first), snapshotted(second), undefined, snapshotted(first),
     ]);
     expect(attribution.configuration[2]).toMatchObject({
       role: 'reviewer', source: 'team', teamRevision: 3, fallbackAgent: projectedFallback(second),
@@ -4032,7 +4093,7 @@ describe('workflow teams', () => {
     }).expect(200);
     const [reassigned, originalAttribution] = read();
     expect(reassigned.definition.steps.map(step => step.agent.fallbackAgent?.name)).toEqual([
-      undefined, revised.name, revised.name, undefined, undefined,
+      undefined, revised.name, revised.name, undefined, revised.name,
     ]);
     expect(reassigned.definition.steps[1].agent.fallbackAgent).toEqual({
       id: revised.id, name: revised.name, launchCommand: revised.launchCommand, resetCommand: revised.resetCommand,
@@ -4061,9 +4122,10 @@ describe('workflow teams', () => {
     await api.delete(base + '/agents/' + backup.id).expect(409).expect('Content-Type', /application\/problem\+json/);
 
     const legacy = await save(2, [{ ...member, role: ' developer ' }]).expect(200);
-    expect(legacy.body.members).toEqual([{ ...selected, role: 'developer' }]);
+    expect(legacy.body.members).toEqual([{ ...selected, role: 'Developer' }]);
     const implicitSelf = await save(3, [{ ...member, agentId: backup.id }]).expect(400);
     expect(implicitSelf.body.errors[0].field).toBe('members[0].fallbackAgentId');
+    createRoleStore(ctx.db).ensureRole('Review');
     const changed = await save(3, [{ ...member, fallbackAgentId: successor.id }, { ...selected, role: 'Review' }]).expect(200);
     expect(changed.body.members.map(item => item.fallbackAgentId)).toEqual([successor.id, backup.id]);
     const cleared = await save(4, [{ ...member, fallbackAgentId: null }]).expect(200);
@@ -4112,7 +4174,7 @@ describe('workflow teams', () => {
       nodes: ['Check', 'Report'].map(name => node(null, { name, role: 'reviewer' })),
     }).expect(201);
     const start = { workflowId: workflow.body.id, requestId: 'team-run', project: 'Demo', input: 'Change' };
-    await request(ctx.app).post(base + '/runs').send(start).expect(400);
+    await request(ctx.app).post(base + '/runs').send({ ...start, teamId: null }).expect(400);
     const assigned = { ...start, teamId: created.body.id, stepOverrides: { Report: agent.id } };
     const run = await request(ctx.app).post(base + '/runs').send(assigned).expect(201);
     await request(ctx.app).post(base + '/runs').send({ ...assigned, stepOverrides: {} }).expect(409);
@@ -4128,12 +4190,13 @@ describe('workflow teams', () => {
       teamId: created.body.id, teamRevision: 1, teamName: 'Daily', mixed: true, trialId: null,
       configuration: [
         { source: 'setup', agentRevision: agent.revision, teamId: null },
-        { source: 'team', role: 'reviewer', agentId: reviewer.id, provider: null, teamId: created.body.id },
+        { source: 'team', role: 'Reviewer', agentId: reviewer.id, provider: null, teamId: created.body.id },
         { source: 'override', agentId: agent.id },
       ],
       attempts: [],
     });
-    expect(ctx.workflowStore.get(start.workflowId).nodes.map(step => step.agentId)).toEqual([null, null]);
+    expect(ctx.workflowStore.get(start.workflowId).nodes.map(step => step.role)).toEqual(['Reviewer', 'Reviewer']);
+    expect(ctx.workflowStore.get(start.workflowId).nodes.every(step => !Object.hasOwn(step, 'agentId'))).toBe(true);
   });
 
   it.each([{}, { members: [] }, { members: [null] }, { members: [{ role: '', agentId: 'x' }] },
@@ -4164,6 +4227,7 @@ it('checks team field boundaries and rejects unsupported run selections before c
   const ctx = await setup();
   const { agent, workflow } = await seedReady(ctx);
   const members = Array.from({ length: 32 }, (_, index) => ({ role: String(index).padStart(32, 'x'), agentId: agent.id }));
+  for (const member of members) createRoleStore(ctx.db).ensureRole(member.role);
   const teams = request(ctx.app);
   await teams.post(base + '/teams').send({ name: 'x'.repeat(64), members }).expect(201);
   for (const patch of [{ name: 'x'.repeat(65) }, { members: [...members, members[0]] },
@@ -4304,13 +4368,13 @@ describe('changing a running workflow’s team', () => {
 
   it('reassigns the failed and later steps atomically, retaining previous terminals and completed work', async () => {
     const ctx = await setup();
-    const { agent } = await seedReady(ctx);
+    const { agent, team: originalTeam } = await seedReady(ctx);
     const trial = ctx.agentStore.create(agentBody({ name: 'Replacement' }));
     const team = (await request(ctx.app).post(base + '/teams').send({ name: 'Trial team', members: [{ role: 'Tester', agentId: trial.id }] }).expect(201)).body;
     const workflow = ctx.workflowStore.create({ name: 'Verification', agentsDecide: false, nodes:
       ['Investigate', 'Verify', 'Report'].map(name => node(agent.id, { name, role: 'Tester' })) });
     const started = (await request(ctx.app).post(base + '/runs').send({ project: 'Demo', input: 'fix', workflowId: workflow.id, requestId: 'reteam' }).expect(201)).body;
-    expect(started.team).toBeNull();
+    expect(started.team).toEqual({ name: 'Feature team', changed: false });
     const url = base + '/runs/' + started.id + '/team';
     const payload = { expectedUpdatedAt: started.updatedAt, teamId: team.id, stepOverrides: { Report: agent.id } };
     await request(ctx.app).put(url).send(payload).expect(409);
@@ -4326,14 +4390,15 @@ describe('changing a running workflow’s team', () => {
     expect(updated.steps.map(step => step.agentName)).toEqual([agent.name, agent.name, trial.name, agent.name]);
     expect(updated.steps[2]).toMatchObject({ priorSessionIds: ['Demo-3'], sessionId: null, attempt: 1 });
     expect(updated.status).toBe('error');
-    // A run started without a team is labelled with the team chosen for it later.
+    // Reassignment replaces the starting team's name in the run snapshot.
     expect(updated.team).toEqual({ name: 'Trial team', changed: true });
     expect(ctx.runStore.get(run.id).definition.team).toEqual({ name: 'Trial team', changed: true });
     expect(ctx.runStore.get(run.id).definition.steps[2].agent.id).toBe(trial.id);
-    expect(ctx.runStore.attribution(run.id)).toMatchObject({ teamId: team.id, mixed: true,
-      configuration: [{source:'setup'}, {source:'workflow'}, {source:'workflow'}, {source:'workflow'}],
+    expect(ctx.runStore.attribution(run.id)).toMatchObject({ teamId: originalTeam.id, mixed: true,
+      configuration: [{source:'setup'}, {source:'team'}, {source:'team'}, {source:'team'}],
     });
-    expect(ctx.workflowStore.get(workflow.id).nodes[1].agentId).toBe(agent.id);
+    expect(ctx.workflowStore.get(workflow.id).nodes[1]).toMatchObject({ role: 'Tester' });
+    expect(ctx.workflowStore.get(workflow.id).nodes[1]).not.toHaveProperty('agentId');
     // If Verify loops back, the earlier Investigator keeps its original attribution until re-entry.
     const latest = ctx.runStore.get(run.id);
     const loop = ctx.runStore.update(run.id, { definition: { ...latest.definition, steps: latest.definition.steps.map((item, index) =>
@@ -4949,13 +5014,14 @@ it('measures five trial deliveries through the normal run launcher, then adopts 
   expect((await start(other)).definition.steps[1].agent.launchCommand).toBe(high);
 });
 
-it('excludes a selected team from comparisons when none of its roles participate', async () => {
+it('refuses a selected team when none of its roles staff the workflow', async () => {
   const ctx=await setup();
   const {agent,workflow}=await seedReady(ctx);
   const team=createTeamStore(ctx.db).create({name:'Unused',members:[{role:'Review',agentId:agent.id}]});
-  const run=(await request(ctx.app).post(base+'/runs').send({requestId:'no-team-roles',teamId:team.id,
-    workflowId:workflow.id,project:'Demo',input:'Fix rotation'}).expect(201)).body;
-  expect(ctx.runStore.attribution(run.id)).toMatchObject({mixed:true, attempts:[]});
+  const response=await request(ctx.app).post(base+'/runs').send({requestId:'no-team-roles',teamId:team.id,
+    workflowId:workflow.id,project:'Demo',input:'Fix rotation'}).expect(400);
+  expect(response.body.errors).toContainEqual({ field: 'teamId', message: expect.stringContaining('Developer') });
+  expect(ctx.runStore.list()).toEqual([]);
 });
 
 it('returns traced problem details for invalid team score queries and missing trial evidence', async () => {

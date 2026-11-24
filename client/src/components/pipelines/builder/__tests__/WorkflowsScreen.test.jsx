@@ -12,13 +12,14 @@ const A1 = '11111111-1111-4111-8111-111111111111';
 const W1 = '33333333-3333-4333-8333-333333333333';
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z' };
 const agent = { id: A1, name: 'codex-high', launchCommand: 'command codex', resetCommand: '/clear', revision: 1, ...STAMPS };
+const roles = ['Planner', 'Developer', 'Tester'].map((name, index) => ({ id: `44444444-4444-4444-8444-44444444444${index}`, name, description: '', revision: 1, ...STAMPS }));
 const localSource = { kind: 'local', id: null, version: null, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null };
 const feature = () => ({
   id: W1, name: 'Feature', kind: 'build', description: 'Plan, build, test', agentsDecide: false, progressFile: null, revision: 3, source: { ...localSource }, ...STAMPS,
   nodes: [
-    { name: 'Plan', role: 'Planner', agentId: A1, prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true, askOwner: false },
-    { name: 'Develop', role: 'Developer', agentId: A1, prompt: 'Build it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
-    { name: 'Test', role: 'Tester', agentId: A1, prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 5 }, readOnly: false, approval: false, askOwner: false },
+    { name: 'Plan', role: 'Planner', prompt: 'Plan {input}', repeat: { mode: 'once' }, readOnly: true, approval: true, askOwner: false },
+    { name: 'Develop', role: 'Developer', prompt: 'Build it', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false },
+    { name: 'Test', role: 'Tester', prompt: 'Test it', repeat: { mode: 'loop_back', to: 'Develop', max: 5 }, readOnly: false, approval: false, askOwner: false },
   ],
 });
 
@@ -33,6 +34,7 @@ function stubBackend({ workflows = [feature()], preview = { prompt: 'Plan docs/x
     requests.push({ method: options.method ?? 'GET', path, body });
     if (fail === path) return json({ message: 'Pipelines request failed' }, 500);
     if (path === '/agents') return page([agent]);
+    if (path === '/roles') return page(roles);
     if (path === '/workflows' && !options.method) return page(workflows);
     if (path === '/templates' || path === '/step-presets') return page([]);
     if (path === '/settings') return json({ setupAgentId: A1, defaultBaseBranch: null, revision: 1 });
@@ -64,8 +66,8 @@ describe('WorkflowsScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit workflow Feature' }));
     expect(steps()).toEqual(['Step 1: Plan', 'Step 2: Develop', 'Step 3: Test']);
     expect(rail().getByRole('button', { name: 'Step 1: Plan' }).getAttribute('aria-current')).toBe('step');
-    expect(rail().getByText('Tester · codex-high · ↺ Develop')).toBeTruthy();
-    expect(rail().getByText('Planner · codex-high · approval')).toBeTruthy();
+    expect(rail().getByText('Tester · ↺ Develop')).toBeTruthy();
+    expect(rail().getByText('Planner · approval')).toBeTruthy();
     // Only the open step's fields are on screen, with a large prompt editor.
     expect(screen.getAllByLabelText(/^Node \d+ name$/).map(input => input.value)).toEqual(['Plan']);
     expect(screen.getByLabelText('Node 1 prompt').rows).toBe(14);
@@ -198,5 +200,5 @@ it('shows disabled in the builder step rail when a step is unchecked', async () 
   await open();
   fireEvent.click(screen.getByRole('button', { name: 'Edit workflow Feature' }));
   fireEvent.click(screen.getByLabelText('Node 1 enabled'));
-  expect(rail().getByText('Planner · codex-high · approval · disabled')).toBeTruthy();
+  expect(rail().getByText('Planner · approval · disabled')).toBeTruthy();
 });

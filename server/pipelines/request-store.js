@@ -153,7 +153,7 @@ function validateParams(requestId, params) {
   if (Object.hasOwn(parsed, 'attachments')) {
     validateAttachmentParams(requestId, attachments);
   }
-  const [error] = validateRunStartBody(body);
+  const [error] = validateRunStartBody(body, { requireTeam: false });
   if (error) fail(requestId, `params.${fields[error.field] ?? error.field}`, error.message);
   if (Object.hasOwn(parsed, 'attachments')) body.attachments = attachments;
   if (serializeStartParams(body) !== params) fail(requestId, 'params', 'must use the canonical start parameters');

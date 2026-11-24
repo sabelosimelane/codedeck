@@ -214,7 +214,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       agentsDecide: false,
       nodes: [{
         name: 'Echo',
-        agentId: nodeAgent.id,
+        role: 'Developer',
         prompt: 'finish now',
         repeat: { mode: 'until_complete', max: 3 },
       }],
@@ -259,7 +259,7 @@ describeLive('pipeline run live (Phase 3)', () => {
             agent: agentSnap(setupAgent),
           },
           {
-            kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
+            kind: 'node', role: 'Developer', askOwner: false, readOnly: false, approval: false,
             name: 'Echo',
             prompt: 'finish now',
             repeat: { mode: 'until_complete', max: 3 },

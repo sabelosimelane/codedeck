@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { isUuid, teamMemberFallbackId, validateTeamBody, validateWorkflowBody, validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
+import { isUuid, teamMemberFallbackId, validateRoleBody, validateTeamBody, validateWorkflowBody, validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const isIso = value => typeof value === 'string' && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value));
@@ -125,6 +125,32 @@ export function createStepPresetStore(db, { now = () => new Date().toISOString()
       readOnly: body.readOnly ?? false, approval: body.approval ?? false, askOwner: body.askOwner ?? false,
     }),
   });
+}
+
+export function createRoleStore(db, { now = () => new Date().toISOString() } = {}) {
+  const store = createLibraryStore(db, {
+    table: 'pipeline_roles',
+    now,
+    validate: validateRoleBody,
+    normalize: body => ({
+      name: body.name.trim(),
+      description: (body.description ?? '').trim(),
+    }),
+  });
+  const readByName = db.prepare('SELECT id FROM pipeline_roles WHERE lower(name) = lower(?)');
+  const findByName = (name) => {
+    if (typeof name !== 'string' || !name.trim()) return null;
+    const row = readByName.get(name.trim());
+    return row ? store.get(row.id) : null;
+  };
+  const ensureRole = (name, description = '') => {
+    const trimmed = typeof name === 'string' ? name.trim() : '';
+    if (!trimmed) throw new Error('pipeline_roles: name is required');
+    const existing = findByName(trimmed);
+    if (existing) return existing;
+    return store.create({ name: trimmed, description: (description ?? '').trim() });
+  };
+  return { ...store, findByName, ensureRole };
 }
 
 export function createTeamStore(db, { now = () => new Date().toISOString() } = {}) {

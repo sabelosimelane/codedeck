@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { createWorkflowStore } from '../pipelines/workflow-store.js';
 
-const AGENT = 'c410a1b2-3456-4789-8abc-def012345678';
 const IMPORT_ID = '123e4567-e89b-42d3-a456-426614174000';
 
 const databases = [];
@@ -20,7 +19,7 @@ function body(overrides = {}) {
     kind: 'bugfix',
     agentsDecide: false,
     progressFile: null,
-    nodes: [{ name: 'Develop', agentId: AGENT, prompt: 'Do it', repeat: { mode: 'once' } }],
+    nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Do it', repeat: { mode: 'once' } }],
     ...overrides,
   };
 }

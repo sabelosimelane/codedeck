@@ -3,7 +3,7 @@ import { Button, Dialog, IconButton, TextInput } from '../ui/index.jsx';
 import { Copy, Pencil, Plus, Trash2, Upload } from 'lucide-react';
 import { addBuiltinWorkflow, createWorkflow, deleteStepPreset, deleteTemplate, deleteWorkflow, dismissBuiltinWorkflow, importWorkflow, listBuiltinWorkflows, previewImport } from '../../utils/pipelinesApi';
 import { parseWorkflow } from '../../utils/pipelineRecords';
-import { WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { requiredWorkflowRoles, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { WORKFLOW_TEMPLATES, buildTemplateDraft } from '../../../../shared/workflow-templates.mjs';
 import { useToast } from '../ToastContext';
 import WorkflowEditor from './WorkflowEditor';
@@ -77,6 +77,9 @@ function ImportPreviewDialog({ importing, existingNames, onClose, onNameChange, 
           {copyClash && <p role="alert">This name is already taken. Choose another.</p>}
         </>
       )}
+      {(importing.preview.newRoles ?? []).length > 0 && canApply && (
+        <p className="pipeline-hint">New roles that will be added: {importing.preview.newRoles.join(', ')}.</p>
+      )}
       {importing.preview.missingRoles.length > 0 && canApply && (
         <p className="pipeline-hint">No team gives these roles an agent yet: {importing.preview.missingRoles.join(', ')}.</p>
       )}
@@ -91,7 +94,8 @@ function summary(workflow) {
     const label = node.repeat.mode === 'loop_back' ? `${node.name} ↺ ${node.repeat.to}` : node.name;
     return node.enabled === false ? `${label} (disabled)` : label;
   });
-  return `${count} ${count === 1 ? 'node' : 'nodes'}: ${names.join(' → ')}${workflow.agentsDecide ? ' · agents decide' : ''}`;
+  const roles = requiredWorkflowRoles(workflow.nodes);
+  return `${count} ${count === 1 ? 'node' : 'nodes'}: ${names.join(' → ')}${roles.length ? ` · Roles: ${roles.join(', ')}` : ''}${workflow.agentsDecide ? ' · agents decide' : ''}`;
 }
 
 function uniqueName(name, workflows) {
@@ -109,7 +113,7 @@ function uniqueName(name, workflows) {
 }
 
 /** Workflows list; one workflow at a time is open in the editor. */
-export default function WorkflowList({ workflows, agents, templates = [], stepPresets = [], variant = 'form', onChanged, onDirtyChange }) {
+export default function WorkflowList({ workflows, roles = [], templates = [], stepPresets = [], variant = 'form', onChanged, onDirtyChange }) {
   const { showToast } = useToast();
   // `opened` counts editor openings so each one starts from a fresh draft.
   const [editing, setEditing] = useState(null);
@@ -150,7 +154,6 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
         parseWorkflow(await createWorkflow({
           ...draft,
           name,
-          nodes: draft.nodes.map(node => ({ ...node, agentId: null })),
         }));
         showToast({ type: 'success', message: `Added as a copy: ${template.name} is already linked to the built-in.` });
       } else {
@@ -241,11 +244,11 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
     setChoosing(false);
     void addBuiltin(template);
   };
-  // A saved template is the owner's own: the same definition without agents.
+  // A saved template is the owner's own: a role-based workflow definition.
   const chooseSaved = template => open({
     id: null, revision: null, name: uniqueName(template.name, workflows), kind: template.kind, description: template.description,
     agentsDecide: template.agentsDecide, progressFile: template.progressFile,
-    nodes: template.nodes.map(node => ({ ...node, agentId: '', repeat: { ...node.repeat } })),
+    nodes: template.nodes.map(node => ({ ...node, repeat: { ...node.repeat } })),
   }, null, true);
   const removeSaved = async (label, name, action) => {
     if (!window.confirm(`Delete the saved ${label} "${name}"? Workflows already made from it are not affected.`)) return;
@@ -381,7 +384,7 @@ export default function WorkflowList({ workflows, agents, templates = [], stepPr
           workflow={editing.workflow}
           roleHints={editing.roleHints}
           prefilled={editing.prefilled}
-          agents={agents}
+          roles={roles}
           variant={variant}
           stepPresets={stepPresets}
           onLibraryChanged={onChanged}

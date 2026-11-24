@@ -91,7 +91,7 @@ describe('validateAgentBody', () => {
 });
 
 describe('workflow progress file', () => {
-  const body = progressFile => ({ name: 'Feature', agentsDecide: false, nodes: [{ name: 'Develop', agentId: '11111111-1111-4111-8111-111111111111', prompt: 'Work', repeat: { mode: 'once' } }], progressFile });
+  const body = progressFile => ({ name: 'Feature', agentsDecide: false, nodes: [{ name: 'Develop', role: 'Developer', prompt: 'Work', repeat: { mode: 'once' } }], progressFile });
   const valid = ['docs/{input}', '{input}', 'docs/{input}.md', 'docs/todos/{input}', 'docs/todo.md', 'docs/{input}.MD', 'a'.repeat(297) + '.md', 'a'.repeat(290) + '{input}.md'];
   const invalid = ['', ' ', 1, {}, [], 'docs/{input}/notes', '/{input}', '~/{input}', '{input}/../x.md', 'docs//{input}', 'docs/{input}.txt', 'docs\\{input}', 'a'.repeat(301), '/tmp/todo.md', '~/todo.md', 'a\\b.md', '../todo.md', 'a/../b.md', 'a//b.md', 'a\nb.md', 'a\u0085b.md', 'a\u2028b.md', 'todo.txt', 'a'.repeat(298) + '.md'];
   it.each(valid)('accepts %s', progressFile => {
@@ -116,7 +116,7 @@ describe('workflow progress file', () => {
 describe('validateWorkflowBody', () => {
   const node = (overrides = {}) => ({
     name: 'Develop',
-    agentId: UUID,
+    role: 'Developer',
     prompt: 'do {input}',
     repeat: { mode: 'once' },
     ...overrides,
@@ -176,11 +176,11 @@ describe('validateWorkflowBody', () => {
   it('rejects duplicate node names case-insensitively', () => {
     expect(fields(validateWorkflowBody({
       name: 'Feature', agentsDecide: false,
-      nodes: [node({ name: 'Dev' }), node({ name: 'dev', agentId: UUID2 })],
+      nodes: [node({ name: 'Dev' }), node({ name: 'dev' })],
     }))).toContain('nodes[1].name');
   });
 
-  it('rejects invalid agentId', () => {
+  it('rejects workflow-level agent assignment', () => {
     expect(fields(validateWorkflowBody({
       name: 'Feature', agentsDecide: false,
       nodes: [node({ agentId: 'not-a-uuid' })],
@@ -312,7 +312,14 @@ describe('validateRunStartBody', () => {
     workflowId: UUID,
     project: 'codedeck',
     input: 'docs/todos/x.md',
+    teamId: UUID2,
   };
+
+  it('requires a team for a new start, but not when reading back an older reservation', () => {
+    const legacy = { ...valid }; delete legacy.teamId;
+    expect(fields(validateRunStartBody(legacy))).toContain('teamId');
+    expect(fields(validateRunStartBody(legacy, { requireTeam: false }))).not.toContain('teamId');
+  });
 
   it('accepts a valid body including empty input', () => {
     expect(validateRunStartBody(valid)).toEqual([]);
@@ -470,7 +477,7 @@ describe('composePrompt', () => {
 });
 
 describe('validateWorkflowBody: who decides', () => {
-  const node = { name: 'Develop', agentId: UUID, prompt: 'do {input}', repeat: { mode: 'once' } };
+  const node = { name: 'Develop', role: 'Developer', prompt: 'do {input}', repeat: { mode: 'once' } };
 
   it.each([true, false])('accepts agentsDecide %s', (agentsDecide) => {
     expect(validateWorkflowBody({ name: 'Feature', agentsDecide, nodes: [node] })).toEqual([]);
@@ -484,7 +491,7 @@ describe('validateWorkflowBody: who decides', () => {
 });
 
 describe('validateWorkflowBody: looping back to an earlier node', () => {
-  const node = (name, repeat = { mode: 'once' }) => ({ name, agentId: UUID, prompt: 'do {input}', repeat });
+  const node = (name, repeat = { mode: 'once' }) => ({ name, role: 'Developer', prompt: 'do {input}', repeat });
   const loop = (to, max = 20) => ({ mode: 'loop_back', to, max });
   const workflow = (...nodes) => ({ name: 'Feature', agentsDecide: false, nodes });
 
@@ -548,13 +555,13 @@ describe('validateWorkflowBody: looping back to an earlier node', () => {
 });
 
 describe('workflow kind, description and step roles', () => {
-  const node = (extra = {}) => ({ name: 'Develop', agentId: UUID, prompt: 'Build', repeat: { mode: 'once' }, ...extra });
+  const node = (extra = {}) => ({ name: 'Develop', role: 'Developer', prompt: 'Build', repeat: { mode: 'once' }, ...extra });
   const body = (extra = {}) => ({ name: 'Feature', agentsDecide: false, nodes: [node()], ...extra });
 
-  it('accepts them, and a workflow that names none', () => {
+  it('accepts workflow metadata and a named role', () => {
     expect(validateWorkflowBody(body())).toEqual([]);
     expect(validateWorkflowBody(body({ kind: 'troubleshoot', description: 'x'.repeat(280), nodes: [node({ role: 'x'.repeat(32) })] }))).toEqual([]);
-    expect(validateWorkflowBody(body({ description: '', nodes: [node({ role: '' })] }))).toEqual([]);
+    expect(validateWorkflowBody(body({ description: '' }))).toEqual([]);
   });
 
   it.each([
@@ -568,11 +575,11 @@ describe('workflow kind, description and step roles', () => {
     expect(fields(validateWorkflowBody(body({ nodes: [node({ role })] })))).toEqual(['nodes[0].role']);
   });
 
-  it('validates a saved template: the same definition with no agents', () => {
-    const { agentId, ...step } = node({ role: 'Developer' });
+  it('validates a saved template with the same role-only nodes as a workflow', () => {
+    const step = node();
     expect(validateWorkflowBody(body({ nodes: [step] }), { template: true })).toEqual([]);
-    expect(fields(validateWorkflowBody(body(), { template: true }))).toEqual(['nodes[0].agentId']);
-    expect(fields(validateWorkflowBody(body({ nodes: [step] })))).toEqual(['nodes[0].agentId']);
+    expect(validateWorkflowBody(body({ nodes: [step] }))).toEqual([]);
+    expect(fields(validateWorkflowBody(body({ nodes: [{ ...step, agentId: UUID }] }), { template: true }))).toEqual(['nodes[0].agentId']);
     expect(fields(validateWorkflowBody(body({ nodes: [{ ...step, prompt: '' }] }), { template: true }))).toEqual(['nodes[0].prompt']);
   });
 });
@@ -582,8 +589,8 @@ describe('validateStepPresetBody', () => {
 
   it('accepts a step with or without its options, and a bounded repeat', () => {
     expect(validateStepPresetBody(valid)).toEqual([]);
-    expect(validateStepPresetBody({ name: 'x', prompt: 'p', repeat: { mode: 'until_complete', max: 100 } })).toEqual([]);
-    expect(validateStepPresetBody({ ...valid, name: 'x'.repeat(64), prompt: 'x'.repeat(8192), role: '' })).toEqual([]);
+    expect(validateStepPresetBody({ name: 'x', role: 'Reviewer', prompt: 'p', repeat: { mode: 'until_complete', max: 100 } })).toEqual([]);
+    expect(validateStepPresetBody({ ...valid, name: 'x'.repeat(64), prompt: 'x'.repeat(8192) })).toEqual([]);
   });
 
   it.each([
@@ -605,19 +612,19 @@ describe('validateStepPresetBody', () => {
 });
 
 describe('a step that always asks the owner', () => {
-  const node = (extra = {}) => ({ name: 'Clarify', agentId: UUID, prompt: 'Ask', repeat: { mode: 'once' }, ...extra });
+  const node = (extra = {}) => ({ name: 'Clarify', role: 'Developer', prompt: 'Ask', repeat: { mode: 'once' }, ...extra });
   it('is accepted on a workflow node, a template node and a saved step, and must be a boolean', () => {
     expect(validateWorkflowBody({ name: 'W', agentsDecide: true, nodes: [node({ askOwner: true })] })).toEqual([]);
-    const { agentId, ...templateNode } = node({ askOwner: true });
+    const templateNode = node({ askOwner: true });
     expect(validateWorkflowBody({ name: 'W', agentsDecide: true, nodes: [templateNode] }, { template: true })).toEqual([]);
-    expect(validateStepPresetBody({ name: 'Clarify', prompt: 'Ask', repeat: { mode: 'once' }, askOwner: true })).toEqual([]);
+    expect(validateStepPresetBody({ name: 'Clarify', role: 'Developer', prompt: 'Ask', repeat: { mode: 'once' }, askOwner: true })).toEqual([]);
     expect(fields(validateWorkflowBody({ name: 'W', agentsDecide: true, nodes: [node({ askOwner: 'yes' })] }))).toEqual(['nodes[0].askOwner']);
-    expect(fields(validateStepPresetBody({ name: 'Clarify', prompt: 'Ask', repeat: { mode: 'once' }, askOwner: 1 }))).toEqual(['askOwner']);
+    expect(fields(validateStepPresetBody({ name: 'Clarify', role: 'Developer', prompt: 'Ask', repeat: { mode: 'once' }, askOwner: 1 }))).toEqual(['askOwner']);
   });
 });
 
 describe('disabling a stage in a workflow or run start', () => {
-  const node = (name, extra = {}) => ({ name, agentId: UUID, prompt: 'Do work', repeat: { mode: 'once' }, ...extra });
+  const node = (name, extra = {}) => ({ name, role: 'Developer', prompt: 'Do work', repeat: { mode: 'once' }, ...extra });
 
   it('accepts enabled boolean on nodes, requires at least one enabled node, and forbids looping back to a disabled node', () => {
     expect(validateWorkflowBody({
@@ -648,7 +655,7 @@ describe('disabling a stage in a workflow or run start', () => {
   });
 
   it('validates disabledSteps on validateRunStartBody', () => {
-    const valid = { requestId: 'run-1', workflowId: UUID, project: 'codedeck', input: 'x' };
+    const valid = { requestId: 'run-1', workflowId: UUID, project: 'codedeck', input: 'x', teamId: UUID2 };
     expect(validateRunStartBody({ ...valid, disabledSteps: [] })).toEqual([]);
     expect(validateRunStartBody({ ...valid, disabledSteps: ['Requirements', 'Review'] })).toEqual([]);
     expect(fields(validateRunStartBody({ ...valid, disabledSteps: 'Requirements' }))).toEqual(['disabledSteps']);

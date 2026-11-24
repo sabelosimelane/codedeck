@@ -5,7 +5,7 @@ import { listWorktreeCandidates, makeTaskFromWorktree } from '../../utils/tasksA
 import { useToast } from '../ToastContext';
 import { parseTeam, parseAgent, parseWorkflow, parsePreflight, parseRunPlan, parseSettings, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
-import { assignedAgentId, BRANCH_NAME_RULE, composePrompt, isBranchName, isProgressFilePath, loopTargetIndex, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { assignedAgentId, BRANCH_NAME_RULE, composePrompt, isBranchName, isProgressFilePath, isTeamCompatible, loopTargetIndex, missingTeamRoles, requiredWorkflowRoles, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { Button, Dialog, Field, Note, SegmentedControl, Select, TextArea, TextInput } from '../ui/index.jsx';
 import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
 import WorktreeCandidatePicker from '../tasks/WorktreeCandidatePicker.jsx';
@@ -105,19 +105,34 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
   const busy = useRef(false);
   const selectedWorkflow = workflows.find(workflow => workflow.id === workflowId);
 
-  const team = teams.find(item => item.id === teamId);
   const nodes = selectedWorkflow?.nodes ?? [];
   const isStepEnabled = node => (Object.hasOwn(stepEnabledOverrides, node.name) ? stepEnabledOverrides[node.name] : node.enabled !== false);
   const activeNodes = nodes.filter(isStepEnabled);
   const disabledStepNames = nodes.filter(node => !isStepEnabled(node)).map(node => node.name);
   const brokenLoop = activeNodes.find((node, index) => node.repeat.mode === 'loop_back' && loopTargetIndex(activeNodes, index) < 0) ?? null;
+  const requiredRoles = requiredWorkflowRoles(activeNodes);
+  const teamMissing = new Map(teams.map(item => [item.id, missingTeamRoles(activeNodes, item)]));
+  const compatibleTeams = teams.filter(item => (teamMissing.get(item.id)?.length ?? 0) === 0);
+  const selectedTeam = teams.find(item => item.id === teamId) ?? null;
+  const team = selectedTeam && isTeamCompatible(activeNodes, selectedTeam) ? selectedTeam : null;
   const agentById = new Map(agents.map(agent => [agent.id, agent]));
-  const missing = activeNodes.filter(node => !agentById.has(assignedAgentId(node, team, overrides)));
+  const missing = team ? activeNodes.filter(node => !agentById.has(assignedAgentId(node, team, overrides))) : activeNodes;
   const assignment = {
-    ...(teamId && { teamId }),
+    ...(team && { teamId: team.id }),
     ...(Object.keys(overrides).length > 0 && { stepOverrides: overrides }),
     ...(Object.keys(stepEnabledOverrides).length > 0 && { disabledSteps: disabledStepNames }),
   };
+
+  // Auto-select the first compatible team when loading, switching workflows, or toggling steps
+  // makes the previous choice incompatible.
+  const compatibleTeamKey = compatibleTeams.map(item => item.id).join(',');
+  useEffect(() => {
+    if (!selectedWorkflow) return;
+    if (teamId && compatibleTeams.some(item => item.id === teamId)) return;
+    setTeamId(compatibleTeams[0]?.id ?? '');
+    setOverrides({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflowId, compatibleTeamKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -215,7 +230,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
   const inputRequired = pathInput || activeNodes.some(node => node.prompt.includes('{input}'));
   const locked = starting || submission !== null;
   const canStart = !starting && !checkingFiles && (submission !== null
-    || (!loading && eligible && Boolean(workflowId) && activeNodes.length > 0 && !brokenLoop && missing.length === 0 && !inputError && !baseError && (!inputRequired || input.trim().length > 0)));
+    || (!loading && eligible && Boolean(workflowId) && Boolean(team) && activeNodes.length > 0 && !brokenLoop && missing.length === 0 && !inputError && !baseError && (!inputRequired || input.trim().length > 0)));
 
   // The todo is looked up for a new task of a workflow that reads a Progress file, in a project with several repositories.
   const wantsPlan = !loading && !error && !inputError && several && where === NEW_TASK && Boolean(selectedWorkflow?.progressFile) && input.trim().length > 0;
@@ -408,15 +423,29 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
             </Select>
           </Field>
 
-          {selectedWorkflow && <Field label="Team">
-            <Select label="Team" value={teamId} onChange={id => { setTeamId(id); setOverrides({}); }}>
-              <option value="">Workflow assignments</option>
-              {teams.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          {selectedWorkflow && <Field label="Team"
+            hint={requiredRoles.length > 0 ? `Required roles: ${requiredRoles.join(', ')}` : null}>
+            <Select label="Team" value={team?.id ?? ''} onChange={id => { setTeamId(id); setOverrides({}); }} disabled={compatibleTeams.length === 0}>
+              {compatibleTeams.length === 0 && <option value="">No compatible team</option>}
+              {teams.map(item => {
+                const missingForTeam = teamMissing.get(item.id) ?? [];
+                const incompatible = missingForTeam.length > 0;
+                return <option key={item.id} value={item.id} disabled={incompatible}>
+                  {incompatible ? `${item.name} — missing: ${missingForTeam.join(', ')}` : item.name}
+                </option>;
+              })}
             </Select>
-            <details key={workflowId + teamId} open={missing.length ? true : undefined}>
+            {compatibleTeams.length === 0 && activeNodes.length > 0 && (
+              <Note tone="warning">
+                {teams.length === 0
+                  ? `Create a team in Settings → Workflows covering: ${requiredRoles.join(', ')}.`
+                  : `No team covers all required roles (${requiredRoles.join(', ')}). Update a team in Settings → Workflows, or disable steps you do not need.`}
+              </Note>
+            )}
+            <details key={workflowId + (team?.id ?? '')}>
               <summary>Step assignments</summary>
               {nodes.map(node => {
-                const inherited = agentById.get(assignedAgentId(node, team));
+                const inherited = team ? agentById.get(assignedAgentId(node, team)) : null;
                 const enabled = isStepEnabled(node);
                 return <Field key={node.name} label={node.role ? `${node.name} · ${node.role}` : node.name}
                   action={<label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
@@ -430,14 +459,14 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
                     }} />
                     <span>{enabled ? 'Enabled' : 'Disabled'}</span>
                   </label>}>
-                  <Select label={`${node.name} agent`} disabled={!enabled} value={Object.hasOwn(overrides, node.name) ? overrides[node.name] : ''} onChange={value => {
+                  <Select label={`${node.name} agent`} disabled={!enabled || !team} value={Object.hasOwn(overrides, node.name) ? overrides[node.name] : ''} onChange={value => {
                     setOverrides(current => {
                       const next = { ...current, [node.name]: value };
                       if (!value) delete next[node.name];
                       return next;
                     });
                   }}>
-                    <option value="">{inherited ? `Use ${inherited.name}` : 'Choose an agent for this run'}</option>
+                    <option value="">{inherited ? `Use ${inherited.name}` : 'Select a compatible team first'}</option>
                     {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                   </Select>
                 </Field>;
@@ -445,7 +474,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
             </details>
             {activeNodes.length === 0 && <Note tone="warning">Keep at least one step enabled for this run.</Note>}
             {brokenLoop && <Note tone="warning">{`${brokenLoop.name} loops back to ${brokenLoop.repeat.to}, which is disabled.`}</Note>}
-            {missing.length > 0 && <Note tone="warning">Choose an agent for {missing.map(node => node.name).join(', ')}.</Note>}
+            {team && missing.length > 0 && <Note tone="warning">Choose an agent for {missing.map(node => node.name).join(', ')}.</Note>}
           </Field>}
 
           <Field label={inputRequired ? 'What is this run about? (required)' : 'What is this run about?'} hint={inputHint} error={inputError}>

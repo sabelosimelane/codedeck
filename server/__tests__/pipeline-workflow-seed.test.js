@@ -27,8 +27,8 @@ describe('seedBuiltInWorkflows', () => {
       expect(workflow).toMatchObject({ kind: template.kind, description: template.description, agentsDecide: template.agentsDecide, progressFile: template.progressFile, revision: 1 });
       expect(workflow.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, prompt, repeat, readOnly, approval, askOwner })))
         .toEqual(template.nodes.map(({ name, role, prompt, repeat, readOnly, approval, askOwner }) => ({ name, role, prompt, repeat, readOnly, approval, askOwner })));
-      // No agent is chosen: the owner's team supplies one for each role when a run starts.
-      expect(workflow.nodes.every(node => node.agentId === null && node.role.trim() !== '')).toBe(true);
+      // Steps define roles only; the owner's team supplies agents when a run starts.
+      expect(workflow.nodes.every(node => !('agentId' in node) && node.role.trim() !== '')).toBe(true);
       // `source` is read-only metadata: bodies never carry it (the unknown-field rule refuses it).
       const { id, revision, createdAt, updatedAt, source, ...body } = workflow;
       // Seeded workflows are linked built-ins: the template's id, version and definition (§5.1).
@@ -61,9 +61,8 @@ describe('seedBuiltInWorkflows', () => {
   });
 
   it('adds nothing to an install that already has workflows, now or later', () => {
-    const { db, agents, workflows } = setup();
-    const agent = agents.create({ name: 'codex', launchCommand: 'codex', resetCommand: '/clear' });
-    const own = workflows.create({ name: 'Mine', agentsDecide: false, nodes: [{ name: 'Do', role: '', agentId: agent.id, prompt: 'Do {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }] });
+    const { db, workflows } = setup();
+    const own = workflows.create({ name: 'Mine', agentsDecide: false, nodes: [{ name: 'Do', role: 'Developer', prompt: 'Do {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false }] });
     expect(seedBuiltInWorkflows({ db, workflows, now: NOW })).toEqual({ seeded: [] });
     workflows.remove(own.id);
     expect(seedBuiltInWorkflows({ db, workflows, now: NOW })).toEqual({ seeded: [] });

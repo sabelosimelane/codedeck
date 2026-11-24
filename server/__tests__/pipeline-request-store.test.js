@@ -197,6 +197,20 @@ describe('pipeline request store', () => {
     expect(() => store.get(REQUEST_ID)).toThrow(/run-request-1.*created_at/);
   });
 
+  it('reads a reservation saved before run starts required a team', () => {
+    const { db, store } = setup();
+    const legacy = JSON.stringify({
+      workflowId: TASK_ID,
+      project: 'Demo',
+      input: 'Fix login',
+      place: { kind: 'newTask', title: null, repositories: ['backend', 'frontend'] },
+      startIn: 'backend',
+    });
+    db.prepare(`INSERT INTO pipeline_run_requests (request_id, params, task_id, created_at, provisioning_state)
+      VALUES (?, ?, ?, ?, 'reserved')`).run(REQUEST_ID, legacy, TASK_ID, STAMP);
+    expect(store.listUnpublished().map(record => record.requestId)).toEqual([REQUEST_ID]);
+  });
+
   it('rejects a corrupt request_id returned by the database', () => {
     const { db, store } = setup();
     store.reserve(REQUEST_ID, serialized);

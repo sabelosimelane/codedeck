@@ -66,7 +66,7 @@ export default function WorkflowsScreen({ onClose, projects = [] }) {
         )}
         {definitions === null && !loadError && <p className="pipeline-empty" role="status">Loading…</p>}
         {definitions !== null && (
-          <WorkflowList variant="builder" workflows={definitions.workflows} agents={definitions.agents} templates={definitions.templates}
+          <WorkflowList variant="builder" workflows={definitions.workflows} roles={definitions.roles} templates={definitions.templates}
             stepPresets={definitions.stepPresets} onChanged={load} onDirtyChange={setDirty} />
         )}
       </div>

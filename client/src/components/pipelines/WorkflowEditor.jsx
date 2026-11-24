@@ -17,7 +17,7 @@ const nextNodeKey = () => `node-${++lastNodeKey}`;
 
 // `loopTo` is the key of the node a loop returns to, so the loop follows that node when it is
 // renamed or moved; the name is filled in when the workflow is saved.
-const blankNode = () => ({ key: nextNodeKey(), name: '', role: '', agentId: '', prompt: '', mode: 'once', max: '', loopTo: '', readOnly: false, approval: false, askOwner: false, enabled: true });
+const blankNode = () => ({ key: nextNodeKey(), name: '', role: '', prompt: '', mode: 'once', max: '', loopTo: '', readOnly: false, approval: false, askOwner: false, enabled: true });
 
 // A saved step becomes a node of its own: a copy, so editing it here never changes the saved one.
 const nodeFromPreset = preset => ({ ...blankNode(), name: preset.name, role: preset.role, prompt: preset.prompt, mode: preset.repeat.mode, max: preset.repeat.mode === 'once' ? '' : String(preset.repeat.max), readOnly: preset.readOnly, approval: preset.approval, askOwner: preset.askOwner, enabled: preset.enabled !== false });
@@ -36,7 +36,6 @@ function toDraft(workflow, roleHints = null) {
     nodes: workflow.nodes.map((node, index) => ({
       key: keys[index],
       name: node.name,
-      agentId: node.agentId ?? '',
       prompt: node.prompt,
       role: node.role ?? roleHints?.[index] ?? '',
       readOnly: node.readOnly,
@@ -70,7 +69,6 @@ function toFields(draft) {
     nodes: draft.nodes.map(node => ({
       name: node.name,
       role: node.role,
-      agentId: node.agentId || null,
       prompt: node.prompt,
       readOnly: node.readOnly,
       approval: node.mode === 'loop_back' ? false : node.approval,
@@ -85,7 +83,7 @@ function shownFields(nodeCount) {
   const fields = ['name', 'kind', 'description', 'agentsDecide', 'progressFile'];
   for (let index = 0; index < nodeCount; index++) {
     const prefix = `nodes[${index}]`;
-    fields.push(`${prefix}.name`, `${prefix}.role`, `${prefix}.agentId`, `${prefix}.prompt`, `${prefix}.readOnly`, `${prefix}.approval`, `${prefix}.askOwner`, `${prefix}.enabled`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
+    fields.push(`${prefix}.name`, `${prefix}.role`, `${prefix}.prompt`, `${prefix}.readOnly`, `${prefix}.approval`, `${prefix}.askOwner`, `${prefix}.enabled`, `${prefix}.repeat.mode`, `${prefix}.repeat.max`, `${prefix}.repeat.to`);
   }
   return fields;
 }
@@ -98,7 +96,7 @@ function PromptPreview({ fields, nodeIndex }) {
   const [input, setInput] = useState('');
   const [state, setState] = useState({ status: 'idle', prompt: null, message: null, skillRewrite: false });
   const latest = useRef(0);
-  const workflow = { ...fields, nodes: fields.nodes.map(({ agentId: _agentId, ...node }) => node) };
+  const workflow = fields;
   const key = JSON.stringify([workflow, nodeIndex, input]);
   useEffect(() => {
     const request = ++latest.current;
@@ -136,7 +134,8 @@ function PromptPreview({ fields, nodeIndex }) {
 }
 
 /** Editor for one workflow: a draft of its name and ordered nodes, saved as a whole. */
-export default function WorkflowEditor({ workflow, agents, stepPresets = [], roleHints = null, prefilled = false, variant = 'form', onSaved, onChanged, onCancel, onDirtyChange, onLibraryChanged = async () => {} }) {
+export default function WorkflowEditor({ workflow, roles = [], stepPresets = [], roleHints = null, prefilled = false, variant = 'form', onSaved, onChanged, onCancel, onDirtyChange, onLibraryChanged = async () => {} }) {
+  const roleNames = roles.map(role => role.name);
   if (variant !== 'form' && variant !== 'builder') throw new Error('workflow editor: variant must be form or builder');
   const builder = variant === 'builder';
   const { showToast } = useToast();
@@ -219,10 +218,9 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
     }
   };
 
-  /** Saves the definition without its agents, to start other workflows from. */
+  /** Saves the definition as a template, to start other workflows from. */
   const saveAsTemplate = async () => {
-    const fields = toFields(draft);
-    const body = { ...fields, nodes: fields.nodes.map(({ agentId: _agentId, ...node }) => node) };
+    const body = toFields(draft);
     const invalid = validateWorkflowBody(body, { template: true });
     if (invalid.length > 0) {
       setErrors(errorsByField(invalid));
@@ -286,11 +284,12 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
               </div>
               <div className="pipeline-node-row">
                 <TextField label={`Node ${number} name`} caption="Name" value={node.name} onChange={setNodeField(index, 'name')} error={errors[`${prefix}.name`]} maxLength={64} placeholder="e.g. Analyse" />
-                <SelectField label={`Node ${number} agent`} caption="Agent" value={node.agentId} onChange={setNodeField(index, 'agentId')} error={errors[`${prefix}.agentId`]}>
-                  <option value="">Assign by team role at launch</option>
-                  {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                <SelectField label={`Node ${number} role`} caption="Role" value={node.role} onChange={setNodeField(index, 'role')} error={errors[`${prefix}.role`]}>
+                  <option value="">Choose a role</option>
+                  {(roleNames.includes(node.role) || !node.role ? roleNames : [node.role, ...roleNames]).map(role => (
+                    <option key={role} value={role}>{role}</option>
+                  ))}
                 </SelectField>
-                <TextField label={`Node ${number} role`} caption="Role (optional)" value={node.role} onChange={setNodeField(index, 'role')} error={errors[`${prefix}.role`]} maxLength={32} placeholder="e.g. Reviewer" />
               </div>
               <TextField multiline rows={builder ? 14 : 3} label={`Node ${number} prompt`} caption="Prompt — {input} is replaced with the run's input; a leading /skill is sent to Codex as $skill" value={node.prompt} onChange={setNodeField(index, 'prompt')} error={errors[`${prefix}.prompt`]} maxLength={8192} placeholder="What this step should do. {input} is replaced with what you type when starting a run." />
               <label className="pipeline-check">
@@ -340,10 +339,8 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
           );
   };
 
-  // Exporting writes the saved workflow to a package file; the endpoint refuses a stale
-  // draft or a step without a role, so the button says why instead of calling it.
-  const roleLessSteps = draft.nodes.filter(node => !node.role.trim()).map(node => node.name.trim() || '(no name yet)');
-  const exportReason = dirty ? 'Save before exporting' : roleLessSteps.length > 0 ? `Give every step a role before exporting: ${roleLessSteps.join(', ')}.` : null;
+  // Exporting writes the saved workflow to a package file; refuse a stale draft.
+  const exportReason = dirty ? 'Save before exporting' : null;
 
   const downloadExport = async () => {
     if (exportReason !== null) return;
@@ -398,7 +395,7 @@ export default function WorkflowEditor({ workflow, agents, stepPresets = [], rol
               <span className="workflow-rail-number">{index + 1}</span>
               <span className="workflow-rail-text">
                 <span className="workflow-rail-name">{node.name.trim() || '(no name yet)'}</span>
-                <span className="workflow-rail-meta">{[node.role.trim(), agents.find(agent => agent.id === node.agentId)?.name ?? 'Team role', node.mode === 'loop_back' ? `↺ ${draft.nodes.find(candidate => candidate.key === node.loopTo)?.name.trim() || '?'}` : null, node.approval && node.mode !== 'loop_back' ? 'approval' : null, !node.enabled ? 'disabled' : null].filter(Boolean).join(' · ')}</span>
+                <span className="workflow-rail-meta">{[node.role.trim() || 'No role', node.mode === 'loop_back' ? `↺ ${draft.nodes.find(candidate => candidate.key === node.loopTo)?.name.trim() || '?'}` : null, node.approval && node.mode !== 'loop_back' ? 'approval' : null, !node.enabled ? 'disabled' : null].filter(Boolean).join(' · ')}</span>
               </span>
               {Object.keys(errors).some(field => field.startsWith(`nodes[${index}].`)) && <span className="pipeline-field-error" aria-label="This step has an invalid field">!</span>}
             </button>

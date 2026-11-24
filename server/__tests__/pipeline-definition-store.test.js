@@ -35,10 +35,10 @@ const validAgent = {
   resetCommand: '/clear',
 };
 
-function node(agentId = AGENT_UUID) {
+function node() {
   return {
     name: 'Develop',
-    agentId,
+    role: 'Developer',
     prompt: 'Implement {input}',
     repeat: { mode: 'once' },
     readOnly: false,

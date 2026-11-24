@@ -245,8 +245,7 @@ function canonicalWithoutName(definition) {
 function normalizeNodes(nodes) {
   return nodes.map((node, index) => ({
     name: node.name.trim(),
-    role: (node.role ?? '').trim(),
-    agentId: node.agentId,
+    role: node.role.trim(),
     prompt: node.prompt,
     repeat: normalizeRepeat(nodes, index),
     readOnly: node.readOnly ?? false,
@@ -470,7 +469,9 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       let changed = false;
       const upgraded = nodes.map(node => {
         if (!node || typeof node !== 'object' || Array.isArray(node)) return node;
-        const missingProps = !Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || !Object.hasOwn(node, 'role') || !Object.hasOwn(node, 'askOwner');
+        const hadAgentId = Object.hasOwn(node, 'agentId');
+        const emptyRole = typeof node.role !== 'string' || !node.role.trim();
+        const missingProps = !Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || emptyRole || !Object.hasOwn(node, 'askOwner');
         const nextPrompt = STOCK_PROMPT_UPGRADES.get(node.prompt);
         const capUntrackedLoop = ['bugfix', 'troubleshoot'].includes(row.kind)
           && ['Test', 'Verify'].includes(node.name)
@@ -480,17 +481,19 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
           && node.name === 'Test'
           && node.repeat?.mode === 'loop_back'
           && node.repeat?.max === 12;
-        if (!missingProps && !nextPrompt && !capUntrackedLoop && !capBuildLoop) return node;
+        if (!hadAgentId && !missingProps && !nextPrompt && !capUntrackedLoop && !capBuildLoop) return node;
         changed = true;
+        const { agentId: _droppedAgentId, ...rest } = node;
+        const fallbackRole = (typeof node.name === 'string' && node.name.trim() ? node.name.trim().slice(0, 32).trim() : 'Step') || 'Step';
         return {
-          ...node,
-          ...(!Object.hasOwn(node, 'readOnly') ? { readOnly: false } : {}),
-          ...(!Object.hasOwn(node, 'approval') ? { approval: false } : {}),
-          ...(!Object.hasOwn(node, 'role') ? { role: '' } : {}),
-          ...(!Object.hasOwn(node, 'askOwner') ? { askOwner: false } : {}),
+          ...rest,
+          ...(!Object.hasOwn(rest, 'readOnly') ? { readOnly: false } : {}),
+          ...(!Object.hasOwn(rest, 'approval') ? { approval: false } : {}),
+          ...(emptyRole ? { role: fallbackRole } : {}),
+          ...(!Object.hasOwn(rest, 'askOwner') ? { askOwner: false } : {}),
           ...(nextPrompt ? { prompt: nextPrompt } : {}),
-          ...(capUntrackedLoop ? { repeat: { ...node.repeat, max: 3 } } : {}),
-          ...(capBuildLoop ? { repeat: { ...node.repeat, max: 8 } } : {}),
+          ...(capUntrackedLoop ? { repeat: { ...rest.repeat, max: 3 } } : {}),
+          ...(capBuildLoop ? { repeat: { ...rest.repeat, max: 8 } } : {}),
         };
       }).filter((node, index, list) => {
         const dropMergedPlan = node?.name === 'Plan'
@@ -732,11 +735,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
         if (!unchanged) continue;
         try {
           const definition = builtinTemplateDefinition(template);
-          const kept = new Map(workflow.nodes.map(node => [node.name.trim().toLowerCase(), node.agentId]));
-          const nodes = normalizeNodes(definition.nodes.map(node => ({
-            ...node,
-            agentId: kept.get(node.name.trim().toLowerCase()) ?? null,
-          })));
+          const nodes = normalizeNodes(definition.nodes);
           const stamp = requireIso(workflow.id, 'updated_at', clock());
           const applied = db.prepare(`UPDATE pipeline_workflows
             SET description = ?, kind = ?, agents_decide = ?, progress_file = ?,

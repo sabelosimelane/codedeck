@@ -1,6 +1,6 @@
-import { validateTeamBody, isBranchName, isUuid, loopTargetIndex, WORKFLOW_KINDS } from '../../../shared/pipeline-definitions.mjs';
+import { validateRoleBody, validateTeamBody, isBranchName, isUuid, loopTargetIndex, WORKFLOW_KINDS } from '../../../shared/pipeline-definitions.mjs';
 import { isUuidV4 } from '../../../shared/workflow-package.mjs';
-import { PipelineApiError, getPipelineSettings, isImportTimestamp as isTimestamp, listAgents, listStepPresets, listTemplates, listWorkflows } from './pipelinesApi';
+import { PipelineApiError, getPipelineSettings, isImportTimestamp as isTimestamp, listAgents, listRoles, listStepPresets, listTemplates, listWorkflows } from './pipelinesApi';
 
 // Responses are an edge: every field of an agent, workflow and settings response is checked before use.
 // Failures name the record and field, never a command's or prompt's content.
@@ -63,6 +63,18 @@ function parseSource(record, id) {
   return { kind, id: sourceId, version, latestVersion, updateAvailable, updatedToVersionAt, shipped };
 }
 
+export function parseRole(record) {
+  if (!isObject(record)) throw invalid('role', 'record');
+  const { id, name, description, revision, createdAt, updatedAt } = record;
+  if (!isUuid(id)) throw invalid('role', 'id');
+  const [error] = validateRoleBody({ name, description, revision }, { revisionRequired: true });
+  if (error) throw invalid('role', error.field, id);
+  if (typeof description !== 'string') throw invalid('role', 'description', id);
+  if (!isTimestamp(createdAt)) throw invalid('role', 'createdAt', id);
+  if (!isTimestamp(updatedAt)) throw invalid('role', 'updatedAt', id);
+  return { id, name, description, revision, createdAt, updatedAt };
+}
+
 export function parseTeam(record) {
   if (!isObject(record)) throw invalid('team', 'record');
   const { id, name, members, revision, createdAt, updatedAt } = record;
@@ -107,24 +119,23 @@ function parseRepeat(nodes, index, id) {
 
 const isLine = (value, max) => typeof value === 'string' && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
 
-/** `withAgent` is false for a saved template, whose steps name no agent. */
-function parseNode(nodes, index, id, kind = 'workflow', withAgent = true) {
+function parseNode(nodes, index, id, kind = 'workflow') {
   const node = nodes[index];
   const path = `nodes[${index}]`;
   if (!isObject(node)) throw invalid(kind, path, id);
   if (!isText(node.name)) throw invalid(kind, `${path}.name`, id);
-  if (!isLine(node.role, 32)) throw invalid(kind, `${path}.role`, id);
-  if (withAgent ? !(isUuid(node.agentId) || (node.agentId === null && isText(node.role))) : node.agentId !== undefined) throw invalid(kind, `${path}.agentId`, id);
+  if (!isText(node.role) || !isLine(node.role, 32)) throw invalid(kind, `${path}.role`, id);
+  if (node.agentId !== undefined) throw invalid(kind, `${path}.agentId`, id);
   if (!isText(node.prompt)) throw invalid(kind, `${path}.prompt`, id);
   if (typeof node.readOnly !== 'boolean') throw invalid(kind, `${path}.readOnly`, id);
   if (typeof node.approval !== 'boolean' || (node.repeat?.mode === 'loop_back' && node.approval)) throw invalid(kind, `${path}.approval`, id);
   // Whether this step's questions always come to the owner, also when agents decide.
   if (typeof node.askOwner !== 'boolean') throw invalid(kind, `${path}.askOwner`, id);
   if (node.enabled !== undefined && typeof node.enabled !== 'boolean') throw invalid(kind, `${path}.enabled`, id);
-  return { name: node.name, role: node.role, askOwner: node.askOwner, ...(withAgent ? { agentId: node.agentId } : {}), prompt: node.prompt, repeat: parseRepeat(nodes, index, id), readOnly: node.readOnly, approval: node.approval, ...(node.enabled === false ? { enabled: false } : {}) };
+  return { name: node.name, role: node.role, askOwner: node.askOwner, prompt: node.prompt, repeat: parseRepeat(nodes, index, id), readOnly: node.readOnly, approval: node.approval, ...(node.enabled === false ? { enabled: false } : {}) };
 }
 
-function parseDefinition(record, kind, withAgent) {
+function parseDefinition(record, kind, withSource) {
   if (!isObject(record)) throw invalid(kind, kind);
   const { id, name, description, agentsDecide, progressFile, revision, nodes, createdAt, updatedAt } = record;
   if (!isUuid(id)) throw invalid(kind, 'id');
@@ -139,27 +150,27 @@ function parseDefinition(record, kind, withAgent) {
   if (!isTimestamp(createdAt)) throw invalid(kind, 'createdAt', id);
   if (!isTimestamp(updatedAt)) throw invalid(kind, 'updatedAt', id);
   if (!Array.isArray(nodes) || nodes.length < 1) throw invalid(kind, 'nodes', id);
-  const source = withAgent ? parseSource(record, id) : undefined;
-  return { id, name, kind: record.kind, description, agentsDecide, progressFile, revision, nodes: nodes.map((_node, index) => parseNode(nodes, index, id, kind, withAgent)), ...(withAgent ? { source } : {}), createdAt, updatedAt };
+  const source = withSource ? parseSource(record, id) : undefined;
+  return { id, name, kind: record.kind, description, agentsDecide, progressFile, revision, nodes: nodes.map((_node, index) => parseNode(nodes, index, id, kind)), ...(withSource ? { source } : {}), createdAt, updatedAt };
 }
 
 export function parseWorkflow(record) {
   return parseDefinition(record, 'workflow', true);
 }
 
-/** A workflow template the owner saved: a workflow whose steps name no agent. */
+/** A workflow template the owner saved: a workflow definition without source metadata. */
 export function parseTemplate(record) {
   return parseDefinition(record, 'template', false);
 }
 
-/** A step the owner saved: a named prompt with its options, never a loop. */
+/** A step the owner saved: a named prompt with its role and options, never a loop. */
 export function parseStepPreset(record) {
   const kind = 'saved step';
   if (!isObject(record)) throw invalid(kind, 'step');
   const { id, name, role, prompt, repeat, readOnly, approval, askOwner, revision, createdAt, updatedAt } = record;
   if (!isUuid(id)) throw invalid(kind, 'id');
   if (!isText(name)) throw invalid(kind, 'name', id);
-  if (!isLine(role, 32)) throw invalid(kind, 'role', id);
+  if (!isText(role) || !isLine(role, 32)) throw invalid(kind, 'role', id);
   if (!isText(prompt)) throw invalid(kind, 'prompt', id);
   if (!isObject(repeat) || !['once', 'until_complete'].includes(repeat.mode)) throw invalid(kind, 'repeat.mode', id);
   if (repeat.mode === 'until_complete' && (!Number.isInteger(repeat.max) || repeat.max < 1 || repeat.max > 100)) throw invalid(kind, 'repeat.max', id);
@@ -259,8 +270,9 @@ export function parsePreflight(record) {
 }
 
 export async function loadDefinitions({ signal } = {}) {
-  const [agents, workflows, settings, templates, stepPresets] = await Promise.all([
+  const [agents, roles, workflows, settings, templates, stepPresets] = await Promise.all([
     listAgents({ signal }),
+    listRoles({ signal }),
     listWorkflows({ signal }),
     getPipelineSettings({ signal }),
     listTemplates({ signal }),
@@ -268,6 +280,7 @@ export async function loadDefinitions({ signal } = {}) {
   ]);
   return {
     agents: agents.map(parseAgent),
+    roles: roles.map(parseRole),
     workflows: workflows.map(parseWorkflow),
     settings: parseSettings(settings),
     templates: templates.map(parseTemplate),

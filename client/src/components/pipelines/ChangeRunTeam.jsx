@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { firstReassignableStep } from '../../../../shared/pipeline-definitions.mjs';
+import { firstReassignableStep, missingTeamRoles } from '../../../../shared/pipeline-definitions.mjs';
 import { changeRunTeam, listAgents, listTeams } from '../../utils/pipelinesApi';
 import { parseAgent, parseTeam } from '../../utils/pipelineRecords';
 import { Button, Dialog, Field, Note, Select } from '../ui/index.jsx';
@@ -21,12 +21,14 @@ function AssignmentDialog({ run, onClose }) {
 
   const steps = run.steps.slice(firstReassignableStep(run.steps, run.currentStepIndex)).filter(step => step.kind === 'node');
   const team = choices?.teams.find(item => item.id === teamId);
+  const teamMissing = choices ? new Map(choices.teams.map(item => [item.id, missingTeamRoles(steps, item)])) : new Map();
+  const teamCompatible = !team || (teamMissing.get(team.id)?.length ?? 0) === 0;
   const assignedName = step => {
     if (!team || !step.role) return step.nextAgentName ?? step.agentName;
     const member = team.members.find(item => item.role.toLowerCase() === step.role.toLowerCase());
     return choices.agents.find(agent => agent.id === member?.agentId)?.name;
   };
-  const ready = choices && (team || Object.keys(overrides).length > 0)
+  const ready = choices && teamCompatible && (team || Object.keys(overrides).length > 0)
     && steps.every(step => Object.hasOwn(overrides, step.name) || assignedName(step));
   async function apply() {
     setBusy(true);
@@ -52,7 +54,13 @@ function AssignmentDialog({ run, onClose }) {
     {choices && <>
       <Field label="Team"><Select label="Team" value={teamId} disabled={busy} onChange={id => { setTeamId(id); setOverrides({}); }}>
         <option value="">Current run assignments</option>
-        {choices.teams.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        {choices.teams.map(item => {
+          const missing = teamMissing.get(item.id) ?? [];
+          const incompatible = missing.length > 0;
+          return <option key={item.id} value={item.id} disabled={incompatible}>
+            {incompatible ? `${item.name} — missing: ${missing.join(', ')}` : item.name}
+          </option>;
+        })}
       </Select></Field>
       {choices.teams.length === 0 && <Note>Create a team in Settings → Workflows, or choose an agent for a step below.</Note>}
       {steps.map(step => <Field key={step.index} label={[step.name, step.role, step.index < run.currentStepIndex && 'next round'].filter(Boolean).join(' · ')}>

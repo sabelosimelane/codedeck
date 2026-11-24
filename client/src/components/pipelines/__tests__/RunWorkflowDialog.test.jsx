@@ -19,7 +19,7 @@ const team = { ...stamp, name: 'Daily', id: '11111111-1111-4111-8111-22222222222
 const localSource = { kind: 'local', id: null, version: null, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null };
 const workflowFields = { ...stamp, kind: 'other', description: '', agentsDecide: false, progressFile: null,
   source: { ...localSource },
-  nodes: ['Develop', 'Fix'].map(name => ({ name, role: 'Developer', prompt: 'Work', repeat: { mode: 'once' }, agentId: agents[0].id, askOwner: false, approval: false, readOnly: false })) };
+  nodes: ['Develop', 'Fix'].map(name => ({ name, role: 'Developer', prompt: 'Work', repeat: { mode: 'once' }, askOwner: false, approval: false, readOnly: false })) };
 const workflows = [
   { ...workflowFields, id: '11111111-1111-4111-8111-111111111111', name: 'Feature' },
   { ...workflowFields, id: '22222222-2222-4222-8222-222222222222', name: 'Review' },
@@ -276,7 +276,7 @@ describe('RunWorkflowDialog', () => {
     expect(startButton().disabled).toBe(false);
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledWith({
-      workflowId: workflows[0].id, input: 'ship the feature', requestId: expect.stringMatching(/^[\w-]{1,128}$/),
+      workflowId: workflows[0].id, teamId: team.id, input: 'ship the feature', requestId: expect.stringMatching(/^[\w-]{1,128}$/),
       newTask: {},
     }));
     expect(onClose).toHaveBeenCalled();
@@ -411,7 +411,7 @@ describe('RunWorkflowDialog', () => {
     fireEvent.click(startButton());
 
     await waitFor(() => expect(onStart).toHaveBeenCalledWith({
-      workflowId: workflows[0].id, input: 'docs/todos/x.md', requestId: expect.stringMatching(/^[\w-]{1,128}$/), taskId: TASK.id,
+      workflowId: workflows[0].id, teamId: team.id, input: 'docs/todos/x.md', requestId: expect.stringMatching(/^[\w-]{1,128}$/), taskId: TASK.id,
     }));
   });
 
@@ -598,7 +598,7 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'demo' }));
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: 'docs/todos/replies.md', newTask: { repositories: ['mobile-app', 'demo'] }, startIn: 'mobile-app' });
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, teamId: team.id, input: 'docs/todos/replies.md', newTask: { repositories: ['mobile-app', 'demo'] }, startIn: 'mobile-app' });
   });
 
   it('starts a new task in the project\'s own repository alone when nothing is changed', async () => {
@@ -607,7 +607,7 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Task title' }), { target: { value: 'Replies' } });
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: '', newTask: { title: 'Replies', repositories: ['demo'] }, startIn: 'demo' });
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, teamId: team.id, input: '', newTask: { title: 'Replies', repositories: ['demo'] }, startIn: 'demo' });
   });
 
   it('asks which repository of an open task the run starts in, among those still open', async () => {
@@ -619,7 +619,7 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
     fireEvent.change(startIn(), { target: { value: 'demo' } });
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: '', taskId: ACROSS.id, startIn: 'demo' });
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, teamId: team.id, input: '', taskId: ACROSS.id, startIn: 'demo' });
   });
 
   it('starts in an open task with one repository the way it always did', async () => {
@@ -628,7 +628,7 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
     expect(screen.queryByRole('combobox', { name: 'Start in' })).toBeNull();
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: '', taskId: TASK.id });
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, teamId: team.id, input: '', taskId: TASK.id });
   });
 
   it('runs in Main of the repository chosen: the project\'s own, or another one\'s own checkout', async () => {
@@ -640,7 +640,7 @@ describe('RunWorkflowDialog in a project with several repositories', () => {
     expect(screen.getByText('Runs directly in the checkout of mobile-app, with no copy of its own and no Setup step. It changes that repository only.')).toBeTruthy();
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, input: '', worktreePath: '/git/mobile-app' });
+    expect(sent(onStart)).toEqual({ workflowId: workflows[0].id, teamId: team.id, input: '', worktreePath: '/git/mobile-app' });
   });
 
   it('says why when the repositories cannot be read, and starts nothing', async () => {
@@ -718,9 +718,9 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     const ids = onStart.mock.calls.map(([request]) => request.requestId);
     expect(new Set(ids).size).toBe(2);
     expect(calls(onStart)).toEqual([
-      [{ workflowId: TEMPLATED[0].id, input: 'todos/tag.md', newTask: { repositories: ['backend', 'frontend'] }, startIn: 'backend' }, undefined],
+      [{ workflowId: TEMPLATED[0].id, teamId: team.id, input: 'todos/tag.md', newTask: { repositories: ['backend', 'frontend'] }, startIn: 'backend' }, undefined],
       // The other run gets a task of its own and does not take the owner away from the first.
-      [{ workflowId: TEMPLATED[0].id, input: 'todos/tag-phone.md', newTask: { repositories: ['mobile-app'] }, startIn: 'mobile-app' }, { follow: false }],
+      [{ workflowId: TEMPLATED[0].id, teamId: team.id, input: 'todos/tag-phone.md', newTask: { repositories: ['mobile-app'] }, startIn: 'mobile-app' }, { follow: false }],
     ]);
   });
 
@@ -733,7 +733,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     fireEvent.click(box('Also start a run in mobile-app with docs/todos/tag-phone.md'));
     fireEvent.click(startButton());
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    expect(calls(onStart)).toEqual([[{ workflowId: TEMPLATED[0].id, input: 'todos/tag.md', newTask: { repositories: ['backend'] }, startIn: 'backend' }, undefined]]);
+    expect(calls(onStart)).toEqual([[{ workflowId: TEMPLATED[0].id, teamId: team.id, input: 'todos/tag.md', newTask: { repositories: ['backend'] }, startIn: 'backend' }, undefined]]);
   });
 
   it('starts in the repository that holds the todo, until the owner picks another', async () => {

@@ -9,7 +9,7 @@ const agent = (patch = {}) => ({
   id: A1, name: 'codex', launchCommand: 'codex', resetCommand: '/clear', revision: 1,
   createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z', ...patch,
 });
-const node = (patch = {}) => ({ name: 'Develop', role: '', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false, ...patch });
+const node = (patch = {}) => ({ name: 'Develop', role: 'Developer', prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false, askOwner: false, ...patch });
 const STAMPS = { createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T12:30:00.000Z' };
 const localSource = () => ({ kind: 'local', id: null, version: null, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null });
 const workflow = (patch = {}) => ({ id: W1, name: 'Feature', kind: 'other', description: '', agentsDecide: false, progressFile: null, revision: 2, nodes: [node()], source: localSource(), ...STAMPS, ...patch });
@@ -170,9 +170,10 @@ describe('parseSettings', () => {
 describe('loadDefinitions', () => {
   const page = data => ({ ok: true, status: 200, json: async () => ({ data, page: { hasNextPage: false } }) });
 
-  function stubBackend({ agents = [agent()], workflows = [workflow()], settings = { setupAgentId: A1, defaultBaseBranch: null, revision: 3 }, templates = [], stepPresets = [] } = {}) {
+  function stubBackend({ agents = [agent()], roles = [], workflows = [workflow()], settings = { setupAgentId: A1, defaultBaseBranch: null, revision: 3 }, templates = [], stepPresets = [] } = {}) {
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (String(url).includes('/agents')) return page(agents);
+      if (String(url).includes('/roles')) return page(roles);
       if (String(url).includes('/workflows')) return page(workflows);
       if (String(url).includes('/templates')) return page(templates);
       if (String(url).includes('/step-presets')) return page(stepPresets);
@@ -180,10 +181,11 @@ describe('loadDefinitions', () => {
     }));
   }
 
-  it('returns validated agents, workflows and settings', async () => {
+  it('returns validated agents, roles, workflows and settings', async () => {
     stubBackend();
     await expect(loadDefinitions()).resolves.toEqual({
       agents: [parseAgent(agent())],
+      roles: [],
       workflows: [workflow()],
       settings: { setupAgentId: A1, defaultBaseBranch: null, revision: 3 },
       templates: [],
@@ -326,7 +328,7 @@ describe('parsePreflight', () => {
 
 
 describe('kind, description, roles and what the owner saved', () => {
-  const { agentId, ...templateNode } = node({ role: 'Developer' });
+  const templateNode = node({ role: 'Developer' });
   // Saved templates carry no source: only workflows remember where they came from.
   const template = (patch = {}) => {
     const { source, ...record } = workflow({ kind: 'build', description: 'Mine', nodes: [templateNode] });
@@ -348,10 +350,10 @@ describe('kind, description, roles and what the owner saved', () => {
 
   it('reads a saved template, which names no agents', () => {
     expect(parseTemplate(template())).toEqual(template());
-    rejects(parseTemplate, template({ nodes: [node()] }), 'nodes[0].agentId');
+    rejects(parseTemplate, template({ nodes: [node({ agentId: A1 })] }), 'nodes[0].agentId');
     rejects(parseTemplate, template({ name: '' }), 'name');
     rejects(parseTemplate, null, 'template');
-    rejects(parseWorkflow, { ...template(), source: localSource() }, 'nodes[0].agentId');
+    rejects(parseWorkflow, { ...template(), nodes: [node({ agentId: A1 })], source: localSource() }, 'nodes[0].agentId');
   });
 
   it('reads a saved step and returns exactly its fields', () => {
@@ -365,29 +367,31 @@ describe('kind, description, roles and what the owner saved', () => {
     [{ readOnly: 'yes' }, 'readOnly'], [{ approval: undefined }, 'approval'], [{ revision: 0 }, 'revision'], [{ createdAt: 'x' }, 'createdAt'], [{ updatedAt: null }, 'updatedAt'],
   ])('rejects a saved step with %j', (patch, field) => rejects(parseStepPreset, preset(patch), field));
 
-  it('loads saved templates and steps with the definitions, and fails as a whole on a bad one', async () => {
+  it('loads saved roles, templates and steps with the definitions, and fails as a whole on a bad one', async () => {
+    const role = { id: W1, name: 'Developer', description: '', revision: 1, ...STAMPS };
     const page = data => ({ ok: true, status: 200, json: async () => ({ data, page: { hasNextPage: false } }) });
     const stub = (templates, presets) => vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (String(url).includes('/agents')) return page([agent()]);
+      if (String(url).includes('/roles')) return page([role]);
       if (String(url).includes('/workflows')) return page([workflow()]);
       if (String(url).includes('/templates')) return page(templates);
       if (String(url).includes('/step-presets')) return page(presets);
       return { ok: true, status: 200, json: async () => ({ setupAgentId: A1, defaultBaseBranch: null, revision: 3 }) };
     }));
     stub([template()], [preset()]);
-    await expect(loadDefinitions()).resolves.toMatchObject({ templates: [template()], stepPresets: [preset()] });
+    await expect(loadDefinitions()).resolves.toMatchObject({ roles: [role], templates: [template()], stepPresets: [preset()] });
     stub([template()], [preset({ prompt: '' })]);
     await expect(loadDefinitions()).rejects.toThrow('Invalid saved step from the pipelines API: prompt');
   });
 });
 
 describe('a step that always asks the owner', () => {
-  const stepFields = { name: 'Develop', role: '', agentId: A1, prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false };
+  const stepFields = { name: 'Develop', role: 'Developer', prompt: '/dev {input}', repeat: { mode: 'once' }, readOnly: false, approval: false };
   it('is read from a workflow node and a saved step, and must be a boolean', () => {
     expect(parseWorkflow(workflow({ nodes: [{ ...stepFields, askOwner: true }] })).nodes[0].askOwner).toBe(true);
     rejects(parseWorkflow, workflow({ nodes: [stepFields] }), 'nodes[0].askOwner');
     rejects(parseWorkflow, workflow({ nodes: [{ ...stepFields, askOwner: 'yes' }] }), 'nodes[0].askOwner');
-    const preset = { id: W1, name: 'Clarify', role: '', prompt: 'Ask', repeat: { mode: 'once' }, readOnly: true, approval: false, askOwner: true, revision: 1, ...STAMPS };
+    const preset = { id: W1, name: 'Clarify', role: 'Investigator', prompt: 'Ask', repeat: { mode: 'once' }, readOnly: true, approval: false, askOwner: true, revision: 1, ...STAMPS };
     expect(parseStepPreset(preset).askOwner).toBe(true);
     const { askOwner, ...without } = preset;
     rejects(parseStepPreset, without, 'askOwner');

@@ -22,6 +22,35 @@
   * `docs/specifications/2026-11-24-172650-run-step-agents-and-role-fallbacks-spec.md` — full requirements, boundaries, persistence, recovery, error and acceptance design.
 # Changelog
 
+## [2026-11-25] - Structured workflow roles and team-only agent assignment
+
+### Executive Summary
+* Workflow steps now name a role from a shared role catalogue (Planner, Developer, Reviewer, …) instead of carrying their own agent, and a run takes every agent from the team chosen when it starts. The Run workflow dialog offers only teams that cover every role the workflow needs and says which roles a team is missing, so a run can no longer start with a step that nobody is assigned to. Existing workflows are migrated at startup: their stored agents are dropped and an empty role is filled from the step's name. The change also fixes a startup crash: run-start reservations saved before teams were required no longer stop the backend.
+
+### Technical Details
+* **✨ New Feature:**
+  * `server/pipelines/role-migration.js` — once-per-database seeding of the built-in roles (`pipeline_role_seed`), startup migration that strips `agentId` from workflow nodes, backfills empty roles, registers roles already in use and normalises their casing; `renameRoleEverywhere` for transactional renames.
+  * `client/src/components/pipelines/RoleList.jsx`, `client/src/components/pipelines/PipelineSettings.jsx` — role catalogue editor in Settings → Workflows, refusing to delete a role still in use.
+  * `client/src/components/pipelines/TeamList.jsx` — team members pick a role from the catalogue (one member per role) and each team shows which workflows it covers.
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx`, `client/src/components/pipelines/ChangeRunTeam.jsx` — only compatible teams can be chosen, the first one is selected automatically, and the required roles are listed.
+  * `client/src/components/pipelines/WorkflowEditor.jsx`, `client/src/components/pipelines/WorkflowList.jsx`, `client/src/components/pipelines/builder/WorkflowsScreen.jsx` — steps choose a role instead of an agent.
+* **🔌 API/Interface:**
+  * `server/routes/pipelines.js` — paginated `GET/POST /api/pipelines/roles` and `GET/PUT/DELETE /api/pipelines/roles/:id`; workflows must name existing roles; built-in and imported workflows register their roles; a run start is refused when its team lacks a required role; an agent is no longer protected from deletion by workflows.
+  * `shared/pipeline-definitions.mjs` — `validateRoleBody`, `requiredWorkflowRoles`, `missingTeamRoles`, `isTeamCompatible`; role required on nodes and saved steps, `agentId` removed from nodes; `validateRunStartBody` requires `teamId` unless called with `requireTeam: false`.
+  * `client/src/utils/pipelinesApi.js`, `client/src/utils/pipelineRecords.js` — role API client and role-only workflow records.
+* **🐛 Bug Fix:**
+  * Problem: the backend exited at startup with `pipeline_run_requests row … field params.teamId: Choose a team`, because saved reservations from before teams were required were re-validated with the new rule.
+  * Solution: `server/pipelines/request-store.js` reads reservations back with `{ requireTeam: false }`; new HTTP starts still require a team.
+* **🛠️ Codebase:**
+  * `server/pipelines/library-store.js` — `createRoleStore` with `findByName` and `ensureRole`.
+  * `server/pipelines/workflow-store.js`, `server/pipelines/workflow-seed.js`, `shared/workflow-templates.mjs` — role-only nodes, built-in role list, upgrades drop stored agents.
+  * `server/index.js` — creates the role store, runs the migration before seeding workflows, passes the stores to the router.
+* **🗄️ Database:**
+  * New `pipeline_roles` and `pipeline_role_seed` tables; existing `pipeline_workflows` nodes are rewritten without `agentId` at the first start.
+* **🧪 Tests:**
+  * New `server/__tests__/pipeline-roles.test.js`, `server/__tests__/pipeline-roles-api.test.js`, `client/src/components/pipelines/__tests__/RoleCompatibility.test.jsx`; legacy-reservation read test in `server/__tests__/pipeline-request-store.test.js`.
+  * Server and client pipeline fixtures moved to role-only nodes and staffed teams; assertions for removed behaviour rewritten to the new rules.
+
 ## [2026-11-24] - Brainstorm to spec built-in workflow
 
 ### Executive Summary

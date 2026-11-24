@@ -72,6 +72,19 @@ export function listWorkflows({ signal } = {}) {
   return listAll('/workflows', { signal });
 }
 
+export function listRoles({ signal } = {}) {
+  return listAll('/roles', { signal });
+}
+
+export function saveRole(id, fields) {
+  return id === null ? request('/roles', { method: 'POST', body: fields })
+    : request(itemPath('roles', id), { method: 'PUT', body: fields });
+}
+
+export function deleteRole(id) {
+  return request(itemPath('roles', id), { method: 'DELETE', expectedStatus: 204 });
+}
+
 export function listTeams({ signal } = {}) {
   return listAll('/teams', { signal });
 }
@@ -151,12 +164,10 @@ export async function listBuiltinWorkflows({ signal } = {}) {
 /** Link a shipped built-in as a new workflow; the 201 carries a §4.4 source view. */
 export async function addBuiltinWorkflow(id, { signal } = {}) {
   const body = await request(`/builtin-workflows/${encodeURIComponent(id)}/additions`, { method: 'POST', signal });
-  // The addition is a linked built-in of the requested id with every step unassigned
-  // (§5.1 / §5.3). A local, imported, wrong-id or assigned receipt is malformed.
+  // The addition is a linked built-in of the requested id; steps carry roles only.
   if (!isImportWorkflow(body)
     || body.source.kind !== 'builtin'
-    || body.source.id !== id
-    || !body.nodes.every(node => node.agentId === null)) {
+    || body.source.id !== id) {
     throw new PipelineApiError('Invalid built-in workflow from the pipelines API');
   }
   return body;
@@ -219,7 +230,9 @@ export async function previewImport(pkg, { signal } = {}) {
     || !isPreviewWorkflow(body.workflow)
     || !isPreviewChanges(body.changes)
     || !Array.isArray(body.missingRoles)
-    || !body.missingRoles.every(role => typeof role === 'string' && role.trim() !== '')) {
+    || !body.missingRoles.every(role => typeof role === 'string' && role.trim() !== '')
+    || (body.newRoles !== undefined && (!Array.isArray(body.newRoles)
+      || !body.newRoles.every(role => typeof role === 'string' && role.trim() !== '')))) {
     throw new PipelineApiError('Invalid import preview from the pipelines API');
   }
   return body;
@@ -292,17 +305,12 @@ function isImportWorkflow(body, { targetMode = null, pkgSource = null } = {}) {
     && (typeof definition.progressFile !== 'string' || definition.progressFile.trim() === '')) return false;
   const nodesOk = definition.nodes.every(node => node !== null && typeof node === 'object' && !Array.isArray(node)
     && typeof node.role === 'string' && node.role.trim() !== ''
-    && (isUuid(node.agentId) || (node.agentId === null && node.role.trim() !== ''))
+    && node.agentId === undefined
     && typeof node.readOnly === 'boolean'
     && typeof node.approval === 'boolean'
     && typeof node.askOwner === 'boolean'
     && (node.enabled === undefined || typeof node.enabled === 'boolean'));
   if (!nodesOk) return false;
-  // A new import (§5.6) is a linked copy: the server creates it as `imported`
-  // from the file's source with every step unassigned (agentId null, assigned
-  // by team role on this install). Any other receipt for mode=new is malformed.
-  // Linkage is required, not optional: without the sent package's source the
-  // client cannot tell whether the receipt is linked to that file.
   if (targetMode === 'new') {
     if (body.source.kind !== 'imported') return false;
     if (pkgSource === null || typeof pkgSource !== 'object' || Array.isArray(pkgSource)
@@ -310,7 +318,6 @@ function isImportWorkflow(body, { targetMode = null, pkgSource = null } = {}) {
       || body.source.id !== pkgSource.id || body.source.version !== pkgSource.version) {
       return false;
     }
-    if (!definition.nodes.every(node => node.agentId === null)) return false;
   }
   return true;
 }

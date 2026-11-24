@@ -141,16 +141,57 @@ export function validateTeamBody(body, { revisionRequired = false, current, allo
   return errors;
 }
 
+export function validateRoleBody(body, { revisionRequired = false } = {}) {
+  const errors = [];
+  if (!rejectUnknown(errors, body, ['name', 'description', 'revision'])) return errors;
+  requireSingleLine(errors, 'name', body.name, { min: 1, max: ROLE_MAX, label: 'Role name' });
+  optionalLine(errors, 'description', body.description, DESCRIPTION_MAX);
+  requireRevision(errors, body.revision, revisionRequired);
+  return errors;
+}
+
 export const AGENT_ASSIGNMENT_SOURCES = ['workflow', 'team', 'trial', 'override', 'setup', 'fallback'];
 
 export function teamMemberForRole(team, role) {
-  return team.members.find(member => member.role.toLowerCase() === role.toLowerCase());
+  if (!team || !Array.isArray(team.members) || typeof role !== 'string' || !role.trim()) return undefined;
+  const target = role.trim().toLowerCase();
+  return team.members.find(member => typeof member.role === 'string' && member.role.trim().toLowerCase() === target);
+}
+
+/** Unique canonical role names required by a list of workflow nodes (in first-seen order). */
+export function requiredWorkflowRoles(nodes) {
+  if (!Array.isArray(nodes)) return [];
+  const seen = new Set();
+  const roles = [];
+  for (const node of nodes) {
+    const role = typeof node?.role === 'string' ? node.role.trim() : '';
+    if (!role) continue;
+    const key = role.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      roles.push(role);
+    }
+  }
+  return roles;
+}
+
+/** Required roles from `nodes` that `team` does not staff. */
+export function missingTeamRoles(nodes, team) {
+  const required = requiredWorkflowRoles(nodes);
+  if (!team || !Array.isArray(team.members)) return required;
+  const staffed = new Set(team.members.map(member => (typeof member.role === 'string' ? member.role.trim().toLowerCase() : '')).filter(Boolean));
+  return required.filter(role => !staffed.has(role.toLowerCase()));
+}
+
+/** True when `team` defines an agent for every role required by `nodes`. */
+export function isTeamCompatible(nodes, team) {
+  return Boolean(team) && missingTeamRoles(nodes, team).length === 0;
 }
 
 export function assignedAgentId(node, team, overrides) {
   if (overrides && Object.hasOwn(overrides, node.name)) return overrides[node.name];
   if (team && node.role) return teamMemberForRole(team, node.role)?.agentId ?? null;
-  return node.agentId;
+  return null;
 }
 
 export function validateAgentBody(body, { revisionRequired = false } = {}) {
@@ -245,10 +286,10 @@ function optionalLine(errors, field, value, max) {
 }
 
 /**
- * A workflow, or with `template: true` a saved template: the same definition without agents,
- * since agents are chosen when a template is turned into a workflow.
+ * A workflow or saved template: both define steps by their required role only;
+ * concrete agents are supplied by a compatible team when a run starts.
  */
-export function validateWorkflowBody(body, { revisionRequired = false, template = false } = {}) {
+export function validateWorkflowBody(body, { revisionRequired = false } = {}) {
   const errors = [];
   if (!rejectUnknown(errors, body, ['name', 'description', 'kind', 'agentsDecide', 'progressFile', 'nodes', 'revision'])) return errors;
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
@@ -277,22 +318,18 @@ export function validateWorkflowBody(body, { revisionRequired = false, template 
       return;
     }
     for (const field of Object.keys(node)) {
-      if (!['name', 'role', ...(template ? [] : ['agentId']), 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner', 'enabled'].includes(field)) {
+      if (!['name', 'role', 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner', 'enabled'].includes(field)) {
         add(errors, `${prefix}.${field}`, 'Unknown field');
       }
     }
-    // What the step is there to do (Planner, Reviewer…); shown beside its name, never sent to the agent.
-    optionalLine(errors, `${prefix}.role`, node.role, ROLE_MAX);
+    // Every step requires a structured role; a compatible team supplies the agent at run start.
+    requireSingleLine(errors, `${prefix}.role`, node.role, { min: 1, max: ROLE_MAX, label: 'Role' });
     if (typeof node.name !== 'string' || !node.name.trim() || node.name.trim().length > 64 || SINGLE_LINE.test(node.name)) {
       add(errors, `${prefix}.name`, 'Use 1–64 characters on one line without control characters');
     } else {
       const key = node.name.trim().toLowerCase();
       if (seenNames.has(key)) add(errors, `${prefix}.name`, 'Node names must be unique within the workflow');
       seenNames.add(key);
-    }
-    if (!template && !isUuid(node.agentId)) {
-      const assignedByTeam = node.agentId === null && typeof node.role === 'string' && node.role.trim();
-      if (!assignedByTeam) add(errors, `${prefix}.agentId`, 'Choose a saved agent or enter a role for team assignment');
     }
     if (
       typeof node.prompt !== 'string'
@@ -322,7 +359,7 @@ export function validateStepPresetBody(body, { revisionRequired = false } = {}) 
   const errors = [];
   if (!rejectUnknown(errors, body, ['name', 'role', 'prompt', 'repeat', 'readOnly', 'approval', 'askOwner', 'enabled', 'revision'])) return errors;
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
-  optionalLine(errors, 'role', body.role, ROLE_MAX);
+  requireSingleLine(errors, 'role', body.role, { min: 1, max: ROLE_MAX, label: 'Role' });
   requireRevision(errors, body.revision, revisionRequired);
   if (typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 8192 || MULTI_LINE.test(body.prompt)) {
     add(errors, 'prompt', 'Use 1–8192 characters without terminal control codes');
@@ -420,7 +457,11 @@ export function validateTeamChange(body) {
     : { ...error, field: 'body' });
 }
 
-export function validateRunStartBody(body, { inputMode = 'descriptive' } = {}) {
+/**
+ * `requireTeam` is for new starts only: reservations saved before teams were required are read
+ * back through this validator and must stay readable.
+ */
+export function validateRunStartBody(body, { inputMode = 'descriptive', requireTeam = true } = {}) {
   const errors = [];
   if (!rejectUnknown(errors, body, ['requestId', 'workflowId', 'project', 'input', 'worktreePath', 'taskId', 'newTask', 'startIn', 'teamId', 'stepOverrides', 'disabledSteps', 'host', 'skipSync'])) return errors;
   if (body.host !== undefined && (typeof body.host !== 'string' || !body.host.trim() || SINGLE_LINE.test(body.host))) {
@@ -449,6 +490,7 @@ export function validateRunStartBody(body, { inputMode = 'descriptive' } = {}) {
     }
   }
   validateAssignments(body, errors);
+  if (requireTeam && body.teamId === undefined) add(errors, 'teamId', 'Choose a team');
   if (!isRunRequestId(body.requestId)) {
     add(errors, 'requestId', 'Use 1–128 letters, digits, underscores or hyphens');
   }

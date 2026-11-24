@@ -246,16 +246,15 @@ describe('workflow templates', () => {
     expect(template.nodes.some(node => /commit/i.test(node.name))).toBe(false);
   });
 
-  it('builds independent drafts that pass validation after choosing agents', () => {
+  it('builds independent drafts that pass validation with roles only', () => {
     for (const template of WORKFLOW_TEMPLATES) {
       const draft = buildTemplateDraft(template.id);
-      expect(draft.nodes.every(node => node.agentId === '')).toBe(true);
-      expect(validateWorkflowBody({ ...draft, nodes: draft.nodes.map(node => ({ ...node, agentId: AGENT })) })).toEqual([]);
+      expect(draft.nodes.every(node => !('agentId' in node))).toBe(true);
+      expect(validateWorkflowBody(draft)).toEqual([]);
       // The draft keeps what the template says each step is for, and what the workflow is for.
       expect(draft.nodes.map(node => node.role)).toEqual(template.nodes.map(node => node.role));
       expect(draft).toMatchObject({ kind: template.kind, description: template.description });
-      // Without agents it is a valid saved template.
-      expect(validateWorkflowBody({ ...draft, nodes: draft.nodes.map(({ agentId, ...node }) => node) }, { template: true })).toEqual([]);
+      expect(validateWorkflowBody(draft, { template: true })).toEqual([]);
       draft.nodes[0].name = 'Changed';
       expect(template.nodes[0].name).not.toBe('Changed');
     }
