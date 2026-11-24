@@ -74,7 +74,7 @@ describe('workflow templates', () => {
     expect(byName.Develop.prompt).not.toMatch(/as small as/);
     expect(byName.Review.prompt).toMatch(/against plan\.md and the Specify note/);
     // Test keeps the bug-fix verification rules and works a phase per round, with two rounds per phase.
-    expect(byName.Test.prompt).toMatch(/Untick any task that does not hold/);
+    expect(byName.Test.prompt).toMatch(/Untick any task in plan\.md that does not hold/);
     expect(byName.Test.prompt).toMatch(/only the tests for that phase/);
     expect(byName.Test.prompt).toMatch(/full test suite once/);
     expect(byName.Test.prompt).toMatch(/run the same command on the recorded base commit/);
@@ -191,8 +191,9 @@ describe('workflow templates', () => {
     expect(byName.Requirements.prompt).toMatch(/Ask nothing you could find out yourself, and when nothing is missing ask nothing/);
     expect(byName.Requirements.prompt).not.toMatch(/reproduce/);
     expect(byName.Requirements).toEqual((({ id, ...step }) => step)(BUILT_IN_STEPS.find(step => step.id === 'requirements')));
-    // The specification is a file in the repository and plan.md stays in the run notes; nothing is built before Specify is approved.
-    expect(byName.Specify).toMatchObject({ readOnly: false, approval: true, askOwner: false, repeat: { mode: 'once' } });
+    // The specification is a file in the repository and plan.md stays in the run notes; Specify does not wait for approval.
+    expect(template.description).toBe('Settle the requirements, agree a specification, plan phases, build each one, review, test and commit.');
+    expect(byName.Specify).toMatchObject({ readOnly: false, approval: false, askOwner: false, repeat: { mode: 'once' } });
     expect(byName.Specify.prompt).toMatch(/Read the Requirements note/);
     expect(byName.Specify.prompt).toMatch(/write plan\.md in the run notes folder/i);
     expect(byName.Specify.prompt).toMatch(/Change no code/);

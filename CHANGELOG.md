@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-11-24] - Shipped workflows match the owner's saved workflows
+
+### Executive Summary
+* A new install should start with the same workflows the owner uses. Two built-in templates had drifted from the owner's saved copies: Bug fix's Test step now says which file to untick tasks in (plan.md), and Feature from requirements no longer waits for approval after Specify and carries the owner's description. The owner's saved Feature Build from Spec was brought to the shipped written-out prompts, so it needs no skills.
+
+### Technical Details
+* **🛠️ Codebase:**
+  * `shared/workflow-templates.mjs` — Bug fix Test: "Untick any task in plan.md that does not hold"; Feature from requirements: Specify `approval: false` and the owner's description.
+  * `README.md` — Feature from requirements has two steps before the build loop and Specify does not wait for approval.
+* **🧪 Tests:**
+  * `server/__tests__/workflow-templates.test.js` — the Bug fix Test wording, the Feature from requirements description and Specify's approval setting.
+
 ## [2026-11-24] - Bug fix workflow plans its fix in phases and flags oversized fixes
 
 ### Executive Summary
