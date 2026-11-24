@@ -48,3 +48,14 @@ export function read(lines) {
   const turn = region.above.some(line => LIVE_STATUS.test(line)) ? 'working' : 'idle';
   return { turn, backgroundShells: 0 };
 }
+
+const VOICE_RULE = /^── Voice input \(alt\(option\)\+v to start\) ─+$/u;
+const STATUS_FOOTER = /^muse-[^·]+ · [^·]+ · \S.*$/u;
+const EXHAUSTED_WINDOW = /^You've used your (?:\d{1,3}-(?:hour|minute)|daily|weekly) quota \(resets at (?:0?[1-9]|1[0-2]):[0-5]\d [AP]M\)\.?$/i;
+
+export function usageLimit(lines) {
+  const { above, below, prompt } = promptRegion(lines, line => INPUT_PROMPT.test(line));
+  if (prompt !== '❯' || below.length !== 2 || !/^─+$/.test(below[0]) || !STATUS_FOOTER.test(below[1])) return null;
+  if (!VOICE_RULE.test(above.at(-1)) || read(lines).turn !== 'idle') return null;
+  return EXHAUSTED_WINDOW.test(above.at(-2)) ? 'Muse Code quota exhausted.' : null;
+}

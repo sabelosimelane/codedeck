@@ -39,3 +39,27 @@ export function read(lines) {
   const turn = region.above.some(line => SPINNER.test(line) && !TURN_COMPLETE.test(line)) ? 'working' : 'idle';
   return { turn, backgroundShells };
 }
+
+// Claude Code 2.1.330 composes the refusal from its rate-limit names and a reset time that is
+// "9pm"/"9:30pm" within a day and "Nov 28, 9pm" (with the year when it differs) beyond it.
+const RESET_TIME = String.raw`(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, (?:\d{4}, )?)?(?:[1-9]|1[0-2])(?::[0-5]\d)?[ap]m`;
+const SESSION_LIMIT = new RegExp(String.raw`^You've hit your (?:(?:session|5-hour|weekly|Opus|Sonnet|Fable|usage) )?limit · resets ${RESET_TIME} \([A-Za-z_+-]+(?:\/[A-Za-z0-9_+-]+)*\)(?: · progress saved)?$`);
+// Its upsell table; "you’re" is printed with a curly apostrophe.
+const LIMIT_ADVICE = /^(?:Use your limit reset to reset it now: clau\.de\/reset|\/upgrade to increase your usage limit\.|\/upgrade or \/usage-credits to finish what you[’']re working on\.|\/usage-credits to finish what you[’']re working on\.|\/usage-credits to adjust your monthly spend limit\.|\/usage-credits to request more usage from your admin\.|\/login to switch to an API usage-billed account\.)$/u;
+const INPUT_RULE = /^[─━▔▁]+$/u;
+const SHORT_TURN_COMPLETE = /^[·✢✳✶✻✽✼✱*] \S+ for \d+(?:m \d+)?s$/u;
+
+export function usageLimit(lines) {
+  const { above, below, prompt } = promptRegion(lines, line => INPUT_PROMPT.test(line), 5);
+  if (prompt !== '❯' || !INPUT_RULE.test(below[0]) || !MODE_FOOTER.test(below.at(-1)) || below.length > 3) return null;
+  const turn = read(lines);
+  if (turn.turn !== 'idle' || turn.backgroundShells || / · [1-9]\d* agents?\b/.test(below.at(-1))) return null;
+
+  const heading = above.findLastIndex(line => SESSION_LIMIT.test(line));
+  if (heading < 0) return null;
+  const trailing = above.slice(heading + 1);
+  if (trailing.at(-1) && (TURN_COMPLETE.test(trailing.at(-1)) || SHORT_TURN_COMPLETE.test(trailing.at(-1)))) trailing.pop();
+  return trailing.length <= 2 && trailing.every(line => LIMIT_ADVICE.test(line))
+    ? "You've hit your usage limit."
+    : null;
+}

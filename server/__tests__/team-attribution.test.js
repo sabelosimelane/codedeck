@@ -81,6 +81,42 @@ function input() {
 }
 const start = () => runs.create(input(), { team, mixed: false, workload });
 describe('immutable team attribution', () => {
+  it.each([
+    ['fallbackAgent', null],
+    ['id', 'not a uuid'],
+    ['name', ''],
+    ['launchCommand', null],
+    ['resetCommand', 'break\nline'],
+    ['source', 'override'],
+    ['agentRevision', 0],
+    ['teamId', randomUUID()],
+    ['teamRevision', 7],
+  ])('rejects an invalid persisted role fallback field %s by run identity', (field, invalid) => {
+    const run = start();
+    const def = run.definition;
+    const fallback = {
+      id: second.id, name: second.name, launchCommand: second.launchCommand, resetCommand: second.resetCommand,
+      assignment: { source: 'fallback', agentRevision: second.revision, teamId: team.id, teamRevision: team.revision },
+    };
+    const agent = def.steps[0].agent;
+    agent.fallbackAgent = field === 'fallbackAgent' ? invalid : fallback;
+    if (['id', 'name', 'launchCommand', 'resetCommand'].includes(field)) fallback[field] = invalid;
+    if (['source', 'agentRevision', 'teamId', 'teamRevision'].includes(field)) fallback.assignment[field] = invalid;
+    db.prepare('UPDATE pipeline_runs SET definition=? WHERE id=?').run(JSON.stringify(def), run.id);
+    expect(() => runs.get(run.id)).toThrow(new RegExp(`${run.id}.*fallbackAgent.*${field === 'fallbackAgent' ? '' : field}`));
+  });
+
+  it('does not allow a workflow agent to acquire a fallback from a corrupt run record', () => {
+    const record = input();
+    record.definition.steps[0].agent = {
+      ...attributedAgent(first, 'workflow', null),
+      fallbackAgent: { ...attributedAgent(second, 'team', team), assignment: {
+        source: 'fallback', agentRevision: second.revision, teamId: team.id, teamRevision: team.revision,
+      } },
+    };
+    expect(() => runs.create(record)).toThrow(new RegExp(`${record.id}.*fallbackAgent.*team`));
+  });
+
   it('keeps initial configuration and each executed assignment across retries and restarts', () => {
     const run = start();
     expect(runs.attributedIds()).toEqual([run.id]);

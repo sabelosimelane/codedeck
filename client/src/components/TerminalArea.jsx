@@ -366,6 +366,7 @@ export default function TerminalArea({
   onLoadPipelineRunAnswers = async () => null,
   onApprovePipelineRun,
   onSendBackPipelineRun,
+  onChangePipelineRunAgent,
   onTasksChanged = () => {},
 }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
@@ -1424,7 +1425,7 @@ export default function TerminalArea({
         // Close run: the backend closes the terminals the run used. A run that could not be closed answers null, and its tabs stay.
         onCleanup={async runId => { const closed = await onCleanupPipelineRun(runId); if (closed) removeClosedSessions(closed.terminalsClosed); }}
         onAnswer={onAnswerPipelineRun} onLoadNotes={onLoadPipelineRunNotes} onLoadDecisions={onLoadPipelineRunDecisions}
-        onLoadReviews={onLoadPipelineRunReviews} onLoadAnswers={onLoadPipelineRunAnswers} onApprove={onApprovePipelineRun} onSendBack={onSendBackPipelineRun}>
+        onLoadReviews={onLoadPipelineRunReviews} onLoadAnswers={onLoadPipelineRunAnswers} onApprove={onApprovePipelineRun} onSendBack={onSendBackPipelineRun} onChangeAgent={onChangePipelineRunAgent}>
       <TerminalTabBar tabs={displayTabs} renderTab={tab => {
             const tabLabel = getTerminalTabLabel(tab.panes, tab.label, sessionTitles);
             // Where there is more than one repository to tell apart, a tab says which it is in.

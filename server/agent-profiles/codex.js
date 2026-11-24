@@ -39,3 +39,34 @@ export function read(lines) {
   const turn = working ? 'working' : 'idle';
   return { turn, backgroundShells };
 }
+
+// Codex's usage-limit error history cell starts with ■. Match its formatter's
+// complete refusal and return fixed text so account/model detail stays in the terminal.
+const IDLE_INPUT = /^›(?: Ask Codex to do anything)?$/u;
+const SHORTCUTS = /^(?:← for agents · )?\? for shortcuts(?:\s{2,}⚠ \d+ warnings? · f2 to view)?$/u;
+const STATUS_FOOTER = /^[\w.-]+(?: [\w.-]+)* · (?:~|\/)\S.*$/u;
+const USAGE_LIMIT = /^■ You[’']ve hit your usage limit[. ]/u;
+const RETRY_AT = String.raw`(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}(?:st|nd|rd|th), \d{4} )?(?:[1-9]|1[0-2]):[0-5]\d [AP]M`;
+const RETRY = String.raw`again (?:later|at ${RETRY_AT})\.`;
+const UPGRADE_ADVICE = [
+  String.raw`Upgrade to Pro \(https://chatgpt\.com/explore/pro\), visit https://chatgpt\.com/settings/usage to purchase more credits`,
+  String.raw`To get more access now, send a request to your admin`,
+  String.raw`Upgrade to Plus to continue using Codex \(https://chatgpt\.com/explore/plus\),`,
+  String.raw`Visit https://chatgpt\.com/settings/usage to purchase more credits`,
+].join('|');
+const LIMIT_REFUSAL = new RegExp(
+  String.raw`^■ You[’']ve hit your usage limit(?:\. Try ${RETRY}|(?: for [\w.-]+(?: [\w.-]+){0,4}\. Switch to another model now,|\. (?:${UPGRADE_ADVICE})) or try ${RETRY})$`, 'u',
+);
+
+export function usageLimit(lines) {
+  const { above, below, prompt } = promptRegion(lines, line => INPUT_PROMPT.test(line), 5);
+  if (!IDLE_INPUT.test(prompt) || !SHORTCUTS.test(below.at(-1)) || below.length > 2) return null;
+  if (below.length === 2 && !STATUS_FOOTER.test(below[0])) return null;
+  const turn = read(lines);
+  if (turn.turn !== 'idle' || turn.backgroundShells) return null;
+
+  const heading = above.findLastIndex(line => USAGE_LIMIT.test(line));
+  return heading >= 0 && LIMIT_REFUSAL.test(above.slice(heading).join(' '))
+    ? 'You’ve hit your usage limit.'
+    : null;
+}

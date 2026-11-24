@@ -7,7 +7,7 @@
 
 const STATUS_LINES_ABOVE_PROMPT = 3;
 const DIALOG_TAIL_LINES = 16;
-const BOX_DRAWING_ONLY = /^[─━╌═│╭╰╮╯\s]+$/u;
+const BOX_DRAWING_ONLY = /^[─━╌═│╭╰╮╯▔▁\s]+$/u;
 
 /** Elapsed counter as the CLIs print it: `27s`, `3m 12s`, `1h 02m 03s`. */
 export const ELAPSED = String.raw`(?:\d+h )?(?:\d+m )?\d+s`;
@@ -25,7 +25,7 @@ export function dialogTail(lines) {
  * Locate the last line accepted by `isPrompt` and return the status lines just
  * above it (rules and blank lines skipped) plus everything below it.
  */
-export function promptRegion(lines, isPrompt) {
+export function promptRegion(lines, isPrompt, maxAbove = STATUS_LINES_ABOVE_PROMPT) {
   const text = screenLines(lines);
   let index = -1;
   for (let i = text.length - 1; i >= 0; i -= 1) {
@@ -37,7 +37,7 @@ export function promptRegion(lines, isPrompt) {
   if (index < 0) return { above: [], below: [], prompt: '' };
 
   const above = [];
-  for (let i = index - 1; i >= 0 && above.length < STATUS_LINES_ABOVE_PROMPT; i -= 1) {
+  for (let i = index - 1; i >= 0 && above.length < maxAbove; i -= 1) {
     if (text[i] && !BOX_DRAWING_ONLY.test(text[i])) above.unshift(text[i]);
   }
   return { above, below: text.slice(index + 1).filter(Boolean), prompt: text[index] };

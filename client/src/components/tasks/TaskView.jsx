@@ -1,4 +1,6 @@
 import { listRunAudit } from '../../utils/pipelinesApi';
+import { liveAgentChangeTiming } from '../../../../shared/pipeline-definitions.mjs';
+import ChangeRunAgent from '../pipelines/ChangeRunAgent';
 import ChangeRunTeam from '../pipelines/ChangeRunTeam';
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, CheckCircle2, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'lucide-react';
@@ -65,7 +67,7 @@ function StepRecords({ label, emptyText, load, resetKey, render, summary }) {
   );
 }
 
-function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnswer, onLoadNotes, onLoadDecisions, onLoadReviews, onLoadAnswers, onApprove, onSendBack }) {
+function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnswer, onLoadNotes, onLoadDecisions, onLoadReviews, onLoadAnswers, onApprove, onSendBack, onEditAgent }) {
   const progress = describeStepProgress(step);
   const loopTarget = step.repeat.mode === 'loop_back' ? run.steps.find(target => target.index === step.repeat.toStepIndex) : null;
   const resetKey = `${run.id}:${step.index}:${step.attempt}:${step.iteration}:${step.roundsCompleted}:${step.status}`;
@@ -78,6 +80,8 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
         <span>{progress.detail ? `${progress.label} · ${progress.detail}` : progress.label}</span>
         {step.role && <span className="pipeline-run-muted">{step.role}</span>}
         {step.agentName && <span className="pipeline-run-muted">{step.agentName}</span>}
+        {step.nextAgentName && <span className="pipeline-run-muted">{`${step.index < run.currentStepIndex ? 'Next round' : 'Next pass'} · ${step.nextAgentName}`}</span>}
+        {onEditAgent && <button type="button" onClick={onEditAgent}>Change agent</button>}
         {step.readOnly && <span className="pipeline-run-muted">read-only</span>}
         {step.askOwner && <span className="pipeline-run-muted" title="This step's questions always come to you, also when agents decide">always asks you</span>}
         {loopTarget && <span className="pipeline-run-muted">{`loops back to ${loopTarget.name}`}</span>}
@@ -97,7 +101,7 @@ function StepDetail({ run, step, isCurrent, terminalOpen, onOpenTerminal, onAnsw
           load={() => listRunAudit(run.id, step.index)}
           summary={events => describeAuditIntervals(events).map(row => <p key={row.attempt}>{`Attempt ${row.attempt} · ${row.words}`}</p>)}
           render={event => <li key={event.id} className="pipeline-run-list-item">
-            <strong>{`Attempt ${event.attempt} · ${event.kind.replaceAll('_',' ')}`}</strong>
+            <strong>{`Attempt ${event.attempt} · ${event.kind === 'quota_takeover' ? 'Usage limit takeover' : event.kind.replaceAll('_',' ')}`}</strong>
             <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleTimeString()}</time>
             <span>{[event.host, event.worktreePath, event.sessionId, event.agentName, event.model, event.effort].filter(Boolean).join(' · ')}</span>
             {event.detail && <span>{event.detail}</span>}
@@ -172,7 +176,7 @@ export default function TaskView({
   title, tooltip, run, openSessionIds, inTask = false, repository = null, children,
   onActivateStep, onOpenTerminal,
   onStop, onResume, onContinue, onCleanup, onAnswer,
-  onLoadNotes, onLoadDecisions, onLoadReviews, onLoadAnswers = async () => ({ answers: [] }), onApprove, onSendBack,
+  onLoadNotes, onLoadDecisions, onLoadReviews, onLoadAnswers = async () => ({ answers: [] }), onApprove, onSendBack, onChangeAgent,
 }) {
   if (!run || typeof run !== 'object') throw new Error('task view: run is required');
   if (!Array.isArray(run.steps) || run.steps.length === 0) throw new Error('task view: run.steps must be a nonempty array');
@@ -187,6 +191,9 @@ export default function TaskView({
   const selectedIndex = picked !== null && run.steps.some(step => step.index === picked) ? picked : currentIndex;
   const selected = run.steps.find(step => step.index === selectedIndex) ?? run.steps[0];
   const current = run.steps.find(step => step.index === currentIndex) ?? run.steps[0];
+  const [editingAgent, setEditingAgent] = useState(null);
+  const editingStep = run.steps.find(step => step.index === editingAgent?.index);
+  const agentTiming = step => liveAgentChangeTiming(run.status, run.steps, run.steps, currentIndex, step.index);
   // The terminal follows the run: when the run starts working in another step's terminal, that
   // terminal is shown. It fires once per move, so a tab the owner then picks stays put, and a run
   // that is no longer working moves nothing.
@@ -313,7 +320,10 @@ export default function TaskView({
           <StepDetail run={run} step={selected} isCurrent={selected.index === currentIndex}
             terminalOpen={selected.sessionId !== null && openSessionIds.has(selected.sessionId)}
             onOpenTerminal={onOpenTerminal} onAnswer={onAnswer} onLoadNotes={onLoadNotes} onLoadDecisions={onLoadDecisions}
-            onLoadReviews={onLoadReviews} onLoadAnswers={onLoadAnswers} onApprove={onApprove} onSendBack={onSendBack} />
+            onLoadReviews={onLoadReviews} onLoadAnswers={onLoadAnswers} onApprove={onApprove} onSendBack={onSendBack}
+            onEditAgent={onChangeAgent && agentTiming(selected) !== null ? () => setEditingAgent({ runId: run.id, index: selected.index }) : undefined} />
+          {editingAgent?.runId === run.id && editingStep && <ChangeRunAgent run={run} step={editingStep}
+            timing={agentTiming(editingStep)} onSave={onChangeAgent} onClose={() => setEditingAgent(null)} />}
           {children}
         </div>
       </div>

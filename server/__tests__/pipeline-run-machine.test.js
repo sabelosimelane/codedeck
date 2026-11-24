@@ -742,3 +742,41 @@ describe('agent_restarted (the agent of a running step is started again in its t
       .toThrow('agent_restarted event: the step has no terminal to restart its agent in');
   });
 });
+
+
+describe('queued agent dispatch boundaries', () => {
+  const agent = { id: 'old', launchCommand: 'old' };
+  const replacement = { id: 'new', launchCommand: 'new' };
+  const queued = (status = 'running', stepStatus = status) => run({ status, worktreeState: 'present',
+    definition: { steps: [{ agent, nextAgent: replacement }] },
+    steps: [step({ status: stepStatus, sessionId: 'Demo-1', attempt: 1, iteration: 1, startedAt: AT })],
+  });
+
+  it.each([
+    ['awaiting_approval', 'awaiting_approval', 'send_back'],
+    ['stopped', 'stopped', 'resume'],
+    ['limit_paused', 'limit_reached', 'continue'],
+    ['running', 'running', 'agent_switched'],
+  ])('dispatches the queued agent on %s + %s + %s', (status, stepStatus, type) => {
+    const next = applyEvent(queued(status, stepStatus), { type, at: AT, newTerminal: false });
+    expect(next.definition.steps[0]).toEqual({ agent: replacement });
+    expect(next.steps[0]).toMatchObject({ status: 'launching', sessionId: null, priorSessionIds: ['Demo-1'],
+      attempt: 2, iteration: type === 'agent_switched' ? 1 : 0 });
+  });
+
+  it.each([
+    ['running', 'running', 'step_complete'],
+    ['awaiting_approval', 'awaiting_approval', 'approve'],
+  ])('discards the queue on final completion via %s + %s + %s', (status, stepStatus, type) => {
+    const next = applyEvent(queued(status, stepStatus), { type, at: AT });
+    expect(next.definition.steps[0]).toEqual({ agent });
+    expect(next.steps[0].sessionId).toBe('Demo-1');
+  });
+
+  it('keeps an answered pass on the terminal which requested the answer', () => {
+    const pending = queued('needs_input');
+    const next = applyEvent(pending, { type: 'input_received', at: AT });
+    expect(next.definition.steps[0]).toEqual(pending.definition.steps[0]);
+    expect(next.steps[0].sessionId).toBe('Demo-1');
+  });
+});

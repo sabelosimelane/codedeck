@@ -18,14 +18,14 @@ const HANDOFF_IDLE_MS = 24000;
 // already worked. `guidance` is one more sentence or two of instruction for every pass.
 // A step's guidance names every repository of its task with its path, so it has room for several.
 export const GUIDANCE_MAX = 4000;
-const START_FIELDS = ['requestId', 'command', 'resetCommand', 'maxIterations', 'resetFirst', 'guidance'];
+const START_FIELDS = ['requestId', 'command', 'resetCommand', 'maxIterations', 'resetFirst', 'guidance', 'startAfterPass', 'ownerContext'];
 
 function validateStart(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Workflow start requires an object.');
   for (const field of Object.keys(request)) {
     if (!START_FIELDS.includes(field)) throw new Error('Workflow start contains an unknown field.');
   }
-  const { requestId, command, resetCommand, maxIterations, resetFirst, guidance } = request;
+  const { requestId, command, resetCommand, maxIterations, resetFirst, guidance, startAfterPass, ownerContext } = request;
   if (resetFirst !== undefined && typeof resetFirst !== 'boolean') throw new Error('Workflow resetFirst must be true or false.');
   if (guidance !== undefined && (typeof guidance !== 'string' || !guidance.trim() || guidance.length > GUIDANCE_MAX || /[\x00-\x1f\x7f]/.test(guidance))) {
     throw new Error(`Workflow guidance must contain 1–${GUIDANCE_MAX} characters on one line without terminal control codes.`);
@@ -35,6 +35,14 @@ function validateStart(request) {
   if (typeof resetCommand !== 'string' || !resetCommand.trim() || resetCommand.length > 256 || /[\x00-\x1f\x7f]/.test(resetCommand)) throw new Error('Workflow resetCommand must contain 1–256 characters on one line without terminal control codes.');
   if (maxIterations !== undefined && (!Number.isInteger(maxIterations) || maxIterations < 1 || maxIterations > 100)) {
     throw new Error('Workflow maxIterations must be an integer from 1 to 100.');
+  }
+  if (startAfterPass !== undefined && (!Number.isInteger(startAfterPass) || startAfterPass < 1
+    || maxIterations === undefined || startAfterPass >= maxIterations)) {
+    throw new Error('Workflow startAfterPass must identify a completed pass below the iteration limit.');
+  }
+  if (ownerContext !== undefined && (typeof ownerContext !== 'string' || !ownerContext.trim()
+    || ownerContext.length > 8200 || /[\x00-\x09\x0b-\x1f\x7f]/.test(ownerContext))) {
+    throw new Error('Workflow ownerContext must be recorded owner feedback or an answer.');
   }
 }
 
@@ -144,8 +152,10 @@ export function createTerminalWorkflow({ write, notify }) {
   let quietTimer;
   // Checked before every repeat pass (a run's attachment copies); not part of the replayed request.
   let beforePass = null;
+  let beforeDispatch = null;
   let resetTimer;
   let enterTimer;
+  let promptSubmitted = false;
   const inputParser = { mode: 'normal' };
   const requests = new Map();
   const issuedIdentifiers = new Set();
@@ -195,11 +205,28 @@ export function createTerminalWorkflow({ write, notify }) {
     issuedIdentifiers.add(issued);
     return issued;
   }
+  function yieldDispatch() {
+    if (pass <= (request.startAfterPass ?? 0) || beforeDispatch === null) return false;
+    try {
+      if (!beforeDispatch(pass)) return false;
+      finish('stopped');
+    } catch (err) {
+      finish('error', String(err?.message || err).slice(0, 2000));
+    }
+    return true;
+  }
+  function formatPassPrompt() {
+    const command = request.ownerContext === undefined ? request.command
+      : `${request.command}\n\n${request.ownerContext}`;
+    return buildPrompt(command, identifier, request.guidance);
+  }
   function iteration() {
+    if (yieldDispatch()) return;
     cancelTimers();
     status = 'running';
     phase = 'waiting';
     pass += 1;
+    promptSubmitted = false;
     workObserved = false;
     askedForInput = false;
     acceptedSignal = null;
@@ -211,9 +238,13 @@ export function createTerminalWorkflow({ write, notify }) {
     pendingIdentifier = null;
     rawOutput = '';
     publish();
-    pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance), () => audit?.('prompt_submitted', 'Controller submitted terminal input'));
+    pasteAndSubmit(formatPassPrompt(), () => {
+      promptSubmitted = true;
+      audit?.('prompt_submitted', 'Controller submitted terminal input');
+    });
   }
   function reset() {
+    if (yieldDispatch()) return;
     phase = 'reset_output';
     rawOutput = '';
     resetTimer = setTimeout(() => finish('error', 'Reset did not settle within 15 seconds. Check the terminal before starting again.'), RESET_TIMEOUT_MS);
@@ -238,6 +269,7 @@ export function createTerminalWorkflow({ write, notify }) {
       issuedIdentifiers: [...issuedIdentifiers],
       workObserved,
       askedForInput,
+      ...(promptSubmitted && { promptSubmitted }),
       handoffDeadline,
       ...(acceptedSignal && { acceptedSignal }),
     };
@@ -275,6 +307,7 @@ export function createTerminalWorkflow({ write, notify }) {
     exportState,
     /** The identifier the agent copies into its signal for the pass in progress, or null. */
     signalIdentifier: () => identifier,
+    submittedPass: () => status === 'running' && phase === 'waiting' && promptSubmitted && !acceptedSignal ? identifier : null,
     /**
      * Hydrate an in-flight pass after a backend restart without re-sending the prompt or
      * resetting the agent.
@@ -302,14 +335,16 @@ export function createTerminalWorkflow({ write, notify }) {
       }
       if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Workflow reattach options must be an object.');
       for (const field of Object.keys(options)) {
-        if (field !== 'beforePass') throw new Error('Workflow reattach contains an unknown option.');
+        if (!['beforePass', 'beforeDispatch'].includes(field)) throw new Error('Workflow reattach contains an unknown option.');
       }
       if (options.beforePass !== undefined && typeof options.beforePass !== 'function') throw new Error('Workflow beforePass must be a function.');
+      if (options.beforeDispatch !== undefined && typeof options.beforeDispatch !== 'function') throw new Error('Workflow beforeDispatch must be a function.');
       if (ACTIVE.has(status)) throw new Error('A workflow is already running in this terminal.');
 
       cancelTimers();
       request = { ...savedState.request };
       beforePass = options.beforePass ?? null;
+      beforeDispatch = options.beforeDispatch ?? null;
       requests.set(request.requestId, request);
       error = null;
       limitReached = false;
@@ -320,6 +355,8 @@ export function createTerminalWorkflow({ write, notify }) {
       askedForInput = savedState.askedForInput ?? (savedState.status === 'needs_input' || savedState.passIdentifiers.length > 1);
       if (typeof askedForInput !== 'boolean') throw new Error('Workflow askedForInput must be boolean.');
       workObserved = savedState.workObserved ?? false;
+      if (Object.hasOwn(savedState, 'promptSubmitted') && savedState.promptSubmitted !== true) throw new Error('Workflow promptSubmitted must be true when present.');
+      promptSubmitted = savedState.promptSubmitted === true;
       handoffDeadline = savedState.handoffDeadline ?? null;
       if (typeof workObserved !== 'boolean') throw new Error('Workflow workObserved must be boolean.');
       if (handoffDeadline !== null) {
@@ -364,9 +401,10 @@ export function createTerminalWorkflow({ write, notify }) {
       validateStart(input);
       if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Workflow start options must be an object.');
       for (const field of Object.keys(options)) {
-        if (field !== 'beforePass') throw new Error('Workflow start contains an unknown option.');
+        if (!['beforePass', 'beforeDispatch'].includes(field)) throw new Error('Workflow start contains an unknown option.');
       }
       if (options.beforePass !== undefined && typeof options.beforePass !== 'function') throw new Error('Workflow beforePass must be a function.');
+      if (options.beforeDispatch !== undefined && typeof options.beforeDispatch !== 'function') throw new Error('Workflow beforeDispatch must be a function.');
       const previous = requests.get(input.requestId);
       if (previous) {
         if (
@@ -375,6 +413,8 @@ export function createTerminalWorkflow({ write, notify }) {
           || previous.maxIterations !== input.maxIterations
           || (previous.resetFirst ?? false) !== (input.resetFirst ?? false)
           || previous.guidance !== input.guidance
+          || previous.startAfterPass !== input.startAfterPass
+          || previous.ownerContext !== input.ownerContext
         ) throw new Error('Workflow requestId was already used with different commands.');
         publish();
         return;
@@ -384,10 +424,11 @@ export function createTerminalWorkflow({ write, notify }) {
       if (requests.size >= 1000) throw new Error('Workflow request limit reached. Open a new terminal to start another workflow.');
       request = { ...input };
       beforePass = options.beforePass ?? null;
+      beforeDispatch = options.beforeDispatch ?? null;
       requests.set(request.requestId, request);
       error = null;
       limitReached = false;
-      pass = 0;
+      pass = input.startAfterPass ?? 0;
       if (request.resetFirst === true) {
         // The agent in this terminal has context from earlier work: clear it, then start pass 1.
         cancelTimers();
@@ -443,7 +484,7 @@ export function createTerminalWorkflow({ write, notify }) {
         throw new Error('The prompt can be sent again only while a pass is running.');
       }
       clearTimeout(enterTimer);
-      pasteAndSubmit(buildPrompt(request.command, identifier, request.guidance), () => audit?.('prompt_submitted', 'Controller submitted terminal input'));
+      pasteAndSubmit(formatPassPrompt(), () => audit?.('prompt_submitted', 'Controller submitted terminal input'));
     },
     /**
      * What to type for the agent as the answer to its request: the answer, and a new identifier

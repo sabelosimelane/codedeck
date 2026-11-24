@@ -60,6 +60,26 @@ afterEach(() => {
 });
 
 describe('usePipelineRuns', () => {
+  it('keeps a saved assignment when an earlier poll completes later', async () => {
+    const old = runView();
+    const changed = runView({ updatedAt: '2026-11-13T10:00:01.000Z', team: { name: 'Trial', changed: true } });
+    let replyToPoll;
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(okList([old]))
+      .mockImplementationOnce(() => new Promise(resolve => { replyToPoll = resolve; }))
+      .mockResolvedValueOnce(okRun(changed));
+    const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+    await waitFor(() => expect(result.current.runs).toEqual([old]));
+    let poll;
+    act(() => { poll = result.current.refresh(); });
+    await act(async () => { await result.current.changeRunAgent(old.id, {
+      expectedUpdatedAt: old.updatedAt, stepOverrides: { Develop: '11111111-1111-4111-8111-111111111111' },
+    }); });
+    await act(async () => { replyToPoll(okList([old])); await poll; });
+    expect(result.current.runs).toEqual([changed]);
+    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Agent changed for Develop' });
+  });
+
   it('approves and sends back waiting runs with action feedback', async () => {
     const waiting = runView({ status: 'awaiting_approval' });
     const approved = runView({ status: 'complete' });

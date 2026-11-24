@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   answerRun as apiAnswerRun,
+  changeRunTeam as apiChangeRunTeam,
   approveRun as apiApproveRun,
   sendBackRun as apiSendBackRun,
   cleanupRun as apiCleanupRun,
@@ -59,6 +60,7 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 function mergeRun(runs, next) {
   const index = runs.findIndex((run) => run.id === next.id);
   if (index < 0) return [...runs, next];
+  if (runs[index].updatedAt > next.updatedAt) return runs;
   const copy = runs.slice();
   copy[index] = next;
   return copy;
@@ -122,7 +124,10 @@ export function usePipelineRuns({ projectName, showToast }) {
         transitionRuns = [...next, ...finals];
       }
 
-      setRuns(next);
+      setRuns(current => next.map(run => {
+        const displayed = current.find(candidate => candidate.id === run.id);
+        return displayed?.updatedAt > run.updatedAt ? displayed : run;
+      }));
       setLocallyStartedRunIds((current) => {
         if (current.size === 0) return current;
         let changed = false;
@@ -250,6 +255,29 @@ export function usePipelineRuns({ projectName, showToast }) {
     (runId, comment) => runAction(run => `${run.workflowName || 'Workflow'} sent back`, id => apiSendBackRun(id, comment), runId),
     [runAction],
   );
+  const changeRunAgent = useCallback(async (runId, assignment) => {
+    const project = projectNameRef.current;
+    const accept = next => {
+      checkRun(next, 0);
+      if (mountedRef.current && projectNameRef.current === project) setRuns(current => mergeRun(current, next));
+    };
+    try {
+      const next = await apiChangeRunTeam(runId, assignment);
+      accept(next);
+      // Failures are shown in the dialog, which stays open for them.
+      showToast({ type: 'success', message: `Agent changed for ${Object.keys(assignment.stepOverrides)[0]}` });
+      return next;
+    } catch (failure) {
+      if (failure.status === 409) {
+        try {
+          accept(await apiGetRun(runId));
+        } catch (refreshFailure) {
+          throw Object.assign(new Error(`${failure.message} Could not refresh the assignments: ${failureMessage(refreshFailure)}`), { status: 409 });
+        }
+      }
+      throw failure;
+    }
+  }, [showToast]);
   /** What the owner answered in one step, or null when it could not be loaded. */
   const loadRunAnswers = useCallback(async (runId, stepIndex) => {
     try {
@@ -338,6 +366,7 @@ export function usePipelineRuns({ projectName, showToast }) {
     answerRun,
     approveRun,
     sendBackRun,
+    changeRunAgent,
     loadRunDecisions,
     loadRunReviews,
     loadRunAnswers,

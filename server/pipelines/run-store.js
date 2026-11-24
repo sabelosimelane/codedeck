@@ -40,6 +40,11 @@ function requireIso(id, field, value, { allowNull = false } = {}) {
   return value;
 }
 
+function nextRevision(id, current, now) {
+  const stamp = requireIso(id, 'updated_at', now);
+  return new Date(Math.max(Date.parse(stamp), Date.parse(current) + 1)).toISOString();
+}
+
 function requireString(id, field, value, { min = 1, max, singleLine = true, allowEmpty = false } = {}) {
   if (typeof value !== 'string') fieldError(id, field, 'must be a string');
   if (allowEmpty && value.length === 0) {
@@ -105,23 +110,45 @@ function validateLoops(id, steps) {
   });
 }
 
-function validateDefinitionAgent(id, prefix, agent) {
+function validateDefinitionAgent(id, prefix, agent, { role, kind }, isFallback = false) {
   if (!isPlainObject(agent)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(agent)) {
-    if (!['id', 'name', 'launchCommand', 'resetCommand', 'assignment'].includes(key)) {
-      fieldError(id, `${prefix}.${key}`, 'unknown field');
+    if (!['id', 'name', 'launchCommand', 'resetCommand', 'assignment'].includes(key) && !(key === 'fallbackAgent' && !isFallback)) {
+      fieldError(id, prefix, 'unknown agent field');
     }
   }
   if (!isUuid(agent.id)) fieldError(id, `${prefix}.id`, 'must be a UUID');
   requireString(id, `${prefix}.name`, agent.name, { max: 64 });
   requireString(id, `${prefix}.launchCommand`, agent.launchCommand, { max: 2048 });
   requireString(id, `${prefix}.resetCommand`, agent.resetCommand, { max: 256 });
+  if (isFallback && agent.assignment?.source !== 'fallback') {
+    fieldError(id, `${prefix}.assignment.source`, 'must be fallback');
+  }
+  const assignment = Object.hasOwn(agent, 'assignment')
+    ? checkedAssignment(id, agent.assignment, `${prefix}.assignment`) : undefined;
+  if (assignment?.source === 'fallback' && (kind !== 'node' || !role.trim())) {
+    fieldError(id, `${prefix}.assignment.source`, 'fallback requires a workflow step with a role');
+  }
+  let fallbackAgent;
+  if (Object.hasOwn(agent, 'fallbackAgent')) {
+    const field = `${prefix}.fallbackAgent`;
+    if (assignment?.source !== 'team' || kind !== 'node' || !role.trim()) {
+      fieldError(id, field, 'requires a team-supplied workflow step with a role');
+    }
+    fallbackAgent = validateDefinitionAgent(id, field, agent.fallbackAgent, { role, kind }, true);
+    for (const key of ['teamId', 'teamRevision']) {
+      if (fallbackAgent.assignment[key] !== assignment[key]) {
+        fieldError(id, `${field}.assignment.${key}`, 'must match the primary assignment');
+      }
+    }
+  }
   return {
     id: agent.id,
     name: agent.name.trim(),
     launchCommand: agent.launchCommand,
     resetCommand: agent.resetCommand,
-    ...(Object.hasOwn(agent, 'assignment') && { assignment: checkedAssignment(id, agent.assignment) }),
+    ...(assignment && { assignment }),
+    ...(fallbackAgent && { fallbackAgent }),
   };
 }
 
@@ -157,8 +184,8 @@ function validateDefinitionStep(id, index, step) {
     ...(step.inspectCleanCommit === true ? { inspectCleanCommit: true } : {}),
     prompt: requireString(id, `${prefix}.prompt`, step.prompt, { max: 16384, singleLine: false }),
     repeat: validateRepeat(id, `${prefix}.repeat`, step.repeat, index),
-    ...(Object.hasOwn(step, 'nextAgent') && { nextAgent: validateDefinitionAgent(id, `${prefix}.nextAgent`, step.nextAgent) }),
-    agent: validateDefinitionAgent(id, `${prefix}.agent`, step.agent),
+    ...(Object.hasOwn(step, 'nextAgent') && { nextAgent: validateDefinitionAgent(id, `${prefix}.nextAgent`, step.nextAgent, step) }),
+    agent: validateDefinitionAgent(id, `${prefix}.agent`, step.agent, step),
   };
 }
 
@@ -236,7 +263,7 @@ function validateStepProgress(id, index, step, project) {
   const prefix = `steps[${index}]`;
   if (!isPlainObject(step)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(step)) {
-    if (!['status', 'sessionId', 'priorSessionIds', 'attempt', 'iteration', 'roundsCompleted', 'detail', 'startedAt', 'finishedAt', 'elapsedMs'].includes(key)) {
+    if (!['status', 'sessionId', 'priorSessionIds', 'attempt', 'iteration', 'roundsCompleted', 'detail', 'startedAt', 'finishedAt', 'elapsedMs', 'quotaBlocked', 'quotaRestartPending'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
@@ -266,6 +293,9 @@ function validateStepProgress(id, index, step, project) {
   if (detail !== null) {
     detail = requireString(id, `${prefix}.detail`, detail, { max: 2000, singleLine: false, min: 0, allowEmpty: false });
   }
+  if (Object.hasOwn(step, 'quotaRestartPending') && step.quotaRestartPending !== true) {
+    fieldError(id, `${prefix}.quotaRestartPending`, 'must be true when present');
+  }
   return {
     status: step.status,
     sessionId: validateSessionId(id, `${prefix}.sessionId`, step.sessionId, project),
@@ -277,6 +307,10 @@ function validateStepProgress(id, index, step, project) {
     startedAt: requireIso(id, `${prefix}.startedAt`, step.startedAt, { allowNull: true }),
     finishedAt: requireIso(id, `${prefix}.finishedAt`, step.finishedAt, { allowNull: true }),
     elapsedMs: step.elapsedMs,
+    ...(Object.hasOwn(step, 'quotaBlocked') && {
+      quotaBlocked: requireString(id, `${prefix}.quotaBlocked`, step.quotaBlocked, { max: 256 }),
+    }),
+    ...(step.quotaRestartPending && { quotaRestartPending: true }),
   };
 }
 
@@ -389,6 +423,19 @@ function validateRunRecord(id, record) {
       || !Array.isArray(workflowState.passIdentifiers)
       || !Array.isArray(workflowState.issuedIdentifiers)) {
       fieldError(id, 'workflow_state', 'is malformed');
+    }
+    if (Object.hasOwn(workflowState, 'promptSubmitted') && workflowState.promptSubmitted !== true) {
+      fieldError(id, 'workflow_state.promptSubmitted', 'must be true when present');
+    }
+    const { startAfterPass, maxIterations, ownerContext } = workflowState.request;
+    if (startAfterPass !== undefined && (!Number.isInteger(startAfterPass) || startAfterPass < 1
+      || !Number.isInteger(maxIterations) || maxIterations > 100 || startAfterPass >= maxIterations
+      || startAfterPass > workflowState.pass)) {
+      fieldError(id, 'workflow_state.request.startAfterPass', 'must identify a completed pass below the iteration limit');
+    }
+    if (ownerContext !== undefined && (typeof ownerContext !== 'string' || !ownerContext.trim()
+      || ownerContext.length > 8200 || /[\x00-\x09\x0b-\x1f\x7f]/.test(ownerContext))) {
+      fieldError(id, 'workflow_state.request.ownerContext', 'must be recorded owner feedback or an answer');
     }
     if (!['running', 'needs_input'].includes(record.status)) {
       workflowState = null;
@@ -705,7 +752,8 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
     if (!Array.isArray(steps) || row.current_step_index < 0 || row.current_step_index >= steps.length) {
       fieldError(row.id, 'current_step_index', 'out of range');
     }
-    audit.append(get(row.id), {kind:'interrupted',detail:'Controller could not reattach'}, stamp);
+    const updatedAt = nextRevision(row.id, row.updated_at, stamp);
+    audit.append(get(row.id), {kind:'interrupted',detail:'Controller could not reattach'}, updatedAt);
     const nextSteps = steps.map((step, index) => (
       index === row.current_step_index ? { ...step, status: 'interrupted' } : step
     ));
@@ -713,7 +761,7 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
       UPDATE pipeline_runs
       SET status = 'interrupted', steps = ?, updated_at = ?, input_request = NULL, workflow_state = NULL
       WHERE id = ?
-    `).run(JSON.stringify(nextSteps), stamp, row.id);
+    `).run(JSON.stringify(nextSteps), updatedAt, row.id);
     return true;
   };
 
@@ -773,25 +821,26 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
     },
     create: create.immediate,
     update(id, patch, options) {
-      const current = get(id);
-      if (!current) throw new Error(`pipeline_runs row ${id}: not found`);
-      const next = validateRunRecord(id, {
-        ...current,
-        ...patch,
-        id,
-        createdAt: current.createdAt,
-        updatedAt: now(),
-      });
-      if (options?.audit) return db.transaction(() => {
-        const beginning = ['start','resume','agent_restarted'].includes(options.audit.kind);
-        audit.append(beginning ? next : current, options.audit, next.updatedAt);
+      const save = () => {
+        const current = get(id);
+        if (!current) throw new Error(`pipeline_runs row ${id}: not found`);
+        if (options?.expectedUpdatedAt !== undefined && current.updatedAt !== options.expectedUpdatedAt) return null;
+        const next = validateRunRecord(id, {
+          ...current,
+          ...patch,
+          id,
+          createdAt: current.createdAt,
+          // The timestamp is also the edit revision, even for writes in the same millisecond.
+          updatedAt: nextRevision(id, current.updatedAt, now()),
+        });
+        if (options?.audit) {
+          const beginning = ['start', 'resume', 'agent_restarted', 'agent_switched'].includes(options.audit.kind);
+          audit.append(beginning ? next : current, options.audit, next.updatedAt);
+        }
+        if (options?.mixed) attribution.markMixed(id, options.team);
         return write(next);
-      })();
-      if (options?.mixed) return db.transaction(() => {
-        attribution.markMixed(id, options.team);
-        return write(next);
-      })();
-      return write(next);
+      };
+      return options ? db.transaction(save).immediate() : save();
     },
     rewriteHost(previousName, nextName) {
       if (previousName === nextName) return;

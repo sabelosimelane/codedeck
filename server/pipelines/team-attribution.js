@@ -1,6 +1,6 @@
 import { createRunClock, attemptDurations } from './run-clock.js';
 import { createHash } from 'node:crypto';
-import { isUuid } from '../../shared/pipeline-definitions.mjs';
+import { AGENT_ASSIGNMENT_SOURCES, isUuid } from '../../shared/pipeline-definitions.mjs';
 import { AGENT_PRESETS, parseLaunchCommand } from '../../shared/agent-presets.mjs';
 
 const positive = (n) => Number.isSafeInteger(n) && n > 0;
@@ -8,13 +8,14 @@ const singleLine = (s, max) => typeof s === 'string' && s.length <= max && !/[\x
 function check(id, field, valid) {
   if (!valid) throw new Error(`team attribution for ${id}: invalid ${field}`);
 }
-export function checkedAssignment(id, value) {
-  check(id, 'assignment', value && typeof value === 'object' && !Array.isArray(value));
-  check(id, 'agentRevision', positive(value.agentRevision));
-  check(id, 'source', ['workflow', 'team', 'trial', 'override', 'setup'].includes(value.source));
-  const byTeam = ['team', 'trial'].includes(value.source);
-  check(id, 'teamId', byTeam ? isUuid(value.teamId) : value.teamId === null);
-  check(id, 'teamRevision', byTeam ? positive(value.teamRevision) : value.teamRevision === null);
+export function checkedAssignment(id, value, prefix) {
+  const field = name => prefix ? `${prefix}.${name}` : name;
+  check(id, prefix ?? 'assignment', value && typeof value === 'object' && !Array.isArray(value));
+  check(id, field('agentRevision'), positive(value.agentRevision));
+  check(id, field('source'), AGENT_ASSIGNMENT_SOURCES.includes(value.source));
+  const byTeam = ['team', 'trial', 'fallback'].includes(value.source);
+  check(id, field('teamId'), byTeam ? isUuid(value.teamId) : value.teamId === null);
+  check(id, field('teamRevision'), byTeam ? positive(value.teamRevision) : value.teamRevision === null);
   return {
     agentRevision: value.agentRevision,
     source: value.source,
@@ -34,6 +35,12 @@ export function attributedAgent(agent, source, team) {
     });
   return result;
 }
+
+// Commands are pinned in the runnable definition only.
+export function publicRoleFallback({ id, name, assignment }) {
+  return { id, name, agentRevision: assignment.agentRevision };
+}
+
 export function workloadKey(repositories, progressTemplate, input) {
   return createHash('sha256')
     .update(JSON.stringify([[...repositories].sort(), progressTemplate, /\.md$/i.test(input)]))
@@ -50,6 +57,15 @@ function checkObservation(id, observation) {
   check(id, 'role', singleLine(observation.role, 32));
   check(id, 'agentId', isUuid(observation.agentId));
   checkedAssignment(id, observation);
+  if (Object.hasOwn(observation, 'fallbackAgent')) {
+    const fallback = observation.fallbackAgent;
+    check(id, 'fallbackAgent',
+      observation.source === 'team' && fallback && typeof fallback === 'object' && !Array.isArray(fallback)
+      && Object.keys(fallback).every(key => ['id', 'name', 'agentRevision'].includes(key)));
+    check(id, 'fallbackAgent.id', isUuid(fallback.id));
+    check(id, 'fallbackAgent.name', singleLine(fallback.name, 64) && fallback.name.trim());
+    check(id, 'fallbackAgent.agentRevision', positive(fallback.agentRevision));
+  }
   const preset = AGENT_PRESETS.find((p) => p.id === observation.provider);
   check(id, 'provider', observation.provider === null || preset);
   check(
@@ -77,6 +93,7 @@ function observationFor(step, stepIndex) {
     stepName: step.name,
     role: step.role,
     ...agent.assignment,
+    ...(agent.fallbackAgent && { fallbackAgent: publicRoleFallback(agent.fallbackAgent) }),
     agentId: agent.id,
     provider: preset?.provider ?? null,
     model: preset?.model ?? null,

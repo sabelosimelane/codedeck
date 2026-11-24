@@ -67,7 +67,7 @@ export function parseTeam(record) {
   if (!isObject(record)) throw invalid('team', 'record');
   const { id, name, members, revision, createdAt, updatedAt } = record;
   if (!isUuid(id)) throw invalid('team', 'id');
-  const [error] = validateTeamBody({ name, members, revision }, { revisionRequired: true });
+  const [error] = validateTeamBody({ name, members, revision }, { revisionRequired: true, allowFallbackClear: false });
   if (error) throw invalid('team', error.field, id);
   if (!isTimestamp(createdAt)) throw invalid('team', 'createdAt', id);
   if (!isTimestamp(updatedAt)) throw invalid('team', 'updatedAt', id);

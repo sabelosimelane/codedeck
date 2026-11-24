@@ -11,6 +11,7 @@ export default function TeamList({ definitions: { teams, agents, workflows }, on
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const roles = [...new Set(workflows.flatMap(workflow => workflow.nodes.map(node => node.role)).filter(Boolean))].sort();
+  const agentName = id => agents.find(agent => agent.id === id)?.name ?? 'Missing agent';
 
   function edit(team) {
     setError('');
@@ -23,7 +24,10 @@ export default function TeamList({ definitions: { teams, agents, workflows }, on
   }
 
   async function save() {
-    const body = { name: draft.name, members: draft.members, ...(draft.id && { revision: draft.revision }) };
+    // Every member states its fallback: the server keeps an omitted one for older clients,
+    // which would bring back the fallback of a role removed and added again here.
+    const members = draft.members.map(member => ({ ...member, fallbackAgentId: member.fallbackAgentId ?? null }));
+    const body = { name: draft.name, members, ...(draft.id && { revision: draft.revision }) };
     const errors = validateTeamBody(body, { revisionRequired: draft.id !== null });
     if (errors.length) {
       setError(errors.map(item => `${item.field}: ${item.message}`).join('. '));
@@ -67,7 +71,12 @@ export default function TeamList({ definitions: { teams, agents, workflows }, on
           value={member.role} onChange={role => changeMember(index, { role })} />
         <SelectField label={`Member ${index + 1} agent`} caption="Agent" value={member.agentId} onChange={agentId => changeMember(index, { agentId })}>
           <option value="">Choose an agent</option>
-          {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+          {agents.map(agent => <option key={agent.id} value={agent.id} disabled={agent.id === member.fallbackAgentId}>{agent.name}</option>)}
+        </SelectField>
+        <SelectField label={`Member ${index + 1} fallback agent`} caption="Fallback agent" value={member.fallbackAgentId ?? ''}
+          onChange={fallbackAgentId => changeMember(index, { fallbackAgentId: fallbackAgentId || null })}>
+          <option value="">None</option>
+          {agents.filter(agent => agent.id !== member.agentId).map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
         </SelectField>
         <Button aria-label={`Remove member ${index + 1}`} disabled={draft.members.length === 1}
           onClick={() => setDraft({ ...draft, members: draft.members.filter((_, at) => at !== index) })}>Remove</Button>
@@ -81,7 +90,10 @@ export default function TeamList({ definitions: { teams, agents, workflows }, on
       <ul className="pipeline-list">{teams.map(team => <li className="pipeline-item" key={team.id}>
         <div className="pipeline-item-text">
           <strong>{team.name}</strong>
-          <span className="pipeline-item-meta">{team.members.map(member => `${member.role}: ${agents.find(agent => agent.id === member.agentId)?.name ?? 'Missing agent'}`).join(' · ')}</span>
+          <span className="pipeline-item-meta">{team.members.map(member => {
+            const primary = `${member.role}: ${agentName(member.agentId)}`;
+            return member.fallbackAgentId ? `${primary} · Fallback: ${agentName(member.fallbackAgentId)}` : primary;
+          }).join(' · ')}</span>
         </div>
         <div className="pipeline-item-actions">
           <Button aria-label={`Edit ${team.name}`} disabled={busy} onClick={() => edit(team)}>Edit</Button>

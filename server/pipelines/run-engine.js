@@ -10,7 +10,7 @@ import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workf
  * Status transitions go through run-machine.applyEvent — never inside notify.
  */
 
-import { applyEvent, computeActions } from './run-machine.js';
+import { applyEvent, computeActions, progressForAgent } from './run-machine.js';
 import { findPassSignal } from '../terminal-workflow.js';
 import { applySkillPrefix } from './skill-prefix.js';
 import { extractQuestions } from './input-request.js';
@@ -18,7 +18,7 @@ import { buildStepGuidance } from './step-guidance.js';
 import { planRunTerminalMuting } from './run-terminal-muting.js';
 import { notePath, writeCommitNote as defaultWriteCommitNote, prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
 import { listAttachmentCopiesAtRisk as defaultListAttachmentsAtRisk, verifyAttachmentCopies as defaultVerifyAttachments } from './attachment-verify.js';
-import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
+import { ACCEPT_RECOMMENDATIONS_ANSWER, liveAgentChangeTiming, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
 // A run keeps the definition it started with, so a run begun before Bug fix was phased still verifies.
 const verificationPrompts = new Set([...WORKFLOW_TEMPLATES.filter(t => ['bugfix', 'troubleshoot'].includes(t.kind)).map(t => t.nodes.at(-2).prompt), PREVIOUS_BUG_FIX_PROMPTS.Test]);
@@ -210,7 +210,13 @@ export function createRunEngine({
       if (getHandle(runId).workflow !== workflow) return;
       const current = runStore.get(runId);
       if (!['running','needs_input'].includes(current?.status)) return;
-      updateRun(runId, {workflowState:workflow.exportState()}, {kind,detail});
+      const progress = current.steps[current.currentStepIndex];
+      const patch = { workflowState: workflow.exportState() };
+      if (kind === 'prompt_submitted' && progress.quotaRestartPending) {
+        const { quotaRestartPending, ...submitted } = progress;
+        patch.steps = current.steps.map((step, index) => index === current.currentStepIndex ? submitted : step);
+      }
+      updateRun(runId, patch, {kind,detail});
     });
   }
 
@@ -271,6 +277,7 @@ export function createRunEngine({
         roundsWithoutProgress: 0,
         // Set when an agent that takes no input is to be started again: its terminal and folder.
         agentRestart: null,
+        agentSwitch: false,
         // `${stepIndex}:${attempt}` of the attempt that relaunched an agent after a restart.
         restartedAttempt: null,
       };
@@ -304,7 +311,7 @@ export function createRunEngine({
       finishedAt: next.finishedAt,
       steps: next.steps,
       inputRequest: next.inputRequest,
-      ...(!['running', 'needs_input'].includes(next.status) ? { workflowState: null } : {}),
+      ...((event.type === 'agent_switched' || !['running', 'needs_input'].includes(next.status)) ? { workflowState: null } : {}),
     }, {kind:event.type, detail:event.repairKey ?? event.error ?? event.reason ?? (event.type === 'loop_back' ? `See ${current.definition.steps[current.currentStepIndex].name} attempt ${current.steps[current.currentStepIndex].attempt} findings` : null)});
   }
 
@@ -314,6 +321,62 @@ export function createRunEngine({
       return current;
     }
     return persistTransition(runId, { type: 'error', error: String(message).slice(0, 2000), at: now() });
+  }
+
+  function quotaError(step, reason) {
+    return `The agent ${step.agent.name} reached its usage limit during step ${step.name}: ${reason} Change the step's agent with Change team, or Resume once the limit resets.`;
+  }
+
+  function eligibleFallback(agent) {
+    return agent.assignment?.source === 'team' && agent.fallbackAgent && agent.fallbackAgent.id !== agent.id
+      ? agent.fallbackAgent : null;
+  }
+
+  function recoverUsageLimit(run, pass, refusal) {
+    const index = run.currentStepIndex;
+    const depleted = run.definition.steps[index];
+    const reason = refusal.slice(0, 256);
+    const fallback = eligibleFallback(depleted.agent);
+    if (!fallback) {
+      failRun(run.id, quotaError(depleted, reason));
+      return false;
+    }
+
+    const replacement = depleted.nextAgent ?? fallback;
+    const next = applyEvent(run, { type: 'quota_takeover', pass, at: now() });
+    const steps = run.definition.steps.map((step, i) => {
+      if (i === index) {
+        const { nextAgent, ...definition } = step;
+        next.steps[i] = progressForAgent(next.steps[i], step.agent, replacement);
+        return { ...definition, agent: replacement };
+      }
+      const timing = liveAgentChangeTiming(run.status, run.definition.steps, run.steps, index, i);
+      if (timing === null || step.nextAgent || step.agent.assignment?.source !== 'team' || step.agent.id !== depleted.agent.id) return step;
+      const successor = eligibleFallback(step.agent);
+      if (!successor) {
+        next.steps[i].quotaBlocked = reason;
+        return step;
+      }
+      if (timing === 'round') return { ...step, nextAgent: successor };
+      next.steps[i] = progressForAgent(next.steps[i], step.agent, successor);
+      return { ...step, agent: successor };
+    });
+    const team = run.definition.team ? { ...run.definition.team, changed: true } : null;
+    const changed = runStore.update(run.id, {
+      definition: { ...run.definition, steps, team },
+      steps: next.steps,
+      workflowState: null,
+    }, {
+      expectedUpdatedAt: run.updatedAt,
+      mixed: true,
+      audit: {
+        kind: 'quota_takeover',
+        detail: `${depleted.name}: ${depleted.agent.name} reached its usage limit. ${reason} Restarting the pass with ${replacement.name}.`,
+      },
+    });
+    if (!changed) return null;
+    syncTerminalMuting(run.id, changed);
+    return true;
   }
 
   /**
@@ -577,9 +640,9 @@ export function createRunEngine({
    * signal. While one is on screen the run waits for the owner, as it does for a launch dialog;
    * it is answered in the terminal. `isOver` says the step's loop has ended.
    */
-  async function watchForDialog(runId, sessionId, workflow, isOver, { agentName, stepName, settle, cwd, restartedAttempt }) {
+  async function watchForDialog(runId, sessionId, workflow, isOver, { agentName, stepName, settle, cwd, restartedAttempt, stepIndex, attempt, initialState }) {
     const handle = getHandle(runId);
-    const over = () => isOver() || handle.stopped || handle.workflow !== workflow;
+    const over = () => isOver() || handle.stopped || handle.agentSwitch || handle.workflow !== workflow;
     // A pass whose agent sits idle at an unchanged prompt never took its prompt (the CLI was
     // still clearing or starting when it was pasted, or stopped reading input). It is sent once
     // more; then the agent's terminal is started again and the step relaunches its agent there.
@@ -594,6 +657,10 @@ export function createRunEngine({
     let lastIdleScreen = null;
     let dialogReadings = 0;
     let exitedReadings = 0;
+    let observedPass = null;
+    let quotaBaseline = null;
+    let quotaReadings = 0;
+    let lastState = initialState;
     const watchPickup = (readiness, screen, state) => {
       const pass = workflow.snapshot();
       if (pass.iteration !== pickup.pass) pickup = { pass: pass.iteration, idleMs: 0, resent: false, asked: false, screen: null };
@@ -646,6 +713,7 @@ export function createRunEngine({
     while (true) {
       await delay(dialogPollMs, setTimeoutFn);
       if (over()) return;
+      const submittedPass = workflow.submittedPass?.() ?? null;
       const state = await readExecutionState(sessionId);
       const readiness = classifyReadiness(state);
       const showsDialog = readiness === 'needs_input';
@@ -677,10 +745,36 @@ export function createRunEngine({
         if (screen && workflow.snapshot().status === 'running' && typeof workflow.replayScreen === 'function') {
           if (workflow.replayScreen(screen)) return;
         }
+        if (submittedPass !== observedPass) {
+          observedPass = submittedPass;
+          quotaBaseline = lastState?.profile?.usageLimit?.(lastState.lines) ?? null;
+          quotaReadings = 0;
+        }
+        lastState = state;
         idleTurnReadings = readiness === 'ready' ? idleTurnReadings + 1 : 0;
+        quotaReadings = readiness === 'ready' && submittedPass !== null && !showsDialog
+          ? (screen === lastIdleScreen ? quotaReadings + 1 : 1) : 0;
         settledIdleReadings = readiness === 'ready' && screen === lastIdleScreen ? settledIdleReadings + 1 : (readiness === 'ready' ? 1 : 0);
         lastIdleScreen = readiness === 'ready' ? screen : null;
         const working = ['agent_working', 'agent_delegated', 'agent_background_shells'].includes(state?.executionReason);
+        if (!working && !handle.stopRequested && quotaReadings >= IDLE_SETTLE_READINGS && submittedPass === workflow.submittedPass?.()) {
+          const reason = state.profile?.usageLimit?.(state.lines);
+          if (reason && reason !== quotaBaseline) {
+            const run = runStore.get(runId);
+            const progress = run?.steps[stepIndex];
+            const pass = workflow.snapshot().iteration;
+            if (run?.status === 'running' && run.currentStepIndex === stepIndex && progress?.status === 'running'
+              && progress.attempt === attempt && progress.sessionId === sessionId && progress.iteration === pass) {
+              const switched = recoverUsageLimit(run, pass, reason);
+              if (switched !== null) {
+                handle.agentSwitch = switched;
+                settle();
+                workflow.stop();
+                return;
+              }
+            }
+          }
+        }
         const observed = (working || (idleTurnReadings >= 2 && settledIdleReadings >= IDLE_SETTLE_READINGS)) && workflow.observeTurn?.(working ? 'working' : 'idle', screen ?? '');
         if (!observed) watchPickup(readiness, screen, state);
         if (over()) return;
@@ -801,6 +895,19 @@ export function createRunEngine({
     }
   }
 
+  function switchAgentBeforeDispatch(runId, stepIndex, attempt, pass) {
+    const handle = getHandle(runId);
+    const run = runStore.get(runId);
+    if (handle.stopped || handle.stopRequested || handle.agentRestart || !run
+      || !['running', 'needs_input'].includes(run.status) || run.currentStepIndex !== stepIndex
+      || run.steps[stepIndex].attempt !== attempt || !run.definition.steps[stepIndex].nextAgent) return false;
+    if (run.steps[stepIndex].iteration !== pass) throw new Error('The completed pass changed before agent reassignment.');
+    if (run.status === 'needs_input') persistTransition(runId, { type: 'input_received', at: now() });
+    persistTransition(runId, { type: 'agent_switched', at: now() });
+    handle.agentSwitch = true;
+    return true;
+  }
+
   async function applyWorkflowSnapshot(runId, snapshot, command) {
     if (!runStore.get(runId)) return { terminal: true };
     // The loop moved on, so the agent is past any dialog it was showing.
@@ -900,7 +1007,7 @@ export function createRunEngine({
     }
 
     if (snapshot.status === 'stopped') {
-      if (getHandle(runId).stopRequested || getHandle(runId).agentRestart) {
+      if (getHandle(runId).stopRequested || getHandle(runId).agentRestart || getHandle(runId).agentSwitch) {
         return { terminal: true };
       }
       if (['pending', 'running', 'needs_input', 'limit_paused', 'interrupted'].includes(current.status)) {
@@ -990,7 +1097,6 @@ export function createRunEngine({
 
       // Read now, not when the run began: a repository may have been added to the task, or closed in it, since.
       const stepIndex = run.currentStepIndex;
-      const defStep = run.definition.steps[stepIndex];
       let step = run.steps[stepIndex];
 
       // First step of a new run, or the next pending step after advance.
@@ -1000,7 +1106,13 @@ export function createRunEngine({
         step = run.steps[stepIndex];
       }
 
+      const defStep = run.definition.steps[stepIndex];
+      if (step.quotaBlocked) {
+        failRun(runId, quotaError(defStep, step.quotaBlocked));
+        return;
+      }
       const places = await listRunPlaces(run, { includeGit: defStep.inspectCleanCommit === true || verificationPrompts.has(defStep.prompt) });
+      if (runStore.get(runId)?.status !== 'running') return;
       const inspected = [];
       const remoteHost = run.host && run.host !== 'local' ? { host: run.host } : {};
       if (defStep.inspectCleanCommit) {
@@ -1039,7 +1151,7 @@ export function createRunEngine({
       }
       if (handle.stopped) return;
       const feedback = reviewStore.listSentBack(run.id, stepIndex);
-      const feedbackFile = feedback.length ? await writeFeedback({ worktreePath: run.worktreePath, definition: run.definition, stepIndex, reviews: feedback, ...remoteHost }) : undefined;
+      const feedbackFile = feedback.length && run.definition.notesDir !== null ? await writeFeedback({ worktreePath: run.worktreePath, definition: run.definition, stepIndex, reviews: feedback, ...remoteHost }) : undefined;
       const agent = defStep.agent;
       if (handle.stopped) return;
 
@@ -1054,7 +1166,7 @@ export function createRunEngine({
       // agent has no usable terminal in the worktree gets a new one, with the agent launched in it.
       const archiveStepSession = (deadSessionId) => {
         if (step.sessionId !== deadSessionId) return;
-        run = updateRun(runId, { steps: run.steps.map((s, i) => (
+        run = updateRun(runId, { steps: runStore.get(runId).steps.map((s, i) => (
           i === stepIndex ? { ...s, sessionId: null, priorSessionIds: [...(s.priorSessionIds || []), deadSessionId] } : s
         )) });
         step = run.steps[stepIndex];
@@ -1096,7 +1208,7 @@ export function createRunEngine({
         if (handle.stopped) return;
       }
       if (step.sessionId !== sessionId) {
-        const stepsWithSession = run.steps.map((s, i) => (
+        const stepsWithSession = runStore.get(runId).steps.map((s, i) => (
           i === stepIndex ? { ...s, sessionId } : s
         ));
         run = updateRun(runId, { steps: stepsWithSession });
@@ -1114,7 +1226,7 @@ export function createRunEngine({
           host: run.host,
         });
         if (handle.stopped) return;
-        run = updateRun(runId, { steps: run.steps.map((s, i) => (
+        run = updateRun(runId, { steps: runStore.get(runId).steps.map((s, i) => (
           i === stepIndex ? { ...s, sessionId } : s
         )) });
         step = run.steps[stepIndex];
@@ -1171,6 +1283,21 @@ export function createRunEngine({
         const verifier = shellQuote(current.worktreePath + '/' + current.definition.notesDir + '/gradle-proof.mjs');
         command += `\nFor Gradle verification run node ${verifier} ${stepIndex} ${attempt} <task names> from the build root. Preserve native task history. CodeDeck collects the build exit code and Gradle's task reuse decisions.`;
       }
+      const completedPass = step.iteration;
+      // With notes, the new terminal reads the brief and review files. Without notes,
+      // carry the most recent relevant owner messages directly in the dispatched prompt.
+      const ownerContext = [];
+      if (current.definition.notesDir === null) {
+        const answered = completedPass > 0 || step.quotaRestartPending
+          ? answerStore.list(runId, { stepIndex }).findLast(item => item.pass === completedPass
+            || (step.quotaRestartPending && item.pass === completedPass + 1))
+          : undefined;
+        if (answered) {
+          const pass = answered.pass === completedPass ? 'preceding' : 'interrupted';
+          ownerContext.push(`The owner's answer on the ${pass} pass:\n${answered.answer}`);
+        }
+        if (feedback.length > 0) ownerContext.push(`The owner's latest review feedback:\n${feedback.at(-1).comment}`);
+      }
       const maxIterations = maxIterationsFor(defStep.repeat);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
       const guidance = buildStepGuidance(current.definition, stepIndex, {
@@ -1197,6 +1324,7 @@ export function createRunEngine({
       // Never transition inside notify — defer onto the transitions chain.
       const onNotify = (snapshot) => {
         enqueueTransition(runId, async () => {
+          if (settled) return;
           try {
             const { terminal } = await applyWorkflowSnapshot(runId, snapshot, command);
             if (terminal) settleWorkflow();
@@ -1235,24 +1363,32 @@ export function createRunEngine({
         command,
         resetCommand: agent.resetCommand,
         maxIterations,
+        ...(completedPass > 0 && { startAfterPass: completedPass }),
+        ...(ownerContext.length > 0 && { ownerContext: ownerContext.join('\n\n') }),
         // The agent of a returning step still holds its earlier context, unless it had exited
         // and was started again.
         resetFirst: returning && !ready.launched,
         ...(guidance === undefined ? {} : { guidance }),
-      }, ...(run.attachments.length === 0 ? [] : [{
-        // A repeat pass drives the agent again: its copies are checked first, as before every attempt.
-        beforePass: () => verifyAttachments({
-          worktreePath: run.worktreePath,
-          attachments: run.attachments,
-          notesDir: run.definition.notesDir,
+      }, {
+        beforeDispatch: pass => switchAgentBeforeDispatch(runId, stepIndex, attempt, pass),
+        ...(run.attachments.length > 0 && {
+          // A repeat pass drives the agent again: its copies are checked first.
+          beforePass: () => verifyAttachments({
+            worktreePath: run.worktreePath,
+            attachments: run.attachments,
+            notesDir: run.definition.notesDir,
+          }),
         }),
-      }]));
+      });
       persistWorkflowState(runId, workflow);
 
       if (agent.assignment) runStore.recordAttempt(current);
 
       const restartedAttempt = handle.restartedAttempt === `${stepIndex}:${attempt}`;
-      watchForDialog(runId, sessionId, workflow, () => settled, { agentName: agent.name, stepName: defStep.name, settle: settleWorkflow, cwd: current.worktreePath, restartedAttempt }).catch((err) => {
+      watchForDialog(runId, sessionId, workflow, () => settled, {
+        agentName: agent.name, stepName: defStep.name, settle: settleWorkflow, cwd: current.worktreePath,
+        restartedAttempt, stepIndex, attempt, initialState: ready.state,
+      }).catch((err) => {
         try {
           failRun(runId, String(err?.message || err || 'Run failed').slice(0, 2000));
         } catch (failErr) {
@@ -1280,8 +1416,11 @@ export function createRunEngine({
     }
 
     const restart = handle.agentRestart;
+    const switched = handle.agentSwitch;
     handle.agentRestart = null;
+    handle.agentSwitch = false;
     if (handle.stopped) return;
+    if (switched) return runStep(runId);
 
     if (restart) {
       const stepIndex = runStore.get(runId)?.currentStepIndex;
@@ -1329,6 +1468,9 @@ export function createRunEngine({
     agentName,
     stepName,
     cwd,
+    stepIndex,
+    attempt,
+    initialState,
   }) {
     const handle = getHandle(runId);
     try {
@@ -1338,6 +1480,9 @@ export function createRunEngine({
         settle: settleWorkflow,
         cwd,
         restartedAttempt: false,
+        stepIndex,
+        attempt,
+        initialState,
       }).catch((err) => {
         try {
           failRun(runId, String(err?.message || err || 'Run failed').slice(0, 2000));
@@ -1365,8 +1510,11 @@ export function createRunEngine({
     }
 
     const restart = handle.agentRestart;
+    const switched = handle.agentSwitch;
     handle.agentRestart = null;
+    handle.agentSwitch = false;
     if (handle.stopped) return;
+    if (switched) return runStep(runId);
 
     if (restart) {
       const stepIndex = runStore.get(runId)?.currentStepIndex;
@@ -1558,7 +1706,9 @@ export function createRunEngine({
         handle.lastTasksDone = null;
         handle.untrackedLoopStarted = false;
         handle.roundsWithoutProgress = 0;
-        persistTransition(runId, { type: 'resume', newTerminal, at: now() });
+        persistTransition(runId, {
+          type: 'resume', newTerminal: newTerminal || runStore.get(runId).steps[latest.currentStepIndex].sessionId === null, at: now(),
+        });
         const updated = runStore.get(runId);
         // Acknowledge Resume immediately; keep execution on the same chain.
         enqueue(runId, () => runStep(runId)).catch((err) => {
@@ -1666,9 +1816,10 @@ export function createRunEngine({
         }
 
         let readiness = 'waiting';
+        let initialState = null;
         try {
-          const execState = await readExecutionState(sessionId);
-          readiness = classifyReadiness(execState);
+          initialState = await readExecutionState(sessionId);
+          readiness = classifyReadiness(initialState);
         } catch (err) {
           console.warn(`[pipeline-run] startup execution state failed for ${run.id} (${sessionId}): ${err?.message || err}`);
         }
@@ -1705,12 +1856,13 @@ export function createRunEngine({
         handle.dialogPause = run.status === 'needs_input' && run.inputRequest === null;
         syncTerminalMuting(run.id, run);
 
-        const beforePassOption = run.attachments.length === 0 ? {} : {
-          beforePass: () => verifyAttachments({
+        const workflowOptions = {
+          beforeDispatch: pass => switchAgentBeforeDispatch(run.id, run.currentStepIndex, run.steps[run.currentStepIndex].attempt, pass),
+          ...(run.attachments.length > 0 && { beforePass: () => verifyAttachments({
             worktreePath: run.worktreePath,
             attachments: run.attachments,
             notesDir: run.definition.notesDir,
-          }),
+          }) }),
         };
 
         let settled = false;
@@ -1726,6 +1878,7 @@ export function createRunEngine({
 
         const onNotify = (snapshot) => {
           enqueueTransition(run.id, async () => {
+            if (settled) return;
             try {
               const { terminal } = await applyWorkflowSnapshot(run.id, snapshot, savedState.request.command);
               if (terminal) settleWorkflow();
@@ -1762,7 +1915,7 @@ export function createRunEngine({
 
         try {
           attachAudit(run.id, workflow);
-          workflow.reattach(savedState, beforePassOption);
+          workflow.reattach(savedState, workflowOptions);
         } catch (err) {
           console.warn(`[pipeline-run] startup workflow reattach failed for ${run.id} (${sessionId}): ${err?.message || err}`);
           try { attachment.release?.(); } catch (relErr) { console.warn(`[pipeline-run] release failed for ${run.id}:`, relErr); }
@@ -1789,6 +1942,9 @@ export function createRunEngine({
           agentName: defStep.agent.name,
           stepName: defStep.name,
           cwd: run.worktreePath,
+          stepIndex: run.currentStepIndex,
+          attempt: run.steps[run.currentStepIndex].attempt,
+          initialState,
         })).catch((err) => {
           console.error(`[pipeline-run] reattached execution failed for ${run.id}:`, err);
         });

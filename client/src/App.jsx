@@ -113,6 +113,7 @@ function AppContent() {
     loadRunAnswers,
     approveRun,
     sendBackRun,
+    changeRunAgent,
     loadRunNotes,
     cleanupRun,
   } = usePipelineRuns({ projectName: activeProject?.name || null, showToast });
@@ -599,6 +600,7 @@ function AppContent() {
             onLoadPipelineRunAnswers={loadRunAnswers}
             onApprovePipelineRun={approveRun}
             onSendBackPipelineRun={sendBackRun}
+            onChangePipelineRunAgent={changeRunAgent}
           />
         ) : (
           <div style={{

@@ -101,9 +101,16 @@ export function isRunRequestId(value) {
   return typeof value === 'string' && REQUEST_ID_RE.test(value);
 }
 
-export function validateTeamBody(body, { revisionRequired = false } = {}) {
+export function teamMemberFallbackId(member, previousMembers = []) {
+  if (Object.hasOwn(member, 'fallbackAgentId')) return member.fallbackAgentId;
+  const role = member.role.trim().toLowerCase();
+  return previousMembers.find(previous => previous.role.toLowerCase() === role)?.fallbackAgentId;
+}
+
+export function validateTeamBody(body, { revisionRequired = false, current, allowFallbackClear = true } = {}) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['name', 'members', 'revision'])) return errors;
+  if (!isPlainObject(body)) return [{ field: 'body', message: 'A JSON object is required' }];
+  if (Object.keys(body).some(key => !['name', 'members', 'revision'].includes(key))) add(errors, 'body', 'Unknown field');
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'Team name' });
   requireRevision(errors, body.revision, revisionRequired);
   if (!Array.isArray(body.members) || body.members.length < 1 || body.members.length > 32) {
@@ -114,9 +121,7 @@ export function validateTeamBody(body, { revisionRequired = false } = {}) {
   body.members.forEach((member, index) => {
     const field = `members[${index}]`;
     if (!isPlainObject(member)) return add(errors, field, 'A member object is required');
-    for (const key of Object.keys(member)) {
-      if (!['role', 'agentId'].includes(key)) add(errors, `${field}.${key}`, 'Unknown field');
-    }
+    if (Object.keys(member).some(key => !['role', 'agentId', 'fallbackAgentId'].includes(key))) add(errors, field, 'Unknown field');
     requireSingleLine(errors, `${field}.role`, member.role, { min: 1, max: ROLE_MAX, label: 'Role' });
     if (typeof member.role === 'string') {
       const role = member.role.trim().toLowerCase();
@@ -124,13 +129,27 @@ export function validateTeamBody(body, { revisionRequired = false } = {}) {
       roles.add(role);
     }
     if (!isUuid(member.agentId)) add(errors, `${field}.agentId`, 'Choose an existing agent');
+    const fallbackAgentId = typeof member.role === 'string'
+      ? teamMemberFallbackId(member, current?.members)
+      : member.fallbackAgentId;
+    if ((fallbackAgentId === null && allowFallbackClear) || (fallbackAgentId === undefined && !Object.hasOwn(member, 'fallbackAgentId'))) return;
+    if (!isUuid(fallbackAgentId)) add(errors, `${field}.fallbackAgentId`, 'Choose an existing agent');
+    else if (isUuid(member.agentId) && member.agentId.toLowerCase() === fallbackAgentId.toLowerCase()) {
+      add(errors, `${field}.fallbackAgentId`, 'Choose an agent different from the primary agent');
+    }
   });
   return errors;
 }
 
+export const AGENT_ASSIGNMENT_SOURCES = ['workflow', 'team', 'trial', 'override', 'setup', 'fallback'];
+
+export function teamMemberForRole(team, role) {
+  return team.members.find(member => member.role.toLowerCase() === role.toLowerCase());
+}
+
 export function assignedAgentId(node, team, overrides) {
   if (overrides && Object.hasOwn(overrides, node.name)) return overrides[node.name];
-  if (team && node.role) return team.members.find(member => member.role.toLowerCase() === node.role.toLowerCase())?.agentId ?? null;
+  if (team && node.role) return teamMemberForRole(team, node.role)?.agentId ?? null;
   return node.agentId;
 }
 
@@ -372,6 +391,19 @@ export function firstReassignableStep(steps, current) {
     ? Math.min(first, step.repeat.toStepIndex) : first, current);
 }
 
+const LIVE_ASSIGNMENT_STATUSES = new Set(['pending', 'running', 'needs_input', 'awaiting_approval', 'limit_paused']);
+
+export function liveAgentChangeTiming(status, definitions, progress, current, index) {
+  if (!LIVE_ASSIGNMENT_STATUSES.has(status) || definitions[index]?.kind !== 'node') return null;
+  const step = progress[index];
+  if (index >= current) return index > current || step.status === 'pending' ? 'dispatch' : 'pass';
+  const canRevisit = definitions.some((candidate, candidateIndex) => candidateIndex >= current
+    && candidate.repeat.mode === 'loop_back'
+    && candidate.repeat.toStepIndex <= index
+    && progress[candidateIndex].roundsCompleted + 1 < candidate.repeat.max);
+  return canRevisit ? 'round' : null;
+}
+
 export function validateTeamChange(body) {
   const errors = [];
   if (!rejectUnknown(errors, body, ['expectedUpdatedAt', 'teamId', 'stepOverrides'])) return errors;
@@ -383,7 +415,9 @@ export function validateTeamChange(body) {
   if (body.teamId === undefined && (!isPlainObject(body.stepOverrides) || !Object.keys(body.stepOverrides).length)) {
     add(errors, 'teamId', 'Choose a team or override a step');
   }
-  return errors;
+  return errors.map(error => /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.field)
+    ? error
+    : { ...error, field: 'body' });
 }
 
 export function validateRunStartBody(body, { inputMode = 'descriptive' } = {}) {

@@ -71,7 +71,7 @@ async function setup(overrides = {}) {
       },
     } } };
   }
-  const db = new Database(':memory:');
+  const db = new Database(overrides.databasePath ?? ':memory:');
   cleanup.push(() => db.close());
 
   const agentStore = createAgentStore(db);
@@ -3960,6 +3960,141 @@ it('uses structured errors, validates decision edges and forwards valid owner ac
 });
 
 describe('workflow teams', () => {
+  it('pins role fallback snapshots on start and stopped team reassignment', async () => {
+    let team;
+    const teamStore = { get: id => id === team.id ? team : null, list: () => [team] };
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'codedeck-team-snapshot-'));
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+    const databasePath = path.join(directory, 'runs.sqlite');
+    const ctx = await setup({ databasePath, routerDeps: { teamStore } });
+    const { agent } = await seedReady(ctx);
+    const first = ctx.agentStore.create(agentBody({ name: 'Developer backup' }));
+    const second = ctx.agentStore.create(agentBody({ name: 'Reviewer backup' }));
+    team = { id: randomUUID(), revision: 3, name: 'Team snapshot', members: [
+      { role: 'Developer', agentId: agent.id, fallbackAgentId: first.id },
+      { role: 'Reviewer', agentId: agent.id, fallbackAgentId: second.id },
+    ] };
+    const originalTeam = team;
+    const workflow = ctx.workflowStore.create({ name: 'Snapshot', agentsDecide: false, nodes: [
+      node(null, { name: 'Implement', role: 'developer' }),
+      node(null, { name: 'Review', role: 'reviewer' }),
+      node(null, { name: 'Override', role: 'Reviewer' }),
+      node(agent.id, { name: 'Report' }),
+    ] });
+    const started = (await request(ctx.app).post(base + '/runs').send({
+      workflowId: workflow.id, requestId: 'role-snapshots', project: 'Demo', input: 'Change', teamId: team.id,
+      stepOverrides: { Override: agent.id },
+    }).expect(201)).body;
+    const projectedFallback = item => ({ id: item.id, name: item.name, agentRevision: item.revision });
+    expect(started.steps.map(step => [step.agentSource, step.fallbackAgent])).toEqual([
+      ['setup', undefined], ['team', projectedFallback(first)], ['team', projectedFallback(second)],
+      ['override', undefined], ['workflow', undefined],
+    ]);
+    const snapshotted = item => ({
+      id: item.id, name: item.name, launchCommand: item.launchCommand, resetCommand: item.resetCommand,
+      assignment: { source: 'fallback', agentRevision: item.revision, teamId: team.id, teamRevision: originalTeam.revision },
+    });
+    const read = () => {
+      const db = new Database(databasePath);
+      try {
+        const store = createRunStore(db, { interruptOnStart: false });
+        return [store.get(started.id), store.attribution(started.id)];
+      } finally { db.close(); }
+    };
+    const [saved, attribution] = read();
+    expect(saved.definition.steps.map(step => step.agent.fallbackAgent)).toEqual([
+      undefined, snapshotted(first), snapshotted(second), undefined, undefined,
+    ]);
+    expect(attribution.configuration[2]).toMatchObject({
+      role: 'reviewer', source: 'team', teamRevision: 3, fallbackAgent: projectedFallback(second),
+    });
+    expect(attribution.configuration[2].fallbackAgent).toEqual(projectedFallback(second));
+    team = { ...team, revision: 4, members: team.members.map(member => ({ ...member, fallbackAgentId: second.id })) };
+    const revised = ctx.agentStore.update(second.id, { ...agentBody({
+      name: 'Revised backup', launchCommand: 'agy', resetCommand: '/reset',
+    }), revision: second.revision });
+    await request(ctx.app).delete(base + '/agents/' + first.id).expect(204);
+    expect(read()[0].definition.steps[1].agent.fallbackAgent).toEqual(snapshotted(first));
+    expect(read()[0].definition.steps[2].agent.fallbackAgent).toEqual(snapshotted(second));
+
+    // An old, assignment-free run must acquire current fallback configuration only from an explicit team edit.
+    const stopped = ctx.runStore.update(started.id, {
+      status: 'stopped', stopReason: 'user', finishedAt: new Date().toISOString(), currentStepIndex: 1,
+      steps: saved.steps.map((step, index) => index === 0 ? { ...step, status: 'complete' }
+        : index === 1 ? { ...step, status: 'stopped' } : step),
+      definition: { ...saved.definition, steps: saved.definition.steps.map(({ agent: { assignment, fallbackAgent, ...legacy }, ...step }) => ({
+        ...step, agent: legacy,
+      })) },
+    });
+    expect(read()[0].definition.steps[1].agent).not.toHaveProperty('fallbackAgent');
+    await request(ctx.app).put(base + '/runs/' + started.id + '/team').send({
+      expectedUpdatedAt: stopped.updatedAt, teamId: team.id, stepOverrides: { Override: agent.id },
+    }).expect(200);
+    const [reassigned, originalAttribution] = read();
+    expect(reassigned.definition.steps.map(step => step.agent.fallbackAgent?.name)).toEqual([
+      undefined, revised.name, revised.name, undefined, undefined,
+    ]);
+    expect(reassigned.definition.steps[1].agent.fallbackAgent).toEqual({
+      id: revised.id, name: revised.name, launchCommand: revised.launchCommand, resetCommand: revised.resetCommand,
+      assignment: { source: 'fallback', agentRevision: revised.revision, teamId: team.id, teamRevision: 4 },
+    });
+    expect(originalAttribution).toEqual({ ...attribution, mixed: true });
+  });
+
+  it('validates, persists and releases team role fallback references', async () => {
+    const ctx = await setup();
+    const primary = ctx.agentStore.create(agentBody({ name: 'Primary' }));
+    const backup = ctx.agentStore.create(agentBody({ name: 'Backup' }));
+    const successor = ctx.agentStore.create(agentBody({ name: 'Successor' }));
+    const api = request(ctx.app);
+    const member = { role: 'Developer', agentId: primary.id };
+    const team = { name: 'Fallback fleet', members: [member] };
+    const created = await api.post(base + '/teams').send(team).expect(201);
+    const path = base + '/teams/' + created.body.id;
+    expect(created.body.members).toEqual([member]);
+    const save = (revision, members) => api.put(path).send({ ...team, members, revision });
+
+    const selected = { ...member, fallbackAgentId: backup.id };
+    const settled = await Promise.all([save(1, [selected]), save(1, [selected])]);
+    expect(settled.map(response => response.status).sort()).toEqual([200, 409]);
+    expect(settled.find(response => response.status === 409).body.traceId).toBeTruthy();
+    await api.delete(base + '/agents/' + backup.id).expect(409).expect('Content-Type', /application\/problem\+json/);
+
+    const legacy = await save(2, [{ ...member, role: ' developer ' }]).expect(200);
+    expect(legacy.body.members).toEqual([{ ...selected, role: 'developer' }]);
+    const implicitSelf = await save(3, [{ ...member, agentId: backup.id }]).expect(400);
+    expect(implicitSelf.body.errors[0].field).toBe('members[0].fallbackAgentId');
+    const changed = await save(3, [{ ...member, fallbackAgentId: successor.id }, { ...selected, role: 'Review' }]).expect(200);
+    expect(changed.body.members.map(item => item.fallbackAgentId)).toEqual([successor.id, backup.id]);
+    const cleared = await save(4, [{ ...member, fallbackAgentId: null }]).expect(200);
+    expect(cleared.body.members).toEqual([member]);
+    await api.delete(base + '/agents/' + backup.id).expect(204);
+    await api.delete(base + '/agents/' + successor.id).expect(204);
+    expect((await api.get(path).expect(200)).body.members).toEqual([member]);
+    await api.post(base + '/teams').send(team).expect(409);
+    await api.put(base + '/teams/' + randomUUID()).send({ ...team, revision: 1 }).expect(404);
+  });
+
+  it('returns safe field errors for malformed or unknown team role fallbacks', async () => {
+    const ctx = await setup();
+    const primary = ctx.agentStore.create(agentBody({ name: 'Primary' }));
+    const api = request(ctx.app);
+    const path = base + '/teams';
+    for (const fallbackAgentId of [randomUUID(), '', [], {}, 1, primary.id, '<script>secret</script>', 'x'.repeat(2048)]) {
+      const result = await api.post(path).send({ name: 'Daily', members: [{ role: 'Developer', agentId: primary.id, fallbackAgentId }] }).expect(400);
+      expect(result.type).toBe('application/problem+json');
+      expect(result.body.traceId).toBeTruthy();
+      expect(result.body.errors.map(error => error.field)).toEqual(['members[0].fallbackAgentId']);
+      expect(result.text).not.toContain('<script>secret');
+    }
+    const hostile = await api.post(path).send({ name: 'Daily', members: [{ role: 'Developer', agentId: primary.id, '<script>secret</script>': true }] }).expect(400);
+    expect(hostile.body.errors.map(error => error.field)).toEqual(['members[0]']);
+    expect(hostile.text).not.toContain('<script>secret');
+    const malformed = await api.post(path).type('json').send('{').expect(400);
+    expect(malformed.body.traceId).toBeTruthy();
+    expect(malformed.body.errors.length).toBeGreaterThan(0);
+  });
+
   it('saves reusable role assignments and snapshots a run-only step override', async () => {
     const ctx = await setup();
     const { agent } = await seedReady(ctx);
@@ -4044,6 +4179,129 @@ it('checks team field boundaries and rejects unsupported run selections before c
 });
 
 describe('changing a running workflow’s team', () => {
+  it.each([
+    ['pending', 0, 'pending', 'Report', false],
+    ['running', 1, 'pending', 'Verify', false],
+    ['running', 1, 'launching', 'Verify', true],
+    ['running', 1, 'running', 'Verify', true],
+    ['needs_input', 1, 'needs_input', 'Verify', true],
+    ['awaiting_approval', 1, 'awaiting_approval', 'Verify', true],
+    ['limit_paused', 1, 'limit_reached', 'Verify', true],
+  ])('assigns one node in %s (%s, %s)', async (status, currentStepIndex, stepStatus, name, queued) => {
+    const ctx = await setup();
+    const { agent } = await seedReady(ctx);
+    const replacement = ctx.agentStore.create(agentBody({ name: 'Replacement' }));
+    const workflow = ctx.workflowStore.create({ name: 'Live edit', agentsDecide: false,
+      nodes: ['Verify', 'Report'].map(name => node(agent.id, { name })) });
+    const started = (await request(ctx.app).post(base + '/runs').send({ project: 'Demo', input: 'fix', workflowId: workflow.id, requestId: 'live-edit' }).expect(201)).body;
+    const run = ctx.runStore.get(started.id);
+    const current = ctx.runStore.update(run.id, { status, currentStepIndex, steps: run.steps.map((step, index) =>
+      index === currentStepIndex ? { ...step, status: stepStatus, sessionId: queued ? 'Demo-1' : null } : step) });
+    const url = base + '/runs/' + run.id + '/team';
+    const change = { expectedUpdatedAt: current.updatedAt, stepOverrides: { [name]: replacement.id } };
+    const updated = (await request(ctx.app).put(url).send(change).expect(200)).body;
+    const step = updated.steps.find(step => step.name === name);
+    expect(step.agentName).toBe(queued ? agent.name : replacement.name);
+    expect(step.nextAgentName).toBe(queued ? replacement.name : undefined);
+    expect(step.sessionId).toBe(queued ? 'Demo-1' : null);
+    expect(updated.status).toBe(status);
+  });
+
+  it('rejects invalid live edits and separates invalid fields from state conflicts', async () => {
+    const ctx = await setup();
+    const { agent } = await seedReady(ctx);
+    const workflow = ctx.workflowStore.create({ name: 'Live edit', agentsDecide: false,
+      nodes: ['Verify', 'Report'].map(name => node(agent.id, { name })) });
+    const run = (await request(ctx.app).post(base + '/runs').send({ project: 'Demo', input: 'fix', workflowId: workflow.id, requestId: 'invalid-edit' }).expect(201)).body;
+    const url = base + '/runs/' + run.id + '/team';
+    const payload = { expectedUpdatedAt: run.updatedAt, stepOverrides: { Verify: agent.id } };
+    const put = body => request(ctx.app).put(url).set('Content-Type', 'application/json').send(body);
+    for (const body of [
+      '{', 'null', { ...payload, stepOverrides: [] }, { ...payload, stepOverrides: {} },
+      { ...payload, stepOverrides: Object.fromEntries(Array.from({length:33}, (_, i) => ['step-' + i, agent.id])) },
+      { ...payload, stepOverrides: { ['x'.repeat(65)]: agent.id } },
+      { ...payload, stepOverrides: { Verify: '<script>' } },
+      { ...payload, stepOverrides: { Setup: agent.id } },
+      { ...payload, stepOverrides: { Verify: randomUUID() } },
+      JSON.stringify({ ...payload, stepOverrides: { ['__proto__']: agent.id } }),
+      { ...payload, unexpected: 'value' },
+      { ...payload, '<script>': 'value' },
+    ]) {
+      const bad = await put(body).expect(400).expect('Content-Type', /problem\+json/);
+      expect(bad.body).toMatchObject({ status:400, timestamp:expect.any(String), message:expect.any(String), path:url,
+        traceId:bad.headers['x-trace-id'], errors:expect.arrayContaining([expect.objectContaining({field:expect.any(String)})]) });
+      expect(bad.text).not.toContain('<script>');
+    }
+    await put({ ...payload, stepOverrides: { Verify: agent.id, Report: agent.id } }).expect(409);
+    await put({ ...payload, teamId: agent.id }).expect(409);
+    await put({ ...payload, expectedUpdatedAt: '2026-01-01T00:00:00.000Z' }).expect(409);
+    await request(ctx.app).put(base + '/runs/' + randomUUID() + '/team').send(payload).expect(404);
+    const finished = ctx.runStore.update(run.id, { status: 'complete', finishedAt: new Date().toISOString() });
+    await put({ ...payload, expectedUpdatedAt: finished.updatedAt }).expect(409);
+  });
+
+  it('replaces and cancels a next-round choice without changing the completed assignment', async () => {
+    const ctx = await setup();
+    const { agent } = await seedReady(ctx);
+    const first = ctx.agentStore.create(agentBody({ name: 'First' }));
+    const second = ctx.agentStore.create(agentBody({ name: 'Second' }));
+    const workflow = ctx.workflowStore.create({ name: 'Live edit', agentsDecide: false,
+      nodes: [node(agent.id, { name: 'Verify' }), node(agent.id, { name: 'Report', repeat: { mode: 'loop_back', max: 2, to: 'Verify' } })] });
+    const started = (await request(ctx.app).post(base + '/runs').send({
+      project: 'Demo', input: 'fix', workflowId: workflow.id, requestId: 'edit-next-round',
+    }).expect(201)).body;
+    const original = ctx.runStore.get(started.id);
+    const running = ctx.runStore.update(started.id, { status: 'running', currentStepIndex: 2,
+      steps: original.steps.map((step, i) => i === 1 ? { ...step, status: 'complete', sessionId: 'Demo-1', attempt: 1 } : step),
+    });
+    const url = base + '/runs/' + started.id + '/team';
+    const change = async (run, id, status = 200) => (await request(ctx.app).put(url)
+      .send({ expectedUpdatedAt: run.updatedAt, stepOverrides: { Verify: id } }).expect(status)).body;
+    const queued = await change(running, first.id);
+    const replaced = await change(queued, second.id);
+    expect(replaced.steps[1]).toMatchObject({ agentId: agent.id, nextAgentId: second.id, sessionId: 'Demo-1' });
+    const cancelled = await change(replaced, agent.id);
+    expect(cancelled.steps[1].nextAgentName).toBeUndefined();
+    expect(ctx.runStore.get(started.id).definition.steps[1].agent).toEqual(original.definition.steps[1].agent);
+    const current = ctx.runStore.get(started.id);
+    const lastRound = ctx.runStore.update(current.id, { steps: current.steps.map((step, i) =>
+      i === 2 ? { ...step, roundsCompleted: 1 } : step) });
+    await change(lastRound, first.id, 400);
+  });
+
+  it('persists exactly one competing override even within one clock tick, without editing the catalog or a sibling run', async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'codedeck-override-'));
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+    const databasePath = path.join(directory, 'run.db');
+    const ctx = await setup({ databasePath, runClock: () => '2026-01-01T00:00:00.000Z' });
+    const { agent } = await seedReady(ctx);
+    const first = ctx.agentStore.create(agentBody({ name: 'First' }));
+    const second = ctx.agentStore.create(agentBody({ name: 'Second' }));
+    const team = (await request(ctx.app).post(base + '/teams').send({ name: 'Builders', members: [{ role: 'Tester', agentId: agent.id }] }).expect(201)).body;
+    const workflow = ctx.workflowStore.create({ name: 'Live edit', agentsDecide: false,
+      nodes: [node(agent.id, { name: 'Verify', role: 'Tester' })] });
+    const start = async requestId => (await request(ctx.app).post(base + '/runs').send({
+      project: 'Demo', input: 'fix', workflowId: workflow.id, teamId: team.id, requestId,
+    }).expect(201)).body;
+    const run = await start('winner');
+    const sibling = await start('sibling');
+    const before = ctx.runStore.get(sibling.id);
+    const url = base + '/runs/' + run.id + '/team';
+    const results = await Promise.all([first, second].map(replacement => request(ctx.app).put(url)
+      .send({ expectedUpdatedAt: run.updatedAt, stepOverrides: { Verify: replacement.id } })));
+    expect(results.map(result => result.status).sort()).toEqual([200, 409]);
+    const winner = results.find(result => result.status === 200).body;
+    const reconnected = new Database(databasePath);
+    cleanup.push(() => reconnected.close());
+    const reopened = createRunStore(reconnected, { interruptOnStart: false });
+    expect(reopened.get(run.id).definition.steps[1].agent.name).toBe(winner.steps[1].agentName);
+    expect(reopened.attribution(run.id).mixed).toBe(true);
+    expect(winner.team).toEqual({ name: 'Builders', changed: true });
+    expect(reopened.get(sibling.id)).toEqual(before);
+    expect(ctx.workflowStore.get(workflow.id)).toEqual(workflow);
+    expect((await request(ctx.app).get(base + '/teams/' + team.id).expect(200)).body).toEqual(team);
+  });
+
   it('reassigns the failed and later steps atomically, retaining previous terminals and completed work', async () => {
     const ctx = await setup();
     const { agent } = await seedReady(ctx);
@@ -4598,22 +4856,31 @@ describe('pipelines API — attached starts reserve, publish and close', () => {
 });
 
 it('reserves a candidate in the run insert transaction and replays without another slot', async () => {
-  let db, candidate;
+  let db, candidate, backup;
   const reserve = vi.fn(context => {
     expect(db.inTransaction).toBe(true);
     expect(context).toMatchObject({ roles: ['Reviewer'], mixed: false, project: 'Demo', workflowRevision: 1 });
+    expect(context.configuration[1].fallbackAgent).toEqual({ id: backup.id, name: backup.name, agentRevision: 1 });
     return { trialId, role: 'Reviewer', agent: candidate };
   });
   const trialId = randomUUID();
-  const ctx = await setup({ routerDeps: { teamScoring: { trials: { reserve } } } });
+  let team;
+  const teamStore = { get: id => id === team.id ? team : null, list: () => [team] };
+  const ctx = await setup({ routerDeps: { teamStore, teamScoring: { trials: { reserve } } } });
   db = ctx.db;
   const { agent } = await seedReady(ctx);
   candidate = { ...agent, launchCommand: 'command codex --model m -c model_reasoning_effort="medium"' };
-  const team = (await request(ctx.app).post(base + '/teams').send({ name: 'Correctors', members: [{ role: 'Reviewer', agentId: agent.id }] }).expect(201)).body;
+  backup = ctx.agentStore.create(agentBody({ name: 'Review backup' }));
+  team = { id: randomUUID(), name: 'Correctors', revision: 1, members: [
+    { role: 'Reviewer', agentId: agent.id, fallbackAgentId: backup.id },
+  ] };
   const workflow = ctx.workflowStore.create({ name: 'Validate', agentsDecide: false, nodes: [node(agent.id, {role: 'Reviewer'})] });
   const body = { project: 'Demo', requestId: 'reserve', workflowId: workflow.id, input: 'fix', teamId: team.id };
   const run = (await request(ctx.app).post(base + '/runs').send(body).expect(201)).body;
   expect(ctx.runStore.get(run.id).definition.steps.at(-1).agent.launchCommand).toBe(candidate.launchCommand);
+  expect(ctx.runStore.get(run.id).definition.steps.at(-1).agent).not.toHaveProperty('fallbackAgent');
+  expect(run.steps.at(-1)).toMatchObject({ agentSource: 'trial' });
+  expect(run.steps.at(-1)).not.toHaveProperty('fallbackAgent');
   expect(ctx.runStore.attribution(run.id)).toMatchObject({ trialId, mixed: false, configuration: [
     {source: 'setup'}, {source: 'trial', model: 'm', effort: 'medium', agentRevision: agent.revision}
   ]});

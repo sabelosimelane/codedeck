@@ -39,6 +39,20 @@ describe('terminal workflow', () => {
     expect(write).toHaveBeenCalledTimes(2);
   });
 
+  it('exposes the quota-observation pass only after submission and before an accepted signal', () => {
+    const { workflow } = setup();
+    workflow.start(request);
+    expect(workflow.submittedPass()).toBeNull();
+    vi.advanceTimersByTime(100);
+    const id = workflow.signalIdentifier();
+    expect(workflow.submittedPass()).toBe(id);
+    const restored = setup().workflow;
+    restored.reattach(workflow.exportState());
+    expect(restored.submittedPass()).toBe(id);
+    workflow.output(signal(id, 'COMPLETE'));
+    expect(workflow.submittedPass()).toBeNull();
+  });
+
   it('Stop cancels a pending Enter so pasted text is never submitted later', () => {
     const { workflow, write } = setup();
     workflow.start(request);

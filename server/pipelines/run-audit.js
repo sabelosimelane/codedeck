@@ -2,7 +2,7 @@ import {parseLaunchCommand} from '../../shared/agent-presets.mjs';
 import { isAbsolute } from 'node:path';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
 
-const kinds = new Set(('created start step_running needs_input input_received step_complete approval_requested approve send_back loop_back limit_reached error stop continue resume agent_restarted interrupted prompt_submitted prompt_unclaimed work_observed disposition_requested signal_accepted observation_unavailable observation_restored verification_report build_receipt').split(' '));
+const kinds = new Set(('created start step_running needs_input input_received step_complete approval_requested approve send_back loop_back limit_reached error stop continue resume agent_restarted agent_switched quota_takeover interrupted prompt_submitted prompt_unclaimed work_observed disposition_requested signal_accepted observation_unavailable observation_restored verification_report build_receipt').split(' '));
 function check(field, valid) {
   if (!valid) throw new TypeError(`Invalid run audit ${field}`);
 }

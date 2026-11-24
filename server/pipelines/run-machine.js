@@ -12,8 +12,22 @@ const CLEANUP_WORKTREE = new Set(['not_created', 'present', 'removal_blocked', '
 const ACTIVE_STEP = new Set(['pending', 'launching', 'running', 'needs_input', 'interrupted', 'stopped', 'failed']);
 
 export function progressForAgent(progress, oldAgent, newAgent) {
-  if (!progress.sessionId || (newAgent.id === oldAgent.id && newAgent.launchCommand === oldAgent.launchCommand)) return progress;
-  return { ...progress, sessionId: null, priorSessionIds: [...progress.priorSessionIds, progress.sessionId] };
+  const sameAgent = newAgent.id === oldAgent.id && newAgent.launchCommand === oldAgent.launchCommand;
+  if (sameAgent && newAgent.assignment?.source !== 'override') return progress;
+  const { quotaBlocked, ...updated } = progress;
+  if (!progress.sessionId || sameAgent) return updated;
+  return { ...updated, sessionId: null, priorSessionIds: [...progress.priorSessionIds, progress.sessionId] };
+}
+
+function applyQueuedAgent(run, index) {
+  const step = run.definition?.steps[index];
+  if (!step?.nextAgent) return false;
+  const { nextAgent, ...previous } = step;
+  const steps = [...run.definition.steps];
+  steps[index] = { ...previous, agent: nextAgent };
+  run.definition = { ...run.definition, steps };
+  run.steps[index] = progressForAgent(run.steps[index], step.agent, nextAgent);
+  return true;
 }
 
 function clone(run) {
@@ -155,10 +169,11 @@ function applyApprove(run, event) {
 
 function applySendBack(run, event) {
   if (run.status !== 'awaiting_approval') illegal(run.status, event.type);
+  const switched = applyQueuedAgent(run, run.currentStepIndex);
   const step = currentStep(run);
   if (step.status !== 'awaiting_approval') illegal(`step:${step.status}`, event.type);
   if (typeof event.newTerminal !== 'boolean') throw new Error('send_back event: newTerminal must be true or false');
-  if (event.newTerminal) {
+  if (event.newTerminal || switched) {
     if (step.sessionId) step.priorSessionIds = [...step.priorSessionIds, step.sessionId];
     step.sessionId = null;
   } else if (!step.sessionId) throw new Error('send_back event: a step without a terminal needs a new one');
@@ -192,15 +207,7 @@ function applyLoopBack(run, event) {
     looped.iteration = 0;
     looped.finishedAt = null;
   }
-  if (run.definition?.steps.some((step, i) => i >= toStepIndex && i <= run.currentStepIndex && step.nextAgent)) {
-    const steps = run.definition.steps.map((step, index) => {
-      if (index < toStepIndex || index > run.currentStepIndex || !step.nextAgent) return step;
-      const { nextAgent, ...previous } = step;
-      run.steps[index] = progressForAgent(run.steps[index], step.agent, nextAgent);
-      return { ...previous, agent: nextAgent };
-    });
-    run.definition = { ...run.definition, steps };
-  }
+  for (let index = toStepIndex; index <= run.currentStepIndex; index += 1) applyQueuedAgent(run, index);
   run.currentStepIndex = toStepIndex;
   return run;
 }
@@ -256,6 +263,16 @@ function applyContinue(run, event) {
   if (run.status !== 'limit_paused') illegal(run.status, event.type);
   const step = currentStep(run);
   if (step.status !== 'limit_reached') illegal(`step:${step.status}`, event.type);
+  if (applyQueuedAgent(run, run.currentStepIndex)) {
+    const next = currentStep(run);
+    run.status = 'running';
+    next.status = 'launching';
+    next.attempt += 1;
+    next.iteration = 0;
+    next.startedAt = event.at;
+    next.finishedAt = null;
+    return run;
+  }
   // The owner accepted the limit: the step is over, and its status says how it ended.
   step.status = 'limit_accepted';
   const last = run.currentStepIndex >= run.steps.length - 1;
@@ -292,10 +309,11 @@ function applyResume(run, event) {
   if (typeof event.newTerminal !== 'boolean') {
     throw new Error('resume event: newTerminal must be true or false');
   }
+  const switched = applyQueuedAgent(run, run.currentStepIndex);
   const step = currentStep(run);
   // The step goes back to its own terminal, where its agent is cleared before the prompt is
   // sent again. It gets a new terminal only when the caller found that one unusable.
-  if (event.newTerminal) {
+  if (event.newTerminal || switched) {
     if (step.sessionId) {
       step.priorSessionIds = [...(step.priorSessionIds || []), step.sessionId];
       step.sessionId = null;
@@ -304,14 +322,45 @@ function applyResume(run, event) {
     throw new Error('resume event: a step without a terminal needs a new one');
   }
   step.status = 'launching';
-  step.attempt = (step.attempt ?? 0) + 1;
-  step.iteration = 0;
+  if (!step.quotaRestartPending) {
+    step.attempt = (step.attempt ?? 0) + 1;
+    step.iteration = 0;
+  }
+  delete step.quotaBlocked;
   step.finishedAt = null;
   if (event.at) step.startedAt = event.at;
   run.status = 'running';
   run.stopReason = null;
   run.error = null;
   run.finishedAt = null;
+  return run;
+}
+
+function applyAgentSwitched(run, event) {
+  if (run.status !== 'running') illegal(run.status, event.type);
+  const previous = currentStep(run);
+  if (previous.status !== 'running' || !applyQueuedAgent(run, run.currentStepIndex)) {
+    illegal(`step:${previous.status}`, event.type);
+  }
+  const step = currentStep(run);
+  addWorkedTime(step, event.at);
+  step.status = 'launching';
+  step.attempt += 1;
+  step.startedAt = event.at;
+  return run;
+}
+
+function applyQuotaTakeover(run, event) {
+  if (run.status !== 'running') illegal(run.status, event.type);
+  const step = currentStep(run);
+  if (step.status !== 'running') illegal(`step:${step.status}`, event.type);
+  if (step.iteration < 1 || step.iteration !== event.pass) throw new Error('quota_takeover event: pass must match the running iteration');
+  addWorkedTime(step, event.at);
+  step.status = 'launching';
+  step.attempt += 1;
+  step.iteration -= 1;
+  step.startedAt = event.at;
+  step.quotaRestartPending = true;
   return run;
 }
 
@@ -331,6 +380,8 @@ const HANDLERS = {
   continue: applyContinue,
   resume: applyResume,
   agent_restarted: applyAgentRestarted,
+  agent_switched: applyAgentSwitched,
+  quota_takeover: applyQuotaTakeover,
 };
 
 /**
@@ -344,6 +395,9 @@ export function applyEvent(state, event) {
   const next = handler(clone(state), event);
   // A request belongs to the wait it was made in.
   if (next.status !== 'needs_input') next.inputRequest = null;
+  if (next.status === 'complete' && next.definition?.steps.some(step => step.nextAgent)) {
+    next.definition = { ...next.definition, steps: next.definition.steps.map(({ nextAgent, ...step }) => step) };
+  }
   return next;
 }
 
