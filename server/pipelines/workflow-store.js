@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { validateWorkflowBody, isProgressFileTemplate, isUuid, loopTargetIndex, WORKFLOW_KINDS, DESCRIPTION_MAX } from '../../shared/pipeline-definitions.mjs';
+import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workflow-templates.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
@@ -281,6 +282,20 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
 
   const STOCK_FEATURE_FROM_REQ_PLAN_PROMPT = 'Read the specification named in the Specify note and the code it touches. Change no code. Write plan.md in the run notes folder named by its README. Size the plan to the change: work one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each acceptance check as a task in the phase that builds what it checks. Use ## Phase N: <title> sections with - [ ] tasks. The phases together must cover every acceptance check. In your run note summarise the plan and say why it has as many phases as it has.';
 
+  // A Bug fix still holding the unchanged Specify, Develop, Review and Test from before it was phased
+  // gets all four phased prompts and a Test loop of 8 rounds. They change only together: a phased
+  // Develop after an owner's own Specify would look for a plan.md nobody writes. Changes nodes in place.
+  const PHASED_BUG_FIX_STEPS = ['Specify', 'Develop', 'Review', 'Test'];
+  const phasedBugFixNodes = WORKFLOW_TEMPLATES.find(template => template.id === 'bug-fix').nodes;
+  function phasedBugFix(nodes) {
+    const steps = PHASED_BUG_FIX_STEPS.map(name => nodes.find(item => item?.name === name && item.prompt === PREVIOUS_BUG_FIX_PROMPTS[name]));
+    if (steps.some(step => !step)) return false;
+    for (const step of steps) step.prompt = phasedBugFixNodes.find(item => item.name === step.name).prompt;
+    const test = steps.at(-1);
+    if (test.repeat?.mode === 'loop_back' && test.repeat.max === 3) test.repeat = { ...test.repeat, max: 8 };
+    return true;
+  }
+
   const upgradeNodes = db.transaction(() => {
     const save = db.prepare('UPDATE pipeline_workflows SET nodes = ? WHERE id = ?');
     for (const row of db.prepare('SELECT id, kind, nodes FROM pipeline_workflows').all()) {
@@ -320,6 +335,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
         if (dropMergedPlan) changed = true;
         return !dropMergedPlan;
       });
+      if (phasedBugFix(upgraded)) changed = true;
       if (changed) {
         save.run(JSON.stringify(upgraded), row.id);
       }

@@ -4,7 +4,7 @@ import { createAgentStore } from '../pipelines/agent-store.js';
 import { createWorkflowStore } from '../pipelines/workflow-store.js';
 import { createSettingsStore } from '../pipelines/settings-store.js';
 import { readFileSync } from 'node:fs';
-import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
+import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workflow-templates.mjs';
 
 // The built-in prompts as they were before agents owned the test environment, and the older ones that led to them.
 const STOCK_BEFORE_OWNER_CHECKS = JSON.parse(readFileSync(new URL('./fixtures/stock-prompts-before-owner-checks.json', import.meta.url), 'utf8'));
@@ -422,6 +422,43 @@ describe('workflow progress file persistence', () => {
     expect(reopened.nodes[3].repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 3 });
   });
 
+  function savedBugFix(workflows, agentId, overrides = {}) {
+    const stock = WORKFLOW_TEMPLATES.find(template => template.id === 'bug-fix').nodes;
+    return workflows.create({
+      name: 'Saved bug fix',
+      kind: 'bugfix',
+      agentsDecide: false,
+      nodes: stock.map(item => ({
+        ...node(agentId),
+        name: item.name,
+        prompt: overrides[item.name] ?? PREVIOUS_BUG_FIX_PROMPTS[item.name] ?? item.prompt,
+        repeat: item.name === 'Test' ? { mode: 'loop_back', to: 'Develop', max: 3 } : { mode: 'once' },
+      })),
+    });
+  }
+
+  it('brings an unmodified saved Bug fix to phased plans, whole-phase rounds and 8 Test rounds', () => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const created = savedBugFix(workflows, agent.id);
+    const reopened = createWorkflowStore(db).get(created.id);
+    const stock = WORKFLOW_TEMPLATES.find(template => template.id === 'bug-fix').nodes;
+    expect(reopened.nodes.map(item => item.prompt)).toEqual(stock.map(item => item.prompt));
+    expect(reopened.nodes.find(item => item.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 8 });
+  });
+
+  it('leaves a saved Bug fix alone when the owner changed any of its phased steps, so Develop never expects a plan Specify does not write', () => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const customSpecify = `${PREVIOUS_BUG_FIX_PROMPTS.Specify} And one thing of my own.`;
+    const created = savedBugFix(workflows, agent.id, { Specify: customSpecify });
+    const reopened = createWorkflowStore(db).get(created.id);
+    const byName = Object.fromEntries(reopened.nodes.map(item => [item.name, item]));
+    expect(byName.Specify.prompt).toBe(customSpecify);
+    for (const name of ['Develop', 'Review', 'Test']) expect(byName[name].prompt, name).toBe(PREVIOUS_BUG_FIX_PROMPTS[name]);
+    expect(byName.Test.repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 3 });
+  });
+
   it.each([...STOCK_BEFORE_OWNER_CHECKS.previous, ...STOCK_BEFORE_OWNER_CHECKS.older].map(entry => [`${entry.template} / ${entry.node}`, entry]))('brings an unmodified built-in %s prompt to the one that leaves only owner-only checks to the owner', (_label, entry) => {
     const { db, agents, workflows } = setup();
     const agent = agents.create(validAgent);
@@ -435,9 +472,11 @@ describe('workflow progress file persistence', () => {
       ],
     });
     const current = WORKFLOW_TEMPLATES.find(template => template.id === entry.template).nodes.find(item => item.name === entry.node).prompt;
-    expect(current).not.toBe(entry.previous);
+    // A lone Bug fix step stops at the owner-checks prompt: the phased Bug fix replaces Specify, Develop, Review and Test only together.
+    const expected = entry.template === 'bug-fix' ? (PREVIOUS_BUG_FIX_PROMPTS[entry.node] ?? current) : current;
+    expect(expected).not.toBe(entry.previous);
     const reopened = createWorkflowStore(db).get(created.id);
-    expect(reopened.nodes[0].prompt).toBe(current);
+    expect(reopened.nodes[0].prompt).toBe(expected);
     // A prompt the owner changed is theirs.
     expect(reopened.nodes[1].prompt).toBe(custom);
   });

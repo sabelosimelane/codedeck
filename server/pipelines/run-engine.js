@@ -3,7 +3,7 @@ import { shellQuote } from '../command-runner.js';
 import { MAX_REPAIR_PATH, MAX_REPAIR_REASON, repairFindings } from './repair-evidence.js';
 import { execFile } from 'node:child_process';
 import { inspectCommitWorktree as inspectGitWorktree } from './run-worktree.js';
-import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
+import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workflow-templates.mjs';
 /**
  * Per-run promise-chain executor (Spec §8.3–§8.9).
  * All I/O (worktree, session, attach, workflow, readiness) is injected.
@@ -20,7 +20,8 @@ import { notePath, writeCommitNote as defaultWriteCommitNote, prepare as default
 import { listAttachmentCopiesAtRisk as defaultListAttachmentsAtRisk, verifyAttachmentCopies as defaultVerifyAttachments } from './attachment-verify.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
 
-const verificationPrompts = new Set(WORKFLOW_TEMPLATES.filter(t => ['bugfix', 'troubleshoot'].includes(t.kind)).map(t => t.nodes.at(-2).prompt));
+// A run keeps the definition it started with, so a run begun before Bug fix was phased still verifies.
+const verificationPrompts = new Set([...WORKFLOW_TEMPLATES.filter(t => ['bugfix', 'troubleshoot'].includes(t.kind)).map(t => t.nodes.at(-2).prompt), PREVIOUS_BUG_FIX_PROMPTS.Test]);
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;

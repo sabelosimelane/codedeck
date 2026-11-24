@@ -47,13 +47,38 @@ describe('workflow templates', () => {
       const template = WORKFLOW_TEMPLATES.find(item => item.id === id);
       expect(template.nodes.some(node => node.readOnly && node.approval)).toBe(true);
       expect(template.nodes.at(-1)).toMatchObject({ name: 'Commit', repeat: { mode: 'once' } });
-      expect(template.nodes.find(node => node.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: id === 'bug-fix' ? 3 : 8 });
+      expect(template.nodes.find(node => node.name === 'Test').repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 8 });
     }
     const bugFix = WORKFLOW_TEMPLATES.find(item => item.id === 'bug-fix');
     const featureBuild = WORKFLOW_TEMPLATES.find(item => item.id === 'feature-build');
     expect(bugFix.nodes.find(node => node.name === 'Analyse')).toMatchObject({ readOnly: true, approval: false });
     expect(bugFix.nodes.find(node => node.name === 'Specify')).toMatchObject({ readOnly: true, approval: true });
     expect(featureBuild.nodes[0].prompt).toContain('plan.md');
+  });
+
+  it('plans a bug fix in phases sized to its rounds and flags a fix that has outgrown a bug fix', () => {
+    const byName = Object.fromEntries(WORKFLOW_TEMPLATES.find(item => item.id === 'bug-fix').nodes.map(node => [node.name, node]));
+    // Specify agrees the checks and splits them into phases; a fix that will not fit is flagged before the owner approves it.
+    expect(byName.Specify.prompt).toMatch(/Write plan\.md in the run notes folder/);
+    expect(byName.Specify.prompt).toMatch(/Size the plan to the fix/);
+    expect(byName.Specify.prompt).toMatch(/never a phase that only checks or adds tests/);
+    expect(byName.Specify.prompt).toMatch(/at most 4 phases/);
+    expect(byName.Specify.prompt).toMatch(/The phases together must cover every agreed check/);
+    expect(byName.Specify.prompt).toMatch(/Scope warning:/);
+    expect(byName.Specify.prompt).toMatch(/feature workflow/);
+    // Develop builds one whole phase per round, never a slice of it.
+    expect(byName.Develop.prompt).toMatch(/first phase in plan\.md with unticked tasks/);
+    expect(byName.Develop.prompt).toMatch(/all of that phase, not a slice of it/);
+    expect(byName.Develop.prompt).toMatch(/tick each task when done/);
+    expect(byName.Develop.prompt).toMatch(/do not run git commit/);
+    expect(byName.Develop.prompt).not.toMatch(/as small as/);
+    expect(byName.Review.prompt).toMatch(/against plan\.md and the Specify note/);
+    // Test keeps the bug-fix verification rules and works a phase per round, with two rounds per phase.
+    expect(byName.Test.prompt).toMatch(/Untick any task that does not hold/);
+    expect(byName.Test.prompt).toMatch(/only the tests for that phase/);
+    expect(byName.Test.prompt).toMatch(/full test suite once/);
+    expect(byName.Test.prompt).toMatch(/run the same command on the recorded base commit/);
+    expect(byName.Test.repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 8 });
   });
 
   it('troubleshoots by evidence, an approved hypothesis and a failing test before any fix', () => {

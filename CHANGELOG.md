@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-11-24] - Bug fix workflow plans its fix in phases and flags oversized fixes
+
+### Executive Summary
+* The Bug fix workflow built a fix in one go with only three Test rounds, so a larger fix ran out of rounds or was built in slices nobody planned. Its Specify step now writes a phased plan (at most four phases, each working behaviour), Develop builds one whole phase per round, and Test loops up to eight rounds. A fix that will not fit, or that redesigns a system, opens its Specify note with a "Scope warning:" line so the owner sees it before approving. Saved Bug fix workflows still holding the old, unedited prompts are upgraded on the next start; edited ones are left alone.
+
+### Technical Details
+* **✨ New Feature:**
+  * `shared/workflow-templates.mjs` — phased Bug fix Specify, Develop, Review and Test prompts; Test loop raised from 3 to 8 rounds; `PREVIOUS_BUG_FIX_PROMPTS` exports the four prompts as they were.
+* **🛠️ Codebase:**
+  * `server/pipelines/workflow-store.js` — `phasedBugFix` upgrade: a saved workflow whose Specify, Develop, Review and Test are all unchanged gets the four phased prompts together and a Test loop of 8; any edited one leaves all four as they are.
+  * `server/pipelines/run-engine.js` — the previous Bug fix Test prompt still counts as a verification step, so runs started before the change keep verifying.
+  * `README.md` — the phased Bug fix, the scope warning and the upgrade rule.
+* **🧪 Tests:**
+  * `server/__tests__/workflow-templates.test.js` — the phased prompts' wording and the 8-round Test loop.
+  * `server/__tests__/pipeline-definition-store.test.js` — an unmodified saved Bug fix is upgraded; one with an edited step is left alone; single-step owner-checks upgrades stop at the pre-phased prompt for Bug fix.
+
 ## [2026-11-24] - Every built-in workflow carries its own prompts; no skills shipped
 
 ### Executive Summary
