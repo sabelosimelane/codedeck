@@ -146,12 +146,19 @@ function createBackend(seed = {}) {
 let backend;
 let onDirtyChange;
 
-async function renderSettings(seed) {
+// The sub-tab a describe block works in; renderSettings opens it once the lists have loaded.
+let startTab = null;
+
+/** Shows one section of Settings → Workflows, the way the owner does: by its tab. */
+const openTab = name => fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${name}`) }));
+
+async function renderSettings(seed, { tab = startTab } = {}) {
   backend = createBackend(seed);
   vi.stubGlobal('fetch', backend.fetch);
   onDirtyChange = vi.fn();
   render(<PipelineSettings onDirtyChange={onDirtyChange} />);
-  await screen.findByRole('button', { name: 'Add agent' });
+  await screen.findByRole('tablist', { name: 'Workflow settings sections' });
+  if (tab) openTab(tab);
 }
 
 const agents = () => within(screen.getByRole('region', { name: 'Agents' }));
@@ -179,6 +186,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  startTab = null;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   showToast.mockClear();
@@ -188,12 +196,14 @@ describe('PipelineSettings loading', () => {
   it('lists agents, the setup agent and workflows from the backend', async () => {
     await renderSettings({ agents: [codex(), cursor()], workflows: [feature()], settings: { setupAgentId: A2, defaultBaseBranch: null, revision: 2 } });
 
+    expect(workflows().getByText('Feature')).toBeTruthy();
+    expect(workflows().getByText(/2 nodes: Develop → Test/)).toBeTruthy();
+    openTab('Agents');
     expect(agents().getByText('codex-high')).toBeTruthy();
     expect(agents().getByText('command codex --model gpt-6-sol')).toBeTruthy();
     expect(agents().getByText('cursor-fable')).toBeTruthy();
-    expect(screen.getByLabelText('Setup agent').value).toBe(A2);
-    expect(workflows().getByText('Feature')).toBeTruthy();
-    expect(workflows().getByText(/2 nodes: Develop → Test/)).toBeTruthy();
+    openTab('Defaults');
+    expect(screen.getByRole('combobox', { name: 'Setup agent' }).value).toBe(A2);
     expect(lastDirty()).toBe(false);
   });
 
@@ -205,10 +215,11 @@ describe('PipelineSettings loading', () => {
 
     expect((await screen.findByRole('alert')).textContent).toBe('An unexpected error occurred');
     toast('error', 'An unexpected error occurred');
-    expect(screen.queryByRole('button', { name: 'Add agent' })).toBeNull();
+    expect(screen.queryByRole('tablist')).toBeNull();
 
     click('Retry');
-    await screen.findByRole('button', { name: 'Add agent' });
+    await screen.findByRole('tablist', { name: 'Workflow settings sections' });
+    openTab('Agents');
     expect(agents().getByText('codex-high')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -225,6 +236,8 @@ describe('PipelineSettings loading', () => {
 });
 
 describe('PipelineSettings agents', () => {
+  beforeEach(() => { startTab = 'Agents'; });
+
   it('adds an agent with the reset command pre-filled', async () => {
     await renderSettings();
     click('Add agent');
@@ -241,7 +254,7 @@ describe('PipelineSettings agents', () => {
       body: { name: 'haiku-setup', launchCommand: 'claude --model haiku --chrome', resetCommand: '/clear' },
     }]);
     toast('success', 'Agent "haiku-setup" added');
-    expect(screen.queryByLabelText('Agent name')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
   });
 
   it('shows each invalid field from the shared validator and sends nothing', async () => {
@@ -356,7 +369,7 @@ describe('PipelineSettings agents', () => {
 
     await waitFor(() => toast('error', 'agents record not found'));
     await waitFor(() => expect(agents().queryByText('codex-high')).toBeNull());
-    expect(screen.queryByLabelText('Agent name')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
   });
 
   it('says the server is unreachable when a save never completes, keeping the form', async () => {
@@ -378,7 +391,7 @@ describe('PipelineSettings agents', () => {
     click('Delete agent codex-high');
 
     await waitFor(() => expect(agents().queryByText('codex-high')).toBeNull());
-    expect(screen.queryByLabelText('Agent name')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
     expect(lastDirty()).toBe(false);
   });
 
@@ -430,11 +443,13 @@ describe('PipelineSettings agents', () => {
     expect(lastDirty()).toBe(true);
     click('Cancel');
     expect(lastDirty()).toBe(false);
-    expect(screen.queryByLabelText('Agent name')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
   });
 });
 
 describe('PipelineSettings agent presets', () => {
+  beforeEach(() => { startTab = 'Agents'; });
+
   const alias = () => ({ id: A2, name: 'claude-cc', launchCommand: 'cc', resetCommand: '/clear', revision: 1, ...STAMPS });
   const command = () => screen.getByLabelText('Launch command');
   const providerOptions = () => [...screen.getByLabelText('Provider').options].map(option => [option.value, option.textContent]);
@@ -621,6 +636,8 @@ describe('PipelineSettings agent presets', () => {
 });
 
 describe('PipelineSettings setup agent', () => {
+  beforeEach(() => { startTab = 'Defaults'; });
+
   it('saves the chosen setup agent with the settings revision', async () => {
     await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: null, defaultBaseBranch: null, revision: 5 } });
     expect(screen.getByLabelText('Setup agent').value).toBe('');
@@ -655,6 +672,8 @@ describe('PipelineSettings setup agent', () => {
 });
 
 describe('PipelineSettings default base branch', () => {
+  beforeEach(() => { startTab = 'Defaults'; });
+
   it('saves a default base branch with the setup agent kept, and clears it to null', async () => {
     await renderSettings({ agents: [codex()], settings: { setupAgentId: A1, defaultBaseBranch: null, revision: 3 } });
     expect(screen.getByLabelText('Default base branch').value).toBe('');
@@ -1370,7 +1389,7 @@ describe('PipelineSettings — the way to the builder', () => {
 });
 
 it('creates, edits and deletes a team from workflow settings', async () => {
-  await renderSettings({ agents: [codex(), cursor()] });
+  await renderSettings({ agents: [codex(), cursor()] }, { tab: 'Teams' });
   click('Add team');
   type('Team name', 'Daily');
   type('Member 1 role', 'Developer');
@@ -1386,7 +1405,7 @@ it('creates, edits and deletes a team from workflow settings', async () => {
 });
 
 it('sets, displays, reopens, and clears a team role fallback in workflow settings', async () => {
-  await renderSettings({ agents: [codex(), cursor()] });
+  await renderSettings({ agents: [codex(), cursor()] }, { tab: 'Teams' });
   click('Add team');
   type('Team name', 'Daily');
   type('Member 1 role', 'Developer');
@@ -1407,7 +1426,7 @@ it('sets, displays, reopens, and clears a team role fallback in workflow setting
 });
 
 it('sends None for a re-added role, so the server does not keep the removed role fallback', async () => {
-  await renderSettings({ agents: [codex(), cursor()] });
+  await renderSettings({ agents: [codex(), cursor()] }, { tab: 'Teams' });
   click('Add team');
   type('Team name', 'Daily');
   type('Member 1 role', 'Developer');
@@ -1430,4 +1449,67 @@ it('sends None for a re-added role, so the server does not keep the removed role
     { role: 'Reviewer', agentId: A2, fallbackAgentId: null },
     { role: 'Developer', agentId: A1, fallbackAgentId: null },
   ]);
+});
+
+describe('PipelineSettings — sections as tabs', () => {
+  const tabNames = () => screen.getAllByRole('tab').map(tab => tab.textContent);
+  const selected = () => screen.getAllByRole('tab').find(tab => tab.getAttribute('aria-selected') === 'true');
+
+  it('shows five tabs with counts, opening on Workflows', async () => {
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] }, { tab: null });
+
+    expect(screen.getByRole('tablist', { name: 'Workflow settings sections' })).toBeTruthy();
+    expect(tabNames()).toEqual(['Workflows1', 'Teams0', 'Roles8', 'Agents2', 'Defaults']);
+    expect(selected().textContent).toBe('Workflows1');
+    expect(screen.getByRole('region', { name: 'Workflows' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open the workflow builder' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Agents' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Setup agent' })).toBeNull();
+  });
+
+  it('switches the shown section on click and with the arrow, Home and End keys', async () => {
+    await renderSettings({ agents: [codex()] }, { tab: null });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Agents/ }));
+    expect(screen.getByRole('region', { name: 'Agents' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Workflows' })).toBeNull();
+
+    fireEvent.keyDown(selected(), { key: 'ArrowRight' });
+    expect(selected().textContent).toBe('Defaults');
+    expect(screen.getByRole('combobox', { name: 'Setup agent' })).toBeTruthy();
+    expect(document.activeElement).toBe(selected());
+
+    fireEvent.keyDown(selected(), { key: 'ArrowRight' });
+    expect(selected().textContent).toMatch(/^Workflows/);
+
+    fireEvent.keyDown(selected(), { key: 'ArrowLeft' });
+    expect(selected().textContent).toBe('Defaults');
+
+    fireEvent.keyDown(selected(), { key: 'Home' });
+    expect(selected().textContent).toMatch(/^Workflows/);
+    fireEvent.keyDown(selected(), { key: 'End' });
+    expect(selected().textContent).toBe('Defaults');
+  });
+
+  it('keeps an unsaved draft across tab switches and marks its tab unsaved', async () => {
+    await renderSettings({ agents: [codex()] }, { tab: 'Agents' });
+    click('Add agent');
+    type('Agent name', 'draft-agent');
+    const agentsTab = screen.getByRole('tab', { name: /^Agents/ });
+    expect(within(agentsTab).getByTitle('Unsaved changes')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Roles/ }));
+    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
+    fireEvent.click(agentsTab);
+    expect(screen.getByRole('textbox', { name: 'Agent name' }).value).toBe('draft-agent');
+    expect(within(screen.getByRole('tab', { name: /^Roles/ })).queryByTitle('Unsaved changes')).toBeNull();
+  });
+
+  it('reports an unsaved default base branch as unsaved and marks Defaults', async () => {
+    await renderSettings({}, { tab: 'Defaults' });
+    expect(lastDirty()).toBe(false);
+    type('Default base branch', 'develop');
+    expect(lastDirty()).toBe(true);
+    expect(within(screen.getByRole('tab', { name: /^Defaults/ })).getByTitle('Unsaved changes')).toBeTruthy();
+  });
 });

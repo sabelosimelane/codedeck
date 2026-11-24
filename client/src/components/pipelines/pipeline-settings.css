@@ -49,3 +49,14 @@
 .pipeline-settings .ui-input[readonly] { background: var(--bg-surface); color: var(--text-secondary); cursor: default; }
 .pipeline-settings .ui-field { margin-bottom: 10px; }
 .workflow-insert-step { width: auto; max-width: 240px; }
+
+/* Sections of Settings → Workflows: a segmented bar, lighter than Settings' own underlined tabs. */
+.pipeline-subtabs { display: flex; flex-wrap: wrap; gap: 2px; align-self: flex-start; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-sidebar); }
+.pipeline-subtab { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.pipeline-subtab:hover { color: var(--text-primary); background: var(--bg-hover); }
+.pipeline-subtab:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.pipeline-subtab[aria-selected="true"] { border-color: var(--border-strong); background: var(--bg-surface); color: var(--accent); }
+.pipeline-subtab-count { min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--bg-hover); color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; text-align: center; }
+.pipeline-subtab-dirty { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
+.pipeline-tabpanel { display: flex; flex-direction: column; gap: 16px; }
+.pipeline-tabpanel[hidden] { display: none; }

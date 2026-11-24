@@ -22,6 +22,19 @@
   * `docs/specifications/2026-11-24-172650-run-step-agents-and-role-fallbacks-spec.md` — full requirements, boundaries, persistence, recovery, error and acceptance design.
 # Changelog
 
+## [2026-11-25] - Settings → Workflows split into sub-tabs
+
+### Executive Summary
+* Settings → Workflows had grown into one long scroll of seven sections (Teams, Roles, Agents, Setup agent, Default base branch, Workflow builder, Workflows), which made it hard to find anything. It is now split into five sub-tabs — Workflows (default), Teams, Roles, Agents and Defaults — each with a count and a dot when it holds unsaved changes. Every tab stays loaded while hidden, so a half-finished draft survives a visit to another tab. An unsaved default base branch now also counts as unsaved, so closing Settings warns about it.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/components/pipelines/PipelineSettings.jsx` — `WORKFLOW_SUBTABS` and an accessible tab bar (`role="tablist"`, `aria-selected`/`aria-controls`, roving `tabIndex`, ArrowLeft/ArrowRight/Home/End); each section rendered in a mounted `role="tabpanel"` hidden when inactive; per-tab counts and unsaved dots; `baseChanged` added to `onDirtyChange`.
+* **🛠️ Codebase:**
+  * `client/src/components/pipelines/pipeline-settings.css` — segmented sub-tab bar, count badge, unsaved dot and tab panel styles using existing theme tokens.
+* **🧪 Tests:**
+  * `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx` — new tests for tab order/counts/default, click and keyboard switching, draft preservation with the unsaved dot, and the default base branch reported as unsaved; the render helper waits for the tab bar and opens each describe block's tab.
+
 ## [2026-11-25] - Structured workflow roles and team-only agent assignment
 
 ### Executive Summary

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Field, TextInput } from '../ui/index.jsx';
 import { BRANCH_NAME_RULE, isBranchName } from '../../../../shared/pipeline-definitions.mjs';
 import { listTeams, updatePipelineSettings } from '../../utils/pipelinesApi';
@@ -12,8 +12,20 @@ import { failureMessage } from './definitionForm';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
 import './pipeline-settings.css';
 
+/** The sections of Settings → Workflows, each behind its own tab, in the order they are shown. */
+export const WORKFLOW_SUBTABS = [
+  { id: 'workflows', label: 'Workflows' },
+  { id: 'teams', label: 'Teams' },
+  { id: 'roles', label: 'Roles' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'defaults', label: 'Defaults' },
+];
+const subtabId = id => `pipeline-subtab-${id}`;
+const subpanelId = id => `pipeline-subtabpanel-${id}`;
+const NEXT_TAB_KEYS = { ArrowRight: 1, ArrowLeft: -1 };
+
 /**
- * Settings → Workflows: agents, the setup agent and workflows. Nothing here is authoritative;
+ * Settings → Workflows: workflows, teams, roles, agents and the defaults, each on its own tab. Nothing here is authoritative;
  * every change is sent to the backend and the lists are read back from it.
  */
 export default function PipelineSettings({ onDirtyChange }) {
@@ -28,6 +40,9 @@ export default function PipelineSettings({ onDirtyChange }) {
   const [teamDirty, setTeamDirty] = useState(false);
   const [agentsDirty, setAgentsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
+  // Every panel stays mounted while hidden, so a draft in one section survives a visit to another.
+  const [activeTab, setActiveTab] = useState('workflows');
+  const tabRefs = useRef({});
 
   const load = useCallback(async () => {
     try {
@@ -42,7 +57,6 @@ export default function PipelineSettings({ onDirtyChange }) {
   }, [showToast]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { onDirtyChange(rolesDirty || agentsDirty || workflowsDirty || teamDirty); }, [rolesDirty, agentsDirty, workflowsDirty, teamDirty, onDirtyChange]);
 
   const changeSetupAgent = async (value) => {
     setSavingSetupAgent(true);
@@ -67,6 +81,42 @@ export default function PipelineSettings({ onDirtyChange }) {
   const typedBase = (baseDraft ?? savedBase).trim();
   const baseError = typedBase !== '' && !isBranchName(typedBase) ? BRANCH_NAME_RULE : null;
   const baseChanged = baseDraft !== null && typedBase !== savedBase;
+
+  useEffect(() => {
+    onDirtyChange(rolesDirty || agentsDirty || workflowsDirty || teamDirty || baseChanged);
+  }, [rolesDirty, agentsDirty, workflowsDirty, teamDirty, baseChanged, onDirtyChange]);
+
+  const tabDirty = { workflows: workflowsDirty, teams: teamDirty, roles: rolesDirty, agents: agentsDirty, defaults: baseChanged };
+  const tabCount = {
+    workflows: definitions?.workflows.length,
+    teams: definitions?.teams.length,
+    roles: definitions?.roles.length,
+    agents: definitions?.agents.length,
+  };
+
+  const selectTab = (id) => {
+    setActiveTab(id);
+    tabRefs.current[id]?.focus();
+  };
+
+  const onTabKeyDown = (event) => {
+    const index = WORKFLOW_SUBTABS.findIndex(tab => tab.id === activeTab);
+    let next = null;
+    if (event.key in NEXT_TAB_KEYS) next = (index + NEXT_TAB_KEYS[event.key] + WORKFLOW_SUBTABS.length) % WORKFLOW_SUBTABS.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = WORKFLOW_SUBTABS.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    selectTab(WORKFLOW_SUBTABS[next].id);
+  };
+
+  const panelProps = id => ({
+    role: 'tabpanel',
+    id: subpanelId(id),
+    'aria-labelledby': subtabId(id),
+    hidden: activeTab !== id,
+    className: 'pipeline-tabpanel',
+  });
 
   const saveDefaultBase = async () => {
     setSavingBase(true);
@@ -99,50 +149,81 @@ export default function PipelineSettings({ onDirtyChange }) {
 
       {definitions !== null && (
         <>
-          <TeamList definitions={definitions} onChanged={load} onDirtyChange={setTeamDirty} />
-          <RoleList definitions={definitions} onChanged={load} onDirtyChange={setRolesDirty} />
-          <AgentList agents={definitions.agents} onChanged={load} onDirtyChange={setAgentsDirty} />
+          <div className="pipeline-subtabs" role="tablist" aria-label="Workflow settings sections">
+            {WORKFLOW_SUBTABS.map(tab => (
+              <button
+                key={tab.id}
+                ref={element => { tabRefs.current[tab.id] = element; }}
+                type="button"
+                role="tab"
+                id={subtabId(tab.id)}
+                aria-selected={activeTab === tab.id}
+                aria-controls={subpanelId(tab.id)}
+                tabIndex={activeTab === tab.id ? 0 : -1}
+                className="pipeline-subtab"
+                onClick={() => setActiveTab(tab.id)}
+                onKeyDown={onTabKeyDown}
+              >
+                {tab.label}
+                {tabCount[tab.id] !== undefined && <span className="pipeline-subtab-count">{tabCount[tab.id]}</span>}
+                {tabDirty[tab.id] && <span className="pipeline-subtab-dirty" title="Unsaved changes" />}
+              </button>
+            ))}
+          </div>
 
-          <section className="pipeline-section">
-            <h3>Setup agent</h3>
-            <p className="pipeline-hint">
-              Runs first in every run&apos;s new worktree: installs dependencies and copies the local files the project needs.
-              A small, fast model is enough. A run cannot start until one is chosen.
-            </p>
-            <select
-              className="ui-input"
-              aria-label="Setup agent"
-              value={definitions.settings.setupAgentId ?? ''}
-              disabled={savingSetupAgent}
-              onChange={event => changeSetupAgent(event.target.value)}
-            >
-              <option value="">No setup agent</option>
-              {definitions.agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-            </select>
-          </section>
+          <div {...panelProps('workflows')}>
+            <section className="pipeline-section">
+              <h3>Workflow builder</h3>
+              <p className="pipeline-hint">A full screen for building workflows: the steps side by side with the one you are editing, a large prompt editor, and a preview of exactly what the agent is sent.</p>
+              <Button variant="accent" onClick={openWorkflowBuilder}>Open the workflow builder</Button>
+            </section>
+            <WorkflowList workflows={definitions.workflows} roles={definitions.roles} templates={definitions.templates} stepPresets={definitions.stepPresets} onChanged={load} onDirtyChange={setWorkflowsDirty} />
+          </div>
 
-          <section className="pipeline-section">
-            <h3>Default base branch</h3>
-            <p className="pipeline-hint">
-              The branch a run&apos;s new task is cut from and merged back into, in every repository the task includes. Main is not
-              switched: the task starts from that branch&apos;s latest local commit. The Run workflow dialog can name another for one run.
-              Leave it empty to start from the branch Main is on.
-            </p>
-            <Field label="Default base branch" error={baseError}>
-              <TextInput label="Default base branch" value={baseDraft ?? savedBase} onChange={setBaseDraft} maxLength={200}
-                disabled={savingBase} invalid={Boolean(baseError)} placeholder="The branch Main is on" />
-            </Field>
-            <Button onClick={saveDefaultBase} disabled={!baseChanged || Boolean(baseError) || savingBase}
-              aria-label="Save default base branch">{savingBase ? 'Saving…' : 'Save'}</Button>
-          </section>
+          <div {...panelProps('teams')}>
+            <TeamList definitions={definitions} onChanged={load} onDirtyChange={setTeamDirty} />
+          </div>
+          <div {...panelProps('roles')}>
+            <RoleList definitions={definitions} onChanged={load} onDirtyChange={setRolesDirty} />
+          </div>
+          <div {...panelProps('agents')}>
+            <AgentList agents={definitions.agents} onChanged={load} onDirtyChange={setAgentsDirty} />
+          </div>
 
-          <section className="pipeline-section">
-            <h3>Workflow builder</h3>
-            <p className="pipeline-hint">A full screen for building workflows: the steps side by side with the one you are editing, a large prompt editor, and a preview of exactly what the agent is sent.</p>
-            <Button variant="accent" onClick={openWorkflowBuilder}>Open the workflow builder</Button>
-          </section>
+          <div {...panelProps('defaults')}>
+            <section className="pipeline-section">
+              <h3>Setup agent</h3>
+              <p className="pipeline-hint">
+                Runs first in every run&apos;s new worktree: installs dependencies and copies the local files the project needs.
+                A small, fast model is enough. A run cannot start until one is chosen.
+              </p>
+              <select
+                className="ui-input"
+                aria-label="Setup agent"
+                value={definitions.settings.setupAgentId ?? ''}
+                disabled={savingSetupAgent}
+                onChange={event => changeSetupAgent(event.target.value)}
+              >
+                <option value="">No setup agent</option>
+                {definitions.agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+              </select>
+            </section>
 
-          <WorkflowList workflows={definitions.workflows} roles={definitions.roles} templates={definitions.templates} stepPresets={definitions.stepPresets} onChanged={load} onDirtyChange={setWorkflowsDirty} />
+            <section className="pipeline-section">
+              <h3>Default base branch</h3>
+              <p className="pipeline-hint">
+                The branch a run&apos;s new task is cut from and merged back into, in every repository the task includes. Main is not
+                switched: the task starts from that branch&apos;s latest local commit. The Run workflow dialog can name another for one run.
+                Leave it empty to start from the branch Main is on.
+              </p>
+              <Field label="Default base branch" error={baseError}>
+                <TextInput label="Default base branch" value={baseDraft ?? savedBase} onChange={setBaseDraft} maxLength={200}
+                  disabled={savingBase} invalid={Boolean(baseError)} placeholder="The branch Main is on" />
+              </Field>
+              <Button onClick={saveDefaultBase} disabled={!baseChanged || Boolean(baseError) || savingBase}
+                aria-label="Save default base branch">{savingBase ? 'Saving…' : 'Save'}</Button>
+            </section>
+          </div>
         </>
       )}
     </div>
