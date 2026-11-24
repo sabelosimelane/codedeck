@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { isUuid, teamMemberFallbackId, validateRoleBody, validateTeamBody, validateWorkflowBody, validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
+import { isUuid, teamMemberEffort, teamMemberFallbackId, validateRoleBody, validateTeamBody, validateWorkflowBody, validateStepPresetBody } from '../../shared/pipeline-definitions.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const isIso = value => typeof value === 'string' && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value));
@@ -160,7 +160,14 @@ export function createTeamStore(db, { now = () => new Date().toISOString() } = {
       name: body.name.trim(),
       members: body.members.map(member => {
         const fallbackAgentId = teamMemberFallbackId(member, current?.members);
-        return { role: member.role.trim(), agentId: member.agentId, ...(fallbackAgentId && { fallbackAgentId }) };
+        const effort = teamMemberEffort(member, 'effort', current?.members);
+        const fallbackEffort = teamMemberEffort(member, 'fallbackEffort', current?.members);
+        return {
+          role: member.role.trim(), agentId: member.agentId,
+          ...(effort && { effort }),
+          ...(fallbackAgentId && { fallbackAgentId }),
+          ...(fallbackEffort && { fallbackEffort }),
+        };
       }),
     }),
   });

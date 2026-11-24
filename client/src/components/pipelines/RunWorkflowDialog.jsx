@@ -5,7 +5,7 @@ import { listWorktreeCandidates, makeTaskFromWorktree } from '../../utils/tasksA
 import { useToast } from '../ToastContext';
 import { parseTeam, parseAgent, parseWorkflow, parsePreflight, parseRunPlan, parseSettings, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
-import { assignedAgentId, BRANCH_NAME_RULE, composePrompt, isBranchName, isProgressFilePath, isTeamCompatible, loopTargetIndex, missingTeamRoles, requiredWorkflowRoles, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { assignedAgentId, BRANCH_NAME_RULE, composePrompt, isBranchName, isProgressFilePath, isTeamCompatible, loopTargetIndex, missingTeamRoles, requiredWorkflowRoles, runInputMode, teamMemberForRole, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { Button, Dialog, Field, Note, SegmentedControl, Select, TextArea, TextInput } from '../ui/index.jsx';
 import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
 import WorktreeCandidatePicker from '../tasks/WorktreeCandidatePicker.jsx';
@@ -445,7 +445,8 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
             <details key={workflowId + (team?.id ?? '')}>
               <summary>Step assignments</summary>
               {nodes.map(node => {
-                const inherited = team ? agentById.get(assignedAgentId(node, team)) : null;
+                const member = teamMemberForRole(team, node.role);
+                const inherited = agentById.get(member?.agentId);
                 const enabled = isStepEnabled(node);
                 return <Field key={node.name} label={node.role ? `${node.name} · ${node.role}` : node.name}
                   action={<label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
@@ -466,7 +467,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
                       return next;
                     });
                   }}>
-                    <option value="">{inherited ? `Use ${inherited.name}` : 'Select a compatible team first'}</option>
+                    <option value="">{inherited ? `Use ${[inherited.name, member.effort].filter(Boolean).join(' · ')}` : 'Select a compatible team first'}</option>
                     {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                   </Select>
                 </Field>;

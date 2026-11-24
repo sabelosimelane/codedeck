@@ -4029,18 +4029,21 @@ it('uses structured errors, validates decision edges and forwards valid owner ac
 });
 
 describe('workflow teams', () => {
-  it('pins role fallback snapshots on start and stopped team reassignment', async () => {
+  it('pins team efforts and role fallback snapshots on start and stopped team reassignment', async () => {
     let team;
     const teamStore = { get: id => id === team.id ? team : null, list: () => [team] };
     const directory = mkdtempSync(path.join(os.tmpdir(), 'codedeck-team-snapshot-'));
     cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
     const databasePath = path.join(directory, 'runs.sqlite');
     const ctx = await setup({ databasePath, routerDeps: { teamStore } });
-    const { agent } = await seedReady(ctx);
-    const first = ctx.agentStore.create(agentBody({ name: 'Developer backup' }));
+    const seeded = await seedReady(ctx);
+    const medium = 'command claude --model opus --effort medium';
+    const high = 'command claude --model opus --effort high';
+    const agent = ctx.agentStore.update(seeded.agent.id, { ...agentBody({ launchCommand: medium }), revision: seeded.agent.revision });
+    const first = ctx.agentStore.create(agentBody({ name: 'Developer backup', launchCommand: 'command muse --effort medium' }));
     const second = ctx.agentStore.create(agentBody({ name: 'Reviewer backup' }));
     team = { id: randomUUID(), revision: 3, name: 'Team snapshot', members: [
-      { role: 'Developer', agentId: agent.id, fallbackAgentId: first.id },
+      { role: 'Developer', agentId: agent.id, effort: 'high', fallbackAgentId: first.id, fallbackEffort: 'low' },
       { role: 'Reviewer', agentId: agent.id, fallbackAgentId: second.id },
     ] };
     const originalTeam = team;
@@ -4059,8 +4062,8 @@ describe('workflow teams', () => {
       ['setup', undefined], ['team', projectedFallback(first)], ['team', projectedFallback(second)],
       ['override', undefined], ['team', projectedFallback(first)],
     ]);
-    const snapshotted = item => ({
-      id: item.id, name: item.name, launchCommand: item.launchCommand, resetCommand: item.resetCommand,
+    const snapshotted = (item, launchCommand = item.launchCommand) => ({
+      id: item.id, name: item.name, launchCommand, resetCommand: item.resetCommand,
       assignment: { source: 'fallback', agentRevision: item.revision, teamId: team.id, teamRevision: originalTeam.revision },
     });
     const read = () => {
@@ -4071,19 +4074,21 @@ describe('workflow teams', () => {
       } finally { db.close(); }
     };
     const [saved, attribution] = read();
-    expect(saved.definition.steps.map(step => step.agent.fallbackAgent)).toEqual([
-      undefined, snapshotted(first), snapshotted(second), undefined, snapshotted(first),
+    expect.soft(saved.definition.steps.map(step => step.agent.launchCommand)).toEqual([medium, high, medium, medium, high]);
+    const firstAtLow = snapshotted(first, 'command muse --effort low');
+    expect.soft(saved.definition.steps.map(step => step.agent.fallbackAgent)).toEqual([
+      undefined, firstAtLow, snapshotted(second), undefined, firstAtLow,
     ]);
     expect(attribution.configuration[2]).toMatchObject({
-      role: 'reviewer', source: 'team', teamRevision: 3, fallbackAgent: projectedFallback(second),
+      role: 'reviewer', effort: 'medium', source: 'team', teamRevision: 3, fallbackAgent: projectedFallback(second),
     });
     expect(attribution.configuration[2].fallbackAgent).toEqual(projectedFallback(second));
-    team = { ...team, revision: 4, members: team.members.map(member => ({ ...member, fallbackAgentId: second.id })) };
+    team = { ...team, revision: 4, members: team.members.map(member => ({ ...member, effort: 'low', fallbackAgentId: second.id, fallbackEffort: 'high' })) };
     const revised = ctx.agentStore.update(second.id, { ...agentBody({
-      name: 'Revised backup', launchCommand: 'agy', resetCommand: '/reset',
+      name: 'Revised backup', launchCommand: 'command agy', resetCommand: '/reset',
     }), revision: second.revision });
     await request(ctx.app).delete(base + '/agents/' + first.id).expect(204);
-    expect(read()[0].definition.steps[1].agent.fallbackAgent).toEqual(snapshotted(first));
+    expect.soft(read()[0].definition.steps[1].agent.fallbackAgent).toEqual(firstAtLow);
     expect(read()[0].definition.steps[2].agent.fallbackAgent).toEqual(snapshotted(second));
 
     // An old, assignment-free run must acquire current fallback configuration only from an explicit team edit.
@@ -4103,11 +4108,95 @@ describe('workflow teams', () => {
     expect(reassigned.definition.steps.map(step => step.agent.fallbackAgent?.name)).toEqual([
       undefined, revised.name, revised.name, undefined, revised.name,
     ]);
-    expect(reassigned.definition.steps[1].agent.fallbackAgent).toEqual({
-      id: revised.id, name: revised.name, launchCommand: revised.launchCommand, resetCommand: revised.resetCommand,
+    expect.soft(reassigned.definition.steps.map(step => step.agent.launchCommand)).toEqual([
+      medium, 'command claude --model opus --effort low', 'command claude --model opus --effort low',
+      medium, 'command claude --model opus --effort low',
+    ]);
+    expect.soft(reassigned.definition.steps[1].agent.fallbackAgent).toEqual({
+      id: revised.id, name: revised.name, launchCommand: 'command agy --effort high', resetCommand: revised.resetCommand,
       assignment: { source: 'fallback', agentRevision: revised.revision, teamId: team.id, teamRevision: 4 },
     });
     expect(originalAttribution).toEqual({ ...attribution, mixed: true });
+
+    ctx.agentStore.update(agent.id, { ...agentBody({ name: agent.name, launchCommand: 'claude --extra-flag' }), revision: agent.revision });
+    const refused = await request(ctx.app).put(base + '/runs/' + started.id + '/team').send({
+      expectedUpdatedAt: reassigned.updatedAt, teamId: team.id,
+    });
+    expect.soft(refused.status).toBe(400);
+    expect.soft(refused.body.errors).toEqual([{
+      field: 'teamId', message: expect.stringMatching(/Developer.*codex-sol-high/i),
+    }]);
+  });
+
+  it('refuses a new run when the team effort no longer fits the saved agent', async () => {
+    const ctx = await setup();
+    const { agent, workflow, team } = await seedReady(ctx);
+    const preset = ctx.agentStore.update(agent.id, { ...agentBody({ launchCommand: 'command claude' }), revision: agent.revision });
+    const staffed = (await request(ctx.app).put(base + '/teams/' + team.id).send({
+      name: team.name, revision: team.revision, members: [{ role: 'Developer', agentId: agent.id, effort: 'max' }],
+    }).expect(200)).body;
+    ctx.agentStore.update(agent.id, { ...agentBody({ launchCommand: 'command codex' }), revision: preset.revision });
+    const response = await request(ctx.app).post(base + '/runs').send({
+      workflowId: workflow.id, requestId: 'invalid-pinned-effort', project: 'Demo', input: 'Change', teamId: staffed.id,
+    }).expect(400).expect('Content-Type', /application\/problem\+json/);
+    expect(response.body.errors).toEqual([{ field: 'teamId', message: expect.stringMatching(/Developer.*codex-sol-high/) }]);
+    expect(response.body.traceId).toBeTruthy();
+    expect(ctx.runStore.list()).toEqual([]);
+  });
+
+  it('saves team effort overrides and preserves omission for older clients', async () => {
+    const ctx = await setup();
+    const primary = ctx.agentStore.create(agentBody({ name: 'Primary', launchCommand: 'command codex' }));
+    const backup = ctx.agentStore.create(agentBody({ name: 'Backup', launchCommand: 'command claude' }));
+    const api = request(ctx.app);
+    const member = { role: 'Developer', agentId: primary.id, effort: 'high', fallbackAgentId: backup.id, fallbackEffort: 'max' };
+    const body = { name: 'Daily efforts', members: [member] };
+    const created = await api.post(base + '/teams').send(body).expect(201);
+    expect(created.body.members).toEqual([member]);
+    const path = base + '/teams/' + created.body.id;
+    const update = (revision, members) => api.put(path).send({ ...body, revision, members });
+    const changed = { ...member, effort: 'medium', fallbackEffort: 'high' };
+    const settled = await Promise.all([update(1, [changed]), update(1, [changed])]);
+    expect(settled.map(response => response.status).sort()).toEqual([200, 409]);
+    expect(settled.find(response => response.status === 200).body.members).toEqual([changed]);
+    const legacy = { role: ' developer ', agentId: primary.id };
+    expect((await update(2, [legacy]).expect(200)).body.members).toEqual([changed]);
+    expect((await update(3, [{ ...legacy, effort: null, fallbackEffort: null }]).expect(200)).body.members)
+      .toEqual([{ role: 'Developer', agentId: primary.id, fallbackAgentId: backup.id }]);
+    await api.post(base + '/teams').send(body).expect(409);
+  });
+
+  it('rejects unsupported and malformed team effort overrides with safe field errors', async () => {
+    const ctx = await setup();
+    const preset = ctx.agentStore.create(agentBody({ name: 'Preset', launchCommand: 'command codex' }));
+    const custom = ctx.agentStore.create(agentBody({ name: 'Custom' }));
+    const api = request(ctx.app);
+    const path = base + '/teams';
+    const member = { role: 'Developer', agentId: preset.id };
+    const body = patch => ({ name: 'Invalid efforts', members: [{ ...member, ...patch }] });
+    for (const [patch, field] of [
+      [{ effort: 'max' }, 'effort'],
+      [{ agentId: custom.id, effort: 'high' }, 'effort'],
+      [{ fallbackAgentId: custom.id, fallbackEffort: 'high' }, 'fallbackEffort'],
+      [{ effort: null }, 'effort'],
+      [{ effort: '' }, 'effort'],
+      [{ effort: [] }, 'effort'],
+      [{ effort: 'x'.repeat(17) }, 'effort'],
+      [{ effort: '<script>secret' }, 'effort'],
+      [{ fallbackEffort: 'high' }, 'fallbackEffort'],
+    ]) {
+      const result = await api.post(path).send(body(patch)).expect(400);
+      expect(result.type).toBe('application/problem+json');
+      expect(result.body.traceId).toBeTruthy();
+      expect.soft(result.body.errors.map(error => error.field)).toEqual([`members[0].${field}`]);
+      expect(result.text).not.toContain('<script>secret');
+    }
+    const created = await api.post(path).send(body({})).expect(201);
+    const invalidUpdate = await api.put(path + '/' + created.body.id).send({ ...body({ effort: 'max' }), revision: 1 }).expect(400);
+    expect(invalidUpdate.body.errors.map(error => error.field)).toEqual(['members[0].effort']);
+    const malformed = await api.post(path).type('json').send('{').expect(400);
+    expect(malformed.body.traceId).toBeTruthy();
+    expect(malformed.body.errors.length).toBeGreaterThan(0);
   });
 
   it('validates, persists and releases team role fallback references', async () => {

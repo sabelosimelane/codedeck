@@ -122,3 +122,20 @@ export function parseLaunchCommand(command) {
   }
   return null;
 }
+
+export function launchCommandEfforts(command) {
+  const selection = parseLaunchCommand(command);
+  return selection ? AGENT_PRESETS.find(preset => preset.id === selection.provider).efforts : [];
+}
+
+/** Apply a team effort, preserving the exact saved command when the effort is blank. */
+export function launchCommandAtEffort(command, effort) {
+  requireType('command', command, 'string');
+  requireType('effort', effort, 'string');
+  if (effort === '') return { command, errors: [] };
+  const selection = parseLaunchCommand(command);
+  if (!selection) {
+    return { command: null, errors: [{ field: 'effort', message: 'Effort overrides require a preset launch command' }] };
+  }
+  return buildLaunchCommand({ ...selection, effort });
+}

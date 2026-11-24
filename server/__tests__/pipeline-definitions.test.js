@@ -23,6 +23,33 @@ function fields(errors) {
   return errors.map(e => e.field);
 }
 
+describe('team member effort validation', () => {
+  const member = { role: 'Developer', agentId: UUID };
+  const errors = (patch, options) => fields(validateTeamBody({
+    name: 'Daily', revision: 1, members: [{ ...member, ...patch }],
+  }, options));
+
+  it('accepts overrides at the length boundaries and legacy omission', () => {
+    expect(errors({})).toEqual([]);
+    expect(errors({ effort: 'x', fallbackAgentId: UUID2, fallbackEffort: 'x'.repeat(16) })).toEqual([]);
+    expect(errors({ effort: 'x'.repeat(15) })).toEqual([]);
+  });
+
+  it.each([null, '', '  ', 1, [], {}, 'high\nlow', 'high\u2028low', 'x'.repeat(17)])('identifies each invalid effort %j', value => {
+    expect(errors({ effort: value, fallbackAgentId: UUID2, fallbackEffort: value }))
+      .toEqual(['members[0].effort', 'members[0].fallbackEffort']);
+  });
+
+  it('requires a fallback for fallback effort and rejects unknown fields', () => {
+    expect(errors({ fallbackEffort: 'high' })).toEqual(['members[0].fallbackEffort']);
+    expect(errors({ otherEffort: 'high' })).toEqual(['members[0]']);
+  });
+
+  it('accepts explicit clears only for an update', () => {
+    expect(errors({ effort: null, fallbackEffort: null }, { revisionRequired: true })).toEqual([]);
+  });
+});
+
 describe('team role fallback validation', () => {
   const team = members => ({ name: 'Daily', members, revision: 1 });
   const developer = { role: 'Developer', agentId: UUID };

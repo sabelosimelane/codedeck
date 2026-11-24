@@ -130,6 +130,7 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
       <h3>Agents</h3>
       <p className="pipeline-hint">
         A named CLI a node runs in. Choose a provider, model and effort, or write the launch command yourself.
+        A team can override the default effort for each role.
       </p>
 
       {agents.length === 0 && <p className="pipeline-empty">No agents yet.</p>}

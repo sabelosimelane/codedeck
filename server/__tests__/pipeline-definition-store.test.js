@@ -52,6 +52,20 @@ describe('team role fallback persistence', () => {
   const member = { role: 'Developer', agentId: AGENT_UUID };
   const body = { name: 'Daily', members: [member] };
 
+  it('hydrates effort overrides, preserves legacy omission by role, and clears explicitly', () => {
+    const { db } = setup();
+    const teams = createTeamStore(db);
+    const staffed = { ...member, effort: 'high', fallbackAgentId: FALLBACK_UUID, fallbackEffort: 'medium' };
+    const created = teams.create({ ...body, members: [staffed] });
+    expect(createTeamStore(db).get(created.id).members).toEqual([staffed]);
+    const legacy = teams.update(created.id, { ...body, revision: 1, members: [{ ...member, role: ' developer ' }] });
+    expect(legacy.members).toEqual([{ ...staffed, role: 'developer' }]);
+    const cleared = teams.update(created.id, { ...body, revision: 2, members: [{ ...member, effort: null, fallbackAgentId: null }] });
+    expect(cleared.members).toEqual([member]);
+    db.prepare('UPDATE pipeline_teams SET body = ? WHERE id = ?').run(JSON.stringify({ ...body, members: [{ ...member, effort: null }] }), created.id);
+    expect(() => teams.get(created.id)).toThrow(new RegExp('pipeline_teams row ' + created.id + ' field body.*effort'));
+  });
+
   it('persists and hydrates a fallback, preserves legacy omission by role and clears with null', () => {
     const { db } = setup();
     const teams = createTeamStore(db);

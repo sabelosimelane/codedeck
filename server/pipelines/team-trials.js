@@ -1,7 +1,7 @@
 // Persistence and decisions belong to CodeDeck; verdicts are computed by the standalone scoring policy.
 import { createHash, randomUUID } from 'node:crypto';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
-import { AGENT_PRESETS, buildLaunchCommand, parseLaunchCommand } from '../../shared/agent-presets.mjs';
+import { AGENT_PRESETS, buildLaunchCommand, launchCommandAtEffort, parseLaunchCommand } from '../../shared/agent-presets.mjs';
 import { compareTeamTrial, scoreTeam, TEAM_POLICY_VERSION, TEAM_TRIAL_SIZE } from '../../shared/scoring/index.mjs';
 
 const LIMIT = TEAM_TRIAL_SIZE;
@@ -188,7 +188,9 @@ function nominate(rows, team, agents, previous) {
     const member = team.members.find((m) => m.role.toLowerCase() === role);
     if (!member || ms <= 0) continue;
     const agent = available.get(member.agentId);
-    const current = parseLaunchCommand(agent.launchCommand);
+    const { command } = launchCommandAtEffort(agent.launchCommand, member.effort ?? '');
+    if (command === null) continue;
+    const current = parseLaunchCommand(command);
     if (!current) continue;
     const changes = candidateProfiles(current, agent.resetCommand, goal, agents);
     const change = [...changes].find(
@@ -540,19 +542,19 @@ export function createTeamTrials({
     } else if (action === 'dismiss' && p.status === 'pending') state = 'dismissed';
     else if (action === 'stop' && row.state === 'running') state = 'stopped';
     else if (action === 'adopt' && p.status === 'measured' && p.comparison.verdict === 'helped') {
-      const team = teams.get(d.teamId),
-        agent = candidate(d);
-      const name = (team.name + ' ' + d.role).slice(0, 25) + ' · ' + row.id;
-      const replacement = agents.create({
-        name,
-        launchCommand: agent.launchCommand,
-        resetCommand: agent.resetCommand,
-      });
+      const team = teams.get(d.teamId);
+      let patch = { effort: d.to.effort };
+      if (d.donorId) {
+        const agent = candidate(d);
+        const name = (team.name + ' ' + d.role).slice(0, 25) + ' · ' + row.id;
+        const replacement = agents.create({ name, launchCommand: agent.launchCommand, resetCommand: agent.resetCommand });
+        patch = { agentId: replacement.id, effort: null };
+      }
       teams.update(team.id, {
         name: team.name,
         revision: d.teamRevision,
         members: team.members.map((member) =>
-          member.role === d.role ? { ...member, agentId: replacement.id } : member,
+          member.role === d.role ? { ...member, ...patch } : member,
         ),
       });
       adoption = JSON.stringify(cohorts(d, p.assignmentIds, records));

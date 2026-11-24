@@ -423,6 +423,7 @@ describe('parseTeam', () => {
   it.each([
     ['id', { id: null }], ['name', { name: '' }], ['members', { members: [] }],
     ['role', { members: [{ role: null, agentId: A1 }] }], ['agentId', { members: [{ role: 'Developer', agentId: null }] }],
+    ['effort', { members: [{ role: 'Developer', agentId: A1, effort: null }] }],
     ['fallbackAgentId', { members: [{ role: 'Developer', agentId: A1, fallbackAgentId: {} }] }],
     ['fallbackAgentId', { members: [{ role: 'Developer', agentId: A1, fallbackAgentId: null }] }],
     ['fallbackAgentId', { members: [{ role: 'Developer', agentId: A1, fallbackAgentId: A1 }] }],

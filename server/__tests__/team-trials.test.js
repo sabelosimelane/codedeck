@@ -6,7 +6,7 @@ import { createTeamStore } from '../pipelines/library-store.js';
 import { buildLaunchCommand } from '../../shared/agent-presets.mjs';
 import { createTeamTrials } from '../pipelines/team-trials.js';
 
-function fixture({ effort = 'high', model = 'm1', alternate = false } = {}) {
+function fixture({ effort = 'high', model = 'm1', alternate = false, teamEffort } = {}) {
   const db = new Database(':memory:');
   const teams = createTeamStore(db);
   const agents = createAgentStore(db);
@@ -25,7 +25,7 @@ function fixture({ effort = 'high', model = 'm1', alternate = false } = {}) {
   const team = teams.create({
     name: 'A',
     members: [
-      { role: 'Build', agentId: agent.id },
+      { role: 'Build', agentId: agent.id, ...(teamEffort && { effort: teamEffort }) },
       { role: 'Verify', agentId: other.id },
     ],
   });
@@ -42,7 +42,7 @@ function fixture({ effort = 'high', model = 'm1', alternate = false } = {}) {
     teamRevision: 1,
     provider: stepIndex === 0 || alternate ? 'codex' : null,
     model: stepIndex === 0 ? model : alternate ? 'm2' : null,
-    effort: stepIndex === 0 || alternate ? effort : null,
+    effort: stepIndex === 0 ? (teamEffort ?? effort) : alternate ? effort : null,
   }));
   const cohort = {
     teamId: team.id,
@@ -178,8 +178,12 @@ describe('bounded team role trials', () => {
     expect(p.to).toEqual({ provider: 'codex', model: 'm2', effort: 'low' });
     expect(p.from).toEqual({ provider: 'codex', model: 'm1', effort: 'low' });
   });
+  it('nominates the effective team effort independently of the saved agent default', () => {
+    const f = fixture({ effort: 'medium', teamEffort: 'high' });
+    expect(f.propose()).toMatchObject({ from: { effort: 'high' }, to: { effort: 'medium' } });
+  });
   it('trials the exact saved cross-provider profile and adopts for the reviewed team alone', () => {
-    const f = fixture({ effort: 'low' });
+    const f = fixture({ effort: 'low', teamEffort: 'low' });
     const donor = f.agents.create({
       name: 'Claude low',
       launchCommand: 'command claude --model m2 --effort low --dangerously-skip-permissions',
@@ -204,7 +208,9 @@ describe('bounded team role trials', () => {
     const measured = f.trials.list()[0];
     const adopted = f.trials.decide(p.id, { action: 'adopt', revision: measured.revision });
     expect(adopted.status).toBe('adopted');
-    const newAgent = f.agents.get(f.teams.get(f.team.id).members[0].agentId);
+    const member = f.teams.get(f.team.id).members[0];
+    expect(member).not.toHaveProperty('effort');
+    const newAgent = f.agents.get(member.agentId);
     expect(newAgent.launchCommand).toBe(donor.launchCommand);
     expect(newAgent.resetCommand).toBe(f.agent.resetCommand);
     expect(f.agents.get(donor.id)).toEqual(donor);
@@ -287,9 +293,8 @@ describe('bounded team role trials', () => {
     expect(f.teams.get(f.team.id).members[1]).toEqual(f.team.members[1]);
     expect(f.teams.get(f.shared.id)).toEqual(f.shared);
     expect(f.agents.get(f.agent.id)).toEqual(f.agent);
-    const replacement = f.agents.get(f.teams.get(f.team.id).members[0].agentId);
-    expect(replacement.launchCommand).toEqual(f.command('m1', 'medium'));
-    expect(replacement.resetCommand).toBe(f.agent.resetCommand);
+    expect(f.teams.get(f.team.id).members[0]).toEqual({ role: 'Build', agentId: f.agent.id, effort: 'medium' });
+    expect(f.agents.list()).toHaveLength(2);
     expect(() => f.trials.decide(p.id, { action: 'adopt', revision: measured.revision })).toThrow();
   });
   it('recomputes evidence corrections before adoption, retains a faster-but-inaccurate result', () => {

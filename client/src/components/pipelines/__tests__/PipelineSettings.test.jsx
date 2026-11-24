@@ -93,8 +93,9 @@ function createBackend(seed = {}) {
     const records = state[name];
     if (method === 'GET' && !id) return json({ data: [...records], page: { hasNextPage: false } });
     if (name === 'teams' && ['POST', 'PUT'].includes(method)) {
-      body = { ...body, members: body.members.map(({ fallbackAgentId, ...member }) => ({
+      body = { ...body, members: body.members.map(({ fallbackAgentId, effort, fallbackEffort, ...member }) => ({
         ...member, ...(fallbackAgentId != null && { fallbackAgentId }),
+        ...(effort != null && { effort }), ...(fallbackEffort != null && { fallbackEffort }),
       })) };
     }
     if (method === 'POST') {
@@ -1456,6 +1457,47 @@ it('sets, displays, reopens, and clears a team role fallback in workflow setting
   expect(await screen.findByText('Developer: codex-high')).toBeTruthy();
   expect(backend.mutations().at(-1).body.members).toEqual([{ role: 'Developer', agentId: A1, fallbackAgentId: null }]);
   expect(backend.state.teams[0].members).toEqual([{ role: 'Developer', agentId: A1 }]);
+});
+
+it('sets and clears team effort overrides independently for each assigned agent', async () => {
+  const customId = '55555555-5555-4555-8555-555555555555';
+  const claude = { ...cursor(), name: 'Opus', launchCommand: 'command claude --effort medium' };
+  const custom = { ...codex(), id: customId, name: 'Custom', launchCommand: 'codex --other' };
+  await renderSettings({ agents: [codex(), claude, custom] }, { tab: 'Teams' });
+  click('Add team');
+  type('Team name', 'Daily');
+  type('Member 1 role', 'Developer');
+  type('Member 1 agent', A2);
+  type('Member 1 fallback agent', A1);
+  const effort = () => screen.getByLabelText('Member 1 effort');
+  const fallback = () => screen.getByLabelText('Member 1 fallback effort');
+  expect(within(effort()).getAllByRole('option').map(option => option.textContent))
+    .toEqual(["Agent's default", 'low', 'medium', 'high', 'xhigh', 'max']);
+  expect(within(fallback()).queryByRole('option', { name: 'max' })).toBeNull();
+  type('Member 1 effort', 'max');
+  type('Member 1 fallback effort', 'high');
+  click('Save team');
+  expect(await screen.findByText('Developer: Opus · max · Fallback: codex-high · high')).toBeTruthy();
+  expect(backend.mutations().at(-1).body.members)
+    .toEqual([{ role: 'Developer', agentId: A2, effort: 'max', fallbackAgentId: A1, fallbackEffort: 'high' }]);
+  click('Edit Daily');
+  expect(effort().value).toBe('max');
+  expect(fallback().value).toBe('high');
+  type('Member 1 agent', customId);
+  expect(effort().disabled).toBe(true);
+  expect(effort().title).toMatch(/preset/i);
+  expect(effort().value).toBe('');
+  type('Member 1 fallback agent', '');
+  expect(fallback().value).toBe('');
+  click('Save team');
+  expect(await screen.findByText('Developer: Custom')).toBeTruthy();
+  expect(backend.mutations().at(-1).body.members)
+    .toEqual([{ role: 'Developer', agentId: customId, effort: null, fallbackAgentId: null, fallbackEffort: null }]);
+});
+
+it('explains that the saved agent effort is a default for teams', async () => {
+  await renderSettings({ agents: [codex()] }, { tab: 'Agents' });
+  expect(screen.getByText(/team can override the default effort/i)).toBeTruthy();
 });
 
 it('sends None for a re-added role, so the server does not keep the removed role fallback', async () => {

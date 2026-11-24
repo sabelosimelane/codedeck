@@ -10,6 +10,7 @@ import {
   validateAgentBody,
   validateRoleBody,
   validateTeamBody,
+  teamMemberEffort,
   teamMemberFallbackId,
   validateTeamChange,
   firstReassignableStep,
@@ -34,6 +35,7 @@ import {
   isUuid,
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
+import { launchCommandAtEffort } from '../../shared/agent-presets.mjs';
 import { renameRoleEverywhere } from '../pipelines/role-migration.js';
 import { buildPackage, packageFileName, validatePackage } from '../../shared/workflow-package.mjs';
 import { canonicalDefinition } from '../../shared/workflow-changes.mjs';
@@ -293,14 +295,22 @@ function resolveExistingRoleField(roleStore, role) {
   return found.name;
 }
 
+function agentAtTeamEffort(agent, effort, role) {
+  if (effort === undefined) return agent;
+  const { command, errors } = launchCommandAtEffort(agent.launchCommand, effort);
+  if (errors.length) throw fieldError('teamId', `${role} · ${agent.name}: ${errors[0].message}`);
+  return { ...agent, launchCommand: command };
+}
+
 function snapshotNodeAgent(agent, source, team, role, agentStore) {
   if (source !== 'team') return attributedAgent(agent, source, null);
-  const snapshot = attributedAgent(agent, source, team);
-  const { fallbackAgentId } = teamMemberForRole(team, role);
+  const member = teamMemberForRole(team, role);
+  const { effort, fallbackAgentId, fallbackEffort } = member;
+  const snapshot = attributedAgent(agentAtTeamEffort(agent, effort, member.role), source, team);
   if (fallbackAgentId === undefined) return snapshot;
   const fallback = agentStore.get(fallbackAgentId);
   if (!fallback) throw new Error(`team ${team.id}: fallbackAgentId must identify a saved agent`);
-  return { ...snapshot, fallbackAgent: attributedAgent(fallback, 'fallback', team) };
+  return { ...snapshot, fallbackAgent: attributedAgent(agentAtTeamEffort(fallback, fallbackEffort, member.role), 'fallback', team) };
 }
 
 function buildDefinitionSnapshot({
@@ -1080,15 +1090,25 @@ export function createPipelinesRouter(deps) {
         && !roleStore.findByName(member.role)) {
         errors.push({ field: `members[${index}].role`, message: 'Choose an existing role' });
       }
-      if (isUuid(member?.agentId) && !agentStore.get(member.agentId)) {
-        errors.push({ field: `members[${index}].agentId`, message: 'Choose an existing agent' });
-      }
       const fallbackAgentId = typeof member?.role === 'string'
         ? teamMemberFallbackId(member, current?.members)
         : member?.fallbackAgentId;
-      const field = `members[${index}].fallbackAgentId`;
-      if (isUuid(fallbackAgentId) && !errors.some(error => error.field === field) && !agentStore.get(fallbackAgentId)) {
-        errors.push({ field, message: 'Choose an existing agent' });
+      for (const [id, idKey, effortKey] of [
+        [member?.agentId, 'agentId', 'effort'],
+        [fallbackAgentId, 'fallbackAgentId', 'fallbackEffort'],
+      ]) {
+        const idField = `members[${index}].${idKey}`;
+        if (!isUuid(id) || errors.some(error => error.field === idField)) continue;
+        const agent = agentStore.get(id);
+        if (!agent) {
+          errors.push({ field: idField, message: 'Choose an existing agent' });
+          continue;
+        }
+        const field = `members[${index}].${effortKey}`;
+        const effort = teamMemberEffort(member, effortKey, current?.members);
+        if (effort == null || errors.some(error => error.field === field)) continue;
+        const { errors: effortErrors } = launchCommandAtEffort(agent.launchCommand, effort);
+        if (effortErrors.length) errors.push({ field, message: effortErrors[0].message });
       }
     });
     return errors;

@@ -377,7 +377,7 @@ it('keeps Change team in view while the run works, disabled with the reason, and
 it('lets the owner change teams on a failed run without resuming it', async () => {
   const id = '44444444-4444-4444-8444-444444444444';
   const agent = { id, name: 'Other agent', launchCommand: 'agent', resetCommand: '/new', revision: 1, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
-  const team = { ...agent, name: 'Trial team', members: [{ role: 'Dev', agentId: id }] };
+  const team = { ...agent, name: 'Trial team', members: [{ role: 'Dev', agentId: id, effort: 'high' }] };
   const stopped = run({ status: 'error', actions: { resume: true }, steps: run().steps.map(step => ({ ...step, role: 'Dev' })) });
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, options) => ({
     ok: true, json: async () => options?.method === 'PUT' ? stopped : { data: [String(url).includes('/teams') ? team : agent], page: { hasNextPage: false } },
@@ -387,6 +387,7 @@ it('lets the owner change teams on a failed run without resuming it', async () =
   await screen.findByRole('option', { name: 'Trial team' });
   fireEvent.change(screen.getByLabelText('Team'), { target: { value: id } });
   expect(screen.queryByLabelText('Plan agent')).toBeNull();
+  expect(screen.getByLabelText('Develop agent').selectedOptions[0].textContent).toBe('Other agent · high');
   fireEvent.click(screen.getByRole('button', { name: 'Apply to run' }));
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Change team' })).toBeNull());
   expect(fetch).toHaveBeenCalledWith('/api/pipelines/runs/run-1/team', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ expectedUpdatedAt: stopped.updatedAt, teamId: id }) }));

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { firstReassignableStep, missingTeamRoles } from '../../../../shared/pipeline-definitions.mjs';
+import { firstReassignableStep, missingTeamRoles, teamMemberForRole } from '../../../../shared/pipeline-definitions.mjs';
 import { changeRunTeam, listAgents, listTeams } from '../../utils/pipelinesApi';
 import { parseAgent, parseTeam } from '../../utils/pipelineRecords';
 import { Button, Dialog, Field, Note, Select } from '../ui/index.jsx';
@@ -25,8 +25,9 @@ function AssignmentDialog({ run, onClose }) {
   const teamCompatible = !team || (teamMissing.get(team.id)?.length ?? 0) === 0;
   const assignedName = step => {
     if (!team || !step.role) return step.nextAgentName ?? step.agentName;
-    const member = team.members.find(item => item.role.toLowerCase() === step.role.toLowerCase());
-    return choices.agents.find(agent => agent.id === member?.agentId)?.name;
+    const member = teamMemberForRole(team, step.role);
+    const agent = choices.agents.find(item => item.id === member?.agentId);
+    return agent ? [agent.name, member.effort].filter(Boolean).join(' · ') : undefined;
   };
   const ready = choices && teamCompatible && (team || Object.keys(overrides).length > 0)
     && steps.every(step => Object.hasOwn(overrides, step.name) || assignedName(step));

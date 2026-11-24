@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_PRESETS, buildLaunchCommand, parseLaunchCommand } from '../../shared/agent-presets.mjs';
+import { AGENT_PRESETS, buildLaunchCommand, launchCommandAtEffort, launchCommandEfforts, parseLaunchCommand } from '../../shared/agent-presets.mjs';
 
 const build = (provider, fields = {}) => buildLaunchCommand({ provider, model: '', effort: '', skipPermissions: false, ...fields });
 
@@ -124,5 +124,29 @@ describe('parseLaunchCommand', () => {
 
   it('fails loudly when the command is not a string', () => {
     expect(() => parseLaunchCommand(undefined)).toThrow(/agent preset: command/);
+  });
+});
+
+describe('team launch effort', () => {
+  it.each(['claude', 'codex', 'agy', 'muse'])('adds and replaces effort for %s while preserving launch options', provider => {
+    const fields = { model: 'test-model', skipPermissions: true };
+    const bare = build(provider, fields).command;
+    const medium = build(provider, { ...fields, effort: 'medium' }).command;
+    const high = build(provider, { ...fields, effort: 'high' }).command;
+    expect(launchCommandEfforts(bare)).toEqual(AGENT_PRESETS.find(preset => preset.id === provider).efforts);
+    expect(launchCommandAtEffort(bare, 'high')).toEqual({ command: high, errors: [] });
+    expect(launchCommandAtEffort(medium, 'high')).toEqual({ command: high, errors: [] });
+    expect(launchCommandAtEffort(medium, '')).toEqual({ command: medium, errors: [] });
+  });
+
+  it.each(['claude --extra-flag', 'command agent --model fable', 'command codex'])('rejects an unsupported effort for %s', command => {
+    const result = launchCommandAtEffort(command, 'max');
+    expect(result.command).toBeNull();
+    expect(result.errors).toEqual([{ field: 'effort', message: expect.any(String) }]);
+    expect(launchCommandAtEffort(command, '')).toEqual({ command, errors: [] });
+  });
+
+  it.each(['claude --extra-flag', 'command agent --model fable'])('lists no efforts for %s', command => {
+    expect(launchCommandEfforts(command)).toEqual([]);
   });
 });

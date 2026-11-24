@@ -128,13 +128,21 @@ export function isRunRequestId(value) {
   return typeof value === 'string' && REQUEST_ID_RE.test(value);
 }
 
-export function teamMemberFallbackId(member, previousMembers = []) {
-  if (Object.hasOwn(member, 'fallbackAgentId')) return member.fallbackAgentId;
-  const role = member.role.trim().toLowerCase();
-  return previousMembers.find(previous => previous.role.toLowerCase() === role)?.fallbackAgentId;
+function teamMemberField(member, field, previousMembers) {
+  if (Object.hasOwn(member, field)) return member[field];
+  return teamMemberForRole({ members: previousMembers }, member.role)?.[field];
 }
 
-export function validateTeamBody(body, { revisionRequired = false, current, allowFallbackClear = true } = {}) {
+export function teamMemberFallbackId(member, previousMembers) {
+  return teamMemberField(member, 'fallbackAgentId', previousMembers);
+}
+
+export function teamMemberEffort(member, field, previousMembers) {
+  if (field === 'fallbackEffort' && member.fallbackAgentId === null && !Object.hasOwn(member, field)) return undefined;
+  return teamMemberField(member, field, previousMembers);
+}
+
+export function validateTeamBody(body, { revisionRequired = false, current, allowFallbackClear = true, allowEffortClear = revisionRequired } = {}) {
   const errors = [];
   if (!isPlainObject(body)) return [{ field: 'body', message: 'A JSON object is required' }];
   if (Object.keys(body).some(key => !['name', 'members', 'revision'].includes(key))) add(errors, 'body', 'Unknown field');
@@ -148,7 +156,7 @@ export function validateTeamBody(body, { revisionRequired = false, current, allo
   body.members.forEach((member, index) => {
     const field = `members[${index}]`;
     if (!isPlainObject(member)) return add(errors, field, 'A member object is required');
-    if (Object.keys(member).some(key => !['role', 'agentId', 'fallbackAgentId'].includes(key))) add(errors, field, 'Unknown field');
+    if (Object.keys(member).some(key => !['role', 'agentId', 'fallbackAgentId', 'effort', 'fallbackEffort'].includes(key))) add(errors, field, 'Unknown field');
     requireSingleLine(errors, `${field}.role`, member.role, { min: 1, max: ROLE_MAX, label: 'Role' });
     if (typeof member.role === 'string') {
       const role = member.role.trim().toLowerCase();
@@ -159,6 +167,16 @@ export function validateTeamBody(body, { revisionRequired = false, current, allo
     const fallbackAgentId = typeof member.role === 'string'
       ? teamMemberFallbackId(member, current?.members)
       : member.fallbackAgentId;
+    for (const key of ['effort', 'fallbackEffort']) {
+      if (!Object.hasOwn(member, key)) continue;
+      const value = member[key];
+      if (value === null && allowEffortClear) continue;
+      if (typeof value !== 'string' || !value.trim() || value.length > 16 || PROGRESS_CONTROL.test(value)) {
+        add(errors, `${field}.${key}`, 'Use 1–16 characters on one line without control characters');
+      } else if (key === 'fallbackEffort' && !isUuid(fallbackAgentId)) {
+        add(errors, `${field}.${key}`, 'Choose a fallback agent before setting its effort');
+      }
+    }
     if ((fallbackAgentId === null && allowFallbackClear) || (fallbackAgentId === undefined && !Object.hasOwn(member, 'fallbackAgentId'))) return;
     if (!isUuid(fallbackAgentId)) add(errors, `${field}.fallbackAgentId`, 'Choose an existing agent');
     else if (isUuid(member.agentId) && member.agentId.toLowerCase() === fallbackAgentId.toLowerCase()) {

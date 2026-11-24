@@ -35,12 +35,12 @@ const worktree = (patch = {}) => ({
 const HOME = worktree({ path: '/git/demo', name: 'demo', branch: 'main', current: true });
 const SETUP_MISSING = { code: 'setup_agent_missing', message: 'Choose a setup agent in Settings → Workflows.' };
 
-function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()], candidates = [], defaultBaseBranch = null } = {}) {
+function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()], candidates = [], defaultBaseBranch = null, teams = [team] } = {}) {
   global.fetch = vi.fn(async (url) => {
     const target = String(url);
     const json = body => ({ ok: true, status: 200, json: async () => body });
     if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch, timeouts: TIMEOUTS, revision: 1 });
-    if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
+    if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? teams : agents, page: { hasNextPage: false } }) };
     if (target.includes('/workflows')) return json({ data: workflows, page: { hasNextPage: false } });
     if (target.includes('/preflight')) return json(preflight);
     if (target.includes('/tasks/worktree-candidates')) return json({ data: candidates, page: { currentPage: 0, size: 100, totalElements: candidates.length, totalPages: candidates.length ? 1 : 0, hasNextPage: false } });
@@ -840,6 +840,15 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
     await waitFor(() => expect(screen.queryByText(/From the Repositories line/)).toBeNull());
     expect(asked.length).toBe(before);
   });
+});
+
+it('shows the inherited team effort in the run step assignments', async () => {
+  mockApi({ teams: [{ ...team, members: [{ ...team.members[0], effort: 'high' }] }] });
+  await renderDialog();
+  fireEvent.click(screen.getByText('Step assignments'));
+  const picker = screen.getByLabelText('Develop agent');
+  expect(picker.selectedOptions[0].textContent).toBe('Use Team dev · high');
+  expect(picker.options[2].textContent).toBe('Team dev');
 });
 
 it('uses a team and overrides just one of two steps sharing its role', async () => {

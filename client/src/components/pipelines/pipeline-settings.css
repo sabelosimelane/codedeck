@@ -34,6 +34,9 @@
 .pipeline-node { padding: 12px 12px 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); }
 .pipeline-node-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
 .pipeline-node-row { display: flex; gap: 10px; }
+.pipeline-team-member { flex-wrap: wrap; align-items: start; }
+.pipeline-team-member > .pipeline-field { flex: 1 1 120px; }
+.pipeline-team-agent { flex: 2 1 230px; }
 
 .pipeline-load-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--danger); border-radius: 6px; color: var(--danger); }
 
