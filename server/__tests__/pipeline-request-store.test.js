@@ -60,6 +60,22 @@ describe('pipeline request store', () => {
       expect(serializeStartParams({ ...start, taskId: TASK_ID })).toBe(JSON.stringify({ ...start, place: { kind: 'task', taskId: TASK_ID } }));
     });
 
+    it('records the base branch a new task is asked to start from only when the request names one', () => {
+      const plain = serializeStartParams({ ...start, newTask: { title: 'Replies' } });
+      const based = serializeStartParams({ ...start, newTask: { title: 'Replies', baseBranch: 'develop' } });
+      expect(plain).toBe(JSON.stringify({ ...start, place: { kind: 'newTask', title: 'Replies' } }));
+      expect(JSON.parse(based).place).toEqual({ kind: 'newTask', title: 'Replies', baseBranch: 'develop' });
+    });
+
+    it('reads a reservation with a base branch back as the request it was', () => {
+      const { store } = setup();
+      const recorded = serializeStartParams({ ...start, newTask: { title: 'Replies', baseBranch: 'develop' } });
+      expect(store.reserve('based', recorded).params).toBe(recorded);
+      expect(store.get('based').params).toBe(recorded);
+      const bad = JSON.stringify({ ...start, place: { kind: 'newTask', title: 'Replies', baseBranch: '-x' } });
+      expect(() => store.reserve('bad-base', bad)).toThrow(/field params\.place\.baseBranch: /);
+    });
+
     it('records the repository the run starts in and the ones a new task includes', () => {
       const plain = serializeStartParams({ ...start, newTask: { title: ' Replies ' } });
       const withStart = serializeStartParams({ ...start, newTask: { title: ' Replies ' }, startIn: 'backend' });

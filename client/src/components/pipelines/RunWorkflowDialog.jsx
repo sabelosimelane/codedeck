@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { cleanupRun, listTeams, listAgents, listWorkflows, listWorktrees, planRun, preflightProject } from '../../utils/pipelinesApi';
+import { cleanupRun, getPipelineSettings, listTeams, listAgents, listWorkflows, listWorktrees, planRun, preflightProject } from '../../utils/pipelinesApi';
 import { listProjectRepositories } from '../../utils/projectRepositoriesApi.js';
 import { listWorktreeCandidates, makeTaskFromWorktree } from '../../utils/tasksApi.js';
 import { useToast } from '../ToastContext';
-import { parseTeam, parseAgent, parseWorkflow, parsePreflight, parseRunPlan, parseWorktree } from '../../utils/pipelineRecords';
+import { parseTeam, parseAgent, parseWorkflow, parsePreflight, parseRunPlan, parseSettings, parseWorktree } from '../../utils/pipelineRecords';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
-import { assignedAgentId, composePrompt, isProgressFilePath, loopTargetIndex, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
+import { assignedAgentId, BRANCH_NAME_RULE, composePrompt, isBranchName, isProgressFilePath, loopTargetIndex, runInputMode, validateRunInputField, WORKFLOW_KIND_LABELS } from '../../../../shared/pipeline-definitions.mjs';
 import { Button, Dialog, Field, Note, SegmentedControl, Select, TextArea, TextInput } from '../ui/index.jsx';
 import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTaskFields.jsx';
 import WorktreeCandidatePicker from '../tasks/WorktreeCandidatePicker.jsx';
@@ -81,6 +81,9 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
   const [place, setPlace] = useState(null);
   const [taskId, setTaskId] = useState(null);
   const [title, setTitle] = useState('');
+  // The branch a new task is cut from, when the owner names one for this run; empty takes the default.
+  const [baseBranch, setBaseBranch] = useState('');
+  const [defaultBaseBranch, setDefaultBaseBranch] = useState(null);
   // The project's repositories as Git sees them now; empty for a project with only its own.
   const [projectRepositories, setProjectRepositories] = useState([]);
   // The repository the run starts in, when the owner picked one; the ones a new task also includes.
@@ -122,10 +125,11 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
       setLoading(true);
       setError(null);
       try {
-        const [nextWorkflows, preflightResponse, nextTeams, nextAgents] = await Promise.all([
+        const [nextWorkflows, preflightResponse, nextTeams, nextAgents, settingsResponse] = await Promise.all([
           listWorkflows(),
-          preflightProject(projectName, { host: selectedHost }), listTeams(), listAgents(),
+          preflightProject(projectName, { host: selectedHost }), listTeams(), listAgents(), getPipelineSettings(),
         ]);
+        const nextSettings = parseSettings(settingsResponse);
         const nextPreflight = parsePreflight(preflightResponse);
         // Worktrees exist only for a local git project; a missing setup agent does not change that.
         const listable = nextPreflight.reasons.every(reason => reason.code === SETUP_AGENT_MISSING);
@@ -134,6 +138,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
           repositories.length > 0 ? listProjectRepositories(projectName, hostOption) : [], listWorktreeCandidates(projectName, hostOption),
         ]) : [[], []];
         if (cancelled) return;
+        setDefaultBaseBranch(nextSettings.defaultBaseBranch);
         setWorkflows(nextWorkflows.map(parseWorkflow));
         setTeams(nextTeams.map(parseTeam));
         setAgents(nextAgents.map(parseAgent));
@@ -194,6 +199,10 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
   // A title is sent only when the owner typed one. Without it the backend calls the task after
   // the input and names it from the run's work, with the CLI chosen for session naming.
   const typedTitle = title.trim().slice(0, TASK_TITLE_MAX).trim();
+  // A base branch is sent only when the owner typed one; the backend applies the default otherwise.
+  const typedBase = where === NEW_TASK ? baseBranch.trim() : '';
+  const baseError = typedBase !== '' && !isBranchName(typedBase) ? BRANCH_NAME_RULE : null;
+  const effectiveBase = typedBase || defaultBaseBranch || preflight?.branch || null;
   const reasons = (preflight?.reasons ?? []).filter(reason => !(where !== NEW_TASK && reason.code === SETUP_AGENT_MISSING));
   const listable = (preflight?.reasons ?? []).every(reason => reason.code === SETUP_AGENT_MISSING);
   const placeUsable = where === NEW_TASK ? typedTitle.length > 0 || input.trim().length > 0 : Boolean(chosenWorktree?.selectable);
@@ -206,7 +215,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
   const inputRequired = pathInput || activeNodes.some(node => node.prompt.includes('{input}'));
   const locked = starting || submission !== null;
   const canStart = !starting && !checkingFiles && (submission !== null
-    || (!loading && eligible && Boolean(workflowId) && activeNodes.length > 0 && !brokenLoop && missing.length === 0 && !inputError && (!inputRequired || input.trim().length > 0)));
+    || (!loading && eligible && Boolean(workflowId) && activeNodes.length > 0 && !brokenLoop && missing.length === 0 && !inputError && !baseError && (!inputRequired || input.trim().length > 0)));
 
   // The todo is looked up for a new task of a workflow that reads a Progress file, in a project with several repositories.
   const wantsPlan = !loading && !error && !inputError && several && where === NEW_TASK && Boolean(selectedWorkflow?.progressFile) && input.trim().length > 0;
@@ -257,7 +266,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
         input,
         ...(attachments.length > 0 ? { files: attachments.map(entry => entry.file) } : {}),
         ...(where === EXISTING_WORKTREE ? {} : where === NEW_TASK ? {
-          newTask: { ...(typedTitle ? { title: typedTitle } : {}), ...(start ? { repositories: [start.name, ...alsoIncluded] } : {}) },
+          newTask: { ...(typedTitle ? { title: typedTitle } : {}), ...(start ? { repositories: [start.name, ...alsoIncluded] } : {}), ...(typedBase ? { baseBranch: typedBase } : {}) },
           ...(start ? { startIn: start.name } : {}),
         }
           : where === OPEN_TASK ? { taskId: chosenTask.id, ...(start ? { startIn: start.name } : {}) }
@@ -266,7 +275,7 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
       },
       extras: extraRuns.map(entry => ({ ...assignment, requestId: newRequestId(), workflowId, input: entry.input,
         ...(explicitHost ? { host: explicitHost } : {}),
-        newTask: { repositories: [entry.repository] }, startIn: entry.repository })),
+        newTask: { repositories: [entry.repository], ...(typedBase ? { baseBranch: typedBase } : {}) }, startIn: entry.repository })),
     };
   }
 
@@ -455,6 +464,14 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
                 { value: MAIN, label: 'Main', disabled: !home?.selectable && !several, title: home?.reason?.message },
               ]} />
               {where === NEW_TASK && <TaskTitleInput value={title} onChange={setTitle} optional />}
+              {where === NEW_TASK && <>
+                <span aria-hidden="true" style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>Base branch</span>
+                <TextInput label="Base branch" value={baseBranch} onChange={setBaseBranch} maxLength={200} disabled={locked} invalid={Boolean(baseError)}
+                  placeholder={defaultBaseBranch ? `${defaultBaseBranch} (the default)` : preflight?.branch ? `${preflight.branch} (the branch Main is on)` : 'The branch Main is on'} />
+                {baseError
+                  ? <span className="ui-field-error" role="alert">{baseError}</span>
+                  : <span className="ui-field-hint">The task is cut from this branch&apos;s latest local commit and merges back into it. Main is not switched.</span>}
+              </>}
               {where === EXISTING_WORKTREE && <>
                 <WorktreeCandidatePicker candidates={candidates} value={candidate?.path ?? ''} onChange={setCandidatePath} />
                 <TaskTitleInput value={title} onChange={setTitle} optional placeholder={candidate?.branch ? candidate.branch.split('/').at(-1).replace(/[-_]/g, ' ').slice(0, TASK_TITLE_MAX) : 'Task title'} />
@@ -494,8 +511,8 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
               {where === NEW_TASK && planFailure && <Note tone="warning">{`The todo could not be looked up: ${planFailure}`}</Note>}
               {unlistedMinor.map(entry => <Note key={entry.repository} tone="warning">{`The todo names ${entry.repository}, which is not one of this project's repositories.`}</Note>)}
               <Note>
-                {where === NEW_TASK && !several && <span>The task gets its own copy of the project{preflight?.branch ? ` from ${preflight.branch}` : ''}, prepared by a Setup step, so other work can carry on beside it.</span>}
-                {where === NEW_TASK && several && <span>A Setup step prepares each copy, and the run starts in the repository chosen under Start in.</span>}
+                {where === NEW_TASK && !several && <span>The task gets its own copy of the project{effectiveBase ? ` from ${effectiveBase}` : ''}, prepared by a Setup step, so other work can carry on beside it.</span>}
+                {where === NEW_TASK && several && <span>{`A Setup step prepares each copy${typedBase || defaultBaseBranch ? `, each cut from ${typedBase || defaultBaseBranch}` : ''}, and the run starts in the repository chosen under Start in.`}</span>}
                 {where === OPEN_TASK && <span>Runs in this task as it is, with no Setup step.</span>}
                 {where === EXISTING_WORKTREE && <span>Makes this worktree a task, keeping its uncommitted files, then runs in it with no Setup step.</span>}
                 {where === MAIN && !mainElsewhere && <span>Runs directly in Main, with no copy of its own and no Setup step.</span>}

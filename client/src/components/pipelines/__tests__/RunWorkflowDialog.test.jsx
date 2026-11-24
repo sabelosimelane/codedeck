@@ -31,10 +31,11 @@ const worktree = (patch = {}) => ({
 const HOME = worktree({ path: '/git/demo', name: 'demo', branch: 'main', current: true });
 const SETUP_MISSING = { code: 'setup_agent_missing', message: 'Choose a setup agent in Settings → Workflows.' };
 
-function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()], candidates = [] } = {}) {
+function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()], candidates = [], defaultBaseBranch = null } = {}) {
   global.fetch = vi.fn(async (url) => {
     const target = String(url);
     const json = body => ({ ok: true, status: 200, json: async () => body });
+    if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch, revision: 1 });
     if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
     if (target.includes('/workflows')) return json({ data: workflows, page: { hasNextPage: false } });
     if (target.includes('/preflight')) return json(preflight);
@@ -279,6 +280,45 @@ describe('RunWorkflowDialog', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it('cuts a new task from the default base branch unless another is typed, and says which', async () => {
+    mockApi({ defaultBaseBranch: 'develop' });
+    const { onStart } = await renderDialog();
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'ship the feature' } });
+    const field = screen.getByLabelText('Base branch');
+    expect(field.value).toBe('');
+    expect(field.placeholder).toBe('develop (the default)');
+    expect(screen.getByText(/own copy of the project from develop,/)).toBeTruthy();
+    fireEvent.change(field, { target: { value: ' release/2.1 ' } });
+    expect(screen.getByText(/own copy of the project from release\/2\.1,/)).toBeTruthy();
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ newTask: { baseBranch: 'release/2.1' } })));
+  });
+
+  it('sends no base branch when none is typed, so the backend applies its default', async () => {
+    mockApi();
+    const { onStart } = await renderDialog();
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'ship the feature' } });
+    expect(screen.getByLabelText('Base branch').placeholder).toBe('main (the branch Main is on)');
+    fireEvent.click(startButton());
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ newTask: {} })));
+  });
+
+  it('refuses to start with a base branch that is not a branch name', async () => {
+    mockApi();
+    await renderDialog();
+    fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'ship the feature' } });
+    fireEvent.change(screen.getByLabelText('Base branch'), { target: { value: 'two words' } });
+    expect(screen.getByText(/Use a Git branch name/)).toBeTruthy();
+    expect(startButton().disabled).toBe(true);
+  });
+
+  it('asks for no base branch when the run works in an open task', async () => {
+    mockApi();
+    await renderDialog();
+    fireEvent.click(where('An open task'));
+    expect(screen.queryByLabelText('Base branch')).toBeNull();
+  });
+
   it('sends no title again once a typed one is cleared', async () => {
     mockApi();
     const { onStart } = await renderDialog();
@@ -450,6 +490,7 @@ describe('RunWorkflowDialog', () => {
   it('shows the API message when worktrees cannot be listed', async () => {
     global.fetch = vi.fn(async (url) => {
       const target = String(url);
+      if (target.endsWith('/pipelines/settings')) return { ok: true, json: async () => ({ setupAgentId: null, defaultBaseBranch: null, revision: 1 }) };
       if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return { ok: true, json: async () => ({ data: workflows, page: { hasNextPage: false } }) };
       if (target.includes('/preflight')) return { ok: true, json: async () => eligible() };
@@ -636,6 +677,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
         const answer = typeof plans === 'function' ? plans(body) : plans[body.input] ?? NOTHING;
         return answer instanceof Error ? { ok: false, status: 409, json: async () => ({ message: answer.message }) } : json(answer);
       }
+      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch: null, revision: 1 });
       if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return json({ data: TEMPLATED, page: { hasNextPage: false } });
       if (target.includes('/preflight')) return json(eligible());

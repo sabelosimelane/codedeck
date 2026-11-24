@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-11-24] - Workflow runs cut new tasks from a chosen base branch
+
+### Executive Summary
+* A run's new task was always cut from whatever branch Main happened to be on, so work meant for `develop` or a release branch first needed Main switched. A global **Default base branch** in Settings → Workflows now names the branch new tasks are cut from and merged back into, and the Run workflow dialog's **Base branch** field names another for one run. The task starts from that branch's latest local commit without switching Main or fetching; a repository that lacks the branch refuses the start before anything is created. Left empty, everything works as before.
+
+### Technical Details
+* **✨ New Feature:**
+  * `client/src/components/pipelines/PipelineSettings.jsx` — "Default base branch" section with inline validation and its own Save; the setup agent save keeps the branch.
+  * `client/src/components/pipelines/RunWorkflowDialog.jsx` — Base branch field for a new task, placeholder showing the default or Main's branch, sent only when typed (also to the extra runs a todo starts); the note names the branch the copy comes from.
+* **🔌 API/Interface:**
+  * `shared/pipeline-definitions.mjs` — `isBranchName` (Git ref-name rules, never starting with `-`) and `BRANCH_NAME_RULE`; settings body requires `defaultBaseBranch` (null or a branch); run start accepts `newTask.baseBranch`.
+  * `server/routes/pipelines.js` — a new task's base is `newTask.baseBranch`, else the settings default, else none; a planning field error on `baseBranch` is reported as `newTask.baseBranch`.
+* **🗄️ Database:**
+  * `server/pipelines/settings-store.js` — `pipeline_settings.default_base_branch` column, added to existing tables on start; hydration refuses a stored value that is not a branch name.
+  * `server/pipelines/request-store.js` — a run request records `place.baseBranch` only when named, so older reservations read the same.
+* **🛠️ Codebase:**
+  * `server/tasks/task-service.js` — `plan` takes `baseBranch`, checks `refs/heads/<branch>` in every included repository (409 naming the repository otherwise) and records it as base and start branch; `createPlanned` cuts each worktree from that branch's tip, or from the checkout's commit when none was named.
+  * `client/src/utils/pipelinesApi.js`, `client/src/utils/pipelineRecords.js` — settings carry and validate `defaultBaseBranch`.
+  * `README.md` — the Base branch behaviour, its limits (merge needs Main on that branch; the pre-run pull updates Main's branch; New task outside a run is unchanged).
+* **🧪 Tests:**
+  * `server/__tests__/task-service.test.js` — cutting from another branch's tip without touching Main, unchanged behaviour without one, missing and malformed branches, a tampered plan.
+  * `server/__tests__/pipelines-api.test.js` — default applied, per-run override wins, none named, a refused branch creates nothing, a different branch is a different request, settings PUT requires the field.
+  * `server/__tests__/pipeline-definitions.test.js`, `server/__tests__/pipeline-definition-store.test.js`, `server/__tests__/pipeline-request-store.test.js`, `server/__tests__/pipeline-run-live.test.js` — validators, column migration and corruption guard, recorded requests, settings bodies.
+  * `client/src/components/pipelines/__tests__/RunWorkflowDialog.test.jsx`, `client/src/components/pipelines/__tests__/PipelineSettings.test.jsx`, `client/src/components/pipelines/builder/__tests__/WorkflowsScreen.test.jsx`, `client/src/utils/__tests__/pipelineRecords.test.js`, `client/src/utils/__tests__/pipelinesApi.test.js` — the field, its validation and what is sent; settings shapes.
+
 ## [2026-11-24] - Shipped workflows match the owner's saved workflows
 
 ### Executive Summary

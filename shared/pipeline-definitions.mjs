@@ -319,11 +319,29 @@ export function validateStepPresetBody(body, { revisionRequired = false } = {}) 
   return errors;
 }
 
+export const BRANCH_NAME_RULE = 'Use a Git branch name of 1–200 characters, such as main or release/2.1';
+
+/**
+ * A local branch name a task can start from, by Git's own rules for a ref name (git check-ref-format):
+ * no space, control character or any of ~^:?*[\\, no "..", "@{" or "//", no part starting with "." or
+ * ending in ".lock", and not starting with "-" so that it can never be read as an option.
+ */
+export function isBranchName(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 200) return false;
+  if (value === '@' || value.startsWith('-') || value.startsWith('/') || value.endsWith('/') || value.endsWith('.')) return false;
+  if (/[\x00-\x20\x7f~^:?*[\\]/.test(value) || value.includes('..') || value.includes('@{') || value.includes('//')) return false;
+  return value.split('/').every(part => !part.startsWith('.') && !part.endsWith('.lock'));
+}
+
 export function validateSettingsBody(body) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['setupAgentId', 'revision'])) return errors;
+  if (!rejectUnknown(errors, body, ['setupAgentId', 'defaultBaseBranch', 'revision'])) return errors;
   if (body.setupAgentId !== null && !isUuid(body.setupAgentId)) {
     add(errors, 'setupAgentId', 'Use null or a UUID of an existing agent');
+  }
+  // The branch a new task of a run is cut from when the run names none; null cuts it from what Main is on.
+  if (body.defaultBaseBranch !== null && !isBranchName(body.defaultBaseBranch)) {
+    add(errors, 'defaultBaseBranch', `${BRANCH_NAME_RULE}, or null for the branch Main is on`);
   }
   requireRevision(errors, body.revision, true);
   return errors;
@@ -420,7 +438,9 @@ export function validateRunStartBody(body, { inputMode = 'descriptive' } = {}) {
     if (task === null || typeof task !== 'object' || Array.isArray(task)) {
       add(errors, 'newTask', 'Use an object, with a title when the owner typed one');
     } else {
-      for (const key of Object.keys(task)) if (key !== 'title' && key !== 'repositories') add(errors, `newTask.${key}`, 'Unknown field');
+      for (const key of Object.keys(task)) if (!['title', 'repositories', 'baseBranch'].includes(key)) add(errors, `newTask.${key}`, 'Unknown field');
+      // The branch the new task is cut from and merges into; left out, the default base branch of the settings.
+      if (Object.hasOwn(task, 'baseBranch') && !isBranchName(task.baseBranch)) add(errors, 'newTask.baseBranch', BRANCH_NAME_RULE);
       // The project's repositories the new task includes; left out, the project's own only (or the one the run starts in).
       if (Object.hasOwn(task, 'repositories') && (!Array.isArray(task.repositories) || task.repositories.length < 1 || task.repositories.length > 9
         || !task.repositories.every(isRepositoryName) || new Set(task.repositories).size !== task.repositories.length)) {

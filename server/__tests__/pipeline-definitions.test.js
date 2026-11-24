@@ -222,17 +222,25 @@ describe('validateWorkflowBody', () => {
 
 describe('validateSettingsBody', () => {
   it('accepts null or UUID setupAgentId with revision', () => {
-    expect(validateSettingsBody({ setupAgentId: null, revision: 1 })).toEqual([]);
-    expect(validateSettingsBody({ setupAgentId: UUID, revision: 2 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: UUID, defaultBaseBranch: null, revision: 2 })).toEqual([]);
+  });
+
+  it('accepts a branch name or null as the default base branch, and requires it', () => {
+    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: 'develop', revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: 'release/2.1', revision: 1 })).toEqual([]);
+    for (const bad of ['', ' develop', '-x', 'a b', 'a..b', 'x.lock', 'x/', '/x', 'a~b', 'a^b', 'a:b', 'a?b', 'a*b', 'a[b', 'a\\b', '@', 'a@{b', 'x'.repeat(201), 3, undefined]) {
+      expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: bad, revision: 1 }))).toContain('defaultBaseBranch');
+    }
   });
 
   it('rejects invalid setupAgentId and revision', () => {
-    expect(fields(validateSettingsBody({ setupAgentId: 'x', revision: 1 }))).toContain('setupAgentId');
-    expect(fields(validateSettingsBody({ setupAgentId: null, revision: 0 }))).toContain('revision');
+    expect(fields(validateSettingsBody({ setupAgentId: 'x', defaultBaseBranch: null, revision: 1 }))).toContain('setupAgentId');
+    expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, revision: 0 }))).toContain('revision');
   });
 
   it('rejects unknown fields', () => {
-    expect(fields(validateSettingsBody({ setupAgentId: null, revision: 1, extra: 1 }))).toContain('extra');
+    expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, revision: 1, extra: 1 }))).toContain('extra');
   });
 });
 
@@ -327,6 +335,14 @@ describe('validateRunStartBody', () => {
 
   it('rejects unknown fields', () => {
     expect(fields(validateRunStartBody({ ...valid, extra: 1 }))).toContain('extra');
+  });
+
+  it('accepts a base branch for a new task and refuses one that is not a branch name', () => {
+    expect(validateRunStartBody({ ...valid, newTask: { baseBranch: 'develop' } })).toEqual([]);
+    expect(validateRunStartBody({ ...valid, newTask: { title: 'x', baseBranch: 'release/2.1' } })).toEqual([]);
+    for (const baseBranch of ['', '-x', 'a b', 'a..b', null, 5]) {
+      expect(fields(validateRunStartBody({ ...valid, newTask: { baseBranch } }))).toEqual(['newTask.baseBranch']);
+    }
   });
 
   it('accepts the repositories of a new task and the one a run starts in', () => {

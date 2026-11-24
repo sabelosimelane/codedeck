@@ -75,7 +75,7 @@ export function serializeStartParams({
   workflowId, project, input, newTask, taskId, worktreePath, startIn, teamId, stepOverrides, disabledSteps, attachments,
 }) {
   let place = { kind: 'new' };
-  if (newTask !== undefined) place = { kind: 'newTask', title: newTask.title === undefined ? null : newTask.title.trim(), repositories: newTask.repositories };
+  if (newTask !== undefined) place = { kind: 'newTask', title: newTask.title === undefined ? null : newTask.title.trim(), repositories: newTask.repositories, baseBranch: newTask.baseBranch };
   else if (taskId !== undefined) place = { kind: 'task', taskId };
   else if (worktreePath !== undefined) place = { kind: 'worktree', worktreePath };
   const body = { workflowId, project, input, place, startIn, teamId,
@@ -123,7 +123,7 @@ function validateParams(requestId, params) {
   if (!place || typeof place !== 'object' || Array.isArray(place)) fail(requestId, 'params.place', 'must be an object');
 
   const body = { requestId, workflowId, project, input };
-  const fields = { 'newTask.title': 'place.title', 'newTask.repositories': 'place.repositories', taskId: 'place.taskId', worktreePath: 'place.worktreePath' };
+  const fields = { 'newTask.title': 'place.title', 'newTask.repositories': 'place.repositories', 'newTask.baseBranch': 'place.baseBranch', taskId: 'place.taskId', worktreePath: 'place.worktreePath' };
   for (const key of ['startIn', 'teamId', 'stepOverrides', 'disabledSteps']) {
     if (Object.hasOwn(parsed, key)) body[key] = parsed[key];
   }
@@ -134,6 +134,7 @@ function validateParams(requestId, params) {
       }
       body.newTask = place.title === null ? {} : { title: place.title };
       if (Object.hasOwn(place, 'repositories')) body.newTask.repositories = place.repositories;
+      if (Object.hasOwn(place, 'baseBranch')) body.newTask.baseBranch = place.baseBranch;
       break;
     case 'task':
       if (place.taskId === undefined) fail(requestId, 'params.place.taskId', 'must be a UUID');

@@ -1122,18 +1122,23 @@ export function createPipelinesRouter(deps) {
         if (!typed && !String(body.input ?? '').trim()) {
           throw fieldError('input', 'Provide a title or nonblank input for a new task');
         }
+        // The branch the task is cut from: the one the run names, else the default of the settings,
+        // else none, and the task starts from the commit Main is on as it always did.
+        const baseBranch = body.newTask.baseBranch ?? settings.defaultBaseBranch;
         taskPlan = await taskService.plan({
           project: project.name,
           host: runHost,
           title: typed ? body.newTask.title : provisionalTaskTitle(body.input, workflow.name),
           titleSource: typed ? 'owner' : 'input',
           ...(repositories === undefined ? {} : { repositories }),
+          ...(baseBranch === null ? {} : { baseBranch }),
         });
       } catch (err) {
         if (!Number.isInteger(err?.status)) throw err;
         if (err.status === 400) {
           throw fieldErrors((err.errors ?? []).map(item => ({
-            field: item.field === 'title' ? 'newTask.title' : item.field === 'repositories' ? (asked === undefined ? 'startIn' : 'newTask.repositories') : item.field,
+            field: item.field === 'title' ? 'newTask.title' : item.field === 'repositories' ? (asked === undefined ? 'startIn' : 'newTask.repositories')
+              : item.field === 'baseBranch' ? 'newTask.baseBranch' : item.field,
             message: item.message,
           })));
         }

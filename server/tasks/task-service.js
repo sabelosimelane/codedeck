@@ -7,7 +7,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { isUuid } from '../../shared/pipeline-definitions.mjs';
+import { BRANCH_NAME_RULE, isBranchName, isUuid } from '../../shared/pipeline-definitions.mjs';
 import { create as createWorktree, listWorktrees, planNames, planTaskFolder, preflight, readWorktreeChanges, remove as removeWorktree, resolveHomeRepoPath, runGit } from '../pipelines/run-worktree.js';
 import { readStoredRepositories } from '../project-repositories.js';
 import { holdsWorktree } from '../pipelines/run-worktree-hold.js';
@@ -121,9 +121,10 @@ export function createTaskService({
   /**
    * Checks the request and names the task's branch and folders. Changes nothing.
    * `repositories` names the repositories the task includes, the one it starts in first;
-   * left out, the task includes the project's own repository only.
+   * left out, the task includes the project's own repository only. `baseBranch` names the branch every
+   * worktree is cut from and merges into; left out, each is cut from the commit its checkout is on.
    */
-  async function plan({ project: projectName, title, titleSource, repositories, host: requestedHost } = {}) {
+  async function plan({ project: projectName, title, titleSource, repositories, baseBranch: askedBase, host: requestedHost } = {}) {
     // The caller says whether the owner gave the title or it was made from a run's input.
     if (titleSource !== 'owner' && titleSource !== 'input') throw new Error('Task title source must be owner or input');
     if (typeof projectName !== 'string' || projectName.length === 0) throw invalid('project', 'A project name is required');
@@ -131,6 +132,7 @@ export function createTaskService({
     if (repositories !== undefined && (!Array.isArray(repositories) || repositories.some(name => typeof name !== 'string' || name.length === 0))) {
       throw invalid('repositories', 'Use a list of repository names');
     }
+    if (askedBase !== undefined && !isBranchName(askedBase)) throw invalid('baseBranch', BRANCH_NAME_RULE);
     const { project, host, location, tools } = await resolveProject(projectName, requestedHost);
     const others = readStoredRepositories({ name: project.name, repositories: location.repositories });
 
@@ -172,6 +174,12 @@ export function createTaskService({
         repository.baseBranch = await checkCheckout(repository.checkoutPath, name, tools);
         repository.homePath = await homeOf(repository.checkoutPath, tools);
       }
+      repository.startBranch = null;
+      if (askedBase !== undefined) {
+        await requireBranch(repository.checkoutPath, name, askedBase, tools);
+        repository.baseBranch = askedBase;
+        repository.startBranch = askedBase;
+      }
       chosen.push({ repository: name, ...repository });
     }
 
@@ -207,6 +215,24 @@ export function createTaskService({
     };
   }
 
+  /** A local branch of the checkout's repository, refused by name when Git does not have it. */
+  async function requireBranch(checkout, name, branch, tools) {
+    try {
+      await runGit(tools.execFile, ['-C', checkout, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]);
+    } catch (error) {
+      // rev-parse --verify --quiet says nothing and exits 1 for a ref that is not there; anything else is Git failing.
+      if (error?.code !== 1) throw error;
+      throw new TaskError(`${name} has no branch ${branch} to start the task from.`, 409);
+    }
+  }
+
+  /** The commit a planned worktree is cut from: the tip of the branch it was asked to start from, or its checkout's commit. */
+  async function startCommitOf(worktree, tools) {
+    if (worktree.startBranch === null) return headOf(worktree.checkoutPath, tools);
+    const { stdout } = await runGit(tools.execFile, ['-C', worktree.checkoutPath, 'rev-parse', '--verify', `refs/heads/${worktree.startBranch}^{commit}`]);
+    return stdout.trim();
+  }
+
   function requirePlan(planned) {
     if (!planned || typeof planned !== 'object') throw new TypeError('A task plan is required');
     for (const field of ['id', 'project', 'projectPath', 'title']) {
@@ -221,6 +247,7 @@ export function createTaskService({
       }
       if (worktree.repositoryPath !== null && typeof worktree.repositoryPath !== 'string') throw new TypeError('Task plan worktree repositoryPath is invalid');
       if (worktree.baseBranch !== null && typeof worktree.baseBranch !== 'string') throw new TypeError('Task plan worktree baseBranch is invalid');
+      if (worktree.startBranch !== null && !isBranchName(worktree.startBranch)) throw new TypeError('Task plan worktree startBranch is invalid');
     }
   }
 
@@ -370,7 +397,7 @@ export function createTaskService({
     if (await onDisk(planned.folder ?? planned.worktrees[0].worktreePath, tools)) throw new TaskError('A folder for this task already exists. Try again.', 409);
 
     const worktrees = [];
-    for (const worktree of planned.worktrees) worktrees.push({ ...worktree, baseCommit: await headOf(worktree.checkoutPath, tools) });
+    for (const worktree of planned.worktrees) worktrees.push({ ...worktree, baseCommit: await startCommitOf(worktree, tools) });
     const [first, ...rest] = worktrees;
     const task = taskStore.create({
       id: planned.id, project: planned.project, host: planned.host ?? LOCAL_HOST, title: planned.title, titleSource: planned.titleSource, folder: planned.folder,

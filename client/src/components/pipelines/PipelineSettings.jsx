@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Button } from '../ui/index.jsx';
+import { Button, Field, TextInput } from '../ui/index.jsx';
+import { BRANCH_NAME_RULE, isBranchName } from '../../../../shared/pipeline-definitions.mjs';
 import { listTeams, updatePipelineSettings } from '../../utils/pipelinesApi';
 import { loadDefinitions, parseTeam, parseSettings } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
@@ -19,6 +20,9 @@ export default function PipelineSettings({ onDirtyChange }) {
   const [definitions, setDefinitions] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [savingSetupAgent, setSavingSetupAgent] = useState(false);
+  // What the owner is typing as the default base branch; null while it is the saved value.
+  const [baseDraft, setBaseDraft] = useState(null);
+  const [savingBase, setSavingBase] = useState(false);
   const [teamDirty, setTeamDirty] = useState(false);
   const [agentsDirty, setAgentsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
@@ -43,6 +47,7 @@ export default function PipelineSettings({ onDirtyChange }) {
     try {
       const settings = parseSettings(await updatePipelineSettings({
         setupAgentId: value === '' ? null : value,
+        defaultBaseBranch: definitions.settings.defaultBaseBranch,
         revision: definitions.settings.revision,
       }));
       setDefinitions(current => ({ ...current, settings }));
@@ -53,6 +58,30 @@ export default function PipelineSettings({ onDirtyChange }) {
       await load();
     } finally {
       setSavingSetupAgent(false);
+    }
+  };
+
+  const savedBase = definitions?.settings.defaultBaseBranch ?? '';
+  const typedBase = (baseDraft ?? savedBase).trim();
+  const baseError = typedBase !== '' && !isBranchName(typedBase) ? BRANCH_NAME_RULE : null;
+  const baseChanged = baseDraft !== null && typedBase !== savedBase;
+
+  const saveDefaultBase = async () => {
+    setSavingBase(true);
+    try {
+      const settings = parseSettings(await updatePipelineSettings({
+        setupAgentId: definitions.settings.setupAgentId,
+        defaultBaseBranch: typedBase === '' ? null : typedBase,
+        revision: definitions.settings.revision,
+      }));
+      setDefinitions(current => ({ ...current, settings }));
+      setBaseDraft(null);
+      showToast({ type: 'success', message: settings.defaultBaseBranch === null ? 'Default base branch cleared' : 'Default base branch saved' });
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+      await load();
+    } finally {
+      setSavingBase(false);
     }
   };
 
@@ -87,6 +116,21 @@ export default function PipelineSettings({ onDirtyChange }) {
               <option value="">No setup agent</option>
               {definitions.agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
             </select>
+          </section>
+
+          <section className="pipeline-section">
+            <h3>Default base branch</h3>
+            <p className="pipeline-hint">
+              The branch a run&apos;s new task is cut from and merged back into, in every repository the task includes. Main is not
+              switched: the task starts from that branch&apos;s latest local commit. The Run workflow dialog can name another for one run.
+              Leave it empty to start from the branch Main is on.
+            </p>
+            <Field label="Default base branch" error={baseError}>
+              <TextInput label="Default base branch" value={baseDraft ?? savedBase} onChange={setBaseDraft} maxLength={200}
+                disabled={savingBase} invalid={Boolean(baseError)} placeholder="The branch Main is on" />
+            </Field>
+            <Button onClick={saveDefaultBase} disabled={!baseChanged || Boolean(baseError) || savingBase}
+              aria-label="Save default base branch">{savingBase ? 'Saving…' : 'Save'}</Button>
           </section>
 
           <section className="pipeline-section">

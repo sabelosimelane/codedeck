@@ -36,7 +36,7 @@ function createBackend(seed = {}) {
     teams: seed.teams ?? [],
     agents: seed.agents ?? [],
     workflows: seed.workflows ?? [],
-    settings: seed.settings ?? { setupAgentId: null, revision: 1 },
+    settings: seed.settings ?? { setupAgentId: null, defaultBaseBranch: null, revision: 1 },
     templates: seed.templates ?? [],
     'step-presets': seed.stepPresets ?? [],
   };
@@ -81,7 +81,7 @@ function createBackend(seed = {}) {
     if (name === 'settings') {
       if (method === 'GET') return json(state.settings);
       if (body.revision !== state.settings.revision) return problem(409, STALE);
-      state.settings = { setupAgentId: body.setupAgentId, revision: body.revision + 1 };
+      state.settings = { setupAgentId: body.setupAgentId, defaultBaseBranch: body.defaultBaseBranch, revision: body.revision + 1 };
       return json(state.settings);
     }
     return collection(name, method, id, body);
@@ -138,7 +138,7 @@ afterEach(() => {
 
 describe('PipelineSettings loading', () => {
   it('lists agents, the setup agent and workflows from the backend', async () => {
-    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()], settings: { setupAgentId: A2, revision: 2 } });
+    await renderSettings({ agents: [codex(), cursor()], workflows: [feature()], settings: { setupAgentId: A2, defaultBaseBranch: null, revision: 2 } });
 
     expect(agents().getByText('codex-high')).toBeTruthy();
     expect(agents().getByText('command codex --model gpt-6-sol')).toBeTruthy();
@@ -574,35 +574,68 @@ describe('PipelineSettings agent presets', () => {
 
 describe('PipelineSettings setup agent', () => {
   it('saves the chosen setup agent with the settings revision', async () => {
-    await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: null, revision: 5 } });
+    await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: null, defaultBaseBranch: null, revision: 5 } });
     expect(screen.getByLabelText('Setup agent').value).toBe('');
     type('Setup agent', A2);
 
     await waitFor(() => toast('success', 'Setup agent saved'));
-    expect(backend.mutations()).toEqual([{ method: 'PUT', path: '/settings', body: { setupAgentId: A2, revision: 5 } }]);
+    expect(backend.mutations()).toEqual([{ method: 'PUT', path: '/settings', body: { setupAgentId: A2, defaultBaseBranch: null, revision: 5 } }]);
     await waitFor(() => expect(screen.getByLabelText('Setup agent').value).toBe(A2));
   });
 
   it('clears the setup agent with null and the next revision', async () => {
-    await renderSettings({ agents: [codex()], settings: { setupAgentId: A1, revision: 1 } });
+    await renderSettings({ agents: [codex()], settings: { setupAgentId: A1, defaultBaseBranch: null, revision: 1 } });
     type('Setup agent', '');
     await waitFor(() => toast('success', 'Setup agent saved'));
     type('Setup agent', A1);
     await waitFor(() => expect(backend.mutations()).toHaveLength(2));
 
     expect(backend.mutations().map(request => request.body)).toEqual([
-      { setupAgentId: null, revision: 1 },
-      { setupAgentId: A1, revision: 2 },
+      { setupAgentId: null, defaultBaseBranch: null, revision: 1 },
+      { setupAgentId: A1, defaultBaseBranch: null, revision: 2 },
     ]);
   });
 
   it('keeps the backend value and reloads when saving fails', async () => {
-    await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: A1, revision: 1 } });
-    backend.state.settings = { setupAgentId: A2, revision: 2 };
+    await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: A1, defaultBaseBranch: null, revision: 1 } });
+    backend.state.settings = { setupAgentId: A2, defaultBaseBranch: null, revision: 2 };
     type('Setup agent', '');
 
     await waitFor(() => toast('error', STALE));
     await waitFor(() => expect(screen.getByLabelText('Setup agent').value).toBe(A2));
+  });
+});
+
+describe('PipelineSettings default base branch', () => {
+  it('saves a default base branch with the setup agent kept, and clears it to null', async () => {
+    await renderSettings({ agents: [codex()], settings: { setupAgentId: A1, defaultBaseBranch: null, revision: 3 } });
+    expect(screen.getByLabelText('Default base branch').value).toBe('');
+    type('Default base branch', ' develop ');
+    click('Save default base branch');
+    await waitFor(() => toast('success', 'Default base branch saved'));
+    type('Default base branch', '');
+    click('Save default base branch');
+    await waitFor(() => toast('success', 'Default base branch cleared'));
+    expect(backend.mutations().map(request => request.body)).toEqual([
+      { setupAgentId: A1, defaultBaseBranch: 'develop', revision: 3 },
+      { setupAgentId: A1, defaultBaseBranch: null, revision: 4 },
+    ]);
+  });
+
+  it('refuses a name that is not a branch before sending it', async () => {
+    await renderSettings({ agents: [codex()] });
+    type('Default base branch', 'two words');
+    expect(screen.getByText(/Use a Git branch name/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save default base branch' }).disabled).toBe(true);
+    expect(backend.mutations()).toEqual([]);
+  });
+
+  it('keeps the setup agent choice when saving the default base branch', async () => {
+    await renderSettings({ agents: [codex()], settings: { setupAgentId: null, defaultBaseBranch: 'develop', revision: 1 } });
+    expect(screen.getByLabelText('Default base branch').value).toBe('develop');
+    type('Setup agent', A1);
+    await waitFor(() => toast('success', 'Setup agent saved'));
+    expect(backend.mutations()[0].body).toEqual({ setupAgentId: A1, defaultBaseBranch: 'develop', revision: 1 });
   });
 });
 

@@ -117,14 +117,17 @@ describe('parseWorkflow', () => {
 
 describe('parseSettings', () => {
   it('accepts no setup agent or an agent id', () => {
-    expect(parseSettings({ setupAgentId: null, revision: 1 })).toEqual({ setupAgentId: null, revision: 1 });
-    expect(parseSettings({ setupAgentId: A1, revision: 9 })).toEqual({ setupAgentId: A1, revision: 9 });
+    expect(parseSettings({ setupAgentId: null, defaultBaseBranch: null, revision: 1 })).toEqual({ setupAgentId: null, defaultBaseBranch: null, revision: 1 });
+    expect(parseSettings({ setupAgentId: A1, defaultBaseBranch: null, revision: 9 })).toEqual({ setupAgentId: A1, defaultBaseBranch: null, revision: 9 });
+    expect(parseSettings({ setupAgentId: null, defaultBaseBranch: 'develop', revision: 2 }).defaultBaseBranch).toBe('develop');
   });
 
   it.each([
-    ['setupAgentId', { setupAgentId: undefined, revision: 1 }],
-    ['setupAgentId', { setupAgentId: '', revision: 1 }],
-    ['revision', { setupAgentId: null, revision: 0 }],
+    ['setupAgentId', { setupAgentId: undefined, defaultBaseBranch: null, revision: 1 }],
+    ['setupAgentId', { setupAgentId: '', defaultBaseBranch: null, revision: 1 }],
+    ['revision', { setupAgentId: null, defaultBaseBranch: null, revision: 0 }],
+    ['defaultBaseBranch', { setupAgentId: null, revision: 1 }],
+    ['defaultBaseBranch', { setupAgentId: null, defaultBaseBranch: 'a b', revision: 1 }],
     ['settings', 'nope'],
   ])('rejects settings with a bad %s', (field, record) => {
     rejects(parseSettings, record, field);
@@ -134,7 +137,7 @@ describe('parseSettings', () => {
 describe('loadDefinitions', () => {
   const page = data => ({ ok: true, status: 200, json: async () => ({ data, page: { hasNextPage: false } }) });
 
-  function stubBackend({ agents = [agent()], workflows = [workflow()], settings = { setupAgentId: A1, revision: 3 }, templates = [], stepPresets = [] } = {}) {
+  function stubBackend({ agents = [agent()], workflows = [workflow()], settings = { setupAgentId: A1, defaultBaseBranch: null, revision: 3 }, templates = [], stepPresets = [] } = {}) {
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (String(url).includes('/agents')) return page(agents);
       if (String(url).includes('/workflows')) return page(workflows);
@@ -149,7 +152,7 @@ describe('loadDefinitions', () => {
     await expect(loadDefinitions()).resolves.toEqual({
       agents: [parseAgent(agent())],
       workflows: [workflow()],
-      settings: { setupAgentId: A1, revision: 3 },
+      settings: { setupAgentId: A1, defaultBaseBranch: null, revision: 3 },
       templates: [],
       stepPresets: [],
     });
@@ -331,7 +334,7 @@ describe('kind, description, roles and what the owner saved', () => {
       if (String(url).includes('/workflows')) return page([workflow()]);
       if (String(url).includes('/templates')) return page(templates);
       if (String(url).includes('/step-presets')) return page(presets);
-      return { ok: true, status: 200, json: async () => ({ setupAgentId: A1, revision: 3 }) };
+      return { ok: true, status: 200, json: async () => ({ setupAgentId: A1, defaultBaseBranch: null, revision: 3 }) };
     }));
     stub([template()], [preset()]);
     await expect(loadDefinitions()).resolves.toMatchObject({ templates: [template()], stepPresets: [preset()] });

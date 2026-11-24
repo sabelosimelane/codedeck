@@ -340,6 +340,7 @@ describe('pipeline settings store', () => {
     const { settings } = setup();
     expect(settings.get()).toEqual({
       setupAgentId: null,
+      defaultBaseBranch: null,
       revision: 1,
     });
   });
@@ -347,30 +348,31 @@ describe('pipeline settings store', () => {
   it('updates the setup agent when the revision matches', () => {
     const { agents, settings } = setup();
     const agent = agents.create(validAgent);
-    const updated = settings.update({ setupAgentId: agent.id, revision: 1 });
-    expect(updated).toEqual({ setupAgentId: agent.id, revision: 2 });
+    const updated = settings.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    expect(updated).toEqual({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 2 });
     expect(settings.get()).toEqual(updated);
   });
 
   it('clears the setup agent back to null', () => {
     const { agents, settings } = setup();
     const agent = agents.create(validAgent);
-    settings.update({ setupAgentId: agent.id, revision: 1 });
-    expect(settings.update({ setupAgentId: null, revision: 2 })).toEqual({
+    settings.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    expect(settings.update({ setupAgentId: null, defaultBaseBranch: null, revision: 2 })).toEqual({
       setupAgentId: null,
+      defaultBaseBranch: null,
       revision: 3,
     });
   });
 
   it('throws a revision conflict when the revision is stale', () => {
     const { settings } = setup();
-    expect(() => settings.update({ setupAgentId: null, revision: 99 }))
+    expect(() => settings.update({ setupAgentId: null, defaultBaseBranch: null, revision: 99 }))
       .toThrow(/revision/i);
   });
 
   it('rejects an invalid setupAgentId', () => {
     const { settings } = setup();
-    expect(() => settings.update({ setupAgentId: 'nope', revision: 1 })).toThrow();
+    expect(() => settings.update({ setupAgentId: 'nope', defaultBaseBranch: null, revision: 1 })).toThrow();
   });
 
   it('throws naming table/row/field when the stored setup_agent_id is corrupt', () => {
@@ -378,6 +380,27 @@ describe('pipeline settings store', () => {
     settings.get();
     db.prepare('UPDATE pipeline_settings SET setup_agent_id = ? WHERE id = 1').run('bad');
     expect(() => settings.get()).toThrow(/pipeline_settings.*1.*setup_agent_id/i);
+  });
+  it('saves and clears the default base branch', () => {
+    const { settings } = setup();
+    expect(settings.update({ setupAgentId: null, defaultBaseBranch: 'develop', revision: 1 })).toEqual({ setupAgentId: null, defaultBaseBranch: 'develop', revision: 2 });
+    expect(settings.get().defaultBaseBranch).toBe('develop');
+    expect(settings.update({ setupAgentId: null, defaultBaseBranch: null, revision: 2 }).defaultBaseBranch).toBeNull();
+    expect(() => settings.update({ setupAgentId: null, defaultBaseBranch: 'a b', revision: 3 })).toThrow(/defaultBaseBranch/);
+  });
+
+  it('adds the default base branch to a settings table made before it existed', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE pipeline_settings (id INTEGER PRIMARY KEY CHECK (id = 1), setup_agent_id TEXT, revision INTEGER NOT NULL)');
+    db.prepare('INSERT INTO pipeline_settings (id, setup_agent_id, revision) VALUES (1, NULL, 4)').run();
+    expect(createSettingsStore(db).get()).toEqual({ setupAgentId: null, defaultBaseBranch: null, revision: 4 });
+    db.close();
+  });
+
+  it('throws naming table/row/field when the stored default_base_branch is corrupt', () => {
+    const { db, settings } = setup();
+    db.prepare('UPDATE pipeline_settings SET default_base_branch = ? WHERE id = 1').run('a b');
+    expect(() => settings.get()).toThrow(/pipeline_settings row 1 field default_base_branch/);
   });
 });
 

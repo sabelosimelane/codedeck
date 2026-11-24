@@ -188,7 +188,16 @@ a step of the run writes its note CodeDeck asks the CLI chosen under **Settings 
 Session naming** for a short title that describes the work, and renames the task. A
 title you typed, or one you change with **Rename**, is never replaced. Without a
 session-naming CLI, or if it fails, the task keeps the title made from the input; the
-failure is in the backend log and the next step note tries again. A new task gets its own copy of the project and the run
+failure is in the backend log and the next step note tries again. **Base branch.** A run's new task is cut from the branch Main is on, unless **Settings →
+Workflows → Default base branch** names another (for example `develop`); the Run workflow
+dialog's **Base branch** field names a different one for that run alone. The task starts from
+that branch's latest local commit (nothing is fetched and Main is not switched) and merges back
+into it, so **Merge** asks for Main to be on that branch. In a task with several repositories every
+repository is cut from the same branch name; one that lacks it refuses the start, naming the
+repository, before anything is created. The automatic pull before a run updates the branch Main is
+on, not the base branch. A task made with **New task** outside a run still starts from what Main is on.
+
+A new task gets its own copy of the project and the run
 starts with Setup, which must leave that copy clean before the workflow's nodes can
 begin; uncommitted changes in Main are not in it. A run in an open task or in Main
 uses the place as it is: there is no Setup step and no setup agent is needed.

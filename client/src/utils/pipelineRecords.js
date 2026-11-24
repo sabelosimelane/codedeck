@@ -1,4 +1,4 @@
-import { validateTeamBody, isUuid, loopTargetIndex, WORKFLOW_KINDS } from '../../../shared/pipeline-definitions.mjs';
+import { validateTeamBody, isBranchName, isUuid, loopTargetIndex, WORKFLOW_KINDS } from '../../../shared/pipeline-definitions.mjs';
 import { PipelineApiError, getPipelineSettings, listAgents, listStepPresets, listTemplates, listWorkflows } from './pipelinesApi';
 
 // Responses are an edge: every field of an agent, workflow and settings response is checked before use.
@@ -136,10 +136,11 @@ export function parseStepPreset(record) {
 
 export function parseSettings(record) {
   if (!isObject(record)) throw invalid('settings', 'settings');
-  const { setupAgentId, revision } = record;
+  const { setupAgentId, defaultBaseBranch, revision } = record;
   if (setupAgentId !== null && !isUuid(setupAgentId)) throw invalid('settings', 'setupAgentId');
+  if (defaultBaseBranch !== null && !isBranchName(defaultBaseBranch)) throw invalid('settings', 'defaultBaseBranch');
   if (!isRevision(revision)) throw invalid('settings', 'revision');
-  return { setupAgentId, revision };
+  return { setupAgentId, defaultBaseBranch, revision };
 }
 
 const COMMIT_ID = /^[0-9a-f]{40}$/;

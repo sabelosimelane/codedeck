@@ -266,3 +266,46 @@ describe('task service', () => {
     expect(() => createTaskService({ isRunWorking: () => false,})).toThrow('taskStore');
   });
 });
+
+describe('task service base branch', () => {
+  it('cuts the task from the tip of the branch it is asked for, which becomes its base, without touching Main', async () => {
+    const { repo, service } = setup();
+    git(repo, ['checkout', '-b', 'develop']);
+    git(repo, ['commit', '--allow-empty', '-m', 'On develop']);
+    const developTip = git(repo, ['rev-parse', 'HEAD']);
+    git(repo, ['checkout', 'main']);
+    git(repo, ['commit', '--allow-empty', '-m', 'On main']);
+    const planned = await service.plan({ project: 'Demo', title: 'From develop', titleSource: 'owner', baseBranch: 'develop' });
+    expect(planned.baseBranch).toBe('develop');
+    expect(planned.worktrees[0]).toMatchObject({ baseBranch: 'develop', startBranch: 'develop' });
+    const task = await service.createPlanned(planned);
+    expect(task).toMatchObject({ baseBranch: 'develop', baseCommit: developTip });
+    expect(git(task.worktreePath, ['rev-parse', 'HEAD'])).toBe(developTip);
+    expect(git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('main');
+  });
+
+  it('keeps cutting from Main\'s current commit when no branch is asked for', async () => {
+    const { repo, service } = setup();
+    const planned = await service.plan({ project: 'Demo', title: 'As before', titleSource: 'owner' });
+    expect(planned.worktrees[0]).toMatchObject({ baseBranch: 'main', startBranch: null });
+    expect((await service.createPlanned(planned)).baseCommit).toBe(git(repo, ['rev-parse', 'HEAD']));
+  });
+
+  it('refuses a branch the repository does not have, naming both', async () => {
+    const { service, taskStore } = setup();
+    const error = await rejection(service.plan({ project: 'Demo', title: 'Missing', titleSource: 'owner', baseBranch: 'release/9' }));
+    expect(error).toMatchObject({ status: 409, message: 'repo has no branch release/9 to start the task from.' });
+    expect(taskStore.list()).toEqual([]);
+  });
+
+  it.each([[''], ['-x'], ['a b'], ['a..b'], [42]])('refuses the base branch name %j', async baseBranch => {
+    const { service } = setup();
+    expect(await rejection(service.plan({ project: 'Demo', title: 'Bad', titleSource: 'owner', baseBranch }))).toMatchObject({ status: 400, errors: [{ field: 'baseBranch' }] });
+  });
+
+  it('refuses a plan whose start branch is not a branch name', async () => {
+    const { service } = setup();
+    const planned = await service.plan({ project: 'Demo', title: 'Tampered', titleSource: 'owner' });
+    await expect(service.createPlanned({ ...planned, worktrees: [{ ...planned.worktrees[0], startBranch: '-x' }] })).rejects.toThrow('Task plan worktree startBranch is invalid');
+  });
+});
