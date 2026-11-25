@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { NamingError, parseTitle, requireField } from './session-naming-validation.js';
@@ -70,12 +70,14 @@ export function createCliNamingClient({ execute = execFile, agentStore } = {}) {
     const env = stripNodeWatchEnvironment({ ...process.env });
     delete env.CLAUDECODE;
     delete env.CLAUDE_CODE_ENTRYPOINT;
-    const values = { model: selection.model, effort: settings.effort, prompt };
-    const interpolate = arg => arg.replace(/\{(model|effort|prompt)\}/g, (_match, key) => values[key]);
-    const baseArgs = [...profile.args];
-    if (!selection.model) baseArgs.splice(baseArgs.indexOf('--model'), 2);
-    const args = [...baseArgs, ...(settings.effort === null ? [] : profile.effortArgs)].map(interpolate);
     try {
+      const promptFile = path.join(cwd, 'prompt.txt');
+      if (profile.input === 'file') await writeFile(promptFile, prompt, { mode: 0o600, flag: 'wx' });
+      const values = { model: selection.model, effort: settings.effort, prompt, promptFile };
+      const interpolate = arg => arg.replace(/\{(model|effort|prompt|promptFile)\}/g, (_match, key) => values[key]);
+      const baseArgs = [...profile.args];
+      if (!selection.model) baseArgs.splice(baseArgs.indexOf('--model'), 2);
+      const args = [...baseArgs, ...(settings.effort === null ? [] : profile.effortArgs)].map(interpolate);
       const timeout = purpose === 'review' ? 180000 : 65000;
       const output = await new Promise((resolve, reject) => {
         if (closed) { reject(new Error('stopped')); return; }
@@ -90,7 +92,9 @@ export function createCliNamingClient({ execute = execFile, agentStore } = {}) {
         });
         children.add(child);
         child.stdin.on('error', reject);
-        child.stdin.end(profile.input === 'stdin' ? prompt : undefined);
+        child.stdin.end(profile.input === 'stream-json'
+          ? JSON.stringify({ event: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } }) + '\n'
+          : profile.input === 'stdin' ? prompt : undefined);
       });
       requireField(typeof output === 'string', 'output', 'CLI must return text');
       if (profile.output === 'json') return parse(output.trim(), null);
@@ -103,6 +107,14 @@ export function createCliNamingClient({ execute = execFile, agentStore } = {}) {
         const result = JSON.parse(output);
         requireField(result?.status === 'SUCCESS' && result.structured_output && typeof result.structured_output === 'object', 'output', 'Antigravity must return structured title JSON');
         return parse(JSON.stringify(result.structured_output), null);
+      }
+      if (profile.output === 'agy-stream-json') {
+        const events = output.trim().split('\n').map(line => JSON.parse(line));
+        const failures = events.filter(event => event.event === 'error' || event.result?.status === 'ERROR');
+        requireField(failures.length === 0, 'output', 'Antigravity stream must not contain errors');
+        const results = events.filter(event => event.event === 'result');
+        requireField(results.length === 1 && results[0].result?.status === 'SUCCESS' && results[0].result.structured_output && typeof results[0].result.structured_output === 'object', 'output', 'Antigravity must return exactly one structured final result');
+        return parse(JSON.stringify(results[0].result.structured_output), null);
       }
       const events = output.trim().split('\n').map(line => JSON.parse(line));
       if (events.some(event => event.type === 'error' || event.type === 'turn.failed')) throw new Error('CLI turn failed');
@@ -120,7 +132,7 @@ export function createCliNamingClient({ execute = execFile, agentStore } = {}) {
     async generate(value, context) {
       const settings = validateCliSettings(value, agentStore);
       requireField(typeof context === 'string' && context.trim().length > 0 && context.length <= 12000, 'context', 'Use a nonempty terminal excerpt of at most 12000 characters');
-      return invoke(settings, instruction + '\nTERMINAL CONTEXT (JSON string):\n' + JSON.stringify(context), parseTitle, 'naming');
+      return invoke(settings, instruction + '\nTERMINAL CONTEXT (JSON string):\n' + JSON.stringify(redactReviewText(context)), parseTitle, 'naming');
     },
     async review(value, packet) {
       const settings = validateCliSettings(value, agentStore);

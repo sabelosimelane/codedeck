@@ -1,6 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
+import { readFile, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { createCliNamingClient } from '../cli-naming-client.js';
 import { buildLaunchCommand } from '../../shared/agent-presets.mjs';
 
@@ -26,6 +28,57 @@ it('keeps terminal context out of executable arguments for stdin profiles', asyn
   expect(options).toMatchObject({ shell: false, timeout: 65000, maxBuffer: 1048576 });
   expect(options.cwd).not.toBe(process.cwd());
   expect(input()).toContain('task $(touch /tmp/no)');
+});
+it.each(['claude', 'codex', 'cursor', 'agy', 'muse'])('redacts terminal secrets for %s before sending the prompt', async provider => {
+  const output = provider === 'cursor' ? JSON.stringify({ type: 'result', is_error: false, result: '{"title":"Fix uploads"}' })
+    : provider === 'agy' ? JSON.stringify({ event: 'result', result: { status: 'SUCCESS', structured_output: { title: 'Fix uploads' } } })
+    : '{"title":"Fix uploads"}';
+  const { client, execute, input, settings } = setup(provider, output);
+  await client.generate(settings, 'password=supersecret123 fix uploads').catch(() => {});
+  const [, args] = execute.mock.calls[0];
+  expect(args.join(' ') + input()).not.toContain('supersecret123');
+});
+it('uses a private prompt file for Muse', async () => {
+  const { client, execute, settings } = setup('muse');
+  let observed;
+  execute.mockImplementation((_file, args, options, callback) => {
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.kill = vi.fn();
+    queueMicrotask(async () => {
+      const file = args[args.indexOf('--prompt-file') + 1];
+      observed = { file, cwd: options.cwd, mode: (await stat(file)).mode & 0o777, prompt: await readFile(file, 'utf8') };
+      callback(null, '{"title":"Fix uploads"}', '');
+    });
+    return child;
+  });
+  expect(await client.generate(settings, 'fix uploads')).toBe('Fix uploads');
+  expect(execute.mock.calls[0][1].join(' ')).not.toContain('fix uploads');
+  expect(path.dirname(observed.file)).toBe(observed.cwd);
+  expect(observed.mode).toBe(0o600);
+  expect(observed.prompt).toContain('fix uploads');
+  await expect(stat(observed.file)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+it('uses sandboxed stream JSON input for Antigravity', async () => {
+  const output = JSON.stringify({ event: 'result', result: { status: 'SUCCESS', structured_output: { title: 'Fix uploads' } } });
+  const { client, execute, input, settings } = setup('agy', output);
+  expect(await client.generate(settings, 'fix uploads')).toBe('Fix uploads');
+  const args = execute.mock.calls[0][1];
+  expect(args).toContain('--sandbox');
+  expect(args).toContain('--json-schema');
+  expect(args.slice(args.indexOf('--input-format'), args.indexOf('--input-format') + 2)).toEqual(['--input-format', 'stream-json']);
+  expect(args.slice(args.indexOf('--output-format'), args.indexOf('--output-format') + 2)).toEqual(['--output-format', 'stream-json']);
+  expect(args.join(' ')).not.toContain('fix uploads');
+  expect(JSON.parse(input().trim())).toEqual({ event: 'user', message: { role: 'user', content: [{ type: 'text', text: expect.stringContaining('fix uploads') }] } });
+});
+it('uses sandboxed read-only stdin for Cursor with required workspace trust', async () => {
+  const { client, execute, input, settings } = setup('cursor', JSON.stringify({ type: 'result', is_error: false, result: '{"title":"Fix uploads"}' }));
+  expect(await client.generate(settings, 'fix uploads')).toBe('Fix uploads');
+  const args = execute.mock.calls[0][1];
+  expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'enabled']);
+  expect(args.slice(args.indexOf('--mode'), args.indexOf('--mode') + 2)).toEqual(['--mode', 'ask']);
+  expect(args).toContain('--trust');
+  expect(args).not.toContain('--approve-mcps');
+  expect(args.join(' ')).not.toContain('fix uploads');
+  expect(input()).toContain('fix uploads');
 });
 it('rejects empty and oversized context before running', async () => {
   const { client, execute, settings } = setup();

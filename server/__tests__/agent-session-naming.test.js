@@ -56,7 +56,7 @@ it.each([
   ['claude', 'claude', '{"title":"Fix login redirects"}'],
   ['codex', 'codex', '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"title\\":\\"Fix login redirects\\"}"}}'],
   ['cursor', 'agent', '{"type":"result","is_error":false,"result":"{\\"title\\":\\"Fix login redirects\\"}"}'],
-  ['agy', 'agy', '{"status":"SUCCESS","structured_output":{"title":"Fix login redirects"}}'],
+  ['agy', 'agy', '{"event":"result","result":{"status":"SUCCESS","structured_output":{"title":"Fix login redirects"}}}'],
   ['muse', 'muse', '{"title":"Fix login redirects"}'],
 ])('resolves %s from the saved agent and runs its headless profile', async (provider, executable, output) => {
   const { agents, add } = setup(); const agent = add(provider, 'chosen-model');
@@ -71,7 +71,8 @@ it.each([
   expect(args).toContain('chosen-model');
   expect(args).not.toContain('--effort');
   if (provider === 'agy') {
-    expect(args.some(arg => arg.startsWith('--print='))).toBe(true);
+    expect(args).toContain('--input-format');
+    expect(args).toContain('--sandbox');
     expect(args).toContain('plan');
     expect(args).not.toContain('--disable-slash-commands');
   }
