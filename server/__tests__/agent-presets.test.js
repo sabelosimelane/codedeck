@@ -11,6 +11,7 @@ describe('agent presets', () => {
       ['cursor', 'Cursor'],
       ['agy', 'Antigravity'],
       ['muse', 'Muse Code'],
+      ['opencode', 'OpenCode'],
     ]);
   });
 
@@ -22,6 +23,7 @@ describe('agent presets', () => {
       cursor: [],
       agy: ['low', 'medium', 'high', 'xhigh', 'max'],
       muse: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+      opencode: [],
     });
   });
 });
@@ -41,6 +43,8 @@ describe('buildLaunchCommand', () => {
     ['muse', { model: 'muse-spark-1.3-contributor', effort: 'high', skipPermissions: true }, 'command muse --model muse-spark-1.3-contributor --effort high --yolo'],
     ['cursor', {}, 'command agent'],
     ['cursor', { model: 'gpt-5.6-sol-high', skipPermissions: true }, 'command agent --model gpt-5.6-sol-high --force --trust'],
+    ['opencode', {}, 'command opencode mini'],
+    ['opencode', { model: 'openrouter/deepseek/deepseek-v4.1-flash' }, 'command opencode mini --model openrouter/deepseek/deepseek-v4.1-flash'],
   ])('%s %j builds %s', (provider, fields, command) => {
     expect(build(provider, fields)).toEqual({ command, errors: [] });
   });
@@ -78,6 +82,13 @@ describe('buildLaunchCommand', () => {
     });
   });
 
+  it('rejects permission skipping for OpenCode, which has no bypass flag', () => {
+    expect(build('opencode', { skipPermissions: true })).toEqual({
+      command: null,
+      errors: [{ field: 'skipPermissions', message: expect.stringMatching(/OpenCode.*permission-skip/) }],
+    });
+  });
+
   it('rejects an unknown provider', () => {
     expect(build('gemini')).toEqual({ command: null, errors: [{ field: 'provider', message: 'Choose a provider' }] });
   });
@@ -103,6 +114,8 @@ describe('parseLaunchCommand', () => {
     ['cursor', { model: 'cursor-grok-4.6-high-fast' }],
     ['cursor', { skipPermissions: true }],
     ['muse', { model: 'muse-spark-1.3-contributor', effort: 'high', skipPermissions: true }],
+    ['opencode', {}],
+    ['opencode', { model: 'openrouter/deepseek/deepseek-v4.1-flash' }],
   ])('reads back what %s %j built', (provider, fields) => {
     const selection = { provider, model: '', effort: '', skipPermissions: false, ...fields };
     expect(parseLaunchCommand(buildLaunchCommand(selection).command)).toEqual(selection);

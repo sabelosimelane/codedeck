@@ -464,7 +464,7 @@ describe('PipelineSettings agent presets', () => {
     click('Add agent');
 
     expect(providerOptions()).toEqual([
-      ['claude', 'Claude Code'], ['codex', 'Codex'], ['cursor', 'Cursor'], ['agy', 'Antigravity'], ['muse', 'Muse Code'], ['custom', 'Custom command'],
+      ['claude', 'Claude Code'], ['codex', 'Codex'], ['cursor', 'Cursor'], ['agy', 'Antigravity'], ['muse', 'Muse Code'], ['opencode', 'OpenCode'], ['custom', 'Custom command'],
     ]);
     expect(screen.getByLabelText('Provider').value).toBe('claude');
     expect(screen.getByLabelText('Model').value).toBe('');
@@ -543,6 +543,43 @@ describe('PipelineSettings agent presets', () => {
     expect(screen.queryByLabelText('Effort')).toBeNull();
     type('Model', 'gpt-5.6-sol-high');
     expect(command().value).toBe('command agent --model gpt-5.6-sol-high');
+  });
+
+  it('offers OpenCode mini without permission skipping and defaults new-agent reset to /new', async () => {
+    await renderSettings();
+    click('Add agent');
+    fireEvent.click(screen.getByLabelText('Skip permission prompts'));
+    type('Provider', 'opencode');
+    expect(screen.queryByLabelText('Skip permission prompts')).toBeNull();
+    expect(screen.getByLabelText('Reset command').value).toBe('/new');
+    type('Model', 'openrouter/deepseek/deepseek-v4.1-flash');
+    expect(command().value).toBe('command opencode mini --model openrouter/deepseek/deepseek-v4.1-flash');
+    type('Provider', 'claude');
+    expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
+  });
+
+  it('moves a saved agent still on its CLI default reset to the new CLI default, and back', async () => {
+    await renderSettings({ agents: [codex()] });
+    click('Edit agent codex-high');
+    type('Provider', 'opencode');
+    expect(screen.getByLabelText('Reset command').value).toBe('/new');
+    type('Provider', 'claude');
+    expect(screen.getByLabelText('Reset command').value).toBe('/clear');
+  });
+
+  it('keeps a saved agent reset command that is not its CLI default when switching to OpenCode', async () => {
+    await renderSettings({ agents: [{ ...codex(), resetCommand: '/reset-all' }] });
+    click('Edit agent codex-high');
+    type('Provider', 'opencode');
+    expect(screen.getByLabelText('Reset command').value).toBe('/reset-all');
+  });
+
+  it('preserves an edited reset command when switching a new agent to OpenCode', async () => {
+    await renderSettings();
+    click('Add agent');
+    type('Reset command', '/my-reset');
+    type('Provider', 'opencode');
+    expect(screen.getByLabelText('Reset command').value).toBe('/my-reset');
   });
 
   it('clears the model when the provider changes, keeping the permission choice', async () => {

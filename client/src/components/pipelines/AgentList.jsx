@@ -11,7 +11,7 @@ import { OtherErrors, SelectField, TextField, diagnoseSaveFailure, errorsByField
 const SHOWN_FIELDS = ['name', 'model', 'launchCommand', 'resetCommand'];
 const CUSTOM = 'custom';
 const BLANK_SELECTION = { model: '', skipPermissions: false };
-const NEW_AGENT = { id: null, revision: null, name: '', resetCommand: '/clear', provider: AGENT_PRESETS[0].id, ...BLANK_SELECTION, customCommand: '' };
+const NEW_AGENT = { id: null, revision: null, name: '', resetCommand: '/clear', resetCommandEdited: false, provider: AGENT_PRESETS[0].id, ...BLANK_SELECTION, customCommand: '' };
 
 /** A saved command a preset builds opens as that preset's choices; any other opens as a custom command. */
 function toForm({ id, revision, name, launchCommand, resetCommand }) {
@@ -58,11 +58,21 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
     setLoaded(null);
     setErrors({});
   };
-  const setField = field => value => setForm(current => ({ ...current, [field]: value }));
+  const setField = field => value => setForm(current => ({ ...current, [field]: value, ...(field === 'resetCommand' ? { resetCommandEdited: true } : {}) }));
   // Model names belong to one CLI, so they do not carry over to another provider.
   const setProvider = provider => setForm((current) => {
     if (provider === CUSTOM) return { ...current, provider, customCommand: launchOf(current).command ?? current.customCommand };
-    return { ...current, provider, model: '' };
+    const nextPreset = AGENT_PRESETS.find(candidate => candidate.id === provider);
+    const defaultReset = presetId => AGENT_PRESETS.find(candidate => candidate.id === presetId)?.defaultResetCommand ?? '/clear';
+    // A reset still on the old CLI's default follows the new CLI's; one the owner chose stays.
+    const followsDefault = !current.resetCommandEdited && current.resetCommand === defaultReset(current.provider);
+    return {
+      ...current,
+      provider,
+      model: '',
+      skipPermissions: nextPreset.skipPermissionsFlag === null ? false : current.skipPermissions,
+      resetCommand: followsDefault ? defaultReset(provider) : current.resetCommand,
+    };
   });
 
   const save = async () => {
@@ -180,10 +190,10 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
                   placeholder={preset.modelExample}
                 />
               </div>
-              <label className="pipeline-check">
+              {preset.skipPermissionsFlag !== null && <label className="pipeline-check">
                 <input type="checkbox" aria-label="Skip permission prompts" checked={form.skipPermissions} onChange={event => setField('skipPermissions')(event.target.checked)} />
                 <span>Skip permission prompts <code>{preset.skipPermissionsFlag}</code> — without it a run pauses whenever the agent asks for permission</span>
-              </label>
+              </label>}
               <TextField label="Launch command" caption="Launch command (built from the choices above)" value={launch.command ?? ''} onChange={() => {}} error={errors.launchCommand} readOnly />
             </>
           ) : (

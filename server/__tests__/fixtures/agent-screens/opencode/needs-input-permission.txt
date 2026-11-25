@@ -1,0 +1,45 @@
+
+▪ oc mini v2.3.2 · /path/to/project
+
+› Run the shell command: echo probe2
+
+
+  △ Permission required
+
+   # Shell command                                                                                                                                          █
+                                                                                                                                                            █
+  $ echo probe2                                                                                                                                             █
+                                                                                                                                                            █
+                                                                                                                                                            █
+                                                                                                                                                            █
+                                                                                                                                                            █
+
+
+   Allow once   Always allow   Reject                                                                                     ⇆ select  enter confirm  esc reject
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

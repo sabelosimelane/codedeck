@@ -1,0 +1,45 @@
+
+▪ oc mini v2.3.2 · /path/to/project
+
+› Run the shell command: echo probe2
+
+Thinking: The user asks to run a shell command. Simple.
+
+Thinking: The shell command was rejected by permission — the error says permission rejected with message "/clear". Hmm, that seems like the harness rejected it.
+ Let me report the actual output honestly.
+Perhaps I should retry? The error indicates a permission rejection. Maybe try the execute tool instead? But execute is Code Mode for tools; shell isn't in Code
+Mode catalog. Actually the shell tool description... The rejection message is odd.
+Let me just report. Maybe try again once.
+
+The command was rejected by the permission layer:
+
+{"error":{"type":"permission.rejected","message":"/clear"}}
+No output was produced. That rejection reason (/clear) doesn't look like a normal rule denial — it reads like the approval prompt was dismissed or a session
+command was hit instead. I retried thinking it might be transient? Actually, I haven't retried yet — let me not guess. Want me to try again, or is there a
+permission rule I should adjust?
+
+Build · DeepSeek V4.1 Flash · 30.6s
+
+█▀▀█  Session  Shell echo probe2
+█  █  Continue opencode mini -s ses_dece92ddbffeaJPfCjhB56J4Un
+▀▀▀▀
+user@host ocp %
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

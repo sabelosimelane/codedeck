@@ -176,6 +176,7 @@ asks for permission. A built command starts with `command`, so the shell runs th
 itself: an alias or shell function with the same name (for example `codex='codex --yolo'`)
 does not apply to it. Choose **Custom command** to write the command yourself (aliases,
 extra flags, other CLIs). A model ID is not checked until a run launches the agent.
+OpenCode uses `opencode mini`, because the full `opencode` interface takes no `--model`. It has no permission-skip flag: whether it asks is set in OpenCode's own `permission` configuration, and when it asks, the run pauses for you like any other permission prompt. It resets context with `/new`, which a new OpenCode agent is given; an agent switched to OpenCode while its reset command is still the old CLI's default gets `/new` too.
 
 In **Settings → Workflows → Teams**, choose the effort for each role's agent and
 optional fallback. Reuse one saved agent across roles or teams at different efforts.

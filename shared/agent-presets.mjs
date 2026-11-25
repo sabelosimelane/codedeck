@@ -55,6 +55,16 @@ export const AGENT_PRESETS = Object.freeze([
     skipPermissionsFlag: '--yolo',
     modelExample: 'muse-spark-1.3-contributor',
   }),
+  Object.freeze({
+    id: 'opencode',
+    label: 'OpenCode',
+    executable: 'opencode mini',
+    efforts: Object.freeze([]),
+    effortArgs: null,
+    skipPermissionsFlag: null,
+    modelExample: 'openrouter/deepseek/deepseek-v4.1-flash',
+    defaultResetCommand: '/new',
+  }),
 ]);
 
 function requireType(field, value, type) {
@@ -80,6 +90,9 @@ export function buildLaunchCommand({ provider, model, effort, skipPermissions })
   if (modelId !== '' && !MODEL_RE.test(modelId)) errors.push({ field: 'model', message: MODEL_MESSAGE });
   if (effort !== '' && !preset.efforts.includes(effort)) {
     errors.push({ field: 'effort', message: `Choose an effort ${preset.label} accepts` });
+  }
+  if (skipPermissions && preset.skipPermissionsFlag === null) {
+    errors.push({ field: 'skipPermissions', message: `${preset.label} has no permission-skip flag` });
   }
   if (errors.length > 0) return { command: null, errors };
 
@@ -115,7 +128,7 @@ export function parseLaunchCommand(command) {
         break;
       }
     }
-    if (rest === ` ${preset.skipPermissionsFlag}`) selection.skipPermissions = true;
+    if (preset.skipPermissionsFlag !== null && rest === ` ${preset.skipPermissionsFlag}`) selection.skipPermissions = true;
 
     // Only an exact round trip counts, so nothing in the command is dropped by showing it as a preset.
     if (buildLaunchCommand(selection).command === command) return selection;
