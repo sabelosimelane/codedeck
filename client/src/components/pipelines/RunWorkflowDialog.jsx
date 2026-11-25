@@ -476,9 +476,10 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
                     <option value="">{inherited ? `Use ${[inherited.name, member.effort].filter(Boolean).join(' · ')}` : 'Select a compatible team first'}</option>
                     {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                   </Select>
-                  <EffortField label={`${node.name} effort`} caption="Effort" value={overrides[node.name]?.effort}
-                    agent={agentById.get(overrides[node.name]?.agentId)} disabled={!enabled || !team}
-                    onChange={effort => setOverrides(current => ({ ...current, [node.name]: { ...current[node.name], effort: effort || null } }))} />
+                  {/* A step left to its team runs at the team's effort, named in the agent option, so it has no picker of its own. */}
+                  {Object.hasOwn(overrides, node.name) && <EffortField label={`${node.name} effort`} caption="Effort" value={overrides[node.name].effort}
+                    agent={agentById.get(overrides[node.name].agentId)} disabled={!enabled || !team}
+                    onChange={effort => setOverrides(current => ({ ...current, [node.name]: { ...current[node.name], effort: effort || null } }))} />}
                 </Field>;
               })}
             </details>

@@ -79,9 +79,10 @@ function AssignmentDialog({ run, onClose }) {
           <option value="">{assignedName(step) || 'Choose an agent'}</option>
           {choices.agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
         </Select>
-        <EffortField label={`${step.name} effort`} caption="Effort" value={overrides[step.name]?.effort}
-          agent={choices.agents.find(item => item.id === overrides[step.name]?.agentId)}
-          onChange={effort => setOverrides(current => ({ ...current, [step.name]: { ...current[step.name], effort: effort || null } }))} />
+        {/* A step left to its team runs at the team's effort, named in the agent option, so it has no picker of its own. */}
+        {Object.hasOwn(overrides, step.name) && <EffortField label={`${step.name} effort`} caption="Effort" value={overrides[step.name].effort}
+          agent={choices.agents.find(item => item.id === overrides[step.name].agentId)}
+          onChange={effort => setOverrides(current => ({ ...current, [step.name]: { ...current[step.name], effort: effort || null } }))} />}
       </Field>)}
     </>}
   </Dialog>;

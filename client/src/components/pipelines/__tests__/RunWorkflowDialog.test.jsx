@@ -869,7 +869,7 @@ it('chooses an effort for a step overridden with a preset agent', async () => {
   const { onStart } = await renderDialog();
   fireEvent.change(screen.getByLabelText('Team'), { target: { value: team.id } });
   fireEvent.click(screen.getByText('Step assignments'));
-  expect(screen.getByLabelText('Fix effort').disabled).toBe(true);
+  expect(screen.queryByLabelText('Fix effort')).toBeNull();
   fireEvent.change(screen.getByLabelText('Fix agent'), { target: { value: codex.id } });
   fireEvent.change(screen.getByLabelText('Fix effort'), { target: { value: 'high' } });
   fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'a change' } });

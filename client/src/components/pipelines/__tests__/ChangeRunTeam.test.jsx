@@ -21,6 +21,7 @@ it('sends a step override with its selected effort', async () => {
   render(<ChangeRunTeam run={run} />);
   fireEvent.click(screen.getByRole('button', { name: 'Change team' }));
   await screen.findByLabelText('Develop agent');
+  expect(screen.queryByLabelText('Develop effort')).toBeNull();
   fireEvent.change(screen.getByLabelText('Develop agent'), { target: { value: '11111111-1111-4111-8111-111111111111' } });
   fireEvent.change(screen.getByLabelText('Develop effort'), { target: { value: 'high' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply to run' }));
