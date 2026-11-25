@@ -12,9 +12,9 @@ Recommended: Speak the first word of the existing name; no storage or app change
 describe('reading the questions an agent listed', () => {
   it('splits the list into questions, each with the answer the agent recommends', () => {
     expect(parseQuestions(LIST)).toEqual([
-      { number: 1, question: 'Should we really store first name and last name separately, or just speak the first word of the existing name?', recommended: 'Speak the first word of the existing name; no storage or app change.' },
-      { number: 2, question: 'Which outputs should switch to the first name?', recommended: 'Both voice calls use the first name.' },
-      { number: 3, question: 'Anything else?', recommended: null },
+      { number: 1, question: 'Should we really store first name and last name separately, or just speak the first word of the existing name?', recommended: 'Speak the first word of the existing name; no storage or app change.', options: [], recommendedLetter: null },
+      { number: 2, question: 'Which outputs should switch to the first name?', recommended: 'Both voice calls use the first name.', options: [], recommendedLetter: null },
+      { number: 3, question: 'Anything else?', recommended: null, options: [], recommendedLetter: null },
     ]);
   });
 
@@ -27,10 +27,39 @@ describe('reading the questions an agent listed', () => {
     expect(() => parseQuestions(null)).toThrow('questions must be a nonempty string');
     expect(() => parseQuestions('  ')).toThrow('questions must be a nonempty string');
   });
+
+  it.each(['b) Best fit because it is isolated.', '(b) Best fit because it is isolated.'])('parses options and finds the recommended letter in %s', recommendation => {
+    expect(parseQuestions(`1. Which database?\na) Shared\nb) Dedicated\nc) Embedded\nRecommended: ${recommendation}`)).toEqual([{
+      number: 1, question: 'Which database?', recommended: recommendation,
+      options: [{ letter: 'a', text: 'Shared' }, { letter: 'b', text: 'Dedicated' }, { letter: 'c', text: 'Embedded' }],
+      recommendedLetter: 'b',
+    }]);
+  });
+
+  it('keeps non-consecutive option lines in the question and leaves options empty', () => {
+    expect(parseQuestions('1. Which database?\na) Shared\nc) Embedded\nRecommended: c) Fast')).toEqual([{
+      number: 1, question: 'Which database? a) Shared c) Embedded', recommended: 'c) Fast', options: [], recommendedLetter: null,
+    }]);
+  });
+
+  it('does not mark a choice recommended when the recommendation has no listed letter', () => {
+    expect(parseQuestions('1. Which database?\na) Shared\nb) Dedicated\nRecommended: It depends on capacity.')[0].recommendedLetter).toBeNull();
+  });
 });
 
 describe('composing the owner’s answer', () => {
   const questions = parseQuestions(LIST);
+  const optionQuestion = parseQuestions('1. Which database?\na) Shared\nb) Dedicated\nRecommended: b) Isolated.');
+
+  it('sends the chosen option and accepts the recommended option with an empty note', () => {
+    expect(composeAnswer(optionQuestion, [{ choice: 'option', letter: 'a', text: 'Shared' }], '')).toBe('1. (a) Shared');
+    expect(composeAnswer(optionQuestion, [{ choice: 'option', letter: 'b', text: 'Dedicated' }], '')).toBe(ACCEPT_RECOMMENDATIONS_ANSWER);
+    expect(composeAnswer(optionQuestion, [{ choice: 'option', letter: 'b', text: 'Dedicated' }], 'Please explain')).toBe('1. (b) Dedicated\n\nAlso: Please explain');
+  });
+
+  it('rejects an option letter not listed for that question', () => {
+    expect(() => composeAnswer(optionQuestion, [{ choice: 'option', letter: 'c', text: 'Other' }], '')).toThrow(TypeError);
+  });
 
   it('is the standard acceptance when every recommendation is taken and nothing is added', () => {
     const two = questions.slice(0, 2);

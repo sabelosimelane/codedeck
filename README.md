@@ -296,7 +296,8 @@ the run and the terminals it used, and leaves the task and its files as they are
 When an agent needs something from you it pauses the run. CodeDeck asks every agent
 to list its questions, each with the answer it recommends, before it pauses. The task
 view shows each question on its own on the waiting step, with the agent's recommendation
-already chosen. Leave it, or pick **My own answer** and type yours; **Send answers** sends
+already chosen. A question with choices lists them by letter, and the task view shows each as
+its own choice with the recommended one chosen. Leave it, or pick **My own answer** and type yours; **Send answers** sends
 one numbered answer for all of them, plus anything else you add for the agent. A request
 that is not a numbered list is shown as written, with one box to answer in. Your answer is
 typed into the agent's terminal for you; answering in the terminal yourself works

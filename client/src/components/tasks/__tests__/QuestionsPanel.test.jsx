@@ -17,6 +17,27 @@ const card = number => within(screen.getByRole('group', { name: `Question ${numb
 afterEach(cleanup);
 
 describe('QuestionsPanel', () => {
+  it('shows each option as a radio, preselects the recommended one, and sends another selected option', async () => {
+    const optionsRun = run({ inputRequest: { questions: '1. Which database?\na) Shared\nb) Dedicated\nc) Embedded\nRecommended: a) Reuses what we have.', truncated: false } });
+    const { onAnswer } = mount({ run: optionsRun });
+    expect(card(1).getAllByRole('radio')).toHaveLength(4);
+    expect(card(1).getByRole('radio', { name: /a\) Shared/ }).checked).toBe(true);
+    expect(card(1).getByText('Reuses what we have.')).toBeTruthy();
+    expect(card(1).queryByRole('radio', { name: /Go with the recommendation/ })).toBeNull();
+    fireEvent.click(card(1).getByRole('radio', { name: /b\) Dedicated/ }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send answers' })); });
+    expect(onAnswer).toHaveBeenCalledWith('run-1', '1. (b) Dedicated');
+  });
+
+  it('requires a selection when options have no matching recommended letter', () => {
+    mount({ run: run({ inputRequest: { questions: '1. Which database?\na) Shared\nb) Dedicated\nRecommended: Decide based on cost.', truncated: false } }) });
+    expect(card(1).getAllByRole('radio')).toHaveLength(3);
+    expect(card(1).getAllByRole('radio').every(radio => !radio.checked)).toBe(true);
+    expect(card(1).getByText('Recommended: Decide based on cost.')).toBeTruthy();
+    expect(screen.getByText('1 of 1 still needs your answer')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send answers' }).disabled).toBe(true);
+  });
+
   it('shows each question on its own, with the recommendation already chosen', () => {
     mount();
     expect(within(screen.getByRole('group', { name: 'Bug fix needs your input' })).getAllByRole('group')).toHaveLength(3);

@@ -8,12 +8,38 @@ const answerDrafts = new Map();
 /** One question: the agent's recommendation chosen to begin with, or the owner's own words. */
 function QuestionCard({ item, answer, disabled, onChange }) {
   const own = answer.choice === 'own';
+  const hasOptions = item.options.length > 0;
   return (
-    <div role="group" aria-label={`Question ${item.number}`} className="task-question" data-answered={own ? answer.text.trim() !== '' : true}>
+    <div role="group" aria-label={`Question ${item.number}`} className="task-question" data-answered={own ? answer.text.trim() !== '' : answer.choice !== null}>
       <span className="task-question-number" aria-hidden="true">{item.number}</span>
       <div className="task-question-body">
         <p className="task-question-text">{item.question}</p>
-        {item.recommended !== null && (
+        {hasOptions && item.recommendedLetter === null && item.recommended !== null && (
+          <p className="task-question-recommended">Recommended: {item.recommended}</p>
+        )}
+        {hasOptions && (
+          <div className="task-question-choices">
+            {item.options.map(option => {
+              const chosen = answer.choice === 'option' && answer.letter === option.letter;
+              const recommended = item.recommendedLetter === option.letter;
+              const reason = recommended ? item.recommended.replace(/^(?:\([a-f]\)|[a-f][.)]?)(?:\s+|$)/i, '') : null;
+              return (
+                <label key={option.letter} className="task-question-choice" data-chosen={chosen}>
+                  <input type="radio" name={`question-${item.number}`} checked={chosen} disabled={disabled}
+                    onChange={() => onChange({ choice: 'option', letter: option.letter })} />
+                  <span><span className="task-question-choice-label">{option.letter}) {option.text}{recommended && ' Recommended'}</span>
+                    {recommended && reason && <span className="task-question-recommended">{reason}</span>}</span>
+                </label>
+              );
+            })}
+            <label className="task-question-choice" data-chosen={own}>
+              <input type="radio" name={`question-${item.number}`} checked={own} disabled={disabled}
+                onChange={() => onChange({ choice: 'own', text: '' })} />
+              <span className="task-question-choice-label">My own answer</span>
+            </label>
+          </div>
+        )}
+        {!hasOptions && item.recommended !== null && (
           <div className="task-question-choices">
             <label className="task-question-choice" data-chosen={!own}>
               <input type="radio" name={`question-${item.number}`} checked={!own} disabled={disabled} onChange={() => onChange({ ...answer, choice: 'recommended' })} />
@@ -47,7 +73,9 @@ export default function QuestionsPanel({ run, onAnswer }) {
   const draftKey = `${run.id}:${run.currentStepIndex ?? ''}:${run.steps?.[run.currentStepIndex]?.iteration ?? ''}:${text ?? '<free-text>'}`;
   const questions = useMemo(() => (text === null ? null : parseQuestions(text)), [text]);
   const saved = answerDrafts.get(draftKey);
-  const [answers, setAnswers] = useState(() => saved?.answers ?? (questions ?? []).map(item => ({ choice: item.recommended === null ? 'own' : 'recommended', text: '' })));
+  const [answers, setAnswers] = useState(() => saved?.answers ?? (questions ?? []).map(item => item.options.length > 0
+    ? (item.recommendedLetter === null ? { choice: null, text: '' } : { choice: 'option', letter: item.recommendedLetter })
+    : { choice: item.recommended === null ? 'own' : 'recommended', text: '' }));
   const [note, setNote] = useState(() => saved?.note ?? '');
   const [draft, setDraft] = useState(() => saved?.draft ?? '');
   const [sending, setSending] = useState(false);
@@ -69,8 +97,9 @@ export default function QuestionsPanel({ run, onAnswer }) {
   };
 
   const listed = questions !== null && answers.length === questions.length;
-  const composed = listed ? composeAnswer(questions, answers, note) : null;
-  const missing = listed ? answers.filter((answer, index) => (answer.choice === 'own' ? answer.text.trim() === '' : questions[index].recommended === null)).length : 0;
+  const missing = listed ? answers.filter((answer, index) => (answer.choice === 'own' ? answer.text.trim() === ''
+    : answer.choice === 'option' ? false : answer.choice === 'recommended' ? questions[index].recommended === null : true)).length : 0;
+  const composed = listed && missing === 0 ? composeAnswer(questions, answers, note) : null;
 
   return (
     <div role="group" aria-label={`${run.workflowName} needs your input`} className="task-questions">

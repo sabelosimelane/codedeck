@@ -7,6 +7,23 @@ const QUESTIONS = `[[CDW:${ID}:QUESTIONS]]`;
 const NEEDS_INPUT = `[[CDW:${ID}:NEEDS_INPUT]]`;
 
 describe('extractQuestions', () => {
+  it('keeps lettered options separate after a wrapped question and wrapped option', () => {
+    const lines = [QUESTIONS,
+      '  1. Which database should the new report use when',
+      '     both are available?',
+      '     a) The existing reporting database',
+      '     b) A dedicated database with its own',
+      '        backup schedule',
+      '     Recommended: b) It isolates report load.',
+      NEEDS_INPUT];
+    expect(extractQuestions(lines, ID).questions).toBe([
+      '1. Which database should the new report use when both are available?',
+      'a) The existing reporting database',
+      'b) A dedicated database with its own backup schedule',
+      'Recommended: b) It isolates report load.',
+    ].join('\n'));
+  });
+
   it('reads the numbered questions a Codex screen shows between the questions marker and the signal', () => {
     const lines = [
       '› $feature-dev docs/todos/x.md CodeDeck workflow instruction: perform one pass of the command above…',

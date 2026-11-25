@@ -547,6 +547,11 @@ describe('terminal workflow — stating what the agent needs', () => {
     expect(prompt).toContain('Before a NEEDS_INPUT signal');
     expect(prompt).toContain('numbered list');
     expect(prompt).toContain('Recommended:');
+    expect(prompt).toContain('each choice on its own line');
+    expect(prompt).toContain('a)');
+    expect(prompt).toContain('b)');
+    expect(prompt).toContain('at most 6');
+    expect(prompt).toContain('chosen letter followed by why');
     expect(prompt).toContain('QUESTIONS');
     // An assembled marker in the instruction would be echoed and read back as the agent's own.
     expect(prompt.replace(/\s/g, '')).not.toContain(signal(token(write), 'QUESTIONS'));

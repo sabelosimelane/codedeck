@@ -12,7 +12,7 @@ const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/;
 // The glyph an agent CLI draws in front of a message, and the indentation under it.
 const LEADING = /^\s*(?:[•⏺●]\s+)?/u;
 // These start a line of their own; any other line continues the one above it.
-const STARTS_LINE = /^(?:\d{1,3}[.)]\s|[-*]\s|Recommended:)/i;
+const STARTS_LINE = /^(?:\d{1,3}[.)]\s|[a-f][.)]\s|[-*]\s|Recommended:)/i;
 
 function fail(field, expectation) {
   throw new TypeError(`input request: ${field} ${expectation}`);
