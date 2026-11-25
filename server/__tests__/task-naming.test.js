@@ -5,7 +5,7 @@ import { createTaskNaming, provisionalTaskTitle } from '../tasks/task-naming.js'
 import { setTaskState, OWN_REPOSITORY } from './helpers/task-state.js';
 
 const ID = '7a000000-0000-4000-8000-000000000001';
-const SETTINGS = { provider: 'codex', model: 'gpt-test', effort: 'low' };
+const SETTINGS = { agentId: '11111111-1111-4111-8111-111111111111', effort: 'low' };
 const NOTE = '# Clarify\n\nThe panic call says the Traveller\'s full name several times; the owner wants the first name only.';
 const databases = [];
 afterEach(() => databases.splice(0).forEach(db => db.close()));

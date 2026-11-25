@@ -14,6 +14,8 @@ import { createRoleStore, createTeamStore, createTemplateStore, createStepPreset
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createPipelinesRouter } from '../routes/pipelines.js';
+import { createNamingStore } from '../session-naming-store.js';
+import { buildLaunchCommand } from '../../shared/agent-presets.mjs';
 import { BUILT_IN_ROLES } from '../../shared/workflow-templates.mjs';
 import { loopbackTestServer } from './helpers/loopback-test-server.js';
 
@@ -32,6 +34,7 @@ async function setup() {
   const roleStore = createRoleStore(db);
   for (const role of BUILT_IN_ROLES) roleStore.ensureRole(role.name, role.description);
   const agentStore = createAgentStore(db);
+  const namingStore = createNamingStore(db, { agentStore });
   const workflowStore = createWorkflowStore(db);
   const teamStore = createTeamStore(db);
   const templateStore = createTemplateStore(db);
@@ -43,6 +46,7 @@ async function setup() {
   app.use(createPipelinesRouter({
     db,
     agentStore,
+    namingStore,
     roleStore,
     workflowStore,
     teamStore,
@@ -98,6 +102,7 @@ async function setup() {
     db,
     roleStore,
     agentStore,
+    namingStore,
     workflowStore,
     teamStore,
     templateStore,
@@ -108,6 +113,15 @@ async function setup() {
 }
 
 describe('structured roles API, role-only workflows, and team compatibility', () => {
+  it('refuses to delete the agent selected for session naming', async () => {
+    const ctx = await setup();
+    const agent = ctx.agentStore.create({ name: 'Naming', launchCommand: buildLaunchCommand({ provider: 'claude', model: 'fable', effort: '', skipPermissions: false }).command, resetCommand: '/clear' });
+    ctx.namingStore.saveSettings({ agentId: agent.id, effort: null });
+    const response = await request(ctx.app).delete(`${base}/agents/${agent.id}`);
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ message: 'Cannot delete the agent used for session naming', traceId: expect.any(String) });
+    expect(ctx.agentStore.get(agent.id)).not.toBeNull();
+  });
   it('supports Roles CRUD, cascades rename across all stores, and guards delete with 409', async () => {
     const ctx = await setup();
     const agent = ctx.agentStore.create({ name: 'Claude', launchCommand: 'claude', resetCommand: '/clear' });

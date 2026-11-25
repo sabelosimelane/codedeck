@@ -5,6 +5,7 @@ import {
   improvementEvidence,
   improvementAction,
   configureReviewer,
+  listAgents,
   startRun,
 } from '../../../utils/pipelinesApi';
 import {
@@ -22,6 +23,8 @@ import {
 import ImprovementProposal, { duration } from './ImprovementProposal';
 import TeamImprovements from './TeamImprovements';
 import RunWorkflowDialog from '../RunWorkflowDialog';
+import { parseAgent } from '../../../utils/pipelineRecords';
+import { AGENT_PRESETS, parseLaunchCommand } from '../../../../../shared/agent-presets.mjs';
 import './improvements.css';
 
 const day = (date) => date.toISOString().slice(0, 10);
@@ -288,16 +291,20 @@ function Evidence({ id, onClose }) {
   );
 }
 function ModelSettings({ worker, onSaved }) {
-  const [provider, setProvider] = useState(worker.provider ?? 'codex');
-  const [model, setModel] = useState(worker.model ?? ''),
-    [effort, setEffort] = useState(worker.effort ?? '');
+  const [agentId, setAgentId] = useState(worker.agentId ?? '');
+  const [agents, setAgents] = useState([]);
+  const [effort, setEffort] = useState(worker.effort ?? '');
   const [message, setMessage] = useState(''),
     [saving, setSaving] = useState(false);
+  useEffect(() => { listAgents().then(records => setAgents(records.map(parseAgent))).catch(error => setMessage(error.message)); }, []);
+  const selected = agents.find(agent => agent.id === agentId);
+  const provider = selected ? parseLaunchCommand(selected.launchCommand)?.provider : null;
+  const efforts = AGENT_PRESETS.find(preset => preset.id === provider)?.efforts ?? [];
   const save = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
-      await configureReviewer({ revision: worker.modelRevision, provider, model, effort: effort || null });
+      await configureReviewer({ revision: worker.modelRevision, agentId, effort: effort || null });
       onSaved();
     } catch (e) {
       setMessage(e.message);
@@ -310,36 +317,29 @@ function ModelSettings({ worker, onSaved }) {
       <summary>Reviewer model</summary>
       <form onSubmit={save} className="imp-filters">
         <label>
-          Provider
-          <select
-            value={provider}
-            onChange={(e) => {
-              setProvider(e.target.value);
+          Reviewer agent
+          <select aria-label="Reviewer agent" value={agentId} onChange={(e) => {
+              setAgentId(e.target.value);
               setEffort('');
-            }}
-          >
-            {['codex', 'claude'].map((p) => (
-              <option key={p}>{p}</option>
-            ))}
+            }}>
+            <option value="">Choose a Claude or Codex agent</option>
+            {agents.map(agent => {
+              const choice = parseLaunchCommand(agent.launchCommand);
+              const allowed = ['claude', 'codex'].includes(choice?.provider);
+              return <option key={agent.id} value={agent.id} disabled={!allowed}>{agent.name}{allowed ? '' : ' — review requires Claude or Codex'}</option>;
+            })}
           </select>
-        </label>
-        <label>
-          Model ID
-          <input required maxLength={256} value={model} onChange={(e) => setModel(e.target.value)} />
         </label>
         <label>
           Reasoning effort
           <select value={effort} onChange={(e) => setEffort(e.target.value)}>
             <option value="">Model default</option>
-            {(provider === 'codex'
-              ? ['minimal', 'low', 'medium', 'high', 'xhigh']
-              : ['low', 'medium', 'high', 'xhigh', 'max']
-            ).map((v) => (
+            {efforts.map((v) => (
               <option key={v}>{v}</option>
             ))}
           </select>
         </label>
-        <button disabled={saving || !model.trim()}>Save reviewer model</button>
+        <button disabled={saving || !agentId || !['claude', 'codex'].includes(provider)}>Save reviewer model</button>
         {message && <p role="alert">{message}</p>}
       </form>
     </details>

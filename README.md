@@ -132,7 +132,7 @@ A run is shown as its task. The header names the task and the workflow and descr
 
 An ordered workflow gives each agent a step, a prompt, and a handoff to the next step. Build workflows in the **workflow builder**, opened from **Settings → Workflows** or from **Edit workflows…** in the Run workflow dialog. It lists your workflows on the left. On the right, the workflow being built shows its steps as a rail (drag a step to reorder it), the open step with a large prompt editor, and **What the agent is sent**: the complete prompt for that step, composed by the backend the way a run composes it. The task's folder, the run notes folder and the pass identifier appear as placeholders, because only a run knows them.
 
-A new install comes with the built-in workflows already saved: Bug fix, Quick change, Feature build, Feature Build from Spec, Feature from requirements, Troubleshoot, Review only and Brainstorm to spec, with their prompts. No agent is chosen in them. Each step names a role (Planner, Developer, Reviewer, Tester, …) and is set to **Assign by team role at launch**, so what is left to you is to add your agents under **Settings → Workflows** and make a team that gives each role an agent; a run then takes its agents from the team you pick. They are ordinary workflows: edit, rename or delete them, and a deleted one does not come back. This happens once, on the first start with an empty workflow list; an install that already has workflows gets nothing added.
+A new install comes with the built-in workflows already saved: Bug fix, Quick change, Feature build, Feature Build from Spec, Feature from requirements, Troubleshoot, Review only and Brainstorm to spec, with their prompts. No agent is chosen in them. Each step names a role (Planner, Developer, Reviewer, Tester, …) and is set to **Assign by team role at launch**, so what is left to you is to add your agents under **Settings → Agents** and make a team under **Settings → Workflows** that gives each role an agent; a run then takes its agents from the team you pick. They are ordinary workflows: edit, rename or delete them, and a deleted one does not come back. This happens once, on the first start with an empty workflow list; an install that already has workflows gets nothing added.
 
 To add another, start with a template in the **Add workflow** chooser, choose an agent for every step or leave it to the team role, then save. The built-in templates are **Bug fix**, **Feature build**, **Feature from requirements**, **Troubleshoot** (gather evidence, agree on a cause, prove it with a failing test, fix, verify) **Review only** (read a change and report findings; it changes and commits nothing) and **Brainstorm to spec**. Bug fix and Troubleshoot open with **Clarify**, a read-only step that checks whether your report is enough to work from: it looks for what is missing in the code, the logs and the history first, and asks you only for what it could not find, each question with the assumption it would otherwise make. Clarify is an ordinary step: you can edit, move or delete it, and add it to any other workflow from **Insert a saved step…**, where it is listed as built in. **Feature from requirements** is for a feature that is still an idea: its input is what you want, in your own words. It opens with **Requirements**, the same kind of step as Clarify with the questions a feature needs (who it is for, what it must do in each case, what is out of scope, how it will be shown to work), which is also listed as built in under **Insert a saved step…**. **Feature Build from Spec** builds a feature from a todo file that already exists: Develop builds the first phase with unticked tasks, Review checks it and Test tests it, round after round until every task is ticked. The todo is its Progress file (`docs/{input}`), so start a run with the todo's path inside `docs/`; its agents decide for themselves, and it has no Commit step, so the work is left for you to commit from the task's bar. Like every built-in workflow, its steps carry their whole prompt: none needs a skill installed. **Brainstorm to spec** is for an idea you want to think through before anything is built. Its **Brainstorm** step talks it over with you one question at a time: each question comes with the answer it recommends and why, it builds on and pushes back on what you said, and when it thinks the idea has landed it sums it up and asks whether to specify it; say no to keep going. Then **Specify** writes the specification and a phased todo in the repository (with a `**Repositories**` line in a project with several) and waits for your approval, so **Send back** reshapes it; **Commit** commits those two files and nothing else. Merge the task, then start **Feature Build from Spec** with the todo's path inside `docs/`, which the last note gives you. **Blank** starts from one empty step. **Duplicate** copies an existing workflow and its agent choices into a new unsaved draft.
 
@@ -144,7 +144,7 @@ Each new run has notes in `.codedeck/runs/<run-id-prefix>` inside its worktree. 
 Each run also keeps a **brief** in that folder, `brief.md`: what you asked for when you started the run, then every question an agent asked and the answer it got, whether you gave it or the agent decided for itself. CodeDeck rewrites it whenever a question is answered, and every step is told to read it, so what you tell one step reaches the steps after it. On the task view, **Your answers** on a step lists what that step asked you and what you said.
 When steps divide work into phases, they can keep `plan.md` in that run's notes folder with `## Phase N: <title>` sections and `- [ ]` or `- [x]` tasks. Without a configured Progress file, the task view reads this plan. If it is absent or has no phases, no progress line appears; an unreadable plan is reported.
 
-Open **Settings → Workflows** to add agents and choose a
+Open **Settings → Agents** to add agents, then **Settings → Workflows** to choose a
 Setup agent; build workflows there or in the workflow builder. Each node has a prompt, an agent and a
 repeat rule: a single pass, repetition until completion with a maximum pass count,
 or a loop back to an earlier node (see below).
@@ -370,45 +370,20 @@ projects are ineligible.
 
 ## Session naming
 
-Open **Settings → Session naming** and select a provider, an exact case-sensitive
-model ID, and optional reasoning effort. Claude Code and Codex are initial editable
-profiles, not a fixed provider list. **Add provider** lets you capture another CLI;
-**Remove provider** removes its profile. Changes take effect only after saving.
-Existing Claude/Codex selections remain valid. Legacy Conduit settings are retained
-but require a CLI selection; existing titles are preserved.
+Add an agent under **Settings → Agents**, then choose it under **Settings → Session naming**.
+An optional reasoning effort overrides that provider's CLI default. Agents with custom
+launch commands cannot be used for naming because CodeDeck cannot run them headlessly.
+The agent's saved launch command is never executed for naming: CodeDeck extracts its
+provider and model, runs a fixed read-only or tool-disabled headless command in a
+temporary directory, and asks for `{"title":"Short title"}`. A blank agent model
+uses the CLI's default. The CLI must already be installed and signed in on the
+machine running CodeDeck. Changes apply after saving; existing titles stay unchanged.
 
-Each profile has an executable name or absolute path, a JSON array of arguments,
-optional effort arguments, a prompt input method, and a response format. Use
-`{model}` in the arguments; use `{prompt}` exactly once for argument input, or
-choose standard input and omit `{prompt}`. Effort arguments use `{effort}` and are
-omitted when effort is blank. Use `[]` when the CLI does not support effort.
-Arguments are passed directly without a shell. Configure the CLI for non-interactive
-use and disable tools; authenticate through the CLI, not secrets in the saved arguments.
-
-For example, a **Cursor** profile can use executable `agent`, argument input, no
-effort arguments, the **JSON result envelope** response format, and:
-
-```json
-["--print", "--trust", "--mode", "ask", "--output-format", "json", "--model", "{model}", "{prompt}"]
-```
-
-A **Kiro** profile can use executable `kiro-cli`, argument input,
-`["--effort", "{effort}"]` for effort arguments, **Title JSON on stdout**, and:
-
-```json
-["chat", "--no-interactive", "--model", "{model}", "{prompt}"]
-```
-
-See [Kiro's CLI reference](https://kiro.dev/docs/cli/reference/cli-commands/)
-for flags supported by your installed version. Kiro was not installed for live
-verification of this example. The command must emit the requested title JSON without
-banners; CLIs with another output shape need a wrapper that emits title JSON.
-
-Response formats are explicit: **Title JSON on stdout** expects
-`{"title":"Short title"}` (or `{"title":null}`); **JSON result envelope** expects
-a successful `type: "result"`, `is_error: false` envelope whose `result` is that JSON
-string; **Codex JSON event stream** reads a single completed agent message. Invalid
-responses fail naming without substituting another provider or changing the title.
+Claude Code, Codex, Cursor, Antigravity and Muse have headless naming commands.
+If the CLI rejects the selected model, the title fails visibly so the owner can
+choose another agent. A legacy provider/model selection moves to the matching
+agent only when exactly one exists; otherwise the owner must choose an agent.
+Legacy Conduit connection settings remain unset for naming.
 
 After a submitted task starts running, CodeDeck sends a bounded terminal excerpt to
 the selected local CLI for a short title. This works through the shared local/remote terminal activity

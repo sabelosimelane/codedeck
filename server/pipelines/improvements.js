@@ -1,4 +1,4 @@
-import { validateCliSettings } from '../cli-naming-client.js';
+import { validateCliSettings, resolveNamingAgent } from '../cli-naming-client.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { createEvidence } from './improvement-evidence.js';
 import {
@@ -13,6 +13,7 @@ import {
   validateOutcome,
 } from '../../shared/workflow-improvements.mjs';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
+import { parseLaunchCommand } from '../../shared/agent-presets.mjs';
 
 const workflowBudget = 6,
   teamBudget = 6,
@@ -30,7 +31,7 @@ const isStamp = (s) =>
   typeof s === 'string' && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
 
 export function createImprovements(deps) {
-  const { db, workflows, settings, generate, now = () => new Date().toISOString() } = deps;
+  const { db, workflows, settings, generate, agentStore, now = () => new Date().toISOString() } = deps;
   for (const [obj, methods] of [
     [db, ['transaction', 'prepare', 'exec']],
     [workflows, ['get', 'update']],
@@ -43,6 +44,7 @@ export function createImprovements(deps) {
     for (const method of methods) check(typeof obj?.[method] === 'function', method);
   for (const [k, v] of Object.entries({ settings, generate, now })) check(typeof v === 'function', k);
   check(typeof deps.tasks?.get === 'function', 'tasks.get');
+  check(typeof agentStore?.get === 'function' && typeof agentStore.list === 'function', 'agentStore');
   const evidence = createEvidence(deps);
   db.exec(`CREATE TABLE IF NOT EXISTS improvement_jobs(id TEXT PRIMARY KEY, workflow TEXT NOT NULL, revision INTEGER NOT NULL,
     members TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','working','done','failed')), attempts INTEGER NOT NULL DEFAULT 0,
@@ -64,12 +66,26 @@ export function createImprovements(deps) {
   const modelRow = () => db.prepare('SELECT * FROM improvement_model WHERE id=1').get();
   const readModel = () => {
     const row = modelRow();
-    return row ? validateCliSettings(JSON.parse(row.value)) : settings();
+    if (!row) return settings();
+    const value = JSON.parse(row.value);
+    if (Object.hasOwn(value, 'provider')) {
+      const matches = agentStore.list().filter(agent => {
+        const parsed = parseLaunchCommand(agent.launchCommand);
+        return parsed?.provider === value.provider && parsed.model === value.model;
+      });
+      if (matches.length !== 1) return settings();
+      const migrated = validateCliSettings({ agentId: matches[0].id, effort: value.effort }, agentStore);
+      db.prepare('UPDATE improvement_model SET value=? WHERE id=1').run(JSON.stringify(migrated));
+      return migrated;
+    }
+    return validateCliSettings(value, agentStore);
   };
   const configure = db.transaction((body) => {
     const row = modelRow();
     if (body.revision !== (row?.revision ?? 0)) throw conflict('Review model revision changed');
-    const options = validateCliSettings({ provider: body.provider, model: body.model, effort: body.effort });
+    const options = validateCliSettings({ agentId: body.agentId, effort: body.effort }, agentStore);
+    const { selection } = resolveNamingAgent(options.agentId, agentStore);
+    check(['claude', 'codex'].includes(selection.provider), 'Background review requires a Claude or Codex agent');
     db.prepare('INSERT OR REPLACE INTO improvement_model VALUES(1,?,?)').run(
       body.revision + 1,
       JSON.stringify(options),
@@ -313,7 +329,9 @@ export function createImprovements(deps) {
       }).immediate();
       const config = readModel();
       if (!config) return;
-      const job = claim.immediate(config.provider + '/' + config.model);
+      const chosen = resolveNamingAgent(config.agentId, agentStore).selection;
+      if (!['claude', 'codex'].includes(chosen.provider)) return;
+      const job = claim.immediate(chosen.provider + '/' + chosen.model);
       if (!job) return;
       try {
         const outcomes = evidence.outcomes();
@@ -618,19 +636,23 @@ export function createImprovements(deps) {
     label,
     evaluate,
     decide,
-    status: () =>
-      validateReviewerStatus({
-        configured: !!readModel(),
-        provider: readModel()?.provider ?? null,
-        model: readModel()?.model ?? null,
-        effort: readModel()?.effort ?? null,
+    status: () => {
+      const selected = readModel();
+      const choice = selected ? resolveNamingAgent(selected.agentId, agentStore).selection : null;
+      return validateReviewerStatus({
+        configured: !!choice && ['claude', 'codex'].includes(choice.provider),
+        agentId: selected?.agentId ?? null,
+        provider: choice?.provider ?? null,
+        model: choice?.model ?? null,
+        effort: selected?.effort ?? null,
         modelRevision: modelRow()?.revision ?? 0,
         dailyBudget: budget,
         reviewerRevision: current().revision,
         queued: db
           .prepare("SELECT count(*) n FROM improvement_jobs WHERE status IN ('queued','working')")
           .get().n,
-      }),
+      });
+    },
     calls: () =>
       db
         .prepare(

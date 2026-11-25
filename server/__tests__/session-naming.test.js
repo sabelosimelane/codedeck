@@ -3,17 +3,22 @@ import Database from 'better-sqlite3';
 import { createNamingStore } from '../session-naming-store.js';
 import { createNamingService, observesSubmission } from '../session-naming-service.js';
 import { validateSettings, validateCatalog, parseTitle } from '../session-naming-validation.js';
+import { createAgentStore } from '../pipelines/agent-store.js';
+import { buildLaunchCommand } from '../../shared/agent-presets.mjs';
 
-const settings = { provider: 'claude', model: 'sonnet', effort: null };
+const AGENT_ID = '11111111-1111-4111-8111-111111111111';
+const settings = { agentId: AGENT_ID, effort: null };
 const databases = [];
 const services = [];
 function setup(generate = vi.fn(async () => 'Fix login redirects')) {
   const db = new Database(':memory:'); databases.push(db);
-  const store = createNamingStore(db);
+  const agentStore = createAgentStore(db);
+  db.prepare('INSERT INTO pipeline_agents VALUES (?, ?, ?, ?, ?, ?, ?)').run(AGENT_ID, 'Claude', buildLaunchCommand({ provider: 'claude', model: 'sonnet', effort: '', skipPermissions: false }).command, '/clear', 1, '2026-11-25T00:00:00.000Z', '2026-11-25T00:00:00.000Z');
+  const store = createNamingStore(db, { agentStore });
   store.saveSettings(settings);
   const service = createNamingService({ store, generate, capture: async () => 'Fix the login redirect bug' });
   services.push(service);
-  return { db, store, service, generate };
+  return { db, store, service, generate, agentStore };
 }
 afterEach(() => { services.splice(0).forEach(service => service.stop()); databases.splice(0).forEach(db => db.close()); vi.useRealTimers(); });
 const activity = { executionStatus: 'running', snapshotText: '› Fix login redirects\nWorking…' };
@@ -88,6 +93,13 @@ describe('session naming', () => {
     service.input('Demo-1', 'task\r'); service.observe('Demo-1', activity);
     await service.waitForIdle(); expect(generate).not.toHaveBeenCalled();
   });
+  it('shows a failed title when the selected agent has disappeared from SQLite', async () => {
+    const { service, store, agentStore } = setup();
+    agentStore.remove(AGENT_ID);
+    service.input('Demo-1', 'fix login\r');
+    service.observe('Demo-1', activity);
+    expect(store.get('Demo-1')).toMatchObject({ state: 'failed', error: 'The session naming agent no longer exists; choose one in Settings' });
+  });
   it('retains a real submission made while the startup-context check is pending', async () => {
     const pending = deferred(); const generate = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce('Fix login redirects');
     const { service, store } = setup(generate);
@@ -103,7 +115,7 @@ describe('session naming', () => {
     const { service, store } = setup(generate);
     for (const id of ['Demo-1', 'Demo-2', 'Demo-3']) { service.input(id, 'task\r'); service.observe(id, activity); }
     await vi.waitFor(() => expect(store.get('Demo-2').state).toBe('generating'));
-    store.saveSettings({ ...settings, model: 'changed-model' });
+    store.saveSettings({ ...settings, effort: 'high' });
     pending.resolve('Task title'); await service.waitForIdle();
     expect(generate).toHaveBeenCalledTimes(2); expect(store.get('Demo-3').state).toBe('failed');
   });
@@ -202,8 +214,8 @@ describe('session naming', () => {
     await service.waitForIdle(); expect(store.get('Demo-1').state).toBe('named');
   });
   it('marks interrupted jobs failed on restart and validates persisted fields', () => {
-    const { store, db } = setup(); store.ensure('Demo-1'); store.update('Demo-1', { state: 'queued' });
-    const reopened = createNamingStore(db); expect(reopened.get('Demo-1').state).toBe('failed');
+    const { store, db, agentStore } = setup(); store.ensure('Demo-1'); store.update('Demo-1', { state: 'queued' });
+    const reopened = createNamingStore(db, { agentStore }); expect(reopened.get('Demo-1').state).toBe('failed');
     db.prepare('UPDATE terminal_titles SET value = ? WHERE session_id = ?').run('{"title":"bad"}', 'Demo-1');
     expect(() => reopened.get('Demo-1')).toThrow();
   });
@@ -233,10 +245,10 @@ describe('naming boundaries', () => {
 });
 
 it('retires legacy Conduit settings while preserving saved titles', () => {
-  const { db, store } = setup(); store.ensure('Demo-1');
+  const { db, store, agentStore } = setup(); store.ensure('Demo-1');
   store.update('Demo-1', { title: 'Keep title', state: 'manual', source: 'manual' });
   db.prepare('UPDATE session_naming_settings SET value=?').run(JSON.stringify({ baseUrl: 'https://old.test', provider: 'old', model: 'old', effort: null }));
-  const reopened = createNamingStore(db);
+  const reopened = createNamingStore(db, { agentStore });
   expect(reopened.settings()).toBeNull();
   expect(reopened.get('Demo-1').title).toBe('Keep title');
 });

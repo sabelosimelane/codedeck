@@ -481,6 +481,7 @@ export function createPipelinesRouter(deps) {
   const {
     db = null,
     agentStore,
+    namingStore,
     roleStore,
     workflowStore,
     settingsStore,
@@ -647,6 +648,9 @@ export function createPipelinesRouter(deps) {
     const settings = settingsStore.get();
     if (settings.setupAgentId === agent.id) {
       throw new PipelineError('Cannot delete the current setup agent', 409);
+    }
+    if (namingStore?.settings()?.agentId === agent.id) {
+      throw new PipelineError('Cannot delete the agent used for session naming', 409);
     }
     if (teamStore.list().some(team => team.members.some(member => member.agentId === agent.id || member.fallbackAgentId === agent.id))) {
       throw new PipelineError('Cannot delete an agent used by a team', 409);

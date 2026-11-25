@@ -231,9 +231,13 @@ The per-terminal Workflow bar and browser control messages were removed. Only pi
 - `client/src/hooks/usePipelineRunCounts.js`: all-project open-run counts, polled
   every two seconds without overlapping requests; pagination uses `pipelinesApi`.
 - `client/src/utils/terminalAdoption.js`: plan step tabs without stealing focus.
-- `SettingsPanel.jsx` keeps tab panels mounted; Hosts/Workflows save per item and
+- `SettingsPanel.jsx` keeps tab panels mounted; Agents/Hosts/Workflows save per item and
   report dirty drafts for close confirmation. Sidebar renders counts for active,
   waiting and shelved project rows, including compact active rows.
+- `AgentSettings.jsx` owns the top-level Agents tab. `SessionNamingSettings.jsx` chooses
+  one saved preset agent and an optional effort. `session-naming-store.js` migrates a
+  unique legacy provider/model selection to that agent's UUID; `cli-naming-client.js`
+  resolves the saved command to a fixed headless profile before each title or review.
 
 ## Tasks
 

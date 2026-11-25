@@ -5116,7 +5116,7 @@ it('measures five trial deliveries through the normal run launcher, then adopts 
   const stores = { db:ctx.db, runs:ctx.runStore, teams, notes:ctx.noteStore, answers:ctx.answerStore,
     reviews:ctx.reviewStore, now };
   const improvements = createImprovements({...stores, tasks:ctx.taskStore, decisions:ctx.decisionStore,
-    workflows:ctx.workflowStore, settings:()=>null, generate:vi.fn()});
+    workflows:ctx.workflowStore, settings:()=>null, agentStore:ctx.agentStore, generate:vi.fn()});
   Object.assign(teamScoring, createTeamObservations({...stores,improvements}));
   teamScoring.trials = createTeamTrials({db:ctx.db, teams, agents:ctx.agentStore, workflows:ctx.workflowStore,
     observations:teamScoring.observations, now});

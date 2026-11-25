@@ -1,7 +1,6 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { NamingError, requireField, isText } from '../session-naming-validation.js';
-import { validateCliSettings } from '../cli-naming-client.js';
 
 function pageQuery(query, fields) {
   const page = query.page === undefined ? 0 : Number(query.page);
@@ -30,14 +29,14 @@ export function createNamingRouter({ store, service, sessionExists }) {
   router.use(base, (req, res, next) => { req.namingTraceId = randomUUID(); res.set('X-Trace-Id', req.namingTraceId); next(); });
   router.use(base, express.json({ limit: '16kb' }));
   const route = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch(next);
-  const publicSettings = () => store.settings() ?? { provider: '', model: '', effort: null };
+  const publicSettings = () => store.settings() ?? { agentId: '', effort: null };
   const assertSession = id => {
     requireField(isText(id), 'sessionId', 'A valid session ID is required');
     if (!sessionExists(id)) throw new NamingError('Terminal session not found', 404);
   };
   router.get(`${base}/settings`, route((_req, res) => res.json(publicSettings())));
   router.put(`${base}/settings`, route(async (req, res) => {
-    store.saveSettings(validateCliSettings(req.body));
+    store.saveSettings(req.body);
     res.json(publicSettings());
   }));
   router.get(`${base}/titles`, route((req, res) => {

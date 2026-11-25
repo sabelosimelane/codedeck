@@ -6,6 +6,7 @@ const { showToast } = vi.hoisted(() => ({ showToast: vi.fn() }));
 vi.mock('../../ToastContext', () => ({ useToast: () => ({ showToast }) }));
 
 import PipelineSettings from '../PipelineSettings';
+import AgentSettings from '../AgentSettings';
 import { WORKFLOW_TEMPLATES } from '../../../../../shared/workflow-templates.mjs';
 
 const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
@@ -159,6 +160,11 @@ async function renderSettings(seed, { tab = startTab } = {}) {
   backend = createBackend(seed);
   vi.stubGlobal('fetch', backend.fetch);
   onDirtyChange = vi.fn();
+  if (tab === 'Agents') {
+    render(<AgentSettings onDirtyChange={onDirtyChange} />);
+    await screen.findByRole('region', { name: 'Agents' });
+    return;
+  }
   render(<PipelineSettings onDirtyChange={onDirtyChange} />);
   await screen.findByRole('tablist', { name: 'Workflow settings sections' });
   if (tab) openTab(tab);
@@ -201,10 +207,6 @@ describe('PipelineSettings loading', () => {
 
     expect(workflows().getByText('Feature')).toBeTruthy();
     expect(workflows().getByText(/2 nodes: Develop → Test/)).toBeTruthy();
-    openTab('Agents');
-    expect(agents().getByText('codex-high')).toBeTruthy();
-    expect(agents().getByText('command codex --model gpt-6-sol')).toBeTruthy();
-    expect(agents().getByText('cursor-fable')).toBeTruthy();
     openTab('Defaults');
     expect(screen.getByRole('combobox', { name: 'Setup agent' }).value).toBe(A2);
     expect(lastDirty()).toBe(false);
@@ -222,8 +224,8 @@ describe('PipelineSettings loading', () => {
 
     click('Retry');
     await screen.findByRole('tablist', { name: 'Workflow settings sections' });
-    openTab('Agents');
-    expect(agents().getByText('codex-high')).toBeTruthy();
+    openTab('Defaults');
+    expect(screen.getByRole('combobox', { name: 'Setup agent' }).value).toBe('');
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
@@ -1534,11 +1536,11 @@ describe('PipelineSettings — sections as tabs', () => {
   const tabNames = () => screen.getAllByRole('tab').map(tab => tab.textContent);
   const selected = () => screen.getAllByRole('tab').find(tab => tab.getAttribute('aria-selected') === 'true');
 
-  it('shows five tabs with counts, opening on Workflows', async () => {
+  it('shows four workflow tabs with counts, opening on Workflows', async () => {
     await renderSettings({ agents: [codex(), cursor()], workflows: [feature()] }, { tab: null });
 
     expect(screen.getByRole('tablist', { name: 'Workflow settings sections' })).toBeTruthy();
-    expect(tabNames()).toEqual(['Workflows1', 'Teams0', 'Roles8', 'Agents2', 'Defaults']);
+    expect(tabNames()).toEqual(['Workflows1', 'Teams0', 'Roles8', 'Defaults']);
     expect(selected().textContent).toBe('Workflows1');
     expect(screen.getByRole('region', { name: 'Workflows' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Open the workflow builder' })).toBeTruthy();
@@ -1549,8 +1551,8 @@ describe('PipelineSettings — sections as tabs', () => {
   it('switches the shown section on click and with the arrow, Home and End keys', async () => {
     await renderSettings({ agents: [codex()] }, { tab: null });
 
-    fireEvent.click(screen.getByRole('tab', { name: /^Agents/ }));
-    expect(screen.getByRole('region', { name: 'Agents' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: /^Roles/ }));
+    expect(screen.getByRole('region', { name: 'Roles' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Workflows' })).toBeNull();
 
     fireEvent.keyDown(selected(), { key: 'ArrowRight' });
@@ -1568,20 +1570,6 @@ describe('PipelineSettings — sections as tabs', () => {
     expect(selected().textContent).toMatch(/^Workflows/);
     fireEvent.keyDown(selected(), { key: 'End' });
     expect(selected().textContent).toBe('Defaults');
-  });
-
-  it('keeps an unsaved draft across tab switches and marks its tab unsaved', async () => {
-    await renderSettings({ agents: [codex()] }, { tab: 'Agents' });
-    click('Add agent');
-    type('Agent name', 'draft-agent');
-    const agentsTab = screen.getByRole('tab', { name: /^Agents/ });
-    expect(within(agentsTab).getByTitle('Unsaved changes')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('tab', { name: /^Roles/ }));
-    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
-    fireEvent.click(agentsTab);
-    expect(screen.getByRole('textbox', { name: 'Agent name' }).value).toBe('draft-agent');
-    expect(within(screen.getByRole('tab', { name: /^Roles/ })).queryByTitle('Unsaved changes')).toBeNull();
   });
 
   it('reports an unsaved default base branch as unsaved and marks Defaults', async () => {

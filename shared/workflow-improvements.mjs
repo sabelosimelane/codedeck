@@ -140,6 +140,7 @@ export function validateReviewerStatus(v) {
   check(v && typeof v.configured === 'boolean', 'configured');
   for (const key of ['dailyBudget', 'reviewerRevision', 'queued', 'modelRevision']) check(count(v[key]), key);
   for (const key of ['provider', 'model', 'effort']) check(nullableText(v[key]), key);
+  check(v.agentId === null || isUuid(v.agentId), 'agentId');
   return v;
 }
 export function validateProposal(v) {

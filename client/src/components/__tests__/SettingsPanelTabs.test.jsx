@@ -24,6 +24,9 @@ vi.mock('../pipelines/PipelineSettings', () => ({
     </div>
   ),
 }));
+vi.mock('../pipelines/AgentSettings', () => ({
+  default: ({ onDirtyChange }) => <div data-testid="agents-panel"><button type="button" onClick={() => onDirtyChange(true)}>dirty agents</button></div>,
+}));
 vi.mock('../SessionNamingSettings', () => ({
   default: forwardRef(function NamingStub({ onStateChange }, ref) {
     useImperativeHandle(ref, () => ({ save: namingSave, revert: namingRevert }));
@@ -39,8 +42,8 @@ vi.mock('../SessionNamingSettings', () => ({
 
 import SettingsPanel from '../SettingsPanel';
 
-const TAB_NAMES = ['General', 'Session naming', 'Hosts', 'Workflows'];
-const PANEL_TEST_IDS = { 'Session naming': 'naming-panel', Hosts: 'hosts-panel', Workflows: 'workflows-panel' };
+const TAB_NAMES = ['General', 'Session naming', 'Agents', 'Hosts', 'Workflows'];
+const PANEL_TEST_IDS = { 'Session naming': 'naming-panel', Agents: 'agents-panel', Hosts: 'hosts-panel', Workflows: 'workflows-panel' };
 
 function panelOf(testId) {
   return screen.getByTestId(testId).closest('[role="tabpanel"]');
@@ -75,11 +78,11 @@ afterEach(() => {
 });
 
 describe('SettingsPanel tabs', () => {
-  it('shows the four tabs in order with General selected', async () => {
+  it('shows the five tabs in order with General selected', async () => {
     await renderPanel();
     const tabs = screen.getAllByRole('tab');
     expect(tabs.map(tab => tab.textContent)).toEqual(TAB_NAMES);
-    expect(tabs.map(tab => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false', 'false']);
+    expect(tabs.map(tab => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false', 'false', 'false']);
     expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(tabs[0].id);
   });
 
@@ -117,6 +120,8 @@ describe('SettingsPanel tabs', () => {
     expect(footerShown()).toBe(true);
     selectTab('Session naming');
     expect(footerShown()).toBe(true);
+    selectTab('Agents');
+    expect(footerAbsent()).toBe(true);
     selectTab('Hosts');
     expect(footerAbsent()).toBe(true);
     selectTab('Workflows');
@@ -161,6 +166,7 @@ describe('SettingsPanel tabs', () => {
     ['General', () => fireEvent.change(screen.getByPlaceholderText('code -r'), { target: { value: 'vim' } })],
     ['Session naming', () => fireEvent.click(screen.getByRole('button', { name: 'dirty naming' }))],
     ['Hosts', () => fireEvent.click(screen.getByRole('button', { name: 'dirty hosts' }))],
+    ['Agents', () => fireEvent.click(screen.getByRole('button', { name: 'dirty agents' }))],
     ['Workflows', () => fireEvent.click(screen.getByRole('button', { name: 'dirty workflows' }))],
   ])('asks before closing with unsaved changes on %s', async (tab, makeDirty) => {
     const { onClose } = await renderPanel();

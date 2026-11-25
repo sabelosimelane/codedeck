@@ -157,7 +157,7 @@ export default function TeamList({ definitions: { teams, agents, workflows, role
         </li>;
       })}</ul>
       <Button disabled={busy || agents.length === 0 || roles.length === 0} onClick={() => edit({ id: null, name: '', members: [blankMember()] })}>Add team</Button>
-      {agents.length === 0 && <p className="pipeline-hint">Add an agent to create a team.</p>}
+      {agents.length === 0 && <p className="pipeline-hint">Add an agent in Settings → Agents to create a team.</p>}
       {roles.length === 0 && <p className="pipeline-hint">Add a role to create a team.</p>}
     </>}
     {error && <p className="pipeline-field-error" role="alert">{error}</p>}

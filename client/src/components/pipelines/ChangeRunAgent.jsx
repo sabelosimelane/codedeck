@@ -56,7 +56,7 @@ export default function ChangeRunAgent({ run, step, timing, onSave, onClose }) {
       {current.nextAgentName && <p>{snapshot.timing === 'round' ? 'Next round' : 'Next pass'} · {current.nextAgentName}</p>}
       {error && <Note tone="danger" role="alert">{error}</Note>}
       {!agents && !error && <span role="status">Loading agents…</span>}
-      {agents?.length === 0 && <Note>Add a saved agent in Settings → Workflows → Agents.</Note>}
+      {agents?.length === 0 && <Note>Add a saved agent in Settings → Agents.</Note>}
       {agents?.length > 0 && <Field label="Saved agent">
         <Select label="Saved agent" value={draft} onChange={setDraft} disabled={busy || stale}>
           <option value="">Choose an agent</option>

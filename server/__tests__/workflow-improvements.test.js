@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { buildLaunchCommand } from '../../shared/agent-presets.mjs';
 import { randomUUID } from 'node:crypto';
 import { createImprovements } from '../pipelines/improvements.js';
 import { compareOutcomes, classifyEvidence } from '../../shared/workflow-improvements.mjs';
@@ -66,12 +67,22 @@ function setup(runs, generate) {
     answers: { list: () => [] },
     decisions: { list: () => [] },
     reviews: { list: () => [] },
-    settings: () => ({ provider: 'codex', model: 'test', effort: null }),
+    agentStore: { get: id => id === '11111111-1111-4111-8111-111111111111' ? { id, launchCommand: buildLaunchCommand({ provider: 'codex', model: 'test', effort: '', skipPermissions: false }).command } : null, list: () => [] },
+    settings: () => ({ agentId: '11111111-1111-4111-8111-111111111111', effort: null }),
     generate,
     now: () => stamp,
   };
   return { db, deps, workflow, service: createImprovements(deps) };
 }
+it('configures a dedicated reviewer with a defined Claude or Codex agent', () => {
+  const { service, deps } = setup([], vi.fn());
+  const agentId = '11111111-1111-4111-8111-111111111111';
+  expect(service.configure({ revision: 0, agentId, effort: 'low' })).toMatchObject({ agentId, effort: 'low' });
+  expect(service.status()).toMatchObject({ agentId, provider: 'codex', model: 'test' });
+  const cursorId = '22222222-2222-4222-8222-222222222222';
+  deps.agentStore.get = id => id === cursorId ? { id, launchCommand: 'command agent --model auto' } : null;
+  expect(() => service.configure({ revision: 1, agentId: cursorId, effort: null })).toThrow('Claude or Codex');
+});
 describe('workflow reviewer', () => {
   it('batches five outcomes, persists its evidence across restart and fences duplicate approvals', async () => {
     const records = Array.from({ length: 5 }, () => run());
@@ -238,13 +249,13 @@ it('sets a reviewer-only model and fences concurrent edits', async () => {
   const model = vi.fn(async () => ({ proposal: null, cost: null })),
     { service, deps } = setup(records, model);
   expect(service.status().model).toBe('test');
-  service.configure({ revision: 0, provider: 'codex', model: 'gpt-selected', effort: 'low' });
-  expect(() => service.configure({ revision: 0, provider: 'claude', model: 'sonnet', effort: null })).toThrow(
+  service.configure({ revision: 0, agentId: '11111111-1111-4111-8111-111111111111', effort: 'low' });
+  expect(() => service.configure({ revision: 0, agentId: '11111111-1111-4111-8111-111111111111', effort: null })).toThrow(
     /revision/,
   );
-  expect(deps.settings().model).toBe('test');
+  expect(deps.settings().agentId).toBe('11111111-1111-4111-8111-111111111111');
   await service.tick();
-  expect(model.mock.calls[0][0].model).toBe('gpt-selected');
+  expect(model.mock.calls[0][0].agentId).toBe('11111111-1111-4111-8111-111111111111');
 });
 it('keeps unresolved proof visible when an agent calls it ordinary', async () => {
   const r = run(),
@@ -321,7 +332,7 @@ it('invalidates a passed reviewer evaluation if the chosen model changes', async
     service.label(r.id, label);
   }
   expect((await service.evaluate(p.id)).passed).toBe(true);
-  service.configure({ revision: 0, provider: 'codex', model: 'another', effort: null });
+  service.configure({ revision: 0, agentId: '11111111-1111-4111-8111-111111111111', effort: 'low' });
   expect(() => service.decide(p.id, { action: 'approve' })).toThrow(/benchmark/);
 });
 
@@ -353,7 +364,7 @@ it('reviews a new proof gap before an older routine batch waiting in the queue',
           },
         ]
       : [];
-  service.configure({ revision: 0, provider: 'claude', model: 'sonnet', effort: null });
+  service.configure({ revision: 0, agentId: '11111111-1111-4111-8111-111111111111', effort: null });
   await service.tick();
   expect(generate.mock.calls[0][1].evidence.map((e) => e.outcome.id)).toEqual([gap.id]);
 });

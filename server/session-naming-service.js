@@ -110,7 +110,15 @@ export function createNamingService({ store, generate, capture }) {
   }
   return {
     input(id, data) {
-      if (stopped || deleted.has(id) || !store.settings()) return;
+      if (stopped || deleted.has(id)) return;
+      try { if (!store.settings()) return; }
+      catch (error) {
+        if (error instanceof NamingError) {
+          store.ensure(id); store.update(id, { state: 'failed', error: error.message });
+          return;
+        }
+        throw error;
+      }
       let input = inputs.get(id);
       if (!input) { input = {}; inputs.set(id, input); }
       const submitted = observesSubmission(input, data);

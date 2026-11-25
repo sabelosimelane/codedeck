@@ -5,14 +5,16 @@ import DirectoryBrowser from './DirectoryBrowser';
 import HostsSection from './HostsSection';
 import SessionNamingSettings from './SessionNamingSettings';
 import PipelineSettings from './pipelines/PipelineSettings';
+import AgentSettings from './pipelines/AgentSettings';
 import { useToast } from './ToastContext';
 
 const DEFAULT_NOTIFICATION_COOLDOWN_SECONDS = 30;
 
-// The footer saves General and Session naming together; Hosts and Workflows save per item.
+// The footer saves General and Session naming together; other sections save per item.
 const TABS = [
   { id: 'general', label: 'General', footer: true },
   { id: 'naming', label: 'Session naming', footer: true },
+  { id: 'agents', label: 'Agents', footer: false },
   { id: 'hosts', label: 'Hosts', footer: false },
   { id: 'workflows', label: 'Workflows', footer: false },
 ];
@@ -34,6 +36,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
   const [activeTab, setActiveTab] = useState('general');
   const [hostsDirty, setHostsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
+  const [agentsDirty, setAgentsDirty] = useState(false);
   const anyDirty = dirty || namingState.dirty;
   const showFooter = TABS.find(tab => tab.id === activeTab).footer;
   // The footer Save covers a panel that may be on a hidden tab, so its blocking problem is named.
@@ -136,7 +139,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
   };
 
   const requestClose = () => {
-    const unsaved = anyDirty || hostsDirty || workflowsDirty;
+    const unsaved = anyDirty || hostsDirty || workflowsDirty || agentsDirty;
     if (unsaved && !window.confirm('Close settings and discard unsaved changes?')) return;
     onClose();
   };
@@ -271,15 +274,19 @@ export default function SettingsPanel({ onClose, onSaved }) {
           </div>
 
           <div {...panelProps('naming')}>
-            <SessionNamingSettings ref={namingRef} onStateChange={setNamingState} />
+            <SessionNamingSettings ref={namingRef} onStateChange={setNamingState} active={activeTab === 'naming'} />
           </div>
 
           <div {...panelProps('hosts')}>
             <HostsSection onDirtyChange={setHostsDirty} />
           </div>
 
+          <div {...panelProps('agents')}>
+            <AgentSettings onDirtyChange={setAgentsDirty} active={activeTab === 'agents'} />
+          </div>
+
           <div {...panelProps('workflows')}>
-            <PipelineSettings onDirtyChange={setWorkflowsDirty} />
+            <PipelineSettings onDirtyChange={setWorkflowsDirty} active={activeTab === 'workflows'} />
           </div>
 
           {/* Footer */}

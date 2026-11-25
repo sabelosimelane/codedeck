@@ -41,6 +41,7 @@ it('opens the records counted by a card and shows unavailable historical time', 
               dailyBudget: 10,
               modelRevision: 0,
               model: 'test',
+              agentId: '11111111-1111-4111-8111-111111111111',
               provider: 'codex',
               effort: null,
               reviewerRevision: 1,
@@ -54,13 +55,17 @@ it('opens the records counted by a card and shows unavailable historical time', 
   expect(await screen.findByText(/Demo · Bug fix/)).toBeTruthy();
   expect(screen.getAllByText(/Unavailable/i).length).toBeGreaterThan(0);
 });
-it('saves a dedicated reviewer model through the revision-fenced API', async () => {
+it('saves a dedicated reviewer agent through the revision-fenced API', async () => {
+  const agentId = '11111111-1111-4111-8111-111111111111';
   const fetch = vi.fn(async (url, opts) => ({
     ok: true,
     json: async () =>
-      String(url).includes('/status')
+      String(url).includes('/agents?')
+        ? { data: [{ id: agentId, name: 'Codex', launchCommand: 'command codex --model gpt-6-luna', resetCommand: '/clear', revision: 1, createdAt: '2026-11-25T00:00:00.000Z', updatedAt: '2026-11-25T00:00:00.000Z' }], page: { hasNextPage: false } }
+        : String(url).includes('/status')
         ? {
             configured: true,
+            agentId,
             provider: 'codex',
             model: 'old',
             effort: 'low',
@@ -76,12 +81,12 @@ it('saves a dedicated reviewer model through the revision-fenced API', async () 
   vi.stubGlobal('fetch', fetch);
   render(<Improvements workflows={[]} />);
   fireEvent.click(await screen.findByText('Reviewer model'));
-  fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'new-model' } });
+  expect(screen.getByLabelText('Reviewer agent').value).toBe(agentId);
   fireEvent.click(screen.getByRole('button', { name: 'Save reviewer model' }));
   expect(
     fetch.mock.calls.some(
       ([url, opts]) =>
-        url.endsWith('/improvements/model') && opts.method === 'PUT' && JSON.parse(opts.body).revision === 4,
+        url.endsWith('/improvements/model') && opts.method === 'PUT' && JSON.parse(opts.body).revision === 4 && JSON.parse(opts.body).agentId === agentId,
     ),
   ).toBe(true);
 });
@@ -103,7 +108,7 @@ function renderPendingProposal(currentRevision, kind = 'workflow') {
       return { ok: false, status: 409, json: async () => ({ message: 'Workflow revision changed. Review fresh evidence.' }) };
     }
     const body = url.endsWith('/status')
-      ? { configured: true, provider: 'codex', model: 'test', effort: null, modelRevision: 1, reviewerRevision: 1, dailyBudget: 10, queued: 0 }
+      ? { configured: true, agentId: '11111111-1111-4111-8111-111111111111', provider: 'codex', model: 'test', effort: null, modelRevision: 1, reviewerRevision: 1, dailyBudget: 10, queued: 0 }
       : { data: url.includes('/proposals') ? [proposal] : [], page: { hasNextPage: false } };
     return { ok: true, json: async () => body };
   }));

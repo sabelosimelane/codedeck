@@ -7,7 +7,6 @@ import { loadDefinitions, parseTeam, parseSettings } from '../../utils/pipelineR
 import { useToast } from '../ToastContext';
 import RoleList from './RoleList';
 import TeamList from './TeamList';
-import AgentList from './AgentList';
 import WorkflowList from './WorkflowList';
 import { failureMessage } from './definitionForm';
 import { EffortField } from './definitionForm';
@@ -20,7 +19,6 @@ export const WORKFLOW_SUBTABS = [
   { id: 'workflows', label: 'Workflows' },
   { id: 'teams', label: 'Teams' },
   { id: 'roles', label: 'Roles' },
-  { id: 'agents', label: 'Agents' },
   { id: 'defaults', label: 'Defaults' },
 ];
 const subtabId = id => `pipeline-subtab-${id}`;
@@ -35,10 +33,10 @@ const TIMEOUT_FIELDS = [
 ];
 
 /**
- * Settings → Workflows: workflows, teams, roles, agents and the defaults, each on its own tab. Nothing here is authoritative;
+ * Settings → Workflows: workflows, teams, roles and defaults, each on its own tab. Nothing here is authoritative;
  * every change is sent to the backend and the lists are read back from it.
  */
-export default function PipelineSettings({ onDirtyChange }) {
+export default function PipelineSettings({ onDirtyChange, active = false }) {
   const { showToast } = useToast();
   const [definitions, setDefinitions] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -51,7 +49,6 @@ export default function PipelineSettings({ onDirtyChange }) {
   const [savingTimeouts, setSavingTimeouts] = useState(false);
   const [rolesDirty, setRolesDirty] = useState(false);
   const [teamDirty, setTeamDirty] = useState(false);
-  const [agentsDirty, setAgentsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
   // Every panel stays mounted while hidden, so a draft in one section survives a visit to another.
   const [activeTab, setActiveTab] = useState('workflows');
@@ -70,6 +67,7 @@ export default function PipelineSettings({ onDirtyChange }) {
   }, [showToast]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (active) load(); }, [active, load]);
 
   const changeSetupAgent = async (value, effort = definitions.settings.setupEffort) => {
     const agent = definitions.agents.find(candidate => candidate.id === value);
@@ -111,15 +109,14 @@ export default function PipelineSettings({ onDirtyChange }) {
   const timeoutsValid = Object.values(timeoutErrors).every(error => error === null);
 
   useEffect(() => {
-    onDirtyChange(rolesDirty || agentsDirty || workflowsDirty || teamDirty || baseChanged || timeoutsChanged);
-  }, [rolesDirty, agentsDirty, workflowsDirty, teamDirty, baseChanged, timeoutsChanged, onDirtyChange]);
+    onDirtyChange(rolesDirty || workflowsDirty || teamDirty || baseChanged || timeoutsChanged);
+  }, [rolesDirty, workflowsDirty, teamDirty, baseChanged, timeoutsChanged, onDirtyChange]);
 
-  const tabDirty = { workflows: workflowsDirty, teams: teamDirty, roles: rolesDirty, agents: agentsDirty, defaults: baseChanged || timeoutsChanged };
+  const tabDirty = { workflows: workflowsDirty, teams: teamDirty, roles: rolesDirty, defaults: baseChanged || timeoutsChanged };
   const tabCount = {
     workflows: definitions?.workflows.length,
     teams: definitions?.teams.length,
     roles: definitions?.roles.length,
-    agents: definitions?.agents.length,
   };
 
   const selectTab = (id) => {
@@ -236,9 +233,6 @@ export default function PipelineSettings({ onDirtyChange }) {
           </div>
           <div {...panelProps('roles')}>
             <RoleList definitions={definitions} onChanged={load} onDirtyChange={setRolesDirty} />
-          </div>
-          <div {...panelProps('agents')}>
-            <AgentList agents={definitions.agents} onChanged={load} onDirtyChange={setAgentsDirty} />
           </div>
 
           <div {...panelProps('defaults')}>

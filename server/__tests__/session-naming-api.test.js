@@ -11,6 +11,8 @@ import { createNamingService } from '../session-naming-service.js';
 import { createNamingRouter } from '../routes/session-naming.js';
 import { createConduitNamingClient } from '../conduit-naming-client.js';
 import { createNamingCredentialStore } from '../session-naming-credentials.js';
+import { createAgentStore } from '../pipelines/agent-store.js';
+import { buildLaunchCommand } from '../../shared/agent-presets.mjs';
 
 const settings = { baseUrl: 'http://localhost:3100', provider: 'test', model: 'small', effort: null };
 const providers = [{ id: 'test', enabled: true, available: true, defaultModel: 'small', models: ['small', 'large'], effort: ['low'], capabilities: {}, toolPolicies: [] }];
@@ -20,18 +22,21 @@ async function setup() {
   const db = new Database(':memory:'); cleanup.push(() => db.close());
   const directory = mkdtempSync(path.join(tmpdir(), 'codedeck-naming-')); cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const credentials = createNamingCredentialStore(path.join(directory, 'credential'));
-  const store = createNamingStore(db);
+  const agentStore = createAgentStore(db);
+  const claude = agentStore.create({ name: 'Claude', launchCommand: buildLaunchCommand({ provider: 'claude', model: 'sonnet', effort: '', skipPermissions: false }).command, resetCommand: '/clear' });
+  const codex = agentStore.create({ name: 'Codex', launchCommand: buildLaunchCommand({ provider: 'codex', model: 'gpt-6-luna', effort: '', skipPermissions: false }).command, resetCommand: '/clear' });
+  const store = createNamingStore(db, { agentStore });
   const conduit = { catalog: vi.fn(async () => providers), metrics: () => ({}) };
   const service = createNamingService({ store, generate: async () => 'Fix login redirects', capture: async () => 'fix login' });
   const app = express();
   app.use(createNamingRouter({ store, service, credentials, conduit, sessionExists: id => /^Demo-\d+$/.test(id) }));
-  return { app: await loopbackTestServer(app), routerApp: app, store, credentials, conduit, service, directory, db };
+  return { app: await loopbackTestServer(app), routerApp: app, store, credentials, conduit, service, directory, db, agentStore, claude, codex };
 }
 
 describe('naming APIs', () => {
   it('saves local CLI selection without a Conduit connection or credential', async () => {
-    const { app, conduit, credentials } = await setup();
-    const selection = { provider: 'claude', model: 'sonnet', effort: 'low' };
+    const { app, conduit, credentials, claude } = await setup();
+    const selection = { agentId: claude.id, effort: 'low' };
     for (let i = 0; i < 2; i++) {
       const saved = await request(app).put('/api/session-naming/settings').send(selection);
       expect(saved.status).toBe(200); expect(saved.body).toEqual(selection);
@@ -39,14 +44,13 @@ describe('naming APIs', () => {
     expect((await request(app).get('/api/session-naming/settings')).body).toEqual(selection);
     expect(conduit.catalog).not.toHaveBeenCalled(); expect(credentials.read()).toBeNull();
   });
-  it('round-trips custom providers and returns field errors without running a CLI on save', async () => {
-    const { app } = await setup();
-    const profile = { id: 'cursor', command: 'agent', args: ['--print', '--model', '{model}', '{prompt}'], effortArgs: [], input: 'argument', output: 'json' };
-    const selection = { provider: 'cursor', model: 'custom', effort: null, providers: [profile] };
+  it('round-trips an agent selection and returns field errors without running a CLI on save', async () => {
+    const { app, claude, codex } = await setup();
+    const selection = { agentId: claude.id, effort: null };
     const results = await Promise.all([1, 2].map(() => request(app).put('/api/session-naming/settings').send(selection)));
     for (const result of results) { expect(result.status).toBe(200); expect(result.body).toEqual(selection); }
     expect((await request(app).get('/api/session-naming/settings')).body).toEqual(selection);
-    for (const patch of [{ providers: [] }, { providers: null }, { provider: 'missing' }, { providers: [{ ...profile, command: 'agent; touch bad' }] }, { providers: [{ ...profile, args: null }] }]) {
+    for (const patch of [{ agentId: 'bad' }, { agentId: null }, { effort: 'ultra' }, { agentId: codex.id, effort: 'max' }]) {
       const result = await request(app).put('/api/session-naming/settings').send({ ...selection, ...patch });
       expect(result.status).toBe(400);
       expect(result.body).toMatchObject({ traceId: expect.any(String), errors: expect.any(Array) });
@@ -54,14 +58,17 @@ describe('naming APIs', () => {
     expect((await request(app).get('/api/session-naming/settings')).body).toEqual(selection);
   });
   it('validates each CLI setting with problem details', async () => {
-    const { app } = await setup();
-    for (const body of [{}, { provider: null, model: null, effort: null }, { provider: 'shell', model: 'x', effort: null }, { provider: 'claude', model: '', effort: null }, { provider: 'claude', model: 'x'.repeat(257), effort: null }, { provider: 'claude', model: '$(id)', effort: null }, { provider: 'codex', model: 'x', effort: 'bad' }]) {
+    const { app, claude, codex } = await setup();
+    for (const body of [{}, { agentId: null, effort: null }, { agentId: 'shell', effort: null }, { agentId: claude.id }, { agentId: claude.id, effort: false }, { agentId: codex.id, effort: 'bad' }]) {
       const result = await request(app).put('/api/session-naming/settings').send(body);
       expect(result.status).toBe(400);
       expect(result.body).toMatchObject({ traceId: expect.any(String), errors: expect.any(Array) });
     }
     expect((await request(app).put('/api/session-naming/settings').set('Content-Type', 'application/json').send('{')).status).toBe(400);
-    for (const model of ['x', 'x'.repeat(256)]) expect((await request(app).put('/api/session-naming/settings').send({ provider: 'codex', model, effort: null })).status).toBe(200);
+    for (const effort of [null, 'high']) expect((await request(app).put('/api/session-naming/settings').send({ agentId: codex.id, effort })).status).toBe(200);
+    const missing = await request(app).put('/api/session-naming/settings').send({ agentId: '99999999-9999-4999-8999-999999999999', effort: null });
+    expect(missing.status).toBe(400);
+    expect(missing.body.errors).toEqual([expect.objectContaining({ field: 'agentId' })]);
   });
   it('persists manual titles, validates boundaries, and returns a paginated list', async () => {
     const { app } = await setup();
@@ -78,7 +85,7 @@ describe('naming APIs', () => {
     expect((await request(app).put('/api/session-naming/titles/missing').send({ title: 'test' })).status).toBe(404);
   });
   it('returns 202 for retry without waiting for a result', async () => {
-    const { app, store, service } = await setup(); store.saveSettings({ provider: 'claude', model: 'sonnet', effort: null });
+    const { app, store, service, claude } = await setup(); store.saveSettings({ agentId: claude.id, effort: null });
     store.ensure('Demo-1'); store.update('Demo-1', { state: 'failed', error: 'failed' });
     expect((await request(app).post('/api/session-naming/titles/Demo-1/retry').send({})).status).toBe(202);
     await service.waitForIdle(); expect(store.get('Demo-1').state).toBe('named');

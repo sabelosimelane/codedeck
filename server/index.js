@@ -882,8 +882,9 @@ const runtimeMode = process.env.CODEDECK_TERMINAL_RUNTIME
 const terminalRuntime = createTerminalRuntime(runtimeMode);
 await prepareMobileDatabase(db);
 const mobileStore = createMobileStore(db);
-const namingStore = createNamingStore(db);
-const namingCli = createCliNamingClient();
+const pipelineAgentStore = createAgentStore(db);
+const namingStore = createNamingStore(db, { agentStore: pipelineAgentStore });
+const namingCli = createCliNamingClient({ agentStore: pipelineAgentStore });
 process.once('exit', () => namingCli.close());
 const namingService = createNamingService({
   store: namingStore,
@@ -1064,7 +1065,6 @@ const taskChanges = createTaskChanges({
 app.use(createTasksRouter({ service: taskService, taskStore, landing: taskLanding, changes: taskChanges }));
 
 const PIPELINE_QUESTION_SCREEN_LINES = 400;
-const pipelineAgentStore = createAgentStore(db);
 const pipelineRoleStore = createRoleStore(db);
 const pipelineWorkflowStore = createWorkflowStore(db);
 const pipelineTeamStore = createTeamStore(db);
@@ -1097,10 +1097,10 @@ const reviewModel = new CircuitBreaker((settings, packet) => namingCli.review(se
 for (const event of ['open', 'halfOpen', 'close']) reviewModel.on(event, () => console.info('[workflow-review] model circuit ' + event));
 const improvements = createImprovements({
   db, tasks: taskStore, runs: pipelineRunStore, workflows: pipelineWorkflowStore, notes: pipelineNoteStore, answers: pipelineAnswerStore,
-  decisions: pipelineDecisionStore, reviews: pipelineReviewStore, settings: () => namingStore.settings(),
+  decisions: pipelineDecisionStore, reviews: pipelineReviewStore, settings: () => namingStore.settings(), agentStore: pipelineAgentStore,
   generate: (settings, packet) => reviewModel.fire(settings, packet).catch((err) => {
     const detail = err?.cause?.message || err?.message || String(err);
-    console.warn(`[workflow-review] CLI review failed (${settings?.provider}/${settings?.model}): ${detail}`);
+    console.warn(`[workflow-review] CLI review failed (agent ${settings?.agentId ?? 'unset'}): ${detail}`);
     throw Object.assign(new Error('Review model unavailable. Check the configured Claude or Codex model and CLI login.'), {status:503});
   }),
 });
@@ -1322,6 +1322,7 @@ app.use(createPipelinesRouter({
   improvements,
   teamScoring,
   agentStore: pipelineAgentStore,
+  namingStore,
   roleStore: pipelineRoleStore,
   workflowStore: pipelineWorkflowStore,
   teamStore: pipelineTeamStore,

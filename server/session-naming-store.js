@@ -1,7 +1,9 @@
 import { validateRecord, requireField, isText } from './session-naming-validation.js';
 import { validateCliSettings } from './cli-naming-client.js';
+import { parseLaunchCommand } from '../shared/agent-presets.mjs';
 
-export function createNamingStore(db) {
+export function createNamingStore(db, { agentStore } = {}) {
+  requireField(typeof agentStore?.get === 'function' && typeof agentStore.list === 'function', 'agentStore', 'An agent store is required');
   db.exec(`CREATE TABLE IF NOT EXISTS session_naming_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS terminal_titles (session_id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   const get = id => {
@@ -22,13 +24,30 @@ export function createNamingStore(db) {
       const row = db.prepare('SELECT value FROM session_naming_settings WHERE id=1').get();
       if (!row) return null;
       const value = JSON.parse(row.value);
-      // Legacy connection settings remain stored until the user selects a local CLI.
+      // Conduit connections are intentionally unset until an agent is selected.
       if (value && Object.hasOwn(value, 'baseUrl')) return null;
-      return validateCliSettings(value);
+      if (value && Object.hasOwn(value, 'provider')) {
+        const matches = agentStore.list().filter(agent => {
+          const selection = parseLaunchCommand(agent.launchCommand);
+          return selection?.provider === value.provider && selection.model === value.model;
+        });
+        if (matches.length === 1) {
+          try {
+            const migrated = validateCliSettings({ agentId: matches[0].id, effort: value.effort }, agentStore);
+            db.prepare('UPDATE session_naming_settings SET value=? WHERE id=1').run(JSON.stringify(migrated));
+            return migrated;
+          } catch (error) {
+            console.warn(`[session-naming] the saved ${value.provider}/${value.model} selection was not moved to agent ${matches[0].id}: ${error.message}`);
+          }
+        }
+        db.prepare('DELETE FROM session_naming_settings WHERE id=1').run();
+        return null;
+      }
+      return validateCliSettings(value, agentStore);
     },
     saveSettings(value) {
       if (value === null) { db.prepare('DELETE FROM session_naming_settings').run(); return; }
-      const valid = validateCliSettings(value);
+      const valid = validateCliSettings(value, agentStore);
       db.prepare('INSERT INTO session_naming_settings VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(JSON.stringify(valid));
     },
     ensure(id) {
