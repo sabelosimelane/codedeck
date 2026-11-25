@@ -128,9 +128,9 @@ function* candidateProfiles(source, resetCommand, goal, agents) {
       (donor.provider !== source.provider || donor.model !== source.model) &&
       agent.resetCommand === resetCommand &&
       donor.skipPermissions === source.skipPermissions &&
-      donor.effort === source.effort
+      (source.effort === '' || AGENT_PRESETS.find(preset => preset.id === donor.provider)?.efforts.includes(source.effort))
     ) {
-      yield { profile: donor, donor: agent };
+      yield { profile: { ...donor, effort: source.effort }, donor: agent };
     }
   }
 }
@@ -460,7 +460,12 @@ export function createTeamTrials({
   });
 
   function candidate(d) {
-    if (d.donorId) return agents.get(d.donorId);
+    if (d.donorId) {
+      const donor = agents.get(d.donorId);
+      const { command, errors } = launchCommandAtEffort(donor.launchCommand, d.to.effort);
+      if (errors.length) throw new Error('Invalid donor effort configuration');
+      return { ...donor, launchCommand: command };
+    }
     const base = agents.get(d.agentId);
     const current = parseLaunchCommand(base.launchCommand);
     const { command, errors } = buildLaunchCommand({ ...d.to, skipPermissions: current.skipPermissions });
@@ -543,12 +548,17 @@ export function createTeamTrials({
     else if (action === 'stop' && row.state === 'running') state = 'stopped';
     else if (action === 'adopt' && p.status === 'measured' && p.comparison.verdict === 'helped') {
       const team = teams.get(d.teamId);
-      let patch = { effort: d.to.effort };
+      let patch = { effort: d.to.effort || null };
       if (d.donorId) {
         const agent = candidate(d);
-        const name = (team.name + ' ' + d.role).slice(0, 25) + ' · ' + row.id;
-        const replacement = agents.create({ name, launchCommand: agent.launchCommand, resetCommand: agent.resetCommand });
-        patch = { agentId: replacement.id, effort: null };
+        const preset = parseLaunchCommand(agent.launchCommand);
+        const { command } = buildLaunchCommand({ ...preset, effort: '' });
+        let replacement = agents.list().find(saved => saved.launchCommand === command && saved.resetCommand === agent.resetCommand);
+        if (!replacement) {
+          const name = (team.name + ' ' + d.role).slice(0, 25) + ' · ' + row.id;
+          replacement = agents.create({ name, launchCommand: command, resetCommand: agent.resetCommand });
+        }
+        patch = { agentId: replacement.id, effort: d.to.effort || null };
       }
       teams.update(team.id, {
         name: team.name,

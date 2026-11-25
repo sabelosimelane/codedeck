@@ -39,6 +39,7 @@ import { createReviewStore } from './pipelines/review-store.js';
 import { createAnswerStore } from './pipelines/answer-store.js';
 import { createRoleStore, createTeamStore, createTemplateStore, createStepPresetStore } from './pipelines/library-store.js';
 import { migrateRolesAndWorkflows } from './pipelines/role-migration.js';
+import { migrateAgentEfforts } from './pipelines/agent-effort-migration.js';
 import {
   create as createPipelineWorktree,
   remove as removePipelineWorktree,
@@ -1069,6 +1070,8 @@ const pipelineWorkflowStore = createWorkflowStore(db);
 const pipelineTeamStore = createTeamStore(db);
 const pipelineTemplateStore = createTemplateStore(db);
 const pipelineStepPresetStore = createStepPresetStore(db);
+const pipelineSettingsStore = createSettingsStore(db);
+migrateAgentEfforts({ db });
 const roleMigration = migrateRolesAndWorkflows({ db, roleStore: pipelineRoleStore });
 if (roleMigration.seededRoles.length) console.log(`[pipelines] seeded built-in roles: ${roleMigration.seededRoles.join(', ')}`);
 if (roleMigration.harvestedRoles.length) console.log(`[pipelines] registered existing roles: ${roleMigration.harvestedRoles.join(', ')}`);
@@ -1081,7 +1084,6 @@ if (seededWorkflows.seeded.length) console.log(`[pipelines] saved the built-in w
 const linkedSources = pipelineWorkflowStore.linkBuiltinSources();
 if (linkedSources.linked.length) console.log(`[pipelines] linked existing workflows to built-ins: ${linkedSources.linked.join(', ')}`);
 pipelineWorkflowStore.applyBuiltinUpdates();
-const pipelineSettingsStore = createSettingsStore(db);
 const pipelineRunStore = createRunStore(db, { interruptOnStart: false });
 const pipelineRequestStore = createRequestStore(db);
 pipelineRunStoreForMobile = pipelineRunStore;

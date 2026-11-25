@@ -3,19 +3,9 @@ import { launchCommandEfforts } from '../../../../shared/agent-presets.mjs';
 import { missingTeamRoles, requiredWorkflowRoles, teamMemberForRole, validateTeamBody } from '../../../../shared/pipeline-definitions.mjs';
 import { deleteTeam, saveTeam } from '../../utils/pipelinesApi';
 import { Button } from '../ui/index.jsx';
-import { failureMessage, SelectField, TextField } from './definitionForm';
+import { EffortField, failureMessage, SelectField, TextField } from './definitionForm';
 
 const blankMember = (role = '') => ({ role, agentId: '' });
-
-function EffortField({ label, caption, value, agent, onChange }) {
-  const efforts = agent ? launchCommandEfforts(agent.launchCommand) : [];
-  return <SelectField label={label} caption={caption} value={value ?? ''} onChange={onChange}
-    disabled={efforts.length === 0}
-    title={agent ? (efforts.length ? undefined : 'Effort overrides require a preset with effort options') : 'Choose an agent first'}>
-    <option value="">Agent's default</option>
-    {efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
-  </SelectField>;
-}
 
 function teamCoverageSummary(team, workflows) {
   if (!workflows.length) return null;

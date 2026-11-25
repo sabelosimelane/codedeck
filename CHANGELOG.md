@@ -1,3 +1,17 @@
+## [2026-11-25] - Choose effort when an agent is assigned
+
+### Executive Summary
+* Saved agents now contain provider, model, permission choice and reset command, without an effort. Effort is selected for each team role and fallback, the Setup agent, or a step agent chosen in a run's Change team dialog.
+
+### Technical Details
+* **✨ New Feature:**
+  * Startup migration moves saved preset efforts to their assignments, merges agents with identical launch and reset commands, and preserves pinned run snapshots.
+  * Setup and per-step agent selections validate supported efforts and snapshot the chosen launch command. Trial adoption reuses a matching saved agent and assigns the donor's effort to the role.
+* **🛠️ Codebase:**
+  * Updated agent, settings, team-change and migration storage, API and UI paths, with field guards at ingress and hydration.
+* **🧪 Tests and verification:**
+  * Added migration, validation, snapshot, trial and client control tests.
+
 ## [2026-11-25] - Choose agent effort per team role
 
 ### Executive Summary

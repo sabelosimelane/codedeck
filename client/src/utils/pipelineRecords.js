@@ -185,8 +185,9 @@ export function parseStepPreset(record) {
 
 export function parseSettings(record) {
   if (!isObject(record)) throw invalid('settings', 'settings');
-  const { setupAgentId, defaultBaseBranch, revision, timeouts } = record;
+  const { setupAgentId, setupEffort, defaultBaseBranch, revision, timeouts } = record;
   if (setupAgentId !== null && !isUuid(setupAgentId)) throw invalid('settings', 'setupAgentId');
+  if (setupEffort !== null && (typeof setupEffort !== 'string' || !setupEffort.trim() || setupEffort.length > 16 || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(setupEffort) || setupAgentId === null)) throw invalid('settings', 'setupEffort');
   if (defaultBaseBranch !== null && !isBranchName(defaultBaseBranch)) throw invalid('settings', 'defaultBaseBranch');
   if (!isRevision(revision)) throw invalid('settings', 'revision');
   if (!isObject(timeouts)) throw invalid('settings', 'timeouts');
@@ -196,7 +197,7 @@ export function parseSettings(record) {
   for (const field of Object.keys(timeouts)) {
     if (!Object.hasOwn(RUN_TIMEOUT_LIMITS, field)) throw invalid('settings', `timeouts.${field}`);
   }
-  return { setupAgentId, defaultBaseBranch, revision, timeouts: { ...timeouts } };
+  return { setupAgentId, setupEffort, defaultBaseBranch, revision, timeouts: { ...timeouts } };
 }
 
 const COMMIT_ID = /^[0-9a-f]{40}$/;

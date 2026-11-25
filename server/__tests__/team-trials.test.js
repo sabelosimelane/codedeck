@@ -14,22 +14,22 @@ function fixture({ effort = 'high', model = 'm1', alternate = false, teamEffort 
     buildLaunchCommand({ provider: 'codex', model, effort, skipPermissions: true }).command;
   const agent = agents.create({
     name: 'Engineer',
-    launchCommand: command(model, effort),
+    launchCommand: command(model, ''),
     resetCommand: '/clear',
   });
   const other = agents.create({
     name: 'Checker',
-    launchCommand: alternate ? command('m2', effort) : 'custom-check',
+    launchCommand: alternate ? command('m2', '') : 'custom-check',
     resetCommand: '/clear',
   });
   const team = teams.create({
     name: 'A',
     members: [
-      { role: 'Build', agentId: agent.id, ...(teamEffort && { effort: teamEffort }) },
-      { role: 'Verify', agentId: other.id },
+      { role: 'Build', agentId: agent.id, ...((teamEffort ?? effort) && { effort: teamEffort ?? effort }) },
+      { role: 'Verify', agentId: other.id, ...(alternate && effort && { effort }) },
     ],
   });
-  const shared = teams.create({ name: 'B', members: [{ role: 'Build', agentId: agent.id }] });
+  const shared = teams.create({ name: 'B', members: [{ role: 'Build', agentId: agent.id, ...(effort && { effort }) }] });
   const workflow = { id: randomUUID(), revision: 1 };
   const configuration = team.members.map(({ role, agentId }, stepIndex) => ({
     stepIndex,
@@ -178,6 +178,23 @@ describe('bounded team role trials', () => {
     expect(p.to).toEqual({ provider: 'codex', model: 'm2', effort: 'low' });
     expect(p.from).toEqual({ provider: 'codex', model: 'm1', effort: 'low' });
   });
+  it('considers a compatible donor when the role uses the CLI default effort', () => {
+    const f = fixture({ effort: '' });
+    f.agents.create({ name: 'Claude default', launchCommand: 'command claude --model m2 --dangerously-skip-permissions', resetCommand: '/clear' });
+    expect(f.propose()).toMatchObject({ from: { effort: '' }, to: { provider: 'claude', model: 'm2', effort: '' } });
+  });
+  it('adopts a donor for a role at the CLI default effort without storing a blank effort', () => {
+    const f = fixture({ effort: '' });
+    const donor = f.agents.create({ name: 'Claude default', launchCommand: 'command claude --model m2 --dangerously-skip-permissions', resetCommand: '/clear' });
+    const p = f.start();
+    expect(p.to).toMatchObject({ provider: 'claude', effort: '' });
+    f.fill(p);
+    const measured = f.trials.list()[0];
+    expect(f.trials.decide(p.id, { action: 'adopt', revision: measured.revision }).status).toBe('adopted');
+    const member = f.teams.get(f.team.id).members[0];
+    expect(member.agentId).toBe(donor.id);
+    expect(member.effort ?? null).toBeNull();
+  });
   it('nominates the effective team effort independently of the saved agent default', () => {
     const f = fixture({ effort: 'medium', teamEffort: 'high' });
     expect(f.propose()).toMatchObject({ from: { effort: 'high' }, to: { effort: 'medium' } });
@@ -186,7 +203,7 @@ describe('bounded team role trials', () => {
     const f = fixture({ effort: 'low', teamEffort: 'low' });
     const donor = f.agents.create({
       name: 'Claude low',
-      launchCommand: 'command claude --model m2 --effort low --dangerously-skip-permissions',
+      launchCommand: 'command claude --model m2 --dangerously-skip-permissions',
       resetCommand: '/clear',
     });
     const p = f.start();
@@ -198,7 +215,7 @@ describe('bounded team role trials', () => {
         expect(f.trials.reserve(ctx).agent).toMatchObject({
           id: donor.id,
           revision: donor.revision,
-          launchCommand: donor.launchCommand,
+          launchCommand: 'command claude --model m2 --effort low --dangerously-skip-permissions',
           resetCommand: donor.resetCommand,
         });
         throw Error('Test rollback');
@@ -209,7 +226,8 @@ describe('bounded team role trials', () => {
     const adopted = f.trials.decide(p.id, { action: 'adopt', revision: measured.revision });
     expect(adopted.status).toBe('adopted');
     const member = f.teams.get(f.team.id).members[0];
-    expect(member).not.toHaveProperty('effort');
+    expect(member.effort).toBe('low');
+    expect(member.agentId).toBe(donor.id);
     const newAgent = f.agents.get(member.agentId);
     expect(newAgent.launchCommand).toBe(donor.launchCommand);
     expect(newAgent.resetCommand).toBe(f.agent.resetCommand);
@@ -217,9 +235,8 @@ describe('bounded team role trials', () => {
     expect(f.teams.get(f.shared.id)).toEqual(f.shared);
   });
   it.each([
-    ['command claude --model m2 --effort low', '/clear'],
-    ['command claude --model m2 --effort medium --dangerously-skip-permissions', '/clear'],
-    ['command claude --model m2 --effort low --dangerously-skip-permissions', '/reset'],
+    ['command claude --model m2', '/clear'],
+    ['command claude --model m2 --dangerously-skip-permissions', '/reset'],
     ['custom --model m2 --effort low', '/clear'],
   ])('skips candidates with incompatible controls', (launchCommand, resetCommand) => {
     const f = fixture({ effort: 'low' });

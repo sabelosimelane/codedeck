@@ -191,7 +191,7 @@ describe('structured roles API, role-only workflows, and team compatibility', ()
     const ctx = await setup();
     const claude = ctx.agentStore.create({ name: 'Claude', launchCommand: 'claude', resetCommand: '/clear' });
     const codex = ctx.agentStore.create({ name: 'Codex', launchCommand: 'codex', resetCommand: '/clear' });
-    ctx.settingsStore.update({ setupAgentId: claude.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: claude.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
 
     // Add Brainstorm to spec (Thinking partner, Planner, Committer)
     const added = await request(ctx.app).post(`${base}/builtin-workflows/brainstorm-to-spec/additions`);

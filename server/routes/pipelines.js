@@ -302,8 +302,15 @@ function agentAtTeamEffort(agent, effort, role) {
   return { ...agent, launchCommand: command };
 }
 
-function snapshotNodeAgent(agent, source, team, role, agentStore) {
-  if (source !== 'team') return attributedAgent(agent, source, null);
+function agentAtOverrideEffort(agent, override) {
+  if (typeof override === 'string') return agent;
+  const { command, errors } = launchCommandAtEffort(agent.launchCommand, override.effort ?? '');
+  if (errors.length) throw fieldError('stepOverrides', errors[0].message);
+  return { ...agent, launchCommand: command };
+}
+
+function snapshotNodeAgent(agent, source, team, role, agentStore, override) {
+  if (source !== 'team') return attributedAgent(source === 'override' ? agentAtOverrideEffort(agent, override) : agent, source, null);
   const member = teamMemberForRole(team, role);
   const { effort, fallbackAgentId, fallbackEffort } = member;
   const snapshot = attributedAgent(agentAtTeamEffort(agent, effort, member.role), source, team);
@@ -350,6 +357,8 @@ function buildDefinitionSnapshot({
   if (withSetup && !setupAgent) {
     errors.push({ field: 'setupAgentId', message: 'Choose a setup agent in Settings → Workflows.' });
   }
+  const setupCommand = setupAgent ? launchCommandAtEffort(setupAgent.launchCommand, settings.setupEffort ?? '') : null;
+  if (setupCommand?.errors.length) errors.push({ field: 'setupEffort', message: setupCommand.errors[0].message });
 
   // Setup, when the run has one, is step 0; a loop names the step it returns to by its index.
   const firstNodeStep = withSetup ? 1 : 0;
@@ -388,7 +397,7 @@ function buildDefinitionSnapshot({
       approval: node.approval,
       prompt,
       repeat: repeatSnapshot(index),
-      agent: snapshotNodeAgent(agent, source, team, node.role, agentStore),
+      agent: snapshotNodeAgent(agent, source, team, node.role, agentStore, stepOverrides?.[node.name]),
     };
   });
 
@@ -417,7 +426,7 @@ function buildDefinitionSnapshot({
     approval: false,
     prompt: buildSetupPromptForRepositories(setupPairs),
     repeat: { mode: 'until_complete', max: 3 },
-    agent: attributedAgent(setupAgent, 'setup', null),
+    agent: attributedAgent({ ...setupAgent, launchCommand: setupCommand.command }, 'setup', null),
   }] : [];
 
   return {
@@ -598,10 +607,32 @@ export function createPipelinesRouter(deps) {
     res.json(agent);
   }));
 
+  // Efforts are chosen where an agent is used, so an edit must not leave one the new command cannot launch.
+  function effortsBrokenBy(agentId, launchCommand) {
+    const unsupported = effort => effort != null && launchCommandAtEffort(launchCommand, effort).errors.length > 0;
+    const broken = [];
+    for (const team of teamStore.list()) {
+      for (const member of team.members) {
+        if (member.agentId === agentId && unsupported(member.effort)) broken.push(`${team.name} · ${member.role} · ${member.effort}`);
+        if (member.fallbackAgentId === agentId && unsupported(member.fallbackEffort)) {
+          broken.push(`${team.name} · ${member.role} fallback · ${member.fallbackEffort}`);
+        }
+      }
+    }
+    const settings = settingsStore.get();
+    if (settings.setupAgentId === agentId && unsupported(settings.setupEffort)) broken.push(`Setup · ${settings.setupEffort}`);
+    return broken;
+  }
+
   router.put(`${BASE}/agents/:id`, route((req, res) => {
     if (!isUuid(req.params.id)) throw new PipelineError('Agent not found', 404);
     const errors = validateAgentBody(req.body, { revisionRequired: true });
     if (errors.length) throw fieldErrors(errors);
+    const broken = effortsBrokenBy(req.params.id, req.body.launchCommand);
+    if (broken.length) {
+      throw new PipelineError('This command does not offer an effort chosen for this agent', 409,
+        broken.map(where => ({ field: 'launchCommand', message: `${where} is not offered by this command; change that effort first` })));
+    }
     try {
       res.json(agentStore.update(req.params.id, req.body));
     } catch (err) {
@@ -1183,8 +1214,13 @@ export function createPipelinesRouter(deps) {
   router.put(`${BASE}/settings`, route((req, res) => {
     const errors = validateSettingsBody(req.body);
     if (errors.length) throw fieldErrors(errors);
-    if (req.body.setupAgentId !== null && !agentStore.get(req.body.setupAgentId)) {
+    const setupAgent = req.body.setupAgentId === null ? null : agentStore.get(req.body.setupAgentId);
+    if (req.body.setupAgentId !== null && !setupAgent) {
       throw fieldError('setupAgentId', 'Use null or a UUID of an existing agent');
+    }
+    if (req.body.setupEffort != null) {
+      const result = launchCommandAtEffort(setupAgent.launchCommand, req.body.setupEffort);
+      if (result.errors.length) throw fieldError('setupEffort', result.errors[0].message);
     }
     try {
       res.json(settingsStore.update(req.body));
@@ -2051,15 +2087,16 @@ export function createPipelinesRouter(deps) {
       const index = run.definition.steps.findIndex(step => step.name === name);
       const timing = liveAgentChangeTiming(run.status, run.definition.steps, run.steps, run.currentStepIndex, index);
       if (timing === null) throw fieldError('stepOverrides', 'Choose a workflow step with work remaining');
-      const agent = agentStore.get(stepOverrides[name]);
+      const override = stepOverrides[name];
+      const agent = agentStore.get(typeof override === 'string' ? override : override.agentId);
       if (!agent) throw fieldError('stepOverrides', 'Choose an existing agent for the step');
+      const replacement = attributedAgent(agentAtOverrideEffort(agent, override), 'override', null);
       const { nextAgent, ...step } = run.definition.steps[index];
-      if (agent.id === (nextAgent ?? step.agent).id) return res.json(await asRunView(run));
+      if (agent.id === (nextAgent ?? step.agent).id && replacement.launchCommand === (nextAgent ?? step.agent).launchCommand) return res.json(await asRunView(run));
 
       const progress = [...run.steps];
-      const replacement = attributedAgent(agent, 'override', null);
       let assignment = step;
-      if (agent.id !== step.agent.id) {
+      if (agent.id !== step.agent.id || replacement.launchCommand !== step.agent.launchCommand) {
         if (timing === 'dispatch') {
           progress[index] = progressForAgent(progress[index], step.agent, replacement);
           assignment = { ...step, agent: replacement };
@@ -2070,7 +2107,7 @@ export function createPipelinesRouter(deps) {
       const label = run.definition.team ? { ...run.definition.team, changed: true } : null;
       const steps = run.definition.steps.map((item, i) => i === index ? assignment : item);
       const updated = runStore.update(run.id, { definition: { ...run.definition, team: label, steps }, steps: progress },
-        { expectedUpdatedAt, mixed: agent.id !== step.agent.id, team: null });
+        { expectedUpdatedAt, mixed: agent.id !== step.agent.id || replacement.launchCommand !== step.agent.launchCommand, team: null });
       if (!updated) throw conflict();
       return res.json(await asRunView(updated));
     }
@@ -2096,7 +2133,7 @@ export function createPipelinesRouter(deps) {
       const agent = id && agentStore.get(id);
       if (!agent) throw fieldError('stepOverrides', `Choose an agent for ${step.name}`);
       const source = Object.hasOwn(stepOverrides, step.name) ? 'override' : 'team';
-      const replacement = snapshotNodeAgent(agent, source, team, step.role, agentStore);
+      const replacement = snapshotNodeAgent(agent, source, team, step.role, agentStore, stepOverrides[step.name]);
       if (index < run.currentStepIndex) return { ...step, nextAgent: replacement };
       progress[index] = progressForAgent(progress[index], step.agent, replacement);
       const { nextAgent, ...previous } = step;

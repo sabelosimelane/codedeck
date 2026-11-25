@@ -11,6 +11,7 @@ import {
   validateSettingsBody,
   validateStepPresetBody,
   validateTeamBody,
+  validateTeamChange,
   validateWorkflowBody,
 } from '../../shared/pipeline-definitions.mjs';
 
@@ -75,6 +76,12 @@ describe('validateAgentBody', () => {
 
   it('accepts a valid agent', () => {
     expect(validateAgentBody(valid)).toEqual([]);
+  });
+
+  it('rejects a preset agent command with effort but leaves custom commands intact', () => {
+    expect(validateAgentBody({ ...valid, launchCommand: 'command codex --model gpt-6-sol -c model_reasoning_effort="high"' }))
+      .toContainEqual({ field: 'launchCommand', message: 'Effort is chosen on the team, not the agent' });
+    expect(validateAgentBody({ ...valid, launchCommand: 'codex --model gpt-6-sol -c model_reasoning_effort="high"' })).toEqual([]);
   });
 
   it('rejects unknown fields', () => {
@@ -273,7 +280,7 @@ describe('validateWorkflowBody', () => {
 describe('validateSettingsBody', () => {
   const timeouts = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
   it('requires and validates every timeout field', () => {
-    const body = { setupAgentId: null, defaultBaseBranch: null, revision: 1, timeouts };
+    const body = { setupAgentId: null, setupEffort: null, defaultBaseBranch: null, revision: 1, timeouts };
     expect(validateSettingsBody(body)).toEqual([]);
     expect(fields(validateSettingsBody({ ...body, timeouts: undefined }))).toContain('timeouts');
     expect(fields(validateSettingsBody({ ...body, timeouts: { ...timeouts, extra: 1 } }))).toContain('timeouts.extra');
@@ -284,14 +291,22 @@ describe('validateSettingsBody', () => {
       }
     }
   });
+  it('accepts a setup effort only with an agent and rejects malformed effort', () => {
+    expect(validateSettingsBody({ setupAgentId: UUID, setupEffort: 'high', defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: null, setupEffort: 'high', defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }).map(e => e.field)).toContain('setupEffort');
+    for (const setupEffort of ['', 3, {}, 'high\nlow', 'x'.repeat(17)]) {
+      expect(validateSettingsBody({ setupAgentId: UUID, setupEffort, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }).map(e => e.field)).toContain('setupEffort');
+    }
+  });
   it('accepts null or UUID setupAgentId with revision', () => {
-    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
-    expect(validateSettingsBody({ setupAgentId: UUID, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 })).toEqual([]);
+    expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }))).toContain('setupEffort');
+    expect(validateSettingsBody({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: UUID, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 })).toEqual([]);
   });
 
   it('accepts a branch name or null as the default base branch, and requires it', () => {
-    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
-    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: 'release/2.1', timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: null, setupEffort: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: null, setupEffort: null, defaultBaseBranch: 'release/2.1', timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
     for (const bad of ['', ' develop', '-x', 'a b', 'a..b', 'x.lock', 'x/', '/x', 'a~b', 'a^b', 'a:b', 'a?b', 'a*b', 'a[b', 'a\\b', '@', 'a@{b', 'x'.repeat(201), 3, undefined]) {
       expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: bad, timeouts: TIMEOUTS, revision: 1 }))).toContain('defaultBaseBranch');
     }
@@ -304,6 +319,19 @@ describe('validateSettingsBody', () => {
 
   it('rejects unknown fields', () => {
     expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1, extra: 1 }))).toContain('extra');
+  });
+});
+
+describe('step override assignments', () => {
+  const body = { expectedUpdatedAt: '2026-11-25T09:00:00.000Z' };
+  it('accepts an agent and effort object and retains legacy string assignments', () => {
+    expect(validateTeamChange({ ...body, stepOverrides: { Develop: { agentId: UUID, effort: 'high' } } })).toEqual([]);
+    expect(validateTeamChange({ ...body, stepOverrides: { Develop: UUID } })).toEqual([]);
+  });
+  it('checks each object field', () => {
+    for (const override of [{ agentId: UUID }, { agentId: 'bad', effort: null }, { agentId: UUID, effort: '' }, { agentId: UUID, effort: 1 }, { agentId: UUID, effort: null, unknown: true }]) {
+      expect(validateTeamChange({ ...body, stepOverrides: { Develop: override } })).not.toEqual([]);
+    }
   });
 });
 

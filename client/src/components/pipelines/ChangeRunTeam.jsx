@@ -3,6 +3,8 @@ import { firstReassignableStep, missingTeamRoles, teamMemberForRole } from '../.
 import { changeRunTeam, listAgents, listTeams } from '../../utils/pipelinesApi';
 import { parseAgent, parseTeam } from '../../utils/pipelineRecords';
 import { Button, Dialog, Field, Note, Select } from '../ui/index.jsx';
+import { EffortField } from './definitionForm';
+import { launchCommandEfforts } from '../../../../shared/agent-presets.mjs';
 
 function AssignmentDialog({ run, onClose }) {
   const [choices, setChoices] = useState(null);
@@ -65,15 +67,21 @@ function AssignmentDialog({ run, onClose }) {
       </Select></Field>
       {choices.teams.length === 0 && <Note>Create a team in Settings → Workflows, or choose an agent for a step below.</Note>}
       {steps.map(step => <Field key={step.index} label={[step.name, step.role, step.index < run.currentStepIndex && 'next round'].filter(Boolean).join(' · ')}>
-        <Select label={`${step.name} agent`} disabled={busy} value={Object.hasOwn(overrides, step.name) ? overrides[step.name] : ''}
+        <Select label={`${step.name} agent`} disabled={busy} value={overrides[step.name]?.agentId ?? ''}
           onChange={value => setOverrides(current => {
-            const next = { ...current, [step.name]: value };
+            const previousEffort = current[step.name]?.effort;
+            const agent = choices.agents.find(item => item.id === value);
+            const effort = agent && launchCommandEfforts(agent.launchCommand).includes(previousEffort) ? previousEffort : null;
+            const next = { ...current, [step.name]: { agentId: value, effort } };
             if (!value) delete next[step.name];
             return next;
           })}>
           <option value="">{assignedName(step) || 'Choose an agent'}</option>
           {choices.agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
         </Select>
+        <EffortField label={`${step.name} effort`} caption="Effort" value={overrides[step.name]?.effort}
+          agent={choices.agents.find(item => item.id === overrides[step.name]?.agentId)}
+          onChange={effort => setOverrides(current => ({ ...current, [step.name]: { ...current[step.name], effort: effort || null } }))} />
       </Field>)}
     </>}
   </Dialog>;

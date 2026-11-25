@@ -8,9 +8,9 @@ import { parseAgent } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
 import { OtherErrors, SelectField, TextField, diagnoseSaveFailure, errorsByField, failureMessage } from './definitionForm';
 
-const SHOWN_FIELDS = ['name', 'model', 'effort', 'launchCommand', 'resetCommand'];
+const SHOWN_FIELDS = ['name', 'model', 'launchCommand', 'resetCommand'];
 const CUSTOM = 'custom';
-const BLANK_SELECTION = { model: '', effort: '', skipPermissions: false };
+const BLANK_SELECTION = { model: '', skipPermissions: false };
 const NEW_AGENT = { id: null, revision: null, name: '', resetCommand: '/clear', provider: AGENT_PRESETS[0].id, ...BLANK_SELECTION, customCommand: '' };
 
 /** A saved command a preset builds opens as that preset's choices; any other opens as a custom command. */
@@ -18,12 +18,12 @@ function toForm({ id, revision, name, launchCommand, resetCommand }) {
   const selection = parseLaunchCommand(launchCommand);
   return selection === null
     ? { id, revision, name, resetCommand, provider: CUSTOM, ...BLANK_SELECTION, customCommand: launchCommand }
-    : { id, revision, name, resetCommand, ...selection, customCommand: '' };
+    : { id, revision, name, resetCommand, provider: selection.provider, model: selection.model, skipPermissions: selection.skipPermissions, customCommand: '' };
 }
 
 /** `{ command, errors }` for the form's launch choice; `command` is null while a preset field is invalid. */
 function launchOf(form) {
-  return form.provider === CUSTOM ? { command: form.customCommand, errors: [] } : buildLaunchCommand(form);
+  return form.provider === CUSTOM ? { command: form.customCommand, errors: [] } : buildLaunchCommand({ ...form, effort: '' });
 }
 
 /** Agents list with an inline add/edit form. Every change is saved to the backend, then reloaded from it. */
@@ -59,10 +59,10 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
     setErrors({});
   };
   const setField = field => value => setForm(current => ({ ...current, [field]: value }));
-  // Model names and efforts belong to one CLI, so they do not carry over to another provider.
+  // Model names belong to one CLI, so they do not carry over to another provider.
   const setProvider = provider => setForm((current) => {
     if (provider === CUSTOM) return { ...current, provider, customCommand: launchOf(current).command ?? current.customCommand };
-    return { ...current, provider, model: '', effort: '' };
+    return { ...current, provider, model: '' };
   });
 
   const save = async () => {
@@ -129,8 +129,8 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
     <section className="pipeline-section" aria-label="Agents">
       <h3>Agents</h3>
       <p className="pipeline-hint">
-        A named CLI a node runs in. Choose a provider, model and effort, or write the launch command yourself.
-        A team can override the default effort for each role.
+        A named CLI a node runs in. Choose a provider and model, or write the launch command yourself.
+        Effort is chosen per team role, setup agent or run step.
       </p>
 
       {agents.length === 0 && <p className="pipeline-empty">No agents yet.</p>}
@@ -179,12 +179,6 @@ export default function AgentList({ agents, onChanged, onDirtyChange }) {
                   maxLength={128}
                   placeholder={preset.modelExample}
                 />
-                {preset.efforts.length > 0 && (
-                  <SelectField label="Effort" caption="Effort" value={form.effort} onChange={setField('effort')} error={errors.effort}>
-                    <option value="">CLI default</option>
-                    {preset.efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
-                  </SelectField>
-                )}
               </div>
               <label className="pipeline-check">
                 <input type="checkbox" aria-label="Skip permission prompts" checked={form.skipPermissions} onChange={event => setField('skipPermissions')(event.target.checked)} />

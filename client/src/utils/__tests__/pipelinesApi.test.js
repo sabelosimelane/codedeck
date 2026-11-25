@@ -341,13 +341,13 @@ describe('pipelinesApi', () => {
     });
 
     it('reads and replaces the pipeline settings', async () => {
-      global.fetch = vi.fn(async () => jsonResponse({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }));
+      global.fetch = vi.fn(async () => jsonResponse({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }));
 
-      await expect(getPipelineSettings()).resolves.toEqual({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+      await expect(getPipelineSettings()).resolves.toEqual({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
       expect(global.fetch.mock.calls.at(-1)[0]).toBe('/api/pipelines/settings');
 
-      await updatePipelineSettings({ setupAgentId: AGENT_ID, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
-      expect(lastCall()).toEqual({ url: '/api/pipelines/settings', method: 'PUT', body: { setupAgentId: AGENT_ID, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 } });
+      await updatePipelineSettings({ setupAgentId: AGENT_ID, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+      expect(lastCall()).toEqual({ url: '/api/pipelines/settings', method: 'PUT', body: { setupAgentId: AGENT_ID, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 } });
     });
 
     it('carries the status, message and field errors of a refused mutation', async () => {

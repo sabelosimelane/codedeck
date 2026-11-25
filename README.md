@@ -169,9 +169,8 @@ Codex invokes skills with `$`, so when the CLI running the step is Codex, CodeDe
 that leading `/name` as `$name`; the rest of the prompt is sent as written.
 
 An agent is a launch command plus a reset command. For supported CLI presets,
-pick the provider, type a model ID and set the default effort; CodeDeck builds the launch
-command and shows it. A blank model or effort uses the CLI's default. Cursor model
-names include the effort, so it has no separate effort choice. **Skip permission
+pick the provider and type a model ID; CodeDeck builds the launch command and
+shows it. A blank model uses the CLI's default. **Skip permission
 prompts** adds the CLI's own bypass flag; without it a run pauses whenever the agent
 asks for permission. A built command starts with `command`, so the shell runs the CLI
 itself: an alias or shell function with the same name (for example `codex='codex --yolo'`)
@@ -180,8 +179,10 @@ extra flags, other CLIs). A model ID is not checked until a run launches the age
 
 In **Settings → Workflows → Teams**, choose the effort for each role's agent and
 optional fallback. Reuse one saved agent across roles or teams at different efforts.
-**Agent's default** keeps the saved command. Team effort choices are available for
-presets with a separate effort flag and are pinned when a run starts or changes teams.
+Choose the Setup agent's effort in **Settings → Workflows → Defaults**, or pick an
+effort beside a step's agent in a run's **Change team** dialog. **CLI's default**
+uses the command without an effort flag. Effort choices are available for presets
+with a separate effort flag and are pinned when a run starts or changes teams.
 
 Select a local Git repository project and click **Run workflow** beside **New task**,
 in the strip of Main and the project's tasks above the terminal tabs. Preflight blocks

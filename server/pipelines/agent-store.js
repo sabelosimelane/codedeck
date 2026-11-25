@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { validateAgentBody, isUuid } from '../../shared/pipeline-definitions.mjs';
+import { parseLaunchCommand } from '../../shared/agent-presets.mjs';
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
@@ -27,6 +28,9 @@ function requireName(id, value) {
 function requireCommand(id, field, value, max) {
   if (typeof value !== 'string' || !value.trim() || value.length > max || SINGLE_LINE.test(value)) {
     fieldError(id, field, `must contain 1–${max} single-line characters`);
+  }
+  if (field === 'launch_command' && parseLaunchCommand(value)?.effort) {
+    fieldError(id, field, 'preset commands must not contain effort');
   }
   return value;
 }

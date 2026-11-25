@@ -39,7 +39,7 @@ function stubBackend({ workflows = [feature()], preview = { prompt: 'Plan docs/x
     if (path === '/roles') return page(roles);
     if (path === '/workflows' && !options.method) return page(workflows);
     if (path === '/templates' || path === '/step-presets') return page([]);
-    if (path === '/settings') return json({ setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    if (path === '/settings') return json({ setupAgentId: A1, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     if (path === '/prompt-previews') return typeof preview === 'function' ? preview(body) : json(preview);
     if (path === `/workflows/${W1}` && options.method === 'PUT') return json({ ...feature(), ...body, revision: body.revision + 1 });
     throw new Error(`unexpected request ${options.method ?? 'GET'} ${path}`);

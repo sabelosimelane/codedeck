@@ -210,7 +210,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       launchCommand: repeatStub,
       resetCommand: '/clear',
     });
-    settings.update({ setupAgentId: setupAgent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    settings.update({ setupAgentId: setupAgent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = workflows.create({
       name: 'Live',
       agentsDecide: false,

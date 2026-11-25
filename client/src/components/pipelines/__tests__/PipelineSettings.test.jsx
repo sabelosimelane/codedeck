@@ -49,7 +49,7 @@ function createBackend(seed = {}) {
     teams: seed.teams ?? [],
     agents: seed.agents ?? [],
     workflows: seed.workflows ?? [],
-    settings: seed.settings ?? { setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 },
+    settings: { setupEffort: null, ...(seed.settings ?? { setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }) },
     templates: seed.templates ?? [],
     'step-presets': seed.stepPresets ?? [],
   };
@@ -132,7 +132,7 @@ function createBackend(seed = {}) {
     if (name === 'settings') {
       if (method === 'GET') return json(state.settings);
       if (body.revision !== state.settings.revision) return problem(409, STALE);
-      state.settings = { setupAgentId: body.setupAgentId, defaultBaseBranch: body.defaultBaseBranch, timeouts: body.timeouts, revision: body.revision + 1 };
+      state.settings = { setupAgentId: body.setupAgentId, setupEffort: body.setupEffort, defaultBaseBranch: body.defaultBaseBranch, timeouts: body.timeouts, revision: body.revision + 1 };
       return json(state.settings);
     }
     return collection(name, method, id, body);
@@ -466,7 +466,7 @@ describe('PipelineSettings agent presets', () => {
     ]);
     expect(screen.getByLabelText('Provider').value).toBe('claude');
     expect(screen.getByLabelText('Model').value).toBe('');
-    expect(screen.getByLabelText('Effort').value).toBe('');
+    expect(screen.queryByLabelText('Effort')).toBeNull();
     expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
     expect(command().value).toBe('command claude');
     expect(command().readOnly).toBe(true);
@@ -479,14 +479,13 @@ describe('PipelineSettings agent presets', () => {
     type('Agent name', 'Antigravity reviewer');
     type('Provider', 'agy');
     type('Model', 'gemini-4-neon-high');
-    type('Effort', 'high');
     click('Save agent');
 
-    expect(await agents().findByText('command agy --model gemini-4-neon-high --effort high')).toBeTruthy();
+    expect(await agents().findByText('command agy --model gemini-4-neon-high')).toBeTruthy();
     click('Edit agent Antigravity reviewer');
     expect(screen.getByLabelText('Provider').value).toBe('agy');
     expect(screen.getByLabelText('Model').value).toBe('gemini-4-neon-high');
-    expect(screen.getByLabelText('Effort').value).toBe('high');
+    expect(screen.queryByLabelText('Effort')).toBeNull();
     expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
   });
 
@@ -496,48 +495,43 @@ describe('PipelineSettings agent presets', () => {
     type('Agent name', 'Muse Spark Contributor High');
     type('Provider', 'muse');
     type('Model', 'muse-spark-1.3-contributor');
-    type('Effort', 'high');
     fireEvent.click(screen.getByLabelText('Skip permission prompts'));
     click('Save agent');
 
-    expect(await agents().findByText('command muse --model muse-spark-1.3-contributor --effort high --yolo')).toBeTruthy();
+    expect(await agents().findByText('command muse --model muse-spark-1.3-contributor --yolo')).toBeTruthy();
     click('Edit agent Muse Spark Contributor High');
     expect(screen.getByLabelText('Provider').value).toBe('muse');
     expect(screen.getByLabelText('Model').value).toBe('muse-spark-1.3-contributor');
-    expect(screen.getByLabelText('Effort').value).toBe('high');
+    expect(screen.queryByLabelText('Effort')).toBeNull();
     expect(screen.getByLabelText('Skip permission prompts').checked).toBe(true);
   });
 
-  it('adds an agent from a provider, model and effort', async () => {
+  it('adds an agent from a provider and model', async () => {
     await renderSettings();
     click('Add agent');
     type('Agent name', 'opus-high');
     type('Model', 'opus');
-    type('Effort', 'high');
-    expect(command().value).toBe('command claude --model opus --effort high');
+    expect(command().value).toBe('command claude --model opus');
     click('Save agent');
 
-    expect(await agents().findByText('command claude --model opus --effort high')).toBeTruthy();
+    expect(await agents().findByText('command claude --model opus')).toBeTruthy();
     expect(backend.mutations()).toEqual([{
       method: 'POST',
       path: '/agents',
-      body: { name: 'opus-high', launchCommand: 'command claude --model opus --effort high', resetCommand: '/clear' },
+      body: { name: 'opus-high', launchCommand: 'command claude --model opus', resetCommand: '/clear' },
     }]);
     toast('success', 'Agent "opus-high" added');
   });
 
-  it('offers the efforts of the chosen provider and adds its permission flag when asked', async () => {
+  it('adds the chosen provider permission flag without agent effort', async () => {
     await renderSettings();
     click('Add agent');
-    const efforts = () => [...screen.getByLabelText('Effort').options].map(option => option.value);
-    expect(efforts()).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max']);
+    expect(screen.queryByLabelText('Effort')).toBeNull();
 
     type('Provider', 'codex');
-    expect(efforts()).toEqual(['', 'low', 'medium', 'high', 'xhigh']);
     type('Model', 'gpt-6-sol');
-    type('Effort', 'xhigh');
     fireEvent.click(screen.getByLabelText('Skip permission prompts'));
-    expect(command().value).toBe('command codex --model gpt-6-sol -c model_reasoning_effort="xhigh" --dangerously-bypass-approvals-and-sandbox');
+    expect(command().value).toBe('command codex --model gpt-6-sol --dangerously-bypass-approvals-and-sandbox');
   });
 
   it('has no effort choice for Cursor, whose model names carry it', async () => {
@@ -549,26 +543,25 @@ describe('PipelineSettings agent presets', () => {
     expect(command().value).toBe('command agent --model gpt-5.6-sol-high');
   });
 
-  it('clears the model and effort when the provider changes, keeping the permission choice', async () => {
+  it('clears the model when the provider changes, keeping the permission choice', async () => {
     await renderSettings();
     click('Add agent');
     type('Model', 'opus');
-    type('Effort', 'max');
     fireEvent.click(screen.getByLabelText('Skip permission prompts'));
     type('Provider', 'codex');
 
     expect(screen.getByLabelText('Model').value).toBe('');
-    expect(screen.getByLabelText('Effort').value).toBe('');
+    expect(screen.queryByLabelText('Effort')).toBeNull();
     expect(command().value).toBe('command codex --dangerously-bypass-approvals-and-sandbox');
   });
 
-  it('shows a saved command a preset builds as that provider, model and effort', async () => {
-    await renderSettings({ agents: [{ ...codex(), launchCommand: 'command codex --model gpt-6-sol -c model_reasoning_effort="high"' }] });
+  it('shows a saved command a preset builds as that provider and model', async () => {
+    await renderSettings({ agents: [{ ...codex(), launchCommand: 'command codex --model gpt-6-sol' }] });
     click('Edit agent codex-high');
 
     expect(screen.getByLabelText('Provider').value).toBe('codex');
     expect(screen.getByLabelText('Model').value).toBe('gpt-6-sol');
-    expect(screen.getByLabelText('Effort').value).toBe('high');
+    expect(screen.queryByLabelText('Effort')).toBeNull();
     expect(screen.getByLabelText('Skip permission prompts').checked).toBe(false);
     expect(lastDirty()).toBe(false);
   });
@@ -641,13 +634,23 @@ describe('PipelineSettings agent presets', () => {
 describe('PipelineSettings setup agent', () => {
   beforeEach(() => { startTab = 'Defaults'; });
 
+  it('chooses setup effort and clears an unsupported effort when the agent changes', async () => {
+    await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: A1, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 } });
+    type('Setup effort', 'high');
+    expect(screen.getByLabelText('Setup agent').disabled).toBe(true);
+    expect(screen.getByLabelText('Setup effort').disabled).toBe(true);
+    await waitFor(() => expect(backend.mutations()[0].body).toMatchObject({ setupAgentId: A1, setupEffort: 'high' }));
+    type('Setup agent', A2);
+    await waitFor(() => expect(backend.mutations()[1].body).toMatchObject({ setupAgentId: A2, setupEffort: null }));
+  });
+
   it('saves the chosen setup agent with the settings revision', async () => {
     await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 5 } });
     expect(screen.getByLabelText('Setup agent').value).toBe('');
     type('Setup agent', A2);
 
     await waitFor(() => toast('success', 'Setup agent saved'));
-    expect(backend.mutations()).toEqual([{ method: 'PUT', path: '/settings', body: { setupAgentId: A2, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 5 } }]);
+    expect(backend.mutations()).toEqual([{ method: 'PUT', path: '/settings', body: { setupAgentId: A2, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 5 } }]);
     await waitFor(() => expect(screen.getByLabelText('Setup agent').value).toBe(A2));
   });
 
@@ -659,14 +662,14 @@ describe('PipelineSettings setup agent', () => {
     await waitFor(() => expect(backend.mutations()).toHaveLength(2));
 
     expect(backend.mutations().map(request => request.body)).toEqual([
-      { setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 },
-      { setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 },
+      { setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 },
+      { setupAgentId: A1, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 },
     ]);
   });
 
   it('keeps the backend value and reloads when saving fails', async () => {
-    await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 } });
-    backend.state.settings = { setupAgentId: A2, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 };
+    await renderSettings({ agents: [codex(), cursor()], settings: { setupAgentId: A1, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 } });
+    backend.state.settings = { setupAgentId: A2, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 };
     type('Setup agent', '');
 
     await waitFor(() => toast('error', STALE));
@@ -687,8 +690,8 @@ describe('PipelineSettings default base branch', () => {
     click('Save default base branch');
     await waitFor(() => toast('success', 'Default base branch cleared'));
     expect(backend.mutations().map(request => request.body)).toEqual([
-      { setupAgentId: A1, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 3 },
-      { setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 4 },
+      { setupAgentId: A1, setupEffort: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 3 },
+      { setupAgentId: A1, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 4 },
     ]);
   });
 
@@ -705,7 +708,7 @@ describe('PipelineSettings default base branch', () => {
     expect(screen.getByLabelText('Default base branch').value).toBe('develop');
     type('Setup agent', A1);
     await waitFor(() => toast('success', 'Setup agent saved'));
-    expect(backend.mutations()[0].body).toEqual({ setupAgentId: A1, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 1 });
+    expect(backend.mutations()[0].body).toEqual({ setupAgentId: A1, setupEffort: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 1 });
   });
 });
 
@@ -733,6 +736,7 @@ describe('PipelineSettings advanced timeouts', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save timeouts' }));
     await waitFor(() => toast('success', 'Workflow timeouts saved'));
     expect(backend.mutations().at(-1).body.timeouts.agentReadySeconds).toBe(90);
+    expect(backend.mutations().at(-1).body).toHaveProperty('setupEffort', null);
     fireEvent.click(screen.getByRole('button', { name: 'Restore defaults' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save timeouts' }));
     await waitFor(() => expect(backend.mutations()).toHaveLength(2));
@@ -1472,7 +1476,7 @@ it('sets and clears team effort overrides independently for each assigned agent'
   const effort = () => screen.getByLabelText('Member 1 effort');
   const fallback = () => screen.getByLabelText('Member 1 fallback effort');
   expect(within(effort()).getAllByRole('option').map(option => option.textContent))
-    .toEqual(["Agent's default", 'low', 'medium', 'high', 'xhigh', 'max']);
+    .toEqual(["CLI's default", 'low', 'medium', 'high', 'xhigh', 'max']);
   expect(within(fallback()).queryByRole('option', { name: 'max' })).toBeNull();
   type('Member 1 effort', 'max');
   type('Member 1 fallback effort', 'high');
@@ -1497,7 +1501,7 @@ it('sets and clears team effort overrides independently for each assigned agent'
 
 it('explains that the saved agent effort is a default for teams', async () => {
   await renderSettings({ agents: [codex()] }, { tab: 'Agents' });
-  expect(screen.getByText(/team can override the default effort/i)).toBeTruthy();
+    expect(screen.getByText(/Effort is chosen per team role/i)).toBeTruthy();
 });
 
 it('sends None for a re-added role, so the server does not keep the removed role fallback', async () => {

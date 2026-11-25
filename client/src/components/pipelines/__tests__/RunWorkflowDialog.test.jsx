@@ -35,12 +35,12 @@ const worktree = (patch = {}) => ({
 const HOME = worktree({ path: '/git/demo', name: 'demo', branch: 'main', current: true });
 const SETUP_MISSING = { code: 'setup_agent_missing', message: 'Choose a setup agent in Settings → Workflows.' };
 
-function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()], candidates = [], defaultBaseBranch = null, teams = [team] } = {}) {
+function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()], candidates = [], defaultBaseBranch = null, teams = [team], agents: agentList = agents } = {}) {
   global.fetch = vi.fn(async (url) => {
     const target = String(url);
     const json = body => ({ ok: true, status: 200, json: async () => body });
-    if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch, timeouts: TIMEOUTS, revision: 1 });
-    if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? teams : agents, page: { hasNextPage: false } }) };
+    if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, setupEffort: null, defaultBaseBranch, timeouts: TIMEOUTS, revision: 1 });
+    if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? teams : agentList, page: { hasNextPage: false } }) };
     if (target.includes('/workflows')) return json({ data: workflows, page: { hasNextPage: false } });
     if (target.includes('/preflight')) return json(preflight);
     if (target.includes('/tasks/worktree-candidates')) return json({ data: candidates, page: { currentPage: 0, size: 100, totalElements: candidates.length, totalPages: candidates.length ? 1 : 0, hasNextPage: false } });
@@ -494,7 +494,7 @@ describe('RunWorkflowDialog', () => {
   it('shows the API message when worktrees cannot be listed', async () => {
     global.fetch = vi.fn(async (url) => {
       const target = String(url);
-      if (target.endsWith('/pipelines/settings')) return { ok: true, json: async () => ({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }) };
+      if (target.endsWith('/pipelines/settings')) return { ok: true, json: async () => ({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }) };
       if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return { ok: true, json: async () => ({ data: workflows, page: { hasNextPage: false } }) };
       if (target.includes('/preflight')) return { ok: true, json: async () => eligible() };
@@ -681,7 +681,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
         const answer = typeof plans === 'function' ? plans(body) : plans[body.input] ?? NOTHING;
         return answer instanceof Error ? { ok: false, status: 409, json: async () => ({ message: answer.message }) } : json(answer);
       }
-      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
       if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return json({ data: TEMPLATED, page: { hasNextPage: false } });
       if (target.includes('/preflight')) return json(eligible());
@@ -860,7 +860,21 @@ it('uses a team and overrides just one of two steps sharing its role', async () 
   fireEvent.change(screen.getByLabelText('Fix agent'), { target: { value: agents[2].id } });
   fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'a change' } });
   fireEvent.click(startButton());
-  await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ teamId: team.id, stepOverrides: { Fix: agents[2].id } })));
+  await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ teamId: team.id, stepOverrides: { Fix: { agentId: agents[2].id, effort: null } } })));
+});
+
+it('chooses an effort for a step overridden with a preset agent', async () => {
+  const codex = { ...agents[2], launchCommand: 'command codex --model gpt-6-sol' };
+  mockApi({ agents: [agents[0], agents[1], codex] });
+  const { onStart } = await renderDialog();
+  fireEvent.change(screen.getByLabelText('Team'), { target: { value: team.id } });
+  fireEvent.click(screen.getByText('Step assignments'));
+  expect(screen.getByLabelText('Fix effort').disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('Fix agent'), { target: { value: codex.id } });
+  fireEvent.change(screen.getByLabelText('Fix effort'), { target: { value: 'high' } });
+  fireEvent.change(screen.getByLabelText('Input'), { target: { value: 'a change' } });
+  fireEvent.click(startButton());
+  await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ stepOverrides: { Fix: { agentId: codex.id, effort: 'high' } } })));
 });
 
 it('allows disabling a step for a single run from Step assignments', async () => {

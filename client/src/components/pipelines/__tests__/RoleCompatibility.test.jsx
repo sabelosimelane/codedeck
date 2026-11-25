@@ -98,7 +98,7 @@ describe('RunWorkflowDialog team role compatibility', () => {
     global.fetch = vi.fn(async (url) => {
       const target = String(url);
       const json = body => ({ ok: true, status: 200, json: async () => body });
-      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: AGENTS[0].id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: AGENTS[0].id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
       if (target.includes('/agents')) return json({ data: AGENTS, page: { hasNextPage: false } });
       if (target.includes('/teams')) return json({ data: teams, page: { hasNextPage: false } });
       if (target.includes('/workflows')) return json({ data: [BRAINSTORM], page: { hasNextPage: false } });
@@ -145,7 +145,7 @@ describe('RunWorkflowDialog team role compatibility', () => {
 
     await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({
       teamId: FULL_TEAM.id,
-      stepOverrides: { Specify: AGENTS[1].id },
+      stepOverrides: { Specify: { agentId: AGENTS[1].id, effort: null } },
     })));
   });
 });

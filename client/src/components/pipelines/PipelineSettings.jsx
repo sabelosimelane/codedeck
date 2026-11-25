@@ -10,6 +10,8 @@ import TeamList from './TeamList';
 import AgentList from './AgentList';
 import WorkflowList from './WorkflowList';
 import { failureMessage } from './definitionForm';
+import { EffortField } from './definitionForm';
+import { launchCommandEfforts } from '../../../../shared/agent-presets.mjs';
 import { openWorkflowBuilder } from '../../utils/workflowBuilder';
 import './pipeline-settings.css';
 
@@ -69,11 +71,14 @@ export default function PipelineSettings({ onDirtyChange }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const changeSetupAgent = async (value) => {
+  const changeSetupAgent = async (value, effort = definitions.settings.setupEffort) => {
+    const agent = definitions.agents.find(candidate => candidate.id === value);
+    const nextEffort = agent && launchCommandEfforts(agent.launchCommand).includes(effort) ? effort : null;
     setSavingSetupAgent(true);
     try {
       const settings = parseSettings(await updatePipelineSettings({
         setupAgentId: value === '' ? null : value,
+        setupEffort: nextEffort,
         defaultBaseBranch: definitions.settings.defaultBaseBranch,
         timeouts: definitions.settings.timeouts,
         revision: definitions.settings.revision,
@@ -146,6 +151,7 @@ export default function PipelineSettings({ onDirtyChange }) {
     try {
       const settings = parseSettings(await updatePipelineSettings({
         setupAgentId: definitions.settings.setupAgentId,
+        setupEffort: definitions.settings.setupEffort,
         defaultBaseBranch: typedBase === '' ? null : typedBase,
         timeouts: definitions.settings.timeouts,
         revision: definitions.settings.revision,
@@ -166,6 +172,7 @@ export default function PipelineSettings({ onDirtyChange }) {
     try {
       const settings = parseSettings(await updatePipelineSettings({
         setupAgentId: definitions.settings.setupAgentId,
+        setupEffort: definitions.settings.setupEffort,
         defaultBaseBranch: definitions.settings.defaultBaseBranch,
         timeouts: Object.fromEntries(TIMEOUT_FIELDS.map(([field]) => [field, Number(displayedTimeouts[field])])),
         revision: definitions.settings.revision,
@@ -251,6 +258,10 @@ export default function PipelineSettings({ onDirtyChange }) {
                 <option value="">No setup agent</option>
                 {definitions.agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
               </select>
+              <EffortField label="Setup effort" caption="Effort" value={definitions.settings.setupEffort}
+                agent={definitions.agents.find(agent => agent.id === definitions.settings.setupAgentId)}
+                disabled={savingSetupAgent}
+                onChange={effort => changeSetupAgent(definitions.settings.setupAgentId, effort || null)} />
             </section>
 
             <section className="pipeline-section">

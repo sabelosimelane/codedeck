@@ -1,4 +1,5 @@
 import React, { useId } from 'react';
+import { launchCommandEfforts } from '../../../../shared/agent-presets.mjs';
 import '../ui/ui.css';
 
 export function failureMessage(failure) {
@@ -68,6 +69,17 @@ export function SelectField({ label, caption, value, onChange, error, children, 
       <select className="ui-input" value={value} {...controlProps(label, error, errorId, onChange)} {...rest}>{children}</select>
     </Field>
   );
+}
+
+/** `disabled`: the caller's own reason to lock the choice (a save in flight), on top of an agent that offers no effort. */
+export function EffortField({ label, caption, value, agent, onChange, disabled = false }) {
+  const efforts = agent ? launchCommandEfforts(agent.launchCommand) : [];
+  return <SelectField label={label} caption={caption} value={value ?? ''} onChange={onChange}
+    disabled={disabled || efforts.length === 0}
+    title={agent ? (efforts.length ? undefined : 'Effort choices require a preset with effort options') : 'Choose an agent first'}>
+    <option value="">CLI's default</option>
+    {efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
+  </SelectField>;
 }
 
 /** Errors for fields that have no control of their own, so none is dropped silently. */

@@ -11,6 +11,8 @@ import { TASK_TITLE_MAX, TaskRepositories, TaskTitleInput } from '../tasks/NewTa
 import WorktreeCandidatePicker from '../tasks/WorktreeCandidatePicker.jsx';
 import WorkflowAttachments from './WorkflowAttachments';
 import SyncConflictDialog from '../SyncConflictDialog.jsx';
+import { EffortField } from './definitionForm';
+import { launchCommandEfforts } from '../../../../shared/agent-presets.mjs';
 
 function newRequestId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -460,9 +462,13 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
                     }} />
                     <span>{enabled ? 'Enabled' : 'Disabled'}</span>
                   </label>}>
-                  <Select label={`${node.name} agent`} disabled={!enabled || !team} value={Object.hasOwn(overrides, node.name) ? overrides[node.name] : ''} onChange={value => {
+                  <Select label={`${node.name} agent`} disabled={!enabled || !team} value={overrides[node.name]?.agentId ?? ''} onChange={value => {
                     setOverrides(current => {
-                      const next = { ...current, [node.name]: value };
+                      // An effort the newly chosen agent's CLI does not offer is dropped, not carried over.
+                      const previousEffort = current[node.name]?.effort;
+                      const agent = agentById.get(value);
+                      const effort = agent && launchCommandEfforts(agent.launchCommand).includes(previousEffort) ? previousEffort : null;
+                      const next = { ...current, [node.name]: { agentId: value, effort } };
                       if (!value) delete next[node.name];
                       return next;
                     });
@@ -470,6 +476,9 @@ export default function RunWorkflowDialog({ projectName, host = 'local', locatio
                     <option value="">{inherited ? `Use ${[inherited.name, member.effort].filter(Boolean).join(' · ')}` : 'Select a compatible team first'}</option>
                     {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                   </Select>
+                  <EffortField label={`${node.name} effort`} caption="Effort" value={overrides[node.name]?.effort}
+                    agent={agentById.get(overrides[node.name]?.agentId)} disabled={!enabled || !team}
+                    onChange={effort => setOverrides(current => ({ ...current, [node.name]: { ...current[node.name], effort: effort || null } }))} />
                 </Field>;
               })}
             </details>

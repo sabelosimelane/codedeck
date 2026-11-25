@@ -1,3 +1,5 @@
+import { parseLaunchCommand } from './agent-presets.mjs';
+
 const SINGLE_LINE = /[\x00-\x1f\x7f]/;
 const MULTI_LINE = /[\x00-\x08\x0b-\x1f\x7f]/;
 /** Descriptive run input may include LF; other controls (NUL, tab, escape, …) are refused. */
@@ -234,7 +236,10 @@ export function isTeamCompatible(nodes, team) {
 }
 
 export function assignedAgentId(node, team, overrides) {
-  if (overrides && Object.hasOwn(overrides, node.name)) return overrides[node.name];
+  if (overrides && Object.hasOwn(overrides, node.name)) {
+    const override = overrides[node.name];
+    return typeof override === 'string' ? override : override.agentId;
+  }
   if (team && node.role) return teamMemberForRole(team, node.role)?.agentId ?? null;
   return null;
 }
@@ -244,6 +249,9 @@ export function validateAgentBody(body, { revisionRequired = false } = {}) {
   if (!rejectUnknown(errors, body, ['name', 'launchCommand', 'resetCommand', 'revision'])) return errors;
   requireSingleLine(errors, 'name', body.name, { min: 1, max: 64, label: 'name' });
   requireNonBlankSingleLine(errors, 'launchCommand', body.launchCommand, { max: 2048, label: 'launchCommand' });
+  if (typeof body.launchCommand === 'string' && parseLaunchCommand(body.launchCommand)?.effort) {
+    add(errors, 'launchCommand', 'Effort is chosen on the team, not the agent');
+  }
   requireNonBlankSingleLine(errors, 'resetCommand', body.resetCommand, { max: 256, label: 'resetCommand' });
   requireRevision(errors, body.revision, revisionRequired);
   return errors;
@@ -436,10 +444,14 @@ export function isBranchName(value) {
 
 export function validateSettingsBody(body) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['setupAgentId', 'defaultBaseBranch', 'revision', 'timeouts'])) return errors;
+  if (!rejectUnknown(errors, body, ['setupAgentId', 'setupEffort', 'defaultBaseBranch', 'revision', 'timeouts'])) return errors;
   if (body.setupAgentId !== null && !isUuid(body.setupAgentId)) {
     add(errors, 'setupAgentId', 'Use null or a UUID of an existing agent');
   }
+  if (body.setupEffort !== null && (
+    typeof body.setupEffort !== 'string' || !body.setupEffort.trim() || body.setupEffort.length > 16 || PROGRESS_CONTROL.test(body.setupEffort)
+  )) add(errors, 'setupEffort', 'Use null or a supported effort of 1–16 characters');
+  if (body.setupAgentId === null && body.setupEffort != null) add(errors, 'setupEffort', 'Choose a setup agent before setting its effort');
   // The branch a new task of a run is cut from when the run names none; null cuts it from what Main is on.
   if (body.defaultBaseBranch !== null && !isBranchName(body.defaultBaseBranch)) {
     add(errors, 'defaultBaseBranch', `${BRANCH_NAME_RULE}, or null for the branch Main is on`);
@@ -460,9 +472,17 @@ function validateAssignments(body, errors) {
     if (!isPlainObject(body.stepOverrides) || Object.keys(body.stepOverrides).length > 32) {
       add(errors, 'stepOverrides', 'Use an object mapping up to 32 step names to agents');
     } else {
-      for (const [step, agentId] of Object.entries(body.stepOverrides)) {
+      for (const [step, override] of Object.entries(body.stepOverrides)) {
         requireSingleLine(errors, 'stepOverrides', step, { min: 1, max: 64, label: 'Step name' });
-        if (!isUuid(agentId)) add(errors, 'stepOverrides', 'Choose an existing agent for each step override');
+        if (typeof override === 'string') {
+          if (!isUuid(override)) add(errors, 'stepOverrides', 'Choose an existing agent for each step override');
+        } else if (isPlainObject(override)) {
+          for (const key of Object.keys(override)) if (!['agentId', 'effort'].includes(key)) add(errors, 'stepOverrides', 'Unknown step override field');
+          if (!isUuid(override.agentId)) add(errors, 'stepOverrides', 'Choose an existing agent for each step override');
+          if (!Object.hasOwn(override, 'effort') || (override.effort !== null && (
+            typeof override.effort !== 'string' || !override.effort.trim() || override.effort.length > 16 || PROGRESS_CONTROL.test(override.effort)
+          ))) add(errors, 'stepOverrides', 'Use null or an effort of 1–16 characters for each step override');
+        } else add(errors, 'stepOverrides', 'Choose an existing agent for each step override');
       }
     }
   }

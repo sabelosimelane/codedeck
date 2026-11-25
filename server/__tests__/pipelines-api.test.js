@@ -334,7 +334,7 @@ function staff(ctx, agent) {
 
 async function seedReady(ctx, { withInput = true } = {}) {
   const agent = ctx.agentStore.create(agentBody());
-  ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+  ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
   const workflow = ctx.workflowStore.create({
     name: 'Feature', agentsDecide: false,
     nodes: [node(agent.id, withInput ? {} : { prompt: 'No placeholder' })],
@@ -394,6 +394,28 @@ describe('pipelines API — agents', () => {
     expect(stale.status).toBe(409);
   });
 
+  it('refuses an agent edit that would leave a team or Setup effort it no longer supports, naming the assignment', async () => {
+    const ctx = await setup();
+    const codex = 'command codex --model gpt-6-sol';
+    const agent = ctx.agentStore.create(agentBody({ name: 'Codex', launchCommand: codex }));
+    createTeamStore(ctx.db).create({ name: 'Builders', members: [{ role: 'Developer', agentId: agent.id, effort: 'high' }] });
+    const toCursor = { name: 'Codex', launchCommand: 'command agent --model auto', resetCommand: '/clear', revision: agent.revision };
+    const refused = await request(ctx.app).put(`${base}/agents/${agent.id}`).send(toCursor);
+    expect(refused.status).toBe(409);
+    expect(JSON.stringify(refused.body)).toMatch(/Builders · Developer · high/);
+    expect(ctx.agentStore.get(agent.id).launchCommand).toBe(codex);
+
+    const setupAgent = ctx.agentStore.create(agentBody({ name: 'Claude', launchCommand: 'command claude --model opus' }));
+    ctx.settingsStore.update({ setupAgentId: setupAgent.id, setupEffort: 'max', defaultBaseBranch: null, timeouts: TIMEOUTS, revision: ctx.settingsStore.get().revision });
+    const toCodex = { name: 'Claude', launchCommand: codex, resetCommand: '/clear', revision: setupAgent.revision };
+    const setupRefused = await request(ctx.app).put(`${base}/agents/${setupAgent.id}`).send(toCodex);
+    expect(setupRefused.status).toBe(409);
+    expect(JSON.stringify(setupRefused.body)).toMatch(/Setup · max/);
+
+    const sameProvider = { name: 'Codex', launchCommand: 'command codex --model gpt-6.2-astra', resetCommand: '/clear', revision: agent.revision };
+    expect((await request(ctx.app).put(`${base}/agents/${agent.id}`).send(sameProvider)).status).toBe(200);
+  });
+
   it('blocks deletion while an agent is staffed on a team, then permits it while the workflow keeps its role', async () => {
     const ctx = await setup();
     const { agent, workflow, team } = await seedReady(ctx);
@@ -401,7 +423,7 @@ describe('pipelines API — agents', () => {
     const setupDelete = await request(ctx.app).delete(`${base}/agents/${agent.id}`);
     expect(setupDelete.status).toBe(409);
 
-    ctx.settingsStore.update({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 });
+    ctx.settingsStore.update({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 });
     const usedDelete = await request(ctx.app).delete(`${base}/agents/${agent.id}`);
     expect(usedDelete.status).toBe(409);
 
@@ -507,7 +529,7 @@ describe('pipelines API — progress file start boundary', () => {
     const ctx = await setup(overrides);
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     const body = { requestId: 'progress-boundary', workflowId: workflow.id, project: 'Demo', input: 'feature' };
     return { ctx, workflow, body };
@@ -713,6 +735,14 @@ describe('pipelines API — progress file start boundary', () => {
 });
 
 describe('pipelines API — workflows and settings', () => {
+  it('validates setup effort against the chosen preset and round trips it', async () => {
+    const ctx = await setup();
+    const agent = ctx.agentStore.create(agentBody({ launchCommand: 'command codex --model gpt-6-sol' }));
+    const send = setupEffort => request(ctx.app).put(`${base}/settings`).send({ setupAgentId: agent.id, setupEffort, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    expect((await send('invalid').expect(400)).body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ field: 'setupEffort' })]));
+    expect((await send('high').expect(200)).body).toMatchObject({ setupAgentId: agent.id, setupEffort: 'high' });
+    expect((await request(ctx.app).get(`${base}/settings`).expect(200)).body.setupEffort).toBe('high');
+  });
   it('creates a workflow referencing an existing agent and updates settings', async () => {
     const { app, agentStore } = await setup();
     const agent = agentStore.create(agentBody());
@@ -726,22 +756,23 @@ describe('pipelines API — workflows and settings', () => {
     expect(created.body.revision).toBe(1);
 
     const settings = await request(app).get(`${base}/settings`);
-    expect(settings.body).toEqual({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    expect(settings.body).toEqual({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
 
     const updated = await request(app).put(`${base}/settings`).send({
       setupAgentId: agent.id,
+      setupEffort: null,
       defaultBaseBranch: 'develop',
       timeouts: TIMEOUTS,
       revision: 1,
     });
     expect(updated.status).toBe(200);
-    expect(updated.body).toEqual({ setupAgentId: agent.id, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 2 });
+    expect(updated.body).toEqual({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 2 });
 
-    const unnamed = await request(app).put(`${base}/settings`).send({ setupAgentId: agent.id, revision: 2 });
+    const unnamed = await request(app).put(`${base}/settings`).send({ setupAgentId: agent.id, setupEffort: null, revision: 2 });
     expect(unnamed.status).toBe(400);
     expect(unnamed.body.errors.map(error => error.field)).toContain('defaultBaseBranch');
     const invalidTimeout = await request(app).put(`${base}/settings`).send({
-      setupAgentId: agent.id, defaultBaseBranch: 'develop', timeouts: { ...TIMEOUTS, resetSettleSeconds: 4 }, revision: 2,
+      setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: 'develop', timeouts: { ...TIMEOUTS, resetSettleSeconds: 4 }, revision: 2,
     });
     expect(invalidTimeout.status).toBe(400);
     expect(invalidTimeout.body.errors).toEqual([{ field: 'timeouts.resetSettleSeconds', message: 'Use an integer from 5 to 600' }]);
@@ -766,7 +797,7 @@ describe('pipelines API — workflows and settings', () => {
     const dup = await request(app).post(`${base}/workflows`).send({ name: 'feature', agentsDecide: false, nodes: [node(agent.id)] });
     expect(dup.status).toBe(409);
 
-    const stale = await request(app).put(`${base}/settings`).send({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 9 });
+    const stale = await request(app).put(`${base}/settings`).send({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 9 });
     expect(stale.status).toBe(409);
   });
 });
@@ -1011,7 +1042,7 @@ describe('pipelines API — preflight and runs', () => {
     });
     const fixedCtx = await setup({ routerDeps: { execFile } });
     staff(fixedCtx, fixedCtx.agentStore.create(agentBody()));
-    fixedCtx.settingsStore.update({ setupAgentId: fixedCtx.agentStore.list()[0].id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    fixedCtx.settingsStore.update({ setupAgentId: fixedCtx.agentStore.list()[0].id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const fixedWorkflow = fixedCtx.workflowStore.create({
       name: 'FixedProgress', agentsDecide: false, progressFile: 'docs/todo.md',
       nodes: [node(fixedCtx.agentStore.list()[0].id, { prompt: 'Work' })],
@@ -1112,7 +1143,7 @@ describe('pipelines API — preflight and runs', () => {
     const settingsStore = createSettingsStore(db);
     const runStore = createRunStore(db, { now: () => times[Math.min(i++, times.length - 1)] });
     const agent = agentStore.create(agentBody());
-    settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = workflowStore.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
 
     const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'];
@@ -2375,7 +2406,7 @@ describe('pipelines API — loops and who decides', () => {
   async function seedLoop(ctx, { agentsDecide = true } = {}) {
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const body = {
       name: 'Build',
       agentsDecide,
@@ -2858,7 +2889,7 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup({ routerDeps: { progressReader: { read } } });
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const body = { name: 'Progress', agentsDecide: false, nodes: [node(agent.id, { prompt: 'Work' })] };
     const workflow = ctx.workflowStore.create(body);
     const start = (requestId, input) => request(ctx.app).post(`${base}/runs`).send({ requestId, workflowId: workflow.id, project: 'Demo', input });
@@ -2905,7 +2936,7 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup({ routerDeps: { progressReader: { read }, execFile } });
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const body = { name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] };
     const created = await request(ctx.app).post(`${base}/workflows`).send(body);
     const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'progress-status', workflowId: created.body.id, project: 'Demo', input: '' });
@@ -2931,7 +2962,7 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup({ routerDeps: { progressReader: { read }, execFile } });
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflowBody = { name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}', nodes: [node(agent.id)] };
     const created = await request(ctx.app).post(`${base}/workflows`).send(workflowBody);
     expect(created.status).toBe(201);
@@ -2966,7 +2997,7 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup();
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     for (const input of ['', '../bad', 'x'.repeat(510)]) {
       const response = await request(ctx.app).post(`${base}/runs`).send({ requestId: `progress-${input.length}`, workflowId: workflow.id, project: 'Demo', input });
@@ -3224,7 +3255,7 @@ describe('pipelines API — runs in tasks', () => {
 
   it('cuts a new task from the default base branch of the settings when the run names none', async () => {
     const ctx = await setupTasks();
-    ctx.settingsStore.update({ setupAgentId: ctx.settingsStore.get().setupAgentId, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: ctx.settingsStore.get().revision });
+    ctx.settingsStore.update({ setupAgentId: ctx.settingsStore.get().setupAgentId, setupEffort: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: ctx.settingsStore.get().revision });
     const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'From default' } }));
     expect(started.status).toBe(201);
     expect(ctx.taskService.plan).toHaveBeenCalledWith({ project: 'Demo', host: 'local', title: 'From default', titleSource: 'owner', baseBranch: 'develop' });
@@ -3232,7 +3263,7 @@ describe('pipelines API — runs in tasks', () => {
 
   it('cuts a new task from the branch the run names, over the default', async () => {
     const ctx = await setupTasks();
-    ctx.settingsStore.update({ setupAgentId: ctx.settingsStore.get().setupAgentId, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: ctx.settingsStore.get().revision });
+    ctx.settingsStore.update({ setupAgentId: ctx.settingsStore.get().setupAgentId, setupEffort: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: ctx.settingsStore.get().revision });
     const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'Hotfix', baseBranch: 'release/2.1' } }));
     expect(started.status).toBe(201);
     expect(ctx.taskService.plan).toHaveBeenCalledWith({ project: 'Demo', host: 'local', title: 'Hotfix', titleSource: 'owner', baseBranch: 'release/2.1' });
@@ -3413,7 +3444,7 @@ describe('pipelines API — kind, description and step roles', () => {
     const ctx = await setup();
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const created = await request(ctx.app).post(`${base}/workflows`).send({
       name: 'Hunt', kind: 'troubleshoot', description: ' Find the cause ', agentsDecide: false, nodes: [node(agent.id, { role: ' Investigator ' })],
     });
@@ -3595,7 +3626,7 @@ describe('POST /api/pipelines/runs — one worktree, two starts at once', () => 
     } });
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Occupancy', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     const post = id => request(ctx.app).post(`${base}/runs`).send({ requestId: `start-${id}`, workflowId: workflow.id, project: 'Demo', input: 'feature', worktreePath: wt });
     const occupying = () => ctx.db.prepare("SELECT request_id FROM pipeline_runs WHERE worktree_path = ? AND worktree_state != 'released'").all(wt).length;
@@ -4037,10 +4068,10 @@ describe('workflow teams', () => {
     const databasePath = path.join(directory, 'runs.sqlite');
     const ctx = await setup({ databasePath, routerDeps: { teamStore } });
     const seeded = await seedReady(ctx);
-    const medium = 'command claude --model opus --effort medium';
+    const medium = 'command claude --model opus';
     const high = 'command claude --model opus --effort high';
     const agent = ctx.agentStore.update(seeded.agent.id, { ...agentBody({ launchCommand: medium }), revision: seeded.agent.revision });
-    const first = ctx.agentStore.create(agentBody({ name: 'Developer backup', launchCommand: 'command muse --effort medium' }));
+    const first = ctx.agentStore.create(agentBody({ name: 'Developer backup', launchCommand: 'command muse' }));
     const second = ctx.agentStore.create(agentBody({ name: 'Reviewer backup' }));
     team = { id: randomUUID(), revision: 3, name: 'Team snapshot', members: [
       { role: 'Developer', agentId: agent.id, effort: 'high', fallbackAgentId: first.id, fallbackEffort: 'low' },
@@ -4080,7 +4111,7 @@ describe('workflow teams', () => {
       undefined, firstAtLow, snapshotted(second), undefined, firstAtLow,
     ]);
     expect(attribution.configuration[2]).toMatchObject({
-      role: 'reviewer', effort: 'medium', source: 'team', teamRevision: 3, fallbackAgent: projectedFallback(second),
+      role: 'reviewer', effort: '', source: 'team', teamRevision: 3, fallbackAgent: projectedFallback(second),
     });
     expect(attribution.configuration[2].fallbackAgent).toEqual(projectedFallback(second));
     team = { ...team, revision: 4, members: team.members.map(member => ({ ...member, effort: 'low', fallbackAgentId: second.id, fallbackEffort: 'high' })) };
@@ -4318,6 +4349,32 @@ it('starts with overrides alone and replays independent of override key order', 
   const replay = await start({ Report: agent.id, Develop: trial.id }).expect(200);
   expect(replay.body.id).toBe(first.body.id);
   expect(first.body.steps.map(step => step.agentName)).toEqual([agent.name, trial.name, agent.name]);
+});
+
+it('pins setup and per-step override efforts while accepting legacy string overrides', async () => {
+  const ctx = await setup();
+  const { agent, workflow } = await seedReady(ctx);
+  const preset = ctx.agentStore.create(agentBody({ name: 'Effort choice', launchCommand: 'command codex --model gpt-6-sol' }));
+  const settings = ctx.settingsStore.get();
+  ctx.settingsStore.update({ ...settings, setupAgentId: preset.id, setupEffort: 'high' });
+  const body = { workflowId: workflow.id, project: 'Demo', input: 'change' };
+  const first = (await request(ctx.app).post(base + '/runs').send({ ...body, requestId: 'effort-object', stepOverrides: { Develop: { agentId: preset.id, effort: 'low' } } }).expect(201)).body;
+  expect(ctx.runStore.get(first.id).definition.steps.map(step => step.agent.launchCommand)).toEqual([
+    'command codex --model gpt-6-sol -c model_reasoning_effort="high"',
+    'command codex --model gpt-6-sol -c model_reasoning_effort="low"',
+  ]);
+  const second = (await request(ctx.app).post(base + '/runs').send({ ...body, requestId: 'effort-legacy', stepOverrides: { Develop: agent.id } }).expect(201)).body;
+  expect(ctx.runStore.get(second.id).definition.steps[1].agent.id).toBe(agent.id);
+});
+
+it('refuses a stored unsupported setup effort before creating a run', async () => {
+  const ctx = await setup();
+  const { workflow } = await seedReady(ctx);
+  const preset = ctx.agentStore.create(agentBody({ name: 'Setup preset', launchCommand: 'command codex --model gpt-6-sol' }));
+  ctx.db.prepare('UPDATE pipeline_settings SET setup_agent_id=?, setup_effort=? WHERE id=1').run(preset.id, 'invalid');
+  const response = await request(ctx.app).post(base + '/runs').send({ workflowId: workflow.id, project: 'Demo', input: 'change', requestId: 'bad-setup-effort' }).expect(400);
+  expect(response.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ field: 'setupEffort' })]));
+  expect(ctx.runStore.list()).toEqual([]);
 });
 
 it('checks team field boundaries and rejects unsupported run selections before creating a task', async () => {
@@ -5066,8 +5123,8 @@ it('measures five trial deliveries through the normal run launcher, then adopts 
   const {agent} = await seedReady(ctx);
   const high = 'command codex --model m -c model_reasoning_effort="high"';
   const medium = 'command codex --model m -c model_reasoning_effort="medium"';
-  ctx.agentStore.update(agent.id, {...agentBody({launchCommand:high}), revision:agent.revision});
-  const members = [{role:'Fix',agentId:agent.id}];
+  ctx.agentStore.update(agent.id, {...agentBody({launchCommand:'command codex --model m'}), revision:agent.revision});
+  const members = [{role:'Fix',agentId:agent.id,effort:'high'}];
   const team = teams.create({name:'Trial team',members}), other = teams.create({name:'Other team',members});
   const workflow = ctx.workflowStore.create({name:'Repair', agentsDecide:false, nodes:[node(agent.id,{role:'Fix'})]});
   const start = async selected => {

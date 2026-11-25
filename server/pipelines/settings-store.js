@@ -38,6 +38,14 @@ function requireTimeout(id, column, value, { min, max }) {
   return value;
 }
 
+function requireSetupEffort(id, value, setupAgentId) {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !value.trim() || value.length > 16 || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value) || setupAgentId === null) {
+    fieldError(id, 'setup_effort', 'must be null or a valid effort for a setup agent');
+  }
+  return value;
+}
+
 function assertValidBody(body) {
   const errors = validateSettingsBody(body);
   if (errors.length) {
@@ -51,6 +59,7 @@ function hydrate(row) {
   if (id !== 1) fieldError(id, 'id', 'must be 1');
   return {
     setupAgentId: requireSetupAgentId(id, row.setup_agent_id),
+    setupEffort: requireSetupEffort(id, row.setup_effort, row.setup_agent_id),
     defaultBaseBranch: requireDefaultBaseBranch(id, row.default_base_branch),
     timeouts: Object.fromEntries(Object.entries(timeoutColumns).map(([field, column]) =>
       [field, requireTimeout(id, column, row[column], RUN_TIMEOUT_LIMITS[field])])),
@@ -64,6 +73,7 @@ export function createSettingsStore(db) {
     CREATE TABLE IF NOT EXISTS pipeline_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       setup_agent_id TEXT,
+      setup_effort TEXT,
       default_base_branch TEXT,
       revision INTEGER NOT NULL
     );
@@ -76,6 +86,9 @@ export function createSettingsStore(db) {
   for (const [field, column] of Object.entries(timeoutColumns)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE pipeline_settings ADD COLUMN ${column} INTEGER NOT NULL DEFAULT ${RUN_TIMEOUT_LIMITS[field].default}`);
   }
+  if (!columns.has('setup_effort')) {
+    db.exec('ALTER TABLE pipeline_settings ADD COLUMN setup_effort TEXT');
+  }
   db.prepare(`
     INSERT INTO pipeline_settings (id, setup_agent_id, revision)
     VALUES (1, NULL, 1)
@@ -85,7 +98,7 @@ export function createSettingsStore(db) {
   const read = db.prepare('SELECT * FROM pipeline_settings WHERE id = 1');
   const updateStmt = db.prepare(`
     UPDATE pipeline_settings
-    SET setup_agent_id = ?, default_base_branch = ?, ${Object.values(timeoutColumns).map(column => `${column} = ?`).join(', ')}, revision = ?
+    SET setup_agent_id = ?, setup_effort = ?, default_base_branch = ?, ${Object.values(timeoutColumns).map(column => `${column} = ?`).join(', ')}, revision = ?
     WHERE id = 1 AND revision = ?
   `);
 
@@ -103,7 +116,7 @@ export function createSettingsStore(db) {
       if (current.revision !== body.revision) {
         throw new Error('pipeline_settings row 1: revision conflict');
       }
-      const result = updateStmt.run(body.setupAgentId, body.defaultBaseBranch,
+      const result = updateStmt.run(body.setupAgentId, body.setupEffort, body.defaultBaseBranch,
         ...Object.keys(timeoutColumns).map(field => body.timeouts[field]), current.revision + 1, body.revision);
       if (result.changes !== 1) {
         throw new Error('pipeline_settings row 1: revision conflict');

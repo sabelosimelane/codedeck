@@ -95,6 +95,13 @@ describe('team role fallback persistence', () => {
 });
 
 describe('pipeline agent store', () => {
+  it('fails loudly when a persisted preset command carries effort', () => {
+    const { db, agents } = setup();
+    const created = agents.create(validAgent);
+    db.prepare('UPDATE pipeline_agents SET launch_command = ? WHERE id = ?')
+      .run('command codex --model gpt-6-sol -c model_reasoning_effort="high"', created.id);
+    expect(() => agents.get(created.id)).toThrow(new RegExp(`pipeline_agents row ${created.id} field launch_command`));
+  });
   it('creates an agent with a UUID, revision 1 and timestamps', () => {
     const { agents } = setup();
     const created = agents.create(validAgent);
@@ -411,13 +418,25 @@ describe('pipeline settings store', () => {
   it('persists all timeout values with the settings revision', () => {
     const { settings } = setup();
     const changed = { agentReadySeconds: 90, resetSettleSeconds: 10, finalSignalIdleSeconds: 20, lostPromptSeconds: 25, stallWarningMinutes: 5 };
-    expect(settings.update({ setupAgentId: null, defaultBaseBranch: null, timeouts: changed, revision: 1 }).timeouts).toEqual(changed);
+    expect(settings.update({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: changed, revision: 1 }).timeouts).toEqual(changed);
     expect(settings.get()).toMatchObject({ timeouts: changed, revision: 2 });
+  });
+  it('requires setupEffort when updating settings', () => {
+    const { settings } = setup();
+    expect(() => settings.update({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 })).toThrow(/setupEffort/);
+  });
+  it('round trips setup effort and guards corrupt stored effort', () => {
+    const { db, agents, settings } = setup();
+    const agent = agents.create({ ...validAgent, launchCommand: 'command codex --model gpt-6-sol' });
+    expect(settings.update({ setupAgentId: agent.id, setupEffort: 'high', defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }).setupEffort).toBe('high');
+    db.prepare('UPDATE pipeline_settings SET setup_effort = ? WHERE id = 1').run('bad\neffort');
+    expect(() => settings.get()).toThrow(/pipeline_settings row 1 field setup_effort/);
   });
   it('returns the default single-row settings', () => {
     const { settings } = setup();
     expect(settings.get()).toEqual({
       setupAgentId: null,
+      setupEffort: null,
       defaultBaseBranch: null,
       timeouts: TIMEOUTS,
       revision: 1,
@@ -427,17 +446,18 @@ describe('pipeline settings store', () => {
   it('updates the setup agent when the revision matches', () => {
     const { agents, settings } = setup();
     const agent = agents.create(validAgent);
-    const updated = settings.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
-    expect(updated).toEqual({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 });
+    const updated = settings.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    expect(updated).toEqual({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 });
     expect(settings.get()).toEqual(updated);
   });
 
   it('clears the setup agent back to null', () => {
     const { agents, settings } = setup();
     const agent = agents.create(validAgent);
-    settings.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
-    expect(settings.update({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 })).toEqual({
+    settings.update({ setupAgentId: agent.id, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    expect(settings.update({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 })).toEqual({
       setupAgentId: null,
+      setupEffort: null,
       defaultBaseBranch: null,
       timeouts: TIMEOUTS,
       revision: 3,
@@ -446,13 +466,13 @@ describe('pipeline settings store', () => {
 
   it('throws a revision conflict when the revision is stale', () => {
     const { settings } = setup();
-    expect(() => settings.update({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 99 }))
+    expect(() => settings.update({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 99 }))
       .toThrow(/revision/i);
   });
 
   it('rejects an invalid setupAgentId', () => {
     const { settings } = setup();
-    expect(() => settings.update({ setupAgentId: 'nope', defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 })).toThrow();
+    expect(() => settings.update({ setupAgentId: 'nope', setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 })).toThrow();
   });
 
   it('throws naming table/row/field when the stored setup_agent_id is corrupt', () => {
@@ -463,17 +483,17 @@ describe('pipeline settings store', () => {
   });
   it('saves and clears the default base branch', () => {
     const { settings } = setup();
-    expect(settings.update({ setupAgentId: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 1 })).toEqual({ setupAgentId: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 2 });
+    expect(settings.update({ setupAgentId: null, setupEffort: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 1 })).toEqual({ setupAgentId: null, setupEffort: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 2 });
     expect(settings.get().defaultBaseBranch).toBe('develop');
-    expect(settings.update({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 }).defaultBaseBranch).toBeNull();
-    expect(() => settings.update({ setupAgentId: null, defaultBaseBranch: 'a b', timeouts: TIMEOUTS, revision: 3 })).toThrow(/defaultBaseBranch/);
+    expect(settings.update({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 }).defaultBaseBranch).toBeNull();
+    expect(() => settings.update({ setupAgentId: null, setupEffort: null, defaultBaseBranch: 'a b', timeouts: TIMEOUTS, revision: 3 })).toThrow(/defaultBaseBranch/);
   });
 
   it('adds the default base branch to a settings table made before it existed', () => {
     const db = new Database(':memory:');
     db.exec('CREATE TABLE pipeline_settings (id INTEGER PRIMARY KEY CHECK (id = 1), setup_agent_id TEXT, revision INTEGER NOT NULL)');
     db.prepare('INSERT INTO pipeline_settings (id, setup_agent_id, revision) VALUES (1, NULL, 4)').run();
-    expect(createSettingsStore(db).get()).toEqual({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 4 });
+    expect(createSettingsStore(db).get()).toEqual({ setupAgentId: null, setupEffort: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 4 });
     db.close();
   });
 
