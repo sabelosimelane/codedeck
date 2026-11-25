@@ -165,7 +165,7 @@ const STATUS_COLORS = {
   dead: 'var(--danger)',
 };
 
-export default function Sidebar({ activeProjects, waitingProjects = [], openRunCounts = new Map(), worktreeGroupsByProject = new Map(), selectedWorktreeByProject = {}, onSelectWorktree = () => {}, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts, onRepositoriesChanged = () => {} }) {
+export default function Sidebar({ activeProjects, waitingProjects = [], openRunCounts = new Map(), worktreeGroupsByProject = new Map(), selectedWorktreeByProject = {}, onSelectWorktree = () => {}, isTaskDismissed = () => false, onReopenTask, shelvedProjects, activeProject, isCompact, onSelect, onAdd, onRemove, onRename, onMarkWaiting, onActivateWaiting, onShelve, onUnshelve, onToggleCompact, onToggleFiles, showFileTree, sessionStatus, finishedSessionIds = new Set(), mutedStatusSessionIds = new Set(), onResetFinishedSession = () => {}, waitingSessionIds = new Set(), onBrowseFiles, onShowShortcuts, onRepositoriesChanged = () => {} }) {
   // Parked sessions stop pulsing and blinking here too — reusing the visual path
   // the mute drives, without joining the mute set the eye icon reports.
   const quietStatusSessionIds = getQuietStatusSessionIds(mutedStatusSessionIds, waitingSessionIds);
@@ -757,8 +757,16 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
                 {/* Per-session details */}
                 {!isCompact && (showWorktreeGroups ? groups.map(group => (
                   <React.Fragment key={group.key}>
-                    <WorktreeGroupHeader group={group} selected={selectedWorktreeByProject[project.name] === group.key} onClick={() => { if (!isActive) onSelect(project); onSelectWorktree(project.name, group.key); }} />
-                    <SidebarSessionRows sessions={sidebarSessionsForGroup(group, projSessions, session => getVisualTerminalStatus(session, finishedSessionIds, quietStatusSessionIds))} finishedSessionIds={finishedSessionIds} quietStatusSessionIds={quietStatusSessionIds} mutedStatusSessionIds={mutedStatusSessionIds} waitingSessionIds={waitingSessionIds} />
+                    {group.task && isTaskDismissed(group.task) ? (
+                      <button type="button" className="worktree-group-header" aria-label={`Reopen tab: ${group.task.title}`} onClick={event => { event.stopPropagation(); onReopenTask(group.task); }}>
+                        Reopen tab: {group.task.title}
+                      </button>
+                    ) : (
+                      <>
+                        <WorktreeGroupHeader group={group} selected={selectedWorktreeByProject[project.name] === group.key} onClick={() => { if (!isActive) onSelect(project); onSelectWorktree(project.name, group.key); }} />
+                        <SidebarSessionRows sessions={sidebarSessionsForGroup(group, projSessions, session => getVisualTerminalStatus(session, finishedSessionIds, quietStatusSessionIds))} finishedSessionIds={finishedSessionIds} quietStatusSessionIds={quietStatusSessionIds} mutedStatusSessionIds={mutedStatusSessionIds} waitingSessionIds={waitingSessionIds} />
+                      </>
+                    )}
                   </React.Fragment>
                 )) : <SidebarSessionRows sessions={projSessions} finishedSessionIds={finishedSessionIds} quietStatusSessionIds={quietStatusSessionIds} mutedStatusSessionIds={mutedStatusSessionIds} waitingSessionIds={waitingSessionIds} />)}
               </div>

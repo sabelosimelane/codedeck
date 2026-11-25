@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { useToast } from '../ToastContext';
 import {
   closeTask, closeTaskWorktree, commitTaskWorktree, listTaskWorktreeLandings, mergeTaskWorktree, openTaskWorktreePullRequest, renameTask,
@@ -6,14 +6,14 @@ import {
 import { Button, ConfirmDialog, PromptDialog } from '../ui/index.jsx';
 import AddRepositoryDialog from './AddRepositoryDialog.jsx';
 import LandingMenu from './LandingMenu.jsx';
-import { landingStatus, nextLandingStep, waitingReasons } from './landingSteps.js';
+import { LANDING_ERROR, useLandingStatus } from './useLandingStatus.js';
+import { FINISH_TASK_LABEL, landingStatus, nextLandingStep, waitingReasons } from './landingSteps.js';
 import { closeArguments, closeRefusals, namedIgnored } from './ignoredFiles.js';
 import './task-view.css';
 
 const plural = (number, word) => `${number} ${word}${number === 1 ? '' : 's'}`;
-const FALLBACK = 'Something went wrong. Please try again.';
 const OPEN = ['active', 'pr_open'];
-const first = list => list[0]?.message;
+const messages = list => list.map(reason => reason.message);
 
 /**
  * How a task with several repositories gets its work back into the project: one row per
@@ -23,67 +23,65 @@ const first = list => list[0]?.message;
  */
 export default function TaskRepositoriesLanding({ task, canAddRepository = false, onChanged, onFinished, onRepositoryFinished }) {
   const { showToast } = useToast();
-  const [landings, setLandings] = useState(null);
-  const [failure, setFailure] = useState(null);
   const [busy, setBusy] = useState(null);
   // What was refused and where: on a repository's row, or on the task (`worktreeId` null).
   const [refusal, setRefusal] = useState(null);
   const [remotes, setRemotes] = useState({});
   // Which action is asking for the owner's word, and for which repository.
-  const [asking, setAsking] = useState(null);
-  const alive = useRef(true);
+  const [confirmation, setAsking] = useState(null);
+  const { snapshot: landings, setSnapshot: setLandings, failure, refresh, alive, begin, end, reconcile } = useLandingStatus(task.id, listTaskWorktreeLandings, setRefusal);
+  const asking = confirmation && (confirmation.snapshot === landings || ['rename', 'addRepository'].includes(confirmation.kind)) ? confirmation : null;
+  const ask = (kind, worktreeId = null) => setAsking({ kind, worktreeId, snapshot: landings });
 
-  const refresh = useCallback(async () => {
-    try {
-      const next = await listTaskWorktreeLandings(task.id);
-      if (!alive.current) return;
-      setLandings(next);
-      setFailure(null);
-    } catch (error) {
-      if (alive.current) setFailure(error instanceof Error ? error.message : FALLBACK);
-    }
-  }, [task.id]);
-
-  useEffect(() => {
-    alive.current = true;
-    setLandings(null);
-    setRefusal(null);
-    refresh();
-    const timer = setInterval(refresh, 5000);
-    return () => { alive.current = false; clearInterval(timer); };
-  }, [refresh]);
-
-  /** Runs one action: one at a time, toast for either outcome, and the refusal kept where it belongs. */
   const act = async (name, worktreeId, action, success) => {
-    if (busy) return null;
+    if (!begin()) return null;
     setBusy(name);
+    setAsking(null);
     setRefusal(null);
+    let failed = false;
     try {
       const result = await action();
       showToast({ type: 'success', message: success(result) });
       return result;
     } catch (error) {
-      const message = error instanceof Error ? error.message : FALLBACK;
+      failed = true;
+      const message = error instanceof Error ? error.message : LANDING_ERROR;
       showToast({ type: 'error', message });
       if (alive.current) setRefusal({ worktreeId, message, reasons: error?.reasons ?? [], conflicts: error?.conflicts ?? [] });
+      if (error?.partialClose) {
+        warnAboutTerminals(error.partialClose);
+        onRepositoryFinished?.(error.partialClose);
+      }
+      onChanged?.();
       return null;
     } finally {
+      end();
       if (alive.current) setBusy(null);
+      if (failed) reconcile();
     }
   };
 
   // Terminals in a worktree that is gone are closed with it; the result says which, and which were not.
   const withClosed = (message, result) => (result.terminalsClosed.length === 0 ? message
     : `${message}${message.endsWith('.') ? '' : '.'} ${plural(result.terminalsClosed.length, 'terminal')} closed.`);
-  const settled = (result) => {
-    if (!result) return;
+  const warnAboutTerminals = result => {
     if (result.terminalsNotClosed.length > 0) {
       showToast({ type: 'error', message: `${plural(result.terminalsNotClosed.length, 'terminal')} could not be closed: ${result.terminalsNotClosed.join(', ')}. Close ${result.terminalsNotClosed.length === 1 ? 'it from its tab' : 'them from their tabs'}.` });
     }
+  };
+  const settled = (result, taskFinished = result?.taskFinished) => {
+    if (!result) return;
+    warnAboutTerminals(result);
     onChanged();
     // A task whose last repository went is left; otherwise only that repository's terminals go.
-    if (result.taskFinished) onFinished(result);
-    else { onRepositoryFinished(result); refresh(); }
+    if (result.folderRemoved === false) showToast({ type: 'error', message: 'The task folder was retained because it still contains files.' });
+    if (taskFinished) {
+      if (alive.current) setLandings(null);
+      onFinished(result);
+    } else {
+      onRepositoryFinished(result);
+      reconcile();
+    }
   };
 
   const open = landings ? landings.filter(entry => OPEN.includes(entry.state)) : [];
@@ -97,14 +95,12 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
 
   const rename = async (title) => {
     const renamed = await act('rename', null, () => renameTask(task.id, { title, revision: task.revision }), result => `Renamed to ${result.title}`);
-    setAsking(null);
     if (renamed) onChanged();
   };
 
   const commit = async (message) => {
     const entry = asked;
     const next = await act('commit', entry.worktreeId, () => commitTaskWorktree(task.id, entry.worktreeId, message), () => `Changes committed in ${entry.repository}`);
-    setAsking(null);
     if (next && alive.current) setLandings(current => (current ? current.map(row => (row.worktreeId === next.worktreeId ? next : row)) : current));
   };
 
@@ -114,7 +110,6 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
       const done = result.filesRemoved ? `Merged ${entry.repository} into ${result.mergedInto}` : `Merged ${entry.repository} into ${result.mergedInto}, but its copy in this task could not be removed`;
       return withClosed(result.taskFinished ? `${done}. The task is finished.` : done, result);
     });
-    setAsking(null);
     settled(merged);
   };
 
@@ -122,7 +117,6 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
     const entry = asked;
     const remote = remoteOf(entry);
     const opened = await act('pullRequest', entry.worktreeId, () => openTaskWorktreePullRequest(task.id, entry.worktreeId, remote.name), result => `Pull request opened for ${entry.repository}: ${result.prUrl}`);
-    setAsking(null);
     if (opened) { onChanged(); refresh(); }
   };
 
@@ -132,50 +126,45 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
       const done = `Closed ${entry.repository} in this task. Branch ${result.branchKept} was kept.`;
       return withClosed(result.taskFinished ? `${done} The task is closed.` : done, result);
     });
-    setAsking(null);
     settled(closed);
   };
 
   const closeWholeTask = async () => {
     const closed = await act('closeTask', null, () => closeTask(task.id, ...closeArguments(holdingIgnored.length > 0)), result => withClosed(result.unmergedCommits > 0 ? `Task closed. Branch ${result.branchKept} was kept.` : 'Task closed', result));
-    setAsking(null);
-    if (!closed) return;
-    if (closed.terminalsNotClosed.length > 0) {
-      showToast({ type: 'error', message: `${plural(closed.terminalsNotClosed.length, 'terminal')} could not be closed: ${closed.terminalsNotClosed.join(', ')}. Close ${closed.terminalsNotClosed.length === 1 ? 'it from its tab' : 'them from their tabs'}.` });
-    }
-    onChanged();
-    onFinished(closed);
+    settled(closed, true);
   };
 
   // Ignored files that exist only in a copy do not refuse Close; its dialog lists them and asks.
-  const blocksClosing = open.find(entry => closeRefusals(entry).length > 0) ?? null;
+  const taskCloseReasons = open.flatMap(entry => closeRefusals(entry).map(reason =>
+    reason.code === 'run_active' ? `${entry.repository}: ${reason.message}` : reason.message
+  ));
   const holdingIgnored = open.filter(entry => entry.ignoredAtRiskCount > 0);
   const unmergedTotal = open.reduce((sum, entry) => sum + (entry.commitsAhead ?? 0), 0);
   const taskRefusal = refusal && refusal.worktreeId === null ? refusal : null;
 
   const taskMenu = [
-    { key: 'rename', label: 'Rename task', onSelect: () => setAsking({ kind: 'rename', worktreeId: null }) },
-    ...(canAddRepository ? [{ key: 'add', label: 'Add repository', onSelect: () => setAsking({ kind: 'addRepository', worktreeId: null }) }] : []),
-    ...(landings ? [{ key: 'closeTask', label: 'Close task', tone: 'danger', disabledReason: open.length === 0 ? 'Every repository is already merged or closed.' : first(blocksClosing ? closeRefusals(blocksClosing) : []),
-      onSelect: () => setAsking({ kind: 'closeTask', worktreeId: null }) }] : []),
+    { key: 'rename', label: 'Rename task', onSelect: () => ask('rename') },
+    ...(canAddRepository ? [{ key: 'add', label: 'Add repository', onSelect: () => ask('addRepository') }] : []),
+    ...(landings ? [{ key: 'closeTask', label: FINISH_TASK_LABEL, tone: 'danger', disabledReasons: open.length === 0 ? ['Every repository is already merged or closed.'] : taskCloseReasons,
+      onSelect: () => ask('closeTask') }] : []),
   ];
 
   /** Everything but the row's next step, for its menu. */
   const rowMenu = (entry, step) => {
     const tools = toolsOf(entry);
-    const ask = kind => () => setAsking({ kind, worktreeId: entry.worktreeId });
+    const askRow = kind => () => ask(kind, entry.worktreeId);
     return [
-      ...(entry.uncommittedCount > 0 && step !== 'commit' ? [{ key: 'commit', label: 'Commit changes', name: `Commit changes in ${entry.repository}`, disabledReason: first(entry.blockers.commit), onSelect: ask('commit') }] : []),
-      ...(entry.baseBranch !== null && entry.commitsAhead > 0 && step !== 'merge' ? [{ key: 'merge', label: `Merge into ${entry.baseBranch}`, name: `Merge ${entry.repository} into ${entry.baseBranch}`, disabledReason: first(entry.blockers.merge), onSelect: ask('merge') }] : []),
-      ...(tools.length > 0 && entry.baseBranch !== null && entry.commitsAhead > 0 && entry.prUrl === null ? [{ key: 'pullRequest', label: 'Open a pull request', name: `Open a pull request for ${entry.repository}`, disabledReason: first(entry.blockers.pullRequest), onSelect: ask('pullRequest') }] : []),
-      ...(step !== 'close' ? [{ key: 'close', label: `Close ${entry.repository}`, tone: 'danger', disabledReason: first(closeRefusals(entry)), onSelect: ask('close') }] : []),
+      ...(entry.uncommittedCount > 0 && step !== 'commit' ? [{ key: 'commit', label: 'Commit changes', name: `Commit changes in ${entry.repository}`, disabledReasons: messages(entry.blockers.commit), onSelect: askRow('commit') }] : []),
+      ...(entry.baseBranch !== null && entry.commitsAhead > 0 && step !== 'merge' ? [{ key: 'merge', label: `Merge into ${entry.baseBranch}`, name: `Merge ${entry.repository} into ${entry.baseBranch}`, disabledReasons: messages(entry.blockers.merge), onSelect: askRow('merge') }] : []),
+      ...(tools.length > 0 && entry.baseBranch !== null && entry.commitsAhead > 0 && entry.prUrl === null ? [{ key: 'pullRequest', label: 'Open a pull request', name: `Open a pull request for ${entry.repository}`, disabledReasons: messages(entry.blockers.pullRequest), onSelect: askRow('pullRequest') }] : []),
+      ...(step !== 'close' ? [{ key: 'close', label: `Close ${entry.repository}`, tone: 'danger', disabledReasons: messages(closeRefusals(entry)), onSelect: askRow('close') }] : []),
     ];
   };
 
   const primary = (entry, step) => {
-    if (step === 'commit') return <Button size="small" variant="primary" aria-label={`Commit changes in ${entry.repository}`} onClick={() => setAsking({ kind: 'commit', worktreeId: entry.worktreeId })} disabled={busy !== null}>Commit changes</Button>;
-    if (step === 'merge') return <Button size="small" variant="primary" aria-label={`Merge ${entry.repository} into ${entry.baseBranch}`} onClick={() => setAsking({ kind: 'merge', worktreeId: entry.worktreeId })} disabled={busy !== null}>{`Merge into ${entry.baseBranch}`}</Button>;
-    if (step === 'close') return <Button size="small" variant="primary" aria-label={`Close ${entry.repository}`} onClick={() => setAsking({ kind: 'close', worktreeId: entry.worktreeId })} disabled={busy !== null}>Close</Button>;
+    if (step === 'commit') return <Button size="small" variant="primary" aria-label={`Commit changes in ${entry.repository}`} onClick={() => ask('commit', entry.worktreeId)} disabled={busy !== null}>Commit changes</Button>;
+    if (step === 'merge') return <Button size="small" variant="primary" aria-label={`Merge ${entry.repository} into ${entry.baseBranch}`} onClick={() => ask('merge', entry.worktreeId)} disabled={busy !== null}>{`Merge into ${entry.baseBranch}`}</Button>;
+    if (step === 'close') return <Button size="small" variant="primary" aria-label={`Close ${entry.repository}`} onClick={() => ask('close', entry.worktreeId)} disabled={busy !== null}>Close</Button>;
     return null;
   };
 
@@ -269,7 +258,7 @@ export default function TaskRepositoriesLanding({ task, canAddRepository = false
         </ConfirmDialog>
       )}
       {asking?.kind === 'closeTask' && (
-        <ConfirmDialog title="Close task" confirmLabel={holdingIgnored.length > 0 ? 'Delete files and close' : 'Close task'} tone={holdingIgnored.length > 0 || unmergedTotal > 0 ? 'danger' : 'primary'} onConfirm={closeWholeTask} onCancel={() => setAsking(null)}>
+        <ConfirmDialog title={FINISH_TASK_LABEL} confirmLabel={holdingIgnored.length > 0 ? 'Delete files and close' : 'Finish task'} tone={holdingIgnored.length > 0 || unmergedTotal > 0 ? 'danger' : 'primary'} onConfirm={closeWholeTask} onCancel={() => setAsking(null)}>
           {`Every repository of "${task.title}" is closed: the task's copies are removed and its terminals are closed.${unmergedTotal > 0 ? ` ${plural(unmergedTotal, 'commit')} that ${unmergedTotal === 1 ? 'is' : 'are'} not merged stay on the task's branches.` : ''}${holdingIgnored.length > 0 ? ` Files Git ignores that exist only in this task are deleted with it: ${holdingIgnored.map(entry => `${entry.repository}: ${namedIgnored(entry)}`).join('; ')}.` : ''}`}
         </ConfirmDialog>
       )}

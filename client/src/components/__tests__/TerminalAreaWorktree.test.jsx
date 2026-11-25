@@ -1,23 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import React from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import React, { useMemo, useState } from 'react';
+import { useTaskTabs } from '../../hooks/useTaskTabs';
+import { buildWorktreeGroups } from '../../utils/worktreeGroups';
 import TerminalArea from '../TerminalArea.jsx';
 
-const mocks = vi.hoisted(() => ({ showToast: vi.fn(), create: vi.fn(), open: vi.fn(), candidates: vi.fn(), adopt: vi.fn() }));
+const mocks = vi.hoisted(() => ({ showToast: vi.fn(), create: vi.fn(), open: vi.fn(), candidates: vi.fn(), adopt: vi.fn(), standing: vi.fn(), repositories: vi.fn(), closeTask: vi.fn(), realLanding: false }));
 const TASK = { id: '7a000000-0000-4000-8000-000000000001', project: 'Demo', title: 'new', state: 'active', worktreePath: '/tmp/worktrees/demo-new', branch: 'task/new-7a000000', createdAt: '2026-11-18T10:00:00.000Z',
   // A task as the backend sends it: with the folder of its worktrees and one entry per repository.
   folder: null, worktrees: [{ id: '7b000000-0000-4000-8000-000000000001', repository: 'demo', own: true, first: true, worktreePath: '/tmp/worktrees/demo-new', branch: 'task/new-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null }] };
 vi.mock('../Terminal', () => ({ default: () => null }));
 vi.mock('../PaneDivider', () => ({ default: () => null }));
-vi.mock('../tasks/TaskLandingBar.jsx', () => ({ default: ({ task }) => <span data-testid="landing-bar">{task.title}</span> }));
+vi.mock('../tasks/TaskLandingBar.jsx', async importOriginal => {
+  const { default: Landing } = await importOriginal();
+  return { default: props => mocks.realLanding ? <Landing {...props} /> : <span data-testid="landing-bar">{props.task.title}</span> };
+});
 vi.mock('../TerminalInspector', () => ({ default: () => null }));
 vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: mocks.showToast }) }));
-vi.mock('../../utils/tasksApi.js', () => ({ createTask: mocks.create, openTaskTerminal: mocks.open, listWorktreeCandidates: mocks.candidates, makeTaskFromWorktree: mocks.adopt }));
+vi.mock('../../utils/tasksApi.js', () => ({ createTask: mocks.create, openTaskTerminal: mocks.open, listWorktreeCandidates: mocks.candidates, makeTaskFromWorktree: mocks.adopt, parseTask: task => task, getTaskLanding: mocks.standing, listTaskWorktreeLandings: mocks.repositories, closeTask: mocks.closeTask }));
 
 const originalFetch = global.fetch;
 beforeEach(() => {
   localStorage.clear();
   mocks.showToast.mockReset();
+  mocks.standing.mockReset();
+  mocks.repositories.mockReset();
+  mocks.closeTask.mockReset();
+  mocks.realLanding = false;
   mocks.create.mockReset();
   mocks.open.mockReset();
   mocks.candidates.mockReset().mockResolvedValue([]);
@@ -72,18 +81,17 @@ describe('TerminalArea new task', () => {
     expect(screen.getByRole('dialog', { name: 'New task' })).toBeTruthy();
     fireEvent.change(screen.getByRole('textbox', { name: 'Task title' }), { target: { value: 'new' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
-    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({ project: 'Demo', title: 'new' }));
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({ project: 'Demo', host: 'local', title: 'new' }));
     await waitFor(() => expect(screen.getByTestId('terminal-tab').getAttribute('data-active')).toBe('true'));
     expect(screen.queryByText('No terminals open')).toBeNull();
   });
 
-  it('offers no New task for a remote project, which cannot have tasks', () => {
+  it('offers New task and Run workflow in a remote project', () => {
     render(<TerminalArea project={{ name: 'Demo', path: '/tmp/demo', host: 'other' }} sessionStatus={[]} />);
     expect(screen.getByRole('button', { name: 'Open terminal' }).disabled).toBe(false);
-    expect(screen.queryByRole('button', { name: 'New task' })).toBeNull();
-    // Workflow runs are for local projects too.
-    expect(screen.queryByRole('button', { name: 'Run workflow' })).toBeNull();
-    expect(screen.queryByLabelText('Main and tasks')).toBeNull();
+    expect(screen.getByRole('button', { name: 'New task' }).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: 'Run workflow' }).disabled).toBe(false);
+    expect(screen.getByLabelText('Main and tasks')).toBeTruthy();
   });
 
   it('opens a new active tab and toasts after creation', async () => {
@@ -94,7 +102,7 @@ describe('TerminalArea new task', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New task' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Task title' }), { target: { value: 'new' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
-    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({ project: 'Demo', title: 'new' }));
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({ project: 'Demo', host: 'local', title: 'new' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New task' })).toBeNull());
     expect(screen.getByTestId('terminal-tab').getAttribute('data-active')).toBe('true');
     expect(mocks.open).toHaveBeenCalledWith(TASK.id);
@@ -265,5 +273,88 @@ describe('TerminalArea new task', () => {
     await waitFor(() => {
       expect(screen.getByRole('combobox', { name: 'Target host' }).value).toBe('devbox.ts.net');
     });
+  });
+});
+
+const navProject = { name: 'Demo', path: '/tmp/demo', repositories: [] };
+const cleanLanding = {
+  taskId: TASK.id, state: 'active', branch: TASK.branch, baseBranch: 'main', prUrl: null,
+  filesPresent: true, uncommitted: [], uncommittedCount: 0, commitsAhead: 0, commitsBehind: 0,
+  alreadyInBase: false, ignoredAtRisk: [], ignoredAtRiskCount: 0, remotes: [], runActive: false,
+  blockers: { commit: [], merge: [], pullRequest: [], close: [] },
+};
+const branchDrift = { code: 'branch_switched', message: `Switch back to ${TASK.branch}.` };
+const working = { code: 'run_active', message: 'Wait for the workflow to finish.' };
+
+function Navigation({ task, onFinished = () => {} }) {
+  const polled = useMemo(() => [task], [task]);
+  const { tasks, dismiss, isTaskDismissed, reopen } = useTaskTabs(polled);
+  const hidden = isTaskDismissed(task);
+  const [selected, select] = useState(() => hidden ? 'main' : task.worktreePath);
+  const groups = buildWorktreeGroups({ project: navProject, tasks, sessions: [], runs: [] });
+  return <>
+    <TerminalArea project={navProject} sessionStatus={[]} worktreeGroups={groups} selectedWorktree={selected}
+      onSelectWorktree={select} isTaskDismissed={isTaskDismissed} onTaskFinished={onFinished}
+      onDismissTask={entry => { dismiss(entry); select('main'); }} />
+    {hidden && <button type="button" onClick={() => { reopen(task); select(task.worktreePath); }}>Restore task</button>}
+  </>;
+}
+
+describe('task tab dismissal with the real landing bar', () => {
+  it.each([
+    ['clean', cleanLanding],
+    ['switched', { ...cleanLanding, blockers: { ...cleanLanding.blockers, close: [branchDrift] } }],
+    ['detached and dirty', { ...cleanLanding, uncommitted: ['draft.txt'], uncommittedCount: 1, blockers: { ...cleanLanding.blockers, commit: [branchDrift], close: [branchDrift] } }],
+    ['working run', { ...cleanLanding, runActive: true, blockers: { ...cleanLanding.blockers, close: [working] } }],
+    ['failed status read', new Error('Inspection unavailable')],
+    ['pending status read', null],
+    ['multi-repository with a finished row', [cleanLanding, { ...cleanLanding, state: 'merged' }]],
+  ])('keeps dismiss and reopen available for %s', async (_label, state) => {
+    mocks.realLanding = true;
+    let task = TASK;
+    if (Array.isArray(state)) {
+      const worktrees = [...TASK.worktrees, { ...TASK.worktrees[0], repository: 'web', id: 'web-repo', first: false, worktreePath: '/tmp/web', state: 'merged' }];
+      task = { ...TASK, worktrees };
+      mocks.repositories.mockResolvedValue(state.map((row, i) => ({ ...row, worktreeId: worktrees[i].id, repository: worktrees[i].repository })));
+    } else if (state === null) mocks.standing.mockReturnValue(new Promise(() => {}));
+    else if (state instanceof Error) mocks.standing.mockRejectedValue(state);
+    else mocks.standing.mockResolvedValue(state);
+    const view = render(<Navigation task={task} />);
+    await act(async () => {});
+    const dismiss = () => screen.getByRole('button', { name: 'Dismiss tab: new' });
+    expect(dismiss().disabled).toBe(false);
+    fireEvent.click(dismiss());
+    expect(screen.queryByRole('button', { name: 'new (0)' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Main (0)' }).getAttribute('aria-pressed')).toBe('true');
+    await act(async () => { view.rerender(<Navigation task={{ ...task }} />); });
+    expect(screen.queryByRole('button', { name: 'new (0)' })).toBeNull();
+    view.unmount();
+    await act(async () => { render(<Navigation task={task} />); });
+    expect(screen.queryByRole('button', { name: 'new (0)' })).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Restore task' })); });
+    expect(screen.getAllByRole('button', { name: 'new (0)' })).toHaveLength(1);
+    expect((Array.isArray(state) ? mocks.repositories : mocks.standing).mock.calls).toEqual([[task.id], [task.id]]);
+    expect(mocks.closeTask).not.toHaveBeenCalled();
+  });
+
+  it('allows dismissal during approved cleanup and does not authorize a second action on reopen', async () => {
+    mocks.realLanding = true;
+    mocks.standing.mockResolvedValue(cleanLanding);
+    let finish;
+    mocks.closeTask.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const onFinished = vi.fn();
+    await act(async () => { render(<Navigation task={TASK} onFinished={onFinished} />); });
+    fireEvent.click(screen.getByRole('button', { name: 'Task actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Finish task…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Finish task', exact: true }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Task actions' }).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss tab: new' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Restore task' }));
+    expect(screen.getByText('Reading the task…')).toBeTruthy();
+    expect(mocks.standing).toHaveBeenCalledTimes(1);
+    expect(mocks.closeTask).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ unmergedCommits: 0, terminalsClosed: [], terminalsNotClosed: [] }));
+    expect(onFinished).toHaveBeenCalledWith(TASK);
   });
 });

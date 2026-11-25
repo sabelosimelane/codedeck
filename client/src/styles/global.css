@@ -112,11 +112,12 @@
 .worktree-group-header-status[data-tone="done"] { color: var(--toast-success-text); background: color-mix(in oklab, var(--accent) 18%, var(--bg-surface)); border: 1px solid color-mix(in oklab, var(--accent) 44%, transparent); font-weight: 600; }
 
 .worktree-switcher { display: flex; gap: 4px; padding: 4px 8px; min-width: 0; overflow-x: auto; flex-wrap: nowrap; background: var(--bg-sidebar); border-bottom: 1px solid var(--border); }
+.worktree-switcher-tab { display: inline-flex; flex: 0 0 auto; min-width: 0; }
 .worktree-switcher-button { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 190px; padding: 3px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
 .worktree-switcher-button[aria-pressed="true"] { background: var(--bg-active); }
 .worktree-switcher-new { border: 1px dashed var(--border); color: var(--text-muted); }
 /* The actions sit apart from Main and the tasks; between themselves the strip's own gap is enough. */
-.worktree-switcher-button:not(.worktree-switcher-new) + .worktree-switcher-new { margin-left: 4px; }
+.worktree-switcher-tab + .worktree-switcher-new { margin-left: 4px; }
 .worktree-switcher-new:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .worktree-switcher-new:disabled { opacity: 0.5; cursor: not-allowed; }
 .worktree-switcher-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

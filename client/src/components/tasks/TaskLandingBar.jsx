@@ -1,16 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { useToast } from '../ToastContext';
 import { closeTask, commitTask, getTaskLanding, mergeTask, openTaskPullRequest, renameTask } from '../../utils/tasksApi.js';
 import { Button, ConfirmDialog, PromptDialog } from '../ui/index.jsx';
 import TaskRepositoriesLanding from './TaskRepositoriesLanding.jsx';
 import AddRepositoryDialog from './AddRepositoryDialog.jsx';
 import LandingMenu from './LandingMenu.jsx';
-import { landingStatus, nextLandingStep, waitingReasons } from './landingSteps.js';
+import { LANDING_ERROR, useLandingStatus } from './useLandingStatus.js';
+import { FINISH_TASK_LABEL, landingStatus, nextLandingStep, waitingReasons } from './landingSteps.js';
 import { closeArguments, closeRefusals, namedIgnored } from './ignoredFiles.js';
 import './task-view.css';
 
 const plural = (number, word) => `${number} ${word}${number === 1 ? '' : 's'}`;
-const FALLBACK = 'Something went wrong. Please try again.';
 
 /**
  * How a task's work gets back into the project. What it shows is read from Git by the
@@ -21,70 +21,53 @@ const FALLBACK = 'Something went wrong. Please try again.';
 export default function TaskLandingBar({ task, canAddRepository = false, onChanged, onFinished, onRepositoryFinished }) {
   // A task with several repositories lands each on its own; one with a single worktree is landed as a whole.
   if (Array.isArray(task.worktrees) && task.worktrees.length > 1) {
-    return <TaskRepositoriesLanding task={task} canAddRepository={canAddRepository} onChanged={onChanged} onFinished={onFinished} onRepositoryFinished={onRepositoryFinished} />;
+    return <TaskRepositoriesLanding key={task.id} task={task} canAddRepository={canAddRepository} onChanged={onChanged} onFinished={onFinished} onRepositoryFinished={onRepositoryFinished} />;
   }
-  return <TaskLanding task={task} canAddRepository={canAddRepository} onChanged={onChanged} onFinished={onFinished} />;
+  return <TaskLanding key={task.id} task={task} canAddRepository={canAddRepository} onChanged={onChanged} onFinished={onFinished} />;
 }
 
 function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
   const { showToast } = useToast();
-  const [landing, setLanding] = useState(null);
-  const [failure, setFailure] = useState(null);
   const [busy, setBusy] = useState(null);
   const [refusal, setRefusal] = useState(null);
   const [remote, setRemote] = useState('');
   // Which action is asking for the owner's word: rename, commit, merge, pullRequest or close.
-  const [asking, setAsking] = useState(null);
-  const alive = useRef(true);
+  const [confirmation, setAsking] = useState(null);
+  const { snapshot: landing, setSnapshot: setLanding, failure, refresh, alive, begin, end, reconcile } = useLandingStatus(task.id, getTaskLanding, setRefusal);
+  const asking = confirmation && (confirmation.snapshot === landing || ['rename', 'addRepository'].includes(confirmation.kind))
+    ? confirmation.kind : null;
 
-  const refresh = useCallback(async () => {
-    try {
-      const next = await getTaskLanding(task.id);
-      if (!alive.current) return;
-      setLanding(next);
-      setFailure(null);
-    } catch (error) {
-      if (alive.current) setFailure(error instanceof Error ? error.message : FALLBACK);
-    }
-  }, [task.id]);
-
-  useEffect(() => {
-    alive.current = true;
-    setLanding(null);
-    setRefusal(null);
-    refresh();
-    const timer = setInterval(refresh, 5000);
-    return () => { alive.current = false; clearInterval(timer); };
-  }, [refresh]);
-
-  /** Runs one action: one at a time, toast for either outcome, and the refusal kept on screen. */
   const act = async (name, action, success) => {
-    if (busy) return;
+    if (!begin()) return null;
     setBusy(name);
+    setAsking(null);
     setRefusal(null);
+    let failed = false;
     try {
       const result = await action();
       showToast({ type: 'success', message: success(result) });
       return result;
     } catch (error) {
-      const message = error instanceof Error ? error.message : FALLBACK;
+      failed = true;
+      const message = error instanceof Error ? error.message : LANDING_ERROR;
       showToast({ type: 'error', message });
       if (alive.current) setRefusal({ message, reasons: error?.reasons ?? [], conflicts: error?.conflicts ?? [] });
+      onChanged?.();
       return null;
     } finally {
+      end();
       if (alive.current) setBusy(null);
+      if (failed) reconcile();
     }
   };
 
   const rename = async (title) => {
     const renamed = await act('rename', () => renameTask(task.id, { title, revision: task.revision }), result => `Renamed to ${result.title}`);
-    setAsking(null);
     if (renamed) onChanged();
   };
 
   const commit = async (message) => {
     const next = await act('commit', () => commitTask(task.id, message), () => 'Changes committed');
-    setAsking(null);
     if (next && alive.current) setLanding(next);
   };
 
@@ -96,6 +79,8 @@ function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
     if (result.terminalsNotClosed.length > 0) {
       showToast({ type: 'error', message: `${plural(result.terminalsNotClosed.length, 'terminal')} could not be closed: ${result.terminalsNotClosed.join(', ')}. Close ${result.terminalsNotClosed.length === 1 ? 'it from its tab' : 'them from their tabs'}.` });
     }
+    if (result.folderRemoved === false) showToast({ type: 'error', message: 'The task folder was retained because it still contains files.' });
+    if (alive.current) setLanding(null);
     onChanged();
     onFinished(result);
   };
@@ -104,7 +89,6 @@ function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
     const merged = await act('merge', () => mergeTask(task.id), result => withClosed(result.filesRemoved
       ? `Merged into ${result.mergedInto}`
       : `Merged into ${result.mergedInto}, but the task's folder could not be removed`, result));
-    setAsking(null);
     finished(merged);
   };
 
@@ -112,13 +96,11 @@ function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
   const chosenRemote = tools.find(candidate => candidate.name === remote) ?? tools[0] ?? null;
   const pullRequest = async () => {
     const opened = await act('pullRequest', () => openTaskPullRequest(task.id, chosenRemote.name), result => `Pull request opened: ${result.prUrl}`);
-    setAsking(null);
     if (opened) { onChanged(); refresh(); }
   };
 
   const close = async () => {
     const closed = await act('close', () => closeTask(task.id, ...closeArguments(deletesIgnored)), result => withClosed(result.unmergedCommits > 0 ? `Task closed. Branch ${result.branchKept} was kept.` : 'Task closed', result));
-    setAsking(null);
     finished(closed);
   };
   const unmerged = landing?.commitsAhead ?? 0;
@@ -126,19 +108,22 @@ function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
   const deletesIgnored = landing !== null && landing.ignoredAtRiskCount > 0;
   const closeRefused = landing ? closeRefusals(landing) : [];
 
-  const first = list => list[0]?.message;
+  const messages = list => list.map(reason => reason.message);
   const step = landing ? nextLandingStep(landing) : null;
   const status = landing ? landingStatus(landing) : null;
-  const ask = kind => () => setAsking(kind);
+  const ask = kind => () => setAsking({ kind, snapshot: landing });
   const menu = landing ? [
-    ...(landing.uncommittedCount > 0 && step !== 'commit' ? [{ key: 'commit', label: 'Commit changes', disabledReason: first(landing.blockers.commit), onSelect: ask('commit') }] : []),
-    ...(landing.baseBranch !== null && landing.commitsAhead > 0 && step !== 'merge' ? [{ key: 'merge', label: `Merge into ${landing.baseBranch}`, disabledReason: first(landing.blockers.merge), onSelect: ask('merge') }] : []),
-    ...(tools.length > 0 && landing.baseBranch !== null && landing.commitsAhead > 0 && landing.prUrl === null ? [{ key: 'pullRequest', label: 'Open a pull request', disabledReason: first(landing.blockers.pullRequest), onSelect: ask('pullRequest') }] : []),
+    ...(landing.uncommittedCount > 0 && step !== 'commit' ? [{ key: 'commit', label: 'Commit changes', disabledReasons: messages(landing.blockers.commit), onSelect: ask('commit') }] : []),
+    ...(landing.baseBranch !== null && landing.commitsAhead > 0 && step !== 'merge' ? [{ key: 'merge', label: `Merge into ${landing.baseBranch}`, disabledReasons: messages(landing.blockers.merge), onSelect: ask('merge') }] : []),
+    ...(tools.length > 0 && landing.baseBranch !== null && landing.commitsAhead > 0 && landing.prUrl === null ? [{ key: 'pullRequest', label: 'Open a pull request', disabledReasons: messages(landing.blockers.pullRequest), onSelect: ask('pullRequest') }] : []),
     { key: 'rename', label: 'Rename task', onSelect: ask('rename') },
     ...(canAddRepository ? [{ key: 'add', label: 'Add repository', onSelect: ask('addRepository') }] : []),
-    ...(step !== 'close' ? [{ key: 'close', label: 'Close task', tone: 'danger', disabledReason: first(closeRefused), onSelect: ask('close') }] : []),
-  ] : [{ key: 'rename', label: 'Rename task', onSelect: ask('rename') }];
-  const primaryLabel = { commit: 'Commit changes', merge: landing?.baseBranch ? `Merge into ${landing.baseBranch}` : null, close: 'Close task' }[step];
+    ...(step !== 'close' ? [{ key: 'close', label: FINISH_TASK_LABEL, tone: 'danger', disabledReasons: messages(closeRefused), onSelect: ask('close') }] : []),
+  ] : [
+    { key: 'rename', label: 'Rename task', onSelect: ask('rename') },
+    ...(canAddRepository ? [{ key: 'add', label: 'Add repository', onSelect: ask('addRepository') }] : []),
+  ];
+  const primaryLabel = { commit: 'Commit changes', merge: landing?.baseBranch ? `Merge into ${landing.baseBranch}` : null, close: FINISH_TASK_LABEL }[step];
 
   return (
     <div role="group" aria-label={`Task ${task.title}`} className="task-landing">
@@ -193,7 +178,7 @@ function TaskLanding({ task, canAddRepository, onChanged, onFinished }) {
         </ConfirmDialog>
       )}
       {asking === 'close' && (
-        <ConfirmDialog title="Close task" confirmLabel={deletesIgnored ? 'Delete files and close' : 'Close task'} tone={deletesIgnored || (unmerged > 0 && landing.state !== 'pr_open') ? 'danger' : 'primary'} onConfirm={close} onCancel={() => setAsking(null)}>
+        <ConfirmDialog title={FINISH_TASK_LABEL} confirmLabel={deletesIgnored ? 'Delete files and close' : 'Finish task'} tone={deletesIgnored || (unmerged > 0 && landing.state !== 'pr_open') ? 'danger' : 'primary'} onConfirm={close} onCancel={() => setAsking(null)}>
           {`"${task.title}" is closed, its copy of the project is removed and its terminals are closed.${unmerged > 0 && landing.state !== 'pr_open' ? ` Its ${plural(unmerged, 'commit')} stay on the branch ${landing.branch}, not merged.` : ''}${deletesIgnored ? ` Files Git ignores that exist only in this task are deleted with it: ${namedIgnored(landing)}.` : ''}`}
         </ConfirmDialog>
       )}

@@ -34,12 +34,18 @@ export default function LandingMenu({ label, items, disabled = false }) {
       </button>
       {open && (
         <div id={menuId} role="menu" aria-label={label} className="landing-menu-list">
-          {items.map(item => (
+          {items.map((item, index) => (
             <button key={item.key} type="button" role="menuitem" className="landing-menu-item" data-tone={item.tone ?? 'plain'}
-              aria-label={item.name ?? item.label} disabled={Boolean(item.disabledReason)}
+              aria-label={item.name ?? item.label}
+              aria-describedby={item.disabledReason || item.disabledReasons?.length ? `${menuId}-reason-${index}` : undefined} disabled={disabled || Boolean(item.disabledReason) || Boolean(item.disabledReasons?.length)}
               onClick={() => { setOpen(false); item.onSelect(); }}>
               <span>{item.label}</span>
-              {item.disabledReason && <span className="landing-menu-reason">{item.disabledReason}</span>}
+              {(item.disabledReason || item.disabledReasons?.length > 0) && (
+                <span id={`${menuId}-reason-${index}`}>
+                  {item.disabledReason && <span className="landing-menu-reason">{item.disabledReason}</span>}
+                  {item.disabledReasons?.map((reason, occurrence) => <span key={occurrence} className="landing-menu-reason">{reason}</span>)}
+                </span>
+              )}
             </button>
           ))}
         </div>

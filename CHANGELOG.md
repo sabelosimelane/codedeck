@@ -22,6 +22,18 @@
   * `docs/specifications/2026-11-24-172650-run-step-agents-and-role-fallbacks-spec.md` — full requirements, boundaries, persistence, recovery, error and acceptance design.
 # Changelog
 
+## [2026-11-25] - Dismiss blocked task tabs and finish tasks safely
+
+### Executive Summary
+* Owners can dismiss and reopen a task tab without closing its task, worktree, files, terminals, sessions or runs. Destructive cleanup is now named **Finish task…** and explains blockers across repositories. Branch drift and detached HEAD no longer look ready to commit or merge, and the server rejects Commit on a switched checkout. Landing views reject stale status responses, revoke actions after inspection failures, and reconcile refusals and partial cleanup before offering another action.
+
+### Technical Details
+* **✨ Task navigation:** `client/src/App.jsx`, `client/src/components/TerminalArea.jsx`, `client/src/components/Sidebar.jsx`, `client/src/hooks/useTasks.js` — add Dismiss tab and Reopen tab actions, persist dismissal by project and task identity, preserve hidden task groups for terminal routing, select Main when dismissing the selected task, and retire finished tasks after an authoritative refresh. Unreadable saved dismissal data is reported and reset so the app remains usable; failed persistence writes are logged.
+* **🛡️ Cleanup and status:** `client/src/components/tasks/TaskLandingBar.jsx`, `TaskRepositoriesLanding.jsx`, `LandingMenu.jsx`, `landingSteps.js`, `useLandingStatus.js`, `server/tasks/task-landing.js` — separate reversible tab dismissal from destructive Finish task cleanup; show applicable repository blockers; identify the actual and expected branch, including detached HEAD; refuse Commit on branch drift; sequence-fence status reads; revoke stale action authorization on inspection failure; and refresh state after refusal or partial completion. Partial results retain completed repository states and surface surviving folders or terminals without automatically retrying mutations.
+* **🔌 API contract:** `client/src/utils/tasksApi.js`, `client/src/utils/__tests__/tasksApi.test.js`, `docs/steering/api-standards.md` — document and consume structured partial-close outcomes while retaining existing routes.
+* **🧪 Tests:** `client/src/App.test.jsx`, task tab and landing component tests, `client/src/hooks/__tests__/useTaskTabs.test.jsx`, and `server/__tests__/task-landing*.test.js` — cover dismissal, polling, reload and reopen; task/session/run identity and routing; unreadable persistence; branch and cleanup blocker combinations; stale reads; server refusals; and interrupted multi-repository cleanup.
+* **✅ Verification:** targeted client tests (307 passed), targeted server tests (81 passed), client build, and isolated Chrome replay of the screenshot scenario passed. The replay preserved the same task, Git checkout and terminal after dismiss, poll, reload and reopen, with no browser mutation requests. Full client and server suites were also run; their 14 client and 5 server failures matched the failures reproduced on base `a817004`.
+
 ## [2026-11-25] - Configurable workflow run timeouts
 
 * Owners can set five workflow run timeouts under Settings → Workflows → Defaults → Advanced. Existing installations retain the previous timings until changed.

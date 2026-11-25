@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 
 const toast = vi.hoisted(() => vi.fn());
@@ -56,10 +56,10 @@ describe('TaskLandingBar', () => {
     // Nothing else competes with it on the bar.
     expect(screen.queryByRole('button', { name: 'Commit changes' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Open a pull request' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Close task' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Finish task…' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
     expect(menuItem('Open a pull request').disabled).toBe(false);
-    expect(menuItem('Close task').disabled).toBe(false);
+    expect(menuItem('Finish task…').disabled).toBe(false);
     expect(screen.queryByRole('menuitem', { name: 'Merge into main' })).toBeNull();
     expect(screen.getByText('Branch task/replies-7a000000, started from main')).toBeTruthy();
     expect(screen.getByText('/tmp/worktrees/demo-replies')).toBeTruthy();
@@ -118,7 +118,7 @@ describe('TaskLandingBar', () => {
     const merge = menuItem('Merge into main');
     expect(merge.disabled).toBe(true);
     expect(reasonOf(merge)).toBe('This task has uncommitted changes. Commit them first.');
-    const close = menuItem('Close task');
+    const close = menuItem('Finish task…');
     expect(close.disabled).toBe(true);
     expect(reasonOf(close)).toBe('This task has uncommitted changes. Commit them first.');
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -214,11 +214,11 @@ describe('TaskLandingBar', () => {
   it('warns that unmerged commits stay on the branch before closing', async () => {
     api.closeTask.mockResolvedValue({ branchKept: 'task/replies-7a000000', unmergedCommits: 2, terminalsClosed: [], terminalsNotClosed: ['Demo-3'] });
     const { onFinished } = await mount();
-    fireEvent.click(menuItem('Close task'));
-    const confirmClose = dialog('Close task');
+    fireEvent.click(menuItem('Finish task…'));
+    const confirmClose = dialog('Finish task…');
     expect(confirmClose.getByText('"Replies" is closed, its copy of the project is removed and its terminals are closed. Its 2 commits stay on the branch task/replies-7a000000, not merged.')).toBeTruthy();
-    expect(confirmClose.getByRole('button', { name: 'Close task' }).dataset.variant).toBe('danger');
-    fireEvent.click(confirmClose.getByRole('button', { name: 'Close task' }));
+    expect(confirmClose.getByRole('button', { name: 'Finish task' }).dataset.variant).toBe('danger');
+    fireEvent.click(confirmClose.getByRole('button', { name: 'Finish task' }));
     await waitFor(() => expect(onFinished).toHaveBeenCalled());
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Task closed. Branch task/replies-7a000000 was kept.' });
     expect(toast).toHaveBeenCalledWith({ type: 'error', message: '1 terminal could not be closed: Demo-3. Close it from its tab.' });
@@ -234,7 +234,7 @@ describe('TaskLandingBar', () => {
     expect(screen.getByText('Already in main')).toBeTruthy();
     expect(screen.queryByText('No changes yet')).toBeNull();
     expect(screen.getByText('main has moved on by 1 commit')).toBeTruthy();
-    const close = screen.getByRole('button', { name: 'Close task' });
+    const close = screen.getByRole('button', { name: 'Finish task…' });
     expect(close.dataset.variant).toBe('primary');
     expect(screen.queryByRole('button', { name: 'Merge into main' })).toBeNull();
     menuItem('Rename task');
@@ -258,11 +258,11 @@ describe('TaskLandingBar', () => {
     const ignored = [{ code: 'ignored_files', message: 'This task has files Git ignores that exist nowhere else: logs/, owner.local. Move or delete them first.' }];
     const { onFinished } = await mount(landing({ commitsAhead: 0, ignoredAtRisk: ['logs/', 'owner.local'], ignoredAtRiskCount: 3, blockers: { commit: [], merge: [], pullRequest: [], close: ignored } }));
     expect(screen.getByText('3 ignored files only here')).toBeTruthy();
-    const close = menuItem('Close task');
+    const close = menuItem('Finish task…');
     expect(close.disabled).toBe(false);
     api.closeTask.mockResolvedValue({ branchKept: 'task/replies-7a000000', unmergedCommits: 0, terminalsClosed: [], terminalsNotClosed: [] });
     fireEvent.click(close);
-    const confirm = dialog('Close task');
+    const confirm = dialog('Finish task…');
     expect(confirm.getByText('"Replies" is closed, its copy of the project is removed and its terminals are closed. Files Git ignores that exist only in this task are deleted with it: logs/, owner.local and 1 more.')).toBeTruthy();
     const yes = confirm.getByRole('button', { name: 'Delete files and close' });
     expect(yes.dataset.variant).toBe('danger');
@@ -275,7 +275,7 @@ describe('TaskLandingBar', () => {
   it('still refuses Close for any other reason beside ignored files', async () => {
     await mount(landing({ uncommitted: ['a.txt'], uncommittedCount: 1, ignoredAtRisk: ['logs/'], ignoredAtRiskCount: 1,
       blockers: { commit: [], merge: [], pullRequest: [], close: [{ code: 'uncommitted', message: 'This task has uncommitted changes. Commit them first.' }, { code: 'ignored_files', message: 'This task has files Git ignores that exist nowhere else: logs/, owner.local. Move or delete them first.' }] } }));
-    const close = menuItem('Close task');
+    const close = menuItem('Finish task…');
     expect(close.disabled).toBe(true);
     expect(reasonOf(close)).toBe('This task has uncommitted changes. Commit them first.');
   });
@@ -310,6 +310,55 @@ describe('TaskLandingBar', () => {
     render(<TaskLandingBar task={TASK} onChanged={() => {}} onFinished={() => {}} />);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Server unreachable'));
     expect(menuItem('Rename task')).toBeTruthy();
-    expect(screen.queryByRole('menuitem', { name: 'Close task' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Finish task…' })).toBeNull();
   });
+});
+
+it('explains overlapping Finish blockers and never suggests a switched checkout is ready', async () => {
+  const run = { code: 'run_active', message: 'Stop the working run or let it finish.' };
+  const drift = { code: 'branch_switched', message: 'Switch feature/scratch back to task/replies-7a000000.' };
+  await mount(landing({ blockers: { commit: [drift], merge: [run, drift], pullRequest: [run, drift], close: [run, drift] } }));
+  expect(screen.queryByText('2 commits ready for main')).toBeNull();
+  expect(screen.getByText('Checkout on a different branch')).toBeTruthy();
+  const finish = menuItem('Finish task…');
+  expect(finish.disabled).toBe(true);
+  expect(finish.textContent).toContain(run.message);
+  expect(finish.textContent).toContain(drift.message);
+});
+
+it('ignores an older status across errors, recovery, and task selection', async () => {
+  vi.useFakeTimers();
+  try {
+    const reads = [];
+    api.getTaskLanding.mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+    const view = render(<TaskLandingBar task={TASK} />);
+    const tick = () => act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    const fail = (i, message) => act(async () => reads[i].reject(new Error(message)));
+    const succeed = i => act(async () => reads[i].resolve(landing()));
+    const merge = () => screen.queryByRole('button', { name: 'Merge into main' });
+    await fail(0, 'Initial inspection failed');
+    expect(screen.getByRole('alert').textContent).toBe('Initial inspection failed');
+    await tick();
+    await succeed(1);
+    expect(merge()).toBeTruthy();
+    await tick();
+    await tick();
+    await fail(3, 'Latest inspection failed');
+    expect(merge()).toBeNull();
+    await succeed(2);
+    expect(merge()).toBeNull();
+    await tick();
+    await tick();
+    await succeed(5);
+    await fail(4, 'Late failure');
+    expect(merge()).toBeTruthy();
+    await tick();
+    view.rerender(<TaskLandingBar task={{ ...TASK, id: 'replacement', title: 'Other task' }} />);
+    await succeed(6);
+    expect(merge()).toBeNull();
+    await succeed(7);
+    expect(merge()).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
 });

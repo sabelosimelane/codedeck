@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
@@ -653,6 +653,41 @@ describe('task landing — work that ordinary status does not show', () => {
     write(path.join(repo, 'conf'), 'inner.txt', 'a folder in Main\n');
 
     expect(codes((await landing.status(ID)).blockers.close)).toEqual(['ignored_files']);
+  });
+
+  it('preserves all hard blockers and files when ignored-file deletion is approved on a detached dirty checkout', async () => {
+    const { wt, landing, state, closeTerminals } = await setup({ activeRun: true });
+    write(wt, '.gitignore', 'owner.local\n');
+    commitAll(wt, 'ignore owner file');
+    git(wt, ['switch', '--detach']);
+    write(wt, 'draft.txt', 'draft');
+    write(wt, 'owner.local', 'unique');
+    const head = git(wt, ['rev-parse', 'HEAD']);
+    expect(codes((await rejection(landing.close(ID))).extra.reasons)).toEqual(['run_active', 'uncommitted', 'branch_switched', 'ignored_files']);
+    expect(codes((await rejection(landing.close(ID, { deleteIgnored: true }))).extra.reasons)).toEqual(['run_active', 'uncommitted', 'branch_switched']);
+    expect(codes((await rejection(landing.commit(ID, { message: 'blocked' }))).extra.reasons)).toEqual(['run_active', 'branch_switched']);
+    state.activeRun = false;
+    expect(codes((await rejection(landing.close(ID, { deleteIgnored: true }))).extra.reasons)).toEqual(['uncommitted', 'branch_switched']);
+    expect(git(wt, ['rev-parse', 'HEAD'])).toBe(head);
+    expect(readFileSync(path.join(wt, 'draft.txt'), 'utf8')).toBe('draft');
+    expect(readFileSync(path.join(wt, 'owner.local'), 'utf8')).toBe('unique');
+    expect(closeTerminals).not.toHaveBeenCalled();
+  });
+
+  it.each(['switched', 'detached'])('refuses direct Commit for a dirty %s checkout without changing its contents or HEAD', async mode => {
+    const { wt, landing, task, closeTerminals } = await setup();
+    git(wt, mode === 'switched' ? ['switch', '-c', 'feature/scratch'] : ['switch', '--detach']);
+    write(wt, 'draft.txt', 'keep this draft');
+    const head = git(wt, ['rev-parse', 'HEAD']);
+    const error = await rejection(landing.commit(ID, { message: 'commit somewhere else' }));
+    expect(error.status).toBe(409);
+    expect(codes(error.extra.reasons)).toEqual(['branch_switched']);
+    expect(error.message).toContain(mode === 'switched' ? 'feature/scratch' : 'detached HEAD');
+    expect(error.message).toContain(task.branch);
+    expect(git(wt, ['rev-parse', 'HEAD'])).toBe(head);
+    expect(git(wt, ['status', '--short'])).toBe('?? draft.txt');
+    expect(readFileSync(path.join(wt, 'draft.txt'), 'utf8')).toBe('keep this draft');
+    expect(closeTerminals).not.toHaveBeenCalled();
   });
 
   it.each([

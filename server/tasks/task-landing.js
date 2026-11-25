@@ -45,7 +45,7 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
       main_not_on_base: () => `Main is on ${mainBranch ?? 'no branch'}, but this task was started from ${worktree.baseBranch}. Switch Main to ${worktree.baseBranch} to merge.`,
       main_dirty: 'Main has uncommitted changes. Commit or stash them before merging.',
       no_remote: 'This project has no remote to push to.',
-      branch_switched: () => `This task's folder is on ${checkoutBranch ?? 'no branch'}, not on its branch ${worktree.branch}. Switch it back to ${worktree.branch} first.`,
+      branch_switched: () => `This task's folder is on ${checkoutBranch ?? 'detached HEAD (no branch)'}, not on its branch ${worktree.branch}. Switch it back to ${worktree.branch} first.`,
       ignored_files: () => `This task has files Git ignores that exist nowhere else: ${listed()}. Move or delete them first.`,
     }[code];
   }
@@ -60,7 +60,7 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
     main_not_on_base: () => `${repository}'s checkout is on ${mainBranch ?? 'no branch'}, but this task started from ${worktree.baseBranch} there. Switch it to ${worktree.baseBranch} to merge.`,
     main_dirty: `${repository}'s checkout has uncommitted changes. Commit or stash them before merging.`,
     no_remote: `${repository} has no remote to push to.`,
-    branch_switched: () => `The task's copy of ${repository} is on ${checkoutBranch ?? 'no branch'}, not on its branch ${worktree.branch}. Switch it back to ${worktree.branch} first.`,
+    branch_switched: () => `The task's copy of ${repository} is on ${checkoutBranch ?? 'detached HEAD (no branch)'}, not on its branch ${worktree.branch}. Switch it back to ${worktree.branch} first.`,
     ignored_files: () => `The task's copy of ${repository} has files Git ignores that exist nowhere else: ${listed()}. Move or delete them first.`,
   }[code];
 }
@@ -339,12 +339,13 @@ export function createTaskLanding({
     if (!open) common.push('finished');
     else if (!present) common.push('files_missing');
     if (active) common.push('run_active');
+    const drift = present && checkoutBranch !== worktree.branch ? ['branch_switched'] : [];
     const withWork = [...common];
     if (present && uncommitted.length > 0) withWork.push('uncommitted');
     // No commit the base lacks is one of two things: the task has done nothing, or its work was merged outside CodeDeck.
     if (present && ahead === 0) withWork.push(alreadyInBase ? 'already_in_base' : 'nothing_to_land');
     // Landing acts on the worktree's stored branch; work committed on another branch would not go with it.
-    if (present && checkoutBranch !== worktree.branch) withWork.push('branch_switched');
+    withWork.push(...drift);
 
     const merge = [...withWork];
     if (open && worktree.baseBranch === null) merge.push('no_base_branch');
@@ -363,7 +364,7 @@ export function createTaskLanding({
     const close = common.filter(code => code !== 'files_missing');
     if (present && uncommitted.length > 0) close.push('uncommitted');
     // Closing removes the folder and keeps only the stored branch; commits on another branch or a detached HEAD would be lost with it.
-    if (present && checkoutBranch !== worktree.branch) close.push('branch_switched');
+    close.push(...drift);
     if (present && ignoredAtRisk.length > 0) close.push('ignored_files');
 
     return {
@@ -397,7 +398,7 @@ export function createTaskLanding({
         main: { branch: mainBranch, dirty: mainDirty },
         remotes: remoteList,
         blockers: {
-          commit: [...common, ...(present && uncommitted.length === 0 ? ['nothing_to_commit'] : [])].map(code => (code === 'nothing_to_commit' ? { code, message: 'There is nothing to commit.' } : describe(code))),
+          commit: [...common, ...drift, ...(present && uncommitted.length === 0 ? ['nothing_to_commit'] : [])].map(code => (code === 'nothing_to_commit' ? { code, message: 'There is nothing to commit.' } : describe(code))),
           merge: merge.map(describe),
           pullRequest: pullRequest.map(describe),
           close: close.map(describe),
@@ -651,7 +652,7 @@ export function createTaskLanding({
             outcome = await closeInspected(inspection);
           } catch (error) {
             if (!(error instanceof TaskError) || repositories.length === 0) throw error;
-            throw new TaskError(`${error.message}. Already closed: ${repositories.map(entry => entry.repository).join(', ')}.`, error.status, undefined, { cause: error });
+            throw withExtra(new TaskError(`${error.message}. Already closed: ${repositories.map(entry => entry.repository).join(', ')}.`, error.status, undefined, { cause: error }), { partialClose: terminals });
           }
           after = outcome.after;
           finish = outcome.finish;

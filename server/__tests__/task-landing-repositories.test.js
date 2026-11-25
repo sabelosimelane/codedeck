@@ -27,10 +27,10 @@ async function setup({ exec = execFile, repositories = ['backend', 'frontend'] }
   const pathExists = async target => existsSync(target);
   const ids = [ID];
   const tasks = createTaskService({ isRunWorking: () => false, taskStore, findProject: ctx.findProject, execFile, startSession: async () => ({ id: 'Demo-1' }), pathExists, newId: () => ids.shift() });
-  const state = { activeRun: false };
+  const state = { activeRun: false, terminalsNotClosed: [] };
   const onTaskFinished = vi.fn();
   const onWorktreeFinished = vi.fn();
-  const closeTerminals = vi.fn(async (_task, worktree) => ({ closed: worktree ? [`in-${worktree.repository}`] : ['rest'], notClosed: [] }));
+  const closeTerminals = vi.fn(async (_task, worktree) => ({ closed: worktree ? [`in-${worktree.repository}`] : ['rest'], notClosed: state.terminalsNotClosed }));
   const landing = createTaskLanding({
     taskStore, findProject: ctx.findProject, execFile: exec, pathExists, hasActiveRun: () => state.activeRun, onTaskFinished, onWorktreeFinished, closeTerminals,
   });
@@ -228,6 +228,35 @@ describe('landing a task with several repositories', { timeout: 30_000 }, () => 
     ]);
     expect(result.task).toMatchObject({ state: 'closed' });
     expect(existsSync(folder)).toBe(false);
+    expect(onTaskFinished).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports terminal outcomes if removing the second repository fails, then finishes only what is left', async () => {
+    let failRemoval = true;
+    const exec = (file, args, options, callback) => {
+      if (failRemoval && file === 'git' && args.includes('worktree') && args.includes('remove') &&
+        args.some(arg => arg.endsWith('/frontend'))) {
+        return callback(new Error('fixture removal refusal'), '', 'fixture removal refusal');
+      }
+      return execFile(file, args, options, callback);
+    };
+    const { landing, first, second, taskStore, state, closeTerminals, onTaskFinished } = await setup({ exec });
+    state.terminalsNotClosed = ['surviving-backend-terminal'];
+    const error = await rejection(landing.close(ID));
+    expect(error.message).toContain('Already closed: backend');
+    expect(error.extra.partialClose).toEqual({ terminalsClosed: ['in-backend'], terminalsNotClosed: ['surviving-backend-terminal'] });
+    expect(existsSync(first.worktreePath)).toBe(false);
+    expect(existsSync(second.worktreePath)).toBe(true);
+    expect((await landing.worktrees(ID)).map(entry => entry.state)).toEqual(['closed', 'active']);
+    expect(taskStore.get(ID).state).toBe('active');
+    expect(closeTerminals).toHaveBeenCalledTimes(1);
+    expect(onTaskFinished).not.toHaveBeenCalled();
+
+    state.terminalsNotClosed = [];
+    failRemoval = false;
+    const closed = await landing.close(ID);
+    expect(closed.task.state).toBe('closed');
+    expect(closed.repositories.map(row => row.repository)).toEqual(['frontend']);
     expect(onTaskFinished).toHaveBeenCalledTimes(1);
   });
 

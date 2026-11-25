@@ -3,7 +3,7 @@ import { listOpenTasks } from '../utils/tasksApi';
 
 /** Every open task, from the backend, refreshed every two seconds without overlapping requests. */
 export function useTasks(showToast) {
-  const [tasks, setTasks] = useState([]);
+  const [tasks, setTasks] = useState(null);
   const refreshRef = useRef(async () => {});
   useEffect(() => {
     let disposed = false;

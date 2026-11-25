@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 
 const toast = vi.hoisted(() => vi.fn());
@@ -206,11 +206,11 @@ describe('TaskLandingBar for a task with several repositories', () => {
     const handlers = await mount([standing(BACKEND, 'backend', ignored(['.project', 'logs/'])), standing(MOBILE, 'mobile-app', ignored(['.gradle/']))]);
     const result = { task: { ...TASK, state: 'closed' }, branchKept: 'task/replies-7a000000', unmergedCommits: 0, terminalsClosed: [], terminalsNotClosed: [] };
     api.closeTask.mockResolvedValue(result);
-    const close = taskMenu().getByRole('menuitem', { name: 'Close task' });
+    const close = taskMenu().getByRole('menuitem', { name: 'Finish task…' });
     expect(close.disabled).toBe(false);
     fireEvent.click(close);
-    expect(dialog('Close task').getByText(/Files Git ignores that exist only in this task are deleted with it: backend: \.project, logs\/; mobile-app: \.gradle\/\./)).toBeTruthy();
-    const yes = dialog('Close task').getByRole('button', { name: 'Delete files and close' });
+    expect(dialog('Finish task…').getByText(/Files Git ignores that exist only in this task are deleted with it: backend: \.project, logs\/; mobile-app: \.gradle\/\./)).toBeTruthy();
+    const yes = dialog('Finish task…').getByRole('button', { name: 'Delete files and close' });
     expect(yes.dataset.variant).toBe('danger');
     fireEvent.click(yes);
     await waitFor(() => expect(handlers.onFinished).toHaveBeenCalledWith(result));
@@ -221,9 +221,9 @@ describe('TaskLandingBar for a task with several repositories', () => {
     const handlers = await mount([standing(BACKEND, 'backend', clean), standing(MOBILE, 'mobile-app', clean)]);
     const result = { task: { ...TASK, state: 'closed' }, branchKept: 'task/replies-7a000000', unmergedCommits: 4, terminalsClosed: ['Demo-4'], terminalsNotClosed: [] };
     api.closeTask.mockResolvedValue(result);
-    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Close task' }));
-    expect(dialog('Close task').getByText(/Every repository of "Replies" is closed/)).toBeTruthy();
-    fireEvent.click(dialog('Close task').getByRole('button', { name: 'Close task' }));
+    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Finish task…' }));
+    expect(dialog('Finish task…').getByText(/Every repository of "Replies" is closed/)).toBeTruthy();
+    fireEvent.click(dialog('Finish task…').getByRole('button', { name: 'Finish task' }));
     await waitFor(() => expect(handlers.onFinished).toHaveBeenCalledWith(result));
     expect(api.closeTask).toHaveBeenCalledWith(ID);
     expect(toast).toHaveBeenCalledWith({ type: 'success', message: 'Task closed. Branch task/replies-7a000000 was kept. 1 terminal closed.' });
@@ -231,7 +231,7 @@ describe('TaskLandingBar for a task with several repositories', () => {
 
   it('does not offer to close the whole task while a repository cannot be closed, and says which', async () => {
     await mount();
-    const close = taskMenu().getByRole('menuitem', { name: 'Close task' });
+    const close = taskMenu().getByRole('menuitem', { name: 'Finish task…' });
     expect(close.disabled).toBe(true);
     expect(reasonOf(close)).toBe('mobile-app has uncommitted changes in this task. Commit them first.');
   });
@@ -239,8 +239,8 @@ describe('TaskLandingBar for a task with several repositories', () => {
   it('keeps the reason on screen when closing the whole task is refused', async () => {
     await mount([standing(BACKEND, 'backend', clean), standing(MOBILE, 'mobile-app', clean)]);
     api.closeTask.mockRejectedValue(Object.assign(new Error('Nothing was closed. A workflow run is still working in this task. Stop it or let it finish first.'), { reasons: [{ code: 'run_active', message: 'A workflow run is still working in this task. Stop it or let it finish first.' }], conflicts: [] }));
-    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Close task' }));
-    fireEvent.click(dialog('Close task').getByRole('button', { name: 'Close task' }));
+    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Finish task…' }));
+    fireEvent.click(dialog('Finish task…').getByRole('button', { name: 'Finish task' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Nothing was closed.'));
   });
 
@@ -289,4 +289,79 @@ describe('TaskLandingBar for a task with several repositories', () => {
     expect(api.listTaskWorktreeLandings).not.toHaveBeenCalled();
     expect(screen.queryByRole('list', { name: 'Repositories of this task' })).toBeNull();
   });
+});
+
+it('reconciles a partial Finish before enabling the surviving repository and ignores an older poll', async () => {
+  vi.useFakeTimers();
+  try {
+    const reads = [];
+    api.listTaskWorktreeLandings.mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+    const handlers = { onChanged: vi.fn(), onFinished: vi.fn(), onRepositoryFinished: vi.fn() };
+    render(<TaskLandingBar task={TASK} {...handlers} />);
+    const initial = [standing(BACKEND, 'backend'), standing(MOBILE, 'mobile-app')];
+    const tick = () => act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => reads[0].reject(new Error('Initial inspection failed')));
+    expect(screen.getByRole('alert').textContent).toBe('Initial inspection failed');
+    await tick();
+    await act(async () => reads[1].resolve(initial));
+    await tick();
+    api.closeTask.mockRejectedValue(Object.assign(new Error('Removal failed. Already closed: backend.'), {
+      partialClose: { terminalsClosed: ['Demo-4'], terminalsNotClosed: ['Demo-5'] },
+    }));
+    fireEvent.click(taskMenu().getByRole('menuitem', { name: 'Finish task…' }));
+    await act(async () => fireEvent.click(dialog('Finish task…').getByRole('button', { name: 'Finish task' })));
+    expect(reads).toHaveLength(4);
+    expect(handlers.onRepositoryFinished).toHaveBeenCalledWith(expect.objectContaining({ terminalsClosed: ['Demo-4'] }));
+    expect(toast).toHaveBeenCalledWith({ type: 'error', message: expect.stringContaining('Demo-5') });
+    expect(taskMenu().queryByRole('menuitem', { name: 'Finish task…' })).toBeNull();
+    await act(async () => reads[3].resolve([{ ...initial[0], state: 'closed' }, initial[1]]));
+    await act(async () => reads[2].resolve(initial));
+    expect(row('backend').getByText('closed')).toBeTruthy();
+    expect(row('backend').queryByRole('button')).toBeNull();
+    expect(api.closeTask).toHaveBeenCalledTimes(1);
+    expect(handlers.onFinished).not.toHaveBeenCalled();
+    await tick();
+    await act(async () => reads[4].resolve([{ ...initial[0], state: 'closed' }, initial[1]]));
+    expect(screen.queryByText('Removal failed. Already closed: backend.')).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+
+it('only lets the latest repository read authorize actions after a failed poll or selection change', async () => {
+  vi.useFakeTimers();
+  try {
+    const reads = [];
+    api.listTaskWorktreeLandings.mockImplementation(() => new Promise((resolve, reject) => reads.push({ resolve, reject })));
+    const view = render(<TaskLandingBar task={TASK} />);
+    const cleanRows = [standing(BACKEND, 'backend', clean), standing(MOBILE, 'mobile-app')];
+    const tick = () => act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    const resolve = i => act(async () => reads[i].resolve(cleanRows));
+    const reject = i => act(async () => reads[i].reject(new Error(`Failed read ${i}`)));
+    const merge = () => screen.queryByRole('button', { name: 'Merge backend into main' });
+    await resolve(0);
+    expect(merge()).toBeTruthy();
+    await tick();
+    await tick();
+    await reject(2);
+    expect(merge()).toBeNull();
+    expect(screen.getByRole('alert').textContent).toBe('Failed read 2');
+    await resolve(1);
+    expect(merge()).toBeNull();
+    await tick();
+    await tick();
+    await resolve(4);
+    await reject(3);
+    expect(merge()).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await tick();
+    view.rerender(<TaskLandingBar task={{ ...TASK, id: 'different-task', title: 'Other task' }} />);
+    await resolve(5);
+    expect(merge()).toBeNull();
+    await resolve(6);
+    expect(merge()).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
 });

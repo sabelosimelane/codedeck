@@ -440,3 +440,19 @@ describe('Sidebar', () => {
     expect(view.getByText('Remove project')).toBeTruthy();
   });
 });
+
+it('reopens a dismissed task from its project without invoking a second selection', () => {
+  const project = { name: 'Alpha', path: '/tmp/alpha' };
+  const task = { id: 'stable-task-id', title: 'Reply', project: project.name };
+  const onReopenTask = vi.fn();
+  const onSelect = vi.fn();
+  const onSelectWorktree = vi.fn();
+  const view = renderSidebar({ activeProjects: [project], onSelect, onReopenTask, onSelectWorktree,
+    isTaskDismissed: candidate => candidate.id === task.id,
+    worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, isMain: true, sessionIds: [] }, { key: '/tmp/reply', task, sessionIds: [] }]]]),
+  });
+  fireEvent.click(view.getByRole('button', { name: 'Reopen tab: Reply' }));
+  expect(onReopenTask).toHaveBeenCalledExactlyOnceWith(task);
+  expect(onSelect).not.toHaveBeenCalled();
+  expect(onSelectWorktree).not.toHaveBeenCalled();
+});

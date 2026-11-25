@@ -12,7 +12,7 @@ const worktree = (overrides = {}) => ({
   branch: 'task/replies-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), state: 'active', prUrl: null, ...overrides,
 });
 const task = (overrides = {}) => ({
-  id: ID, project: 'Demo', title: 'Replies', state: 'active', worktreePath: '/tmp/worktrees/demo-replies',
+  id: ID, project: 'Demo', host: 'local', title: 'Replies', state: 'active', worktreePath: '/tmp/worktrees/demo-replies',
   branch: 'task/replies-7a000000', baseBranch: 'main', baseCommit: 'a'.repeat(40), prUrl: null, revision: 1,
   createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z', finishedAt: null,
   folder: null, worktrees: [worktree()], ...overrides,
@@ -264,6 +264,24 @@ describe('landing API client', () => {
     await expect(mergeTask(ID)).rejects.toThrow('Invalid merge response');
     await expect(closeTask(ID)).rejects.toThrow('Invalid close response');
     await expect(openTaskPullRequest(ID, 'origin')).rejects.toThrow('prUrl');
+  });
+
+  it('preserves terminal outcomes from a partial Close problem and validates both lists', async () => {
+    const partialClose = { terminalsClosed: ['Demo-2'], terminalsNotClosed: ['Demo-3'] };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(reply({ message: 'Removal failed', partialClose }, { ok: false, status: 409 }))
+      .mockResolvedValueOnce(reply({ message: 'Removal failed', partialClose: { ...partialClose, terminalsNotClosed: [null] } }, { ok: false, status: 409 })));
+    await expect(closeTask(ID)).rejects.toMatchObject({ status: 409, partialClose });
+    await expect(closeTask(ID)).rejects.toThrow('Invalid partial close response: terminalsNotClosed');
+  });
+
+  it('preserves and validates the optional task-folder cleanup result', async () => {
+    const result = { task: task(), branchKept: 'task/replies', unmergedCommits: 0, terminalsClosed: [], terminalsNotClosed: [] };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(reply({ ...result, folderRemoved: false }))
+      .mockResolvedValueOnce(reply({ ...result, folderRemoved: null })));
+    await expect(closeTask(ID)).resolves.toMatchObject({ folderRemoved: false });
+    await expect(closeTask(ID)).rejects.toThrow('Invalid close response: folderRemoved');
   });
 
   it('carries the reasons and conflicting files of a refusal', async () => {

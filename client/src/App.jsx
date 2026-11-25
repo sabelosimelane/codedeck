@@ -1,5 +1,6 @@
 import { usePipelineRunCounts } from './hooks/usePipelineRunCounts';
 import { useTasks } from './hooks/useTasks';
+import { useTaskTabs } from './hooks/useTaskTabs';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import TerminalArea from './components/TerminalArea';
@@ -118,7 +119,8 @@ function AppContent() {
     cleanupRun,
   } = usePipelineRuns({ projectName: activeProject?.name || null, showToast });
   const openRunCounts = usePipelineRunCounts(showToast);
-  const { tasks: openTasks, refresh: refreshTasks } = useTasks(showToast);
+  const { tasks: authoritativeTasks, refresh: refreshTasks } = useTasks(showToast);
+  const { tasks: openTasks, isTaskDismissed, dismiss, reopen, taskCreated, taskFinished } = useTaskTabs(authoritativeTasks, showToast);
   const worktreeGroupsByProject = useMemo(() => new Map(projects.map(project => [project.name, buildWorktreeGroups({
     project,
     sessions: sessionStatus.filter(session => doesSessionBelongToProject(session, project)).map(session => ({
@@ -146,6 +148,19 @@ function AppContent() {
     setWorktreeSelection(current => ({ ...current, [projectName]: key }));
     try { localStorage.setItem(`codedeck-worktree-${projectName}`, key); }
     catch (error) { console.warn(`Could not save worktree selection for ${projectName}: ${error.message}`); }
+  };
+  const selectProjectWorktree = (projectName, key) => {
+    selectWorktree(projectName, key);
+    const project = projects.find(candidate => candidate.name === projectName);
+    if (project && activeProject?.name !== projectName) setActiveProject(project);
+  };
+  const dismissTask = task => {
+    dismiss(task);
+    if (selectedWorktreeByProject[task.project] === task.worktreePath) selectWorktree(task.project, 'main');
+  };
+  const reopenTask = task => {
+    reopen(task);
+    selectProjectWorktree(task.project, task.worktreePath);
   };
   const sessionStatusRequestInFlightRef = useRef(false);
   const systemResourcesRequestInFlightRef = useRef(false);
@@ -492,11 +507,9 @@ function AppContent() {
         openRunCounts={openRunCounts}
         worktreeGroupsByProject={worktreeGroupsByProject}
         selectedWorktreeByProject={selectedWorktreeByProject}
-        onSelectWorktree={(projectName, key) => {
-          selectWorktree(projectName, key);
-          const project = projects.find(candidate => candidate.name === projectName);
-          if (project && activeProject?.name !== projectName) setActiveProject(project);
-        }}
+        onSelectWorktree={selectProjectWorktree}
+        isTaskDismissed={isTaskDismissed}
+        onReopenTask={reopenTask}
         waitingProjects={waitingProjects}
         shelvedProjects={shelvedProjects}
         activeProject={activeProject}
@@ -555,6 +568,10 @@ function AppContent() {
             selectedWorktree={selectedWorktreeByProject[activeProject.name]}
             onSelectWorktree={key => selectWorktree(activeProject.name, key)}
             onTasksChanged={refreshTasks}
+            isTaskDismissed={isTaskDismissed}
+            onDismissTask={dismissTask}
+            onTaskCreated={taskCreated}
+            onTaskFinished={taskFinished}
             worktreeBySession={worktreeBySession}
             sessionStatus={sessionStatus}
             sessionTitles={sessionTitles}

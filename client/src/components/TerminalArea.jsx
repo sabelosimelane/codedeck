@@ -368,6 +368,10 @@ export default function TerminalArea({
   onSendBackPipelineRun,
   onChangePipelineRunAgent,
   onTasksChanged = () => {},
+  isTaskDismissed = () => false,
+  onDismissTask,
+  onTaskCreated,
+  onTaskFinished,
 }) {
   const [state, setState] = useState({ tabs: [], activeTabId: null });
   const [localWorktreeSelection, setLocalWorktreeSelection] = useState(() => readWorktreeSelection(project.name));
@@ -435,7 +439,8 @@ export default function TerminalArea({
       worktrees: task ? task.worktrees : null, paths: task ? task.worktrees.map(worktree => worktree.worktreePath) : [key] });
   }
   const requestedGroup = selectedWorktree ?? localWorktreeSelection;
-  const visibleGroup = groups.some(group => group.key === requestedGroup) ? requestedGroup : 'main';
+  const visibleGroups = groups.filter(group => !group.task || !isTaskDismissed(group.task));
+  const visibleGroup = visibleGroups.some(group => group.key === requestedGroup) ? requestedGroup : 'main';
   const displayTabs = orderTabsForDisplay(groups.length > 1 ? tabs.filter(tab => tabGroupKey(tab) === visibleGroup) : tabs, waitingSessionIds);
   // The run shown is the newest open run of the place the owner is looking at.
   const visibleRun = pipelineRuns
@@ -695,6 +700,11 @@ export default function TerminalArea({
     if (sessionIds.length === 0) return;
     markDeletedSessionIds(project.name, sessionIds);
     for (const sessionId of sessionIds) createdWorktreePathsRef.current.delete(`${project.name}:${sessionId}`);
+    if (prevProjectRef.current !== project.name) {
+      const saved = loadLayout(project.name);
+      if (saved) saveLayout(project.name, removeSessionsFromLayout(saved, sessionIds));
+      return;
+    }
     updateTerminalState(previous => removeSessionsFromLayout(previous, sessionIds), { persistImmediately: true });
   };
 
@@ -946,6 +956,7 @@ export default function TerminalArea({
         ...(skipSync ? { skipSync: true } : {}),
       });
       createdTasksRef.current.set(task.worktreePath, task);
+      onTaskCreated?.(task);
       onTasksChanged();
       const opened = await openTaskTerminal(task.id);
       const sessionId = opened.sessionId;
@@ -989,7 +1000,7 @@ export default function TerminalArea({
       showToast({ type: 'error', message });
       throw error;
     }
-  }, [project.name, activeHost, defaultProjectHost, showToast, updateTerminalState, onSelectWorktree, onTasksChanged]);
+  }, [project.name, activeHost, defaultProjectHost, showToast, updateTerminalState, onSelectWorktree, onTasksChanged, onTaskCreated]);
 
   // Backend-confirmed sessions (session search resume + pipeline step tabs)
   // reuse the attach path without calling /api/terminal for a second session ID.
@@ -1374,12 +1385,17 @@ export default function TerminalArea({
 
       {/* Main and the project's tasks, and the way to start another task. */}
       {(groups.length > 1 || canStartTask) && <div className="worktree-switcher" aria-label="Main and tasks">
-        {groups.map(group => {
+        {visibleGroups.map(group => {
           const count = tabs.filter(tab => tabGroupKey(tab) === group.key).length;
           const { title, tooltip } = describeWorktreeGroup(group);
           const runState = group.run ? describeRunStatus(group.run) : null;
           const waiting = runState?.needsOwner === true;
-          return <button key={group.key} type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{runState && <span className="worktree-switcher-state" data-tone={runState.tone}>{runState.tone === 'done' && <Check size={10} strokeWidth={2.75} aria-hidden="true" />}{runState.label.toLowerCase()}</span>}{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>;
+          return <span key={group.key} className="worktree-switcher-tab"><button type="button" onClick={() => selectGroup(group.key)} aria-label={`${title} (${count})`} title={tooltip} aria-pressed={visibleGroup === group.key} className="worktree-switcher-button"><span className="worktree-switcher-title">{title}</span><span className="worktree-switcher-count">{count}</span>{runState && <span className="worktree-switcher-state" data-tone={runState.tone}>{runState.tone === 'done' && <Check size={10} strokeWidth={2.75} aria-hidden="true" />}{runState.label.toLowerCase()}</span>}{waiting && <span className="worktree-switcher-waiting" aria-label="Waiting for owner" data-tone="waiting" aria-hidden="true">●</span>}</button>
+            {group.task && onDismissTask && <button type="button" className="worktree-switcher-button"
+              title="Dismiss tab" aria-label={`Dismiss tab: ${group.task.title}`} onClick={() => onDismissTask(group.task)}>
+              <X size={12} aria-hidden="true" />
+            </button>}
+          </span>;
         })}
         {canStartTask && <button type="button" className="worktree-switcher-button worktree-switcher-new" onClick={() => setShowWorktreeDialog(true)} disabled={isTerminalRuntimeBlocked && activeHost === 'local'} title={isTerminalRuntimeBlocked && activeHost === 'local' ? terminalRuntimeBlockedMessage : 'Start a task: work on something in its own copy of the project'}><Plus size={11} /><span className="worktree-switcher-title">New task</span></button>}
         {/* A run works in a task or in Main, so it is started here, beside them, and not among a tab's own actions. */}
@@ -1415,7 +1431,11 @@ export default function TerminalArea({
         )}
       </div>}
       {visibleTask && <TaskLandingBar key={visibleTask.id} task={visibleTask} onChanged={onTasksChanged}
-        canAddRepository onFinished={result => { removeClosedSessions(result.terminalsClosed); selectGroup('main'); }}
+        canAddRepository onFinished={result => {
+          onTaskFinished?.(visibleTask);
+          removeClosedSessions(result.terminalsClosed);
+          if (prevProjectRef.current === project.name && visibleGroupRef.current === visibleTask.worktreePath) selectGroup('main');
+        }}
         // One repository of the task was merged or closed: its terminals are gone, the task stays on screen.
         onRepositoryFinished={result => removeClosedSessions(result.terminalsClosed)} />}
       <TaskFrame run={visibleRun} group={groups.find(group => group.key === visibleGroup)}

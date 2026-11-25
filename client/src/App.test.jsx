@@ -8,12 +8,15 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('./components/Sidebar', () => ({
-  default: ({ activeProjects = [], waitingProjects = [], onSelect, onActivateWaiting, onRemove }) => (
+  default: ({ activeProjects = [], waitingProjects = [], onSelect, onActivateWaiting, onRemove, worktreeGroupsByProject, isTaskDismissed, onReopenTask }) => (
     <div>
       {activeProjects.map(project => (
         <React.Fragment key={project.name}>
           <button onClick={() => onSelect(project)}>{project.name}</button>
           <button onClick={() => onRemove(project.name)}>Remove {project.name}</button>
+          {worktreeGroupsByProject.get(project.name)?.filter(group => group.task && isTaskDismissed?.(group.task)).map(({ task }) => (
+            <button key={task.id} onClick={() => onReopenTask(task)}>Reopen {project.name} {task.title}</button>
+          ))}
         </React.Fragment>
       ))}
       {waitingProjects.map(project => (
@@ -26,9 +29,14 @@ vi.mock('./components/Sidebar', () => ({
 }));
 
 vi.mock('./components/TerminalArea', () => ({
-  default: ({ selectedWorktree, onOpenRunWorkflow }) => (
+  default: ({ project, selectedWorktree, onOpenRunWorkflow, worktreeGroups, isTaskDismissed, onDismissTask, onTaskCreated }) => (
     <div>
       <button onClick={onOpenRunWorkflow}>Open run workflow</button>
+      {worktreeGroups?.filter(group => group.task && !isTaskDismissed?.(group.task)).map(({ task }) => (
+        <button key={task.id} onClick={() => onDismissTask(task)}>Dismiss {task.title}</button>
+      ))}
+      <button onClick={() => onTaskCreated(navigationTask(9, project.name, 'Local task'))}>Create local task</button>
+      <output data-testid="task-membership">{JSON.stringify(worktreeGroups?.filter(group => group.task).map(group => [group.task.id, group.paths, group.sessionIds, group.run?.id, group.run?.status]))}</output>
       <span data-testid="selected-worktree">{selectedWorktree ?? 'none'}</span>
     </div>
   ),
@@ -76,6 +84,10 @@ vi.mock('./utils/fileActions', () => ({
   openFilePreviewTab: vi.fn(),
 }));
 
+vi.mock('./hooks/usePipelineRunCounts', () => ({
+  usePipelineRunCounts: () => ({ runsByProject: mocks.runsByProject }),
+}));
+
 vi.mock('./hooks/usePipelineRuns', () => ({
   usePipelineRuns: () => ({
     runs: [],
@@ -106,6 +118,19 @@ function mockSystemResources(resources = {
   return okJson(resources);
 }
 
+function navigationTask(n, project, title = 'Same title') {
+  const stamp = '2026-11-19T08:00:00.000Z';
+  const fields = { worktreePath: `/tmp/worktrees/nav-${n}`, branch: `task/t${n}`, baseBranch: 'main',
+    baseCommit: 'a'.repeat(40), state: 'active', prUrl: null };
+  const worktree = (suffix, first, overrides) => ({
+    ...fields, repository: first ? 'backend' : 'frontend', own: first, first,
+    id: `7b000000-0000-4000-8000-0000000000${n}${suffix}`, ...overrides,
+  });
+  return { id: `7a000000-0000-4000-8000-00000000000${n}`, project, title, revision: 1, createdAt: stamp,
+    updatedAt: stamp, finishedAt: null, folder: null, ...fields,
+    worktrees: [worktree(1, true), worktree(2, false, { worktreePath: `${fields.worktreePath}-front`, state: 'merged' })] };
+}
+
 describe('App polling', () => {
   let originalFetch;
 
@@ -113,6 +138,7 @@ describe('App polling', () => {
     vi.useFakeTimers();
     originalFetch = global.fetch;
     mocks.showToast.mockReset();
+    mocks.runsByProject = new Map();
     localStorage.clear();
     document.title = 'CodeDeck';
     window.history.replaceState({}, '', '/');
@@ -123,6 +149,72 @@ describe('App polling', () => {
     vi.useRealTimers();
     global.fetch = originalFetch;
     vi.restoreAllMocks();
+  });
+
+  it('dismisses only the selected project task and restores it across polls, a failed reload, and reopening', async () => {
+    const task = navigationTask(1, 'Gamma');
+    const other = navigationTask(2, 'Delta');
+    const sessionId = 'Gamma-12';
+    const empty = navigationTask(3, 'Gamma', 'Empty task');
+    const run = { id: 'pause-1', project: task.project, status: 'limit_paused', workflowName: 'Fix',
+      worktree: { path: task.worktreePath, branch: task.branch }, progress: null, createdAt: task.createdAt, steps: [] };
+    mocks.runsByProject.set(task.project, [run]);
+    let tasks = [task, other, empty];
+    let unavailable = false;
+    global.fetch = vi.fn(url => {
+      if (url === '/api/projects') return okJson([{ name: 'Gamma', path: '/tmp/gamma', repositories: [] }, { name: 'Delta', path: '/tmp/delta', repositories: [] }]);
+      if (url === '/api/sessions') return okJson([{ sessionId, project: 'Gamma', worktreePath: task.worktrees[1].worktreePath }]);
+      if (String(url).startsWith('/api/tasks')) return unavailable ? Promise.reject(new Error('offline')) :
+        okJson({ data: tasks, page: { currentPage: 0, size: 100, totalElements: tasks.length, totalPages: 1, hasNextPage: false } });
+      return okJson([]);
+    });
+    localStorage.setItem('codedeck-worktree-Gamma', task.worktreePath);
+    const flush = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    const first = render(<App />);
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Gamma' }));
+    const selected = () => screen.getByTestId('selected-worktree').textContent;
+    const members = () => JSON.parse(screen.getByTestId('task-membership').textContent);
+    expect(selected()).toBe(task.worktreePath);
+    const expected = [task.id, task.worktrees.map(row => row.worktreePath), [sessionId], run.id, run.status];
+    expect(members().find(row => row[0] === task.id)).toEqual(expected);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss Empty task' }));
+    expect(selected()).toBe(task.worktreePath);
+    expect(screen.getByRole('button', { name: 'Reopen Gamma Empty task' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss Same title' }));
+    expect(selected()).toBe('main');
+    await flush(4000);
+    expect(screen.queryByRole('button', { name: 'Dismiss Same title' })).toBeNull();
+    expect(members().find(row => row[0] === task.id)).toEqual(expected);
+    fireEvent.click(screen.getByRole('button', { name: 'Delta' }));
+    expect(screen.getByRole('button', { name: 'Dismiss Same title' })).toBeTruthy();
+    unavailable = true;
+    first.unmount();
+    render(<App />);
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen Gamma Same title' }));
+    expect(selected()).toBe(task.worktreePath);
+    expect(members().find(row => row[0] === task.id)).toEqual(expected);
+    expect(screen.queryByRole('button', { name: 'Reopen Gamma Same title' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss Same title' }));
+    unavailable = false;
+    tasks = [other];
+    await flush(2000);
+    expect(screen.queryByRole('button', { name: 'Reopen Gamma Same title' })).toBeNull();
+    expect(global.fetch.mock.calls.every(([, options]) => (options?.method ?? 'GET') === 'GET')).toBe(true);
+  });
+
+  it('can dismiss and reopen a locally created empty task before the list reports it', async () => {
+    global.fetch = vi.fn(url => url === '/api/projects' ? okJson([{ name: 'Gamma', path: '/tmp/gamma', repositories: [] }]) :
+      String(url).startsWith('/api/tasks') ? okJson({ data: [], page: { currentPage: 0, size: 100, totalElements: 0, totalPages: 0, hasNextPage: false } }) : okJson([]));
+    render(<App />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    fireEvent.click(screen.getByRole('button', { name: 'Gamma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create local task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss Local task' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen Gamma Local task' }));
+    expect(screen.getByTestId('selected-worktree').textContent).toBe('/tmp/worktrees/nav-9');
   });
 
   it('opens the dashboard directly from the main navigation and returns to the workspace', async () => {
