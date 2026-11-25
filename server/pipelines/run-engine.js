@@ -18,17 +18,15 @@ import { buildStepGuidance } from './step-guidance.js';
 import { planRunTerminalMuting } from './run-terminal-muting.js';
 import { notePath, writeCommitNote as defaultWriteCommitNote, prepare as defaultPrepareNotes, readNote as defaultReadNote, writeFeedback as defaultWriteFeedback, writeBrief as defaultWriteBrief } from './run-notes.js';
 import { listAttachmentCopiesAtRisk as defaultListAttachmentsAtRisk, verifyAttachmentCopies as defaultVerifyAttachments } from './attachment-verify.js';
-import { ACCEPT_RECOMMENDATIONS_ANSWER, liveAgentChangeTiming, NO_PROGRESS_ROUNDS } from '../../shared/pipeline-definitions.mjs';
+import { ACCEPT_RECOMMENDATIONS_ANSWER, liveAgentChangeTiming, NO_PROGRESS_ROUNDS, validateRunTimeouts } from '../../shared/pipeline-definitions.mjs';
 
 // A run keeps the definition it started with, so a run begun before Bug fix was phased still verifies.
 const verificationPrompts = new Set([...WORKFLOW_TEMPLATES.filter(t => ['bugfix', 'troubleshoot'].includes(t.kind)).map(t => t.nodes.at(-2).prompt), PREVIOUS_BUG_FIX_PROMPTS.Test]);
 const DEFAULT_POLL_MS = 1000;
-const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENTER_DELAY_MS = 100;
 const DEFAULT_DIALOG_POLL_MS = 2000;
-// How long an agent may sit idle at an unchanged prompt while its pass runs before the prompt
-// is taken to be lost: it is sent once more, and then the run fails.
-const DEFAULT_PROMPT_PICKUP_MS = 30_000;
+// The lost-prompt grace (lostPromptSeconds in the owner's settings) is capped at this while the
+// agent's screen still shows only its empty welcome.
 const EMPTY_WELCOME_PICKUP_MS = 4000;
 // Readings of an unchanged shell, after a launch, that mean the launch command never arrived.
 const LAUNCH_LOST_READINGS = 3;
@@ -39,8 +37,6 @@ const EXIT_DEBOUNCE_READINGS = 2;
 // An agent between two steps of its turn can show an idle prompt for a moment (Muse has no live
 // status line then). Its turn counts as over only once the idle screen stops changing.
 const IDLE_SETTLE_READINGS = 5;
-// Log a stall warning if a running step's screen stays unchanged for 15 minutes while not idle at prompt.
-const SILENT_STALL_WARN_MS = 15 * 60 * 1000;
 const INTERRUPTIBLE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input']);
 
 /**
@@ -138,11 +134,12 @@ export function createRunEngine({
   canReclaimReleasedTaskWorktree = () => false,
   now = () => new Date().toISOString(),
   setTimeout: setTimeoutFn = setTimeout,
+  readTimeouts,
   readinessPollMs = DEFAULT_POLL_MS,
-  readinessTimeoutMs = DEFAULT_TIMEOUT_MS,
+  readinessTimeoutMs,
   launchEnterDelayMs = DEFAULT_ENTER_DELAY_MS,
   dialogPollMs = DEFAULT_DIALOG_POLL_MS,
-  promptPickupMs = DEFAULT_PROMPT_PICKUP_MS,
+  promptPickupMs,
 } = {}) {
   if (!runStore) throw new Error('createRunEngine: runStore is required');
   if (typeof createWorktree !== 'function') throw new Error('createRunEngine: createWorktree is required');
@@ -171,7 +168,24 @@ export function createRunEngine({
   if (typeof typeIntoTerminal !== 'function') throw new Error('createRunEngine: typeIntoTerminal must be a function');
   if (typeof inspectTerminal !== 'function') throw new Error('createRunEngine: inspectTerminal must be a function');
   if (typeof terminalInFolder !== 'function') throw new Error('createRunEngine: terminalInFolder must be a function');
-  if (!Number.isInteger(promptPickupMs) || promptPickupMs <= 0) throw new Error(`createRunEngine: promptPickupMs must be a positive integer, got ${promptPickupMs}`);
+  if (typeof readTimeouts !== 'function') throw new TypeError('createRunEngine: readTimeouts must be a function');
+  if (!Number.isInteger(readinessPollMs) || readinessPollMs <= 0) throw new Error(`createRunEngine: readinessPollMs must be a positive integer, got ${readinessPollMs}`);
+  if (readinessTimeoutMs !== undefined && (!Number.isInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)) throw new Error(`createRunEngine: readinessTimeoutMs must be a positive integer, got ${readinessTimeoutMs}`);
+  if (promptPickupMs !== undefined && (!Number.isInteger(promptPickupMs) || promptPickupMs <= 0)) throw new Error(`createRunEngine: promptPickupMs must be a positive integer, got ${promptPickupMs}`);
+  const currentTimeouts = () => {
+    const value = readTimeouts();
+    const errors = validateRunTimeouts(value);
+    if (errors.length) throw new Error(`pipeline run: settings ${errors[0].field}: ${errors[0].message}`);
+    return value;
+  };
+  // A terminal's workflow may have been made before the owner changed a timeout.
+  const applyWorkflowTimeouts = (workflow) => {
+    if (typeof workflow.readTimeoutsFrom !== 'function') throw new Error('pipeline run: workflow requires readTimeoutsFrom()');
+    workflow.readTimeoutsFrom(() => {
+      const { resetSettleSeconds, finalSignalIdleSeconds } = currentTimeouts();
+      return { resetTimeoutMs: resetSettleSeconds * 1000, handoffIdleMs: finalSignalIdleSeconds * 1000 };
+    });
+  };
 
   const handles = new Map();
   const noteWarnings = new Set();
@@ -570,8 +584,9 @@ export function createRunEngine({
       if (returningStep !== null && !launched && AGENT_AT_WORK.has(lastState?.executionReason)) continue;
 
       waitedMs += readinessPollMs;
-      if (waitedMs >= readinessTimeoutMs) {
-        failRun(runId, readinessTimeoutMessage(agentName, lastState, readinessTimeoutMs));
+      const readyMs = readinessTimeoutMs ?? currentTimeouts().agentReadySeconds * 1000;
+      if (waitedMs >= readyMs) {
+        failRun(runId, readinessTimeoutMessage(agentName, lastState, readyMs));
         return { ok: false, reason: 'timeout' };
       }
     }
@@ -672,7 +687,8 @@ export function createRunEngine({
       silentStall.screen = screen;
       if (pass.status === 'running' && !handle.dialogPause && runStore.get(runId)?.status === 'running' && readiness !== 'ready' && stallUnchanged) {
         silentStall.unchangedMs += dialogPollMs;
-        if (!silentStall.warned && silentStall.unchangedMs >= SILENT_STALL_WARN_MS) {
+        // A running step whose screen stays unchanged, not idle at its prompt, is logged as stalled once.
+        if (!silentStall.warned && silentStall.unchangedMs >= currentTimeouts().stallWarningMinutes * 60_000) {
           silentStall.warned = true;
           console.warn(`[pipeline-run] ${runId}: step ${stepName} has shown no screen change for ${Math.round(silentStall.unchangedMs / 60000)}m in ${sessionId}`);
         }
@@ -687,7 +703,8 @@ export function createRunEngine({
       }
       pickup.idleMs += dialogPollMs;
       const emptyWelcome = state.profile?.emptyWelcomePrompt?.(state.lines);
-      const grace = emptyWelcome ? Math.min(promptPickupMs, EMPTY_WELCOME_PICKUP_MS) : promptPickupMs;
+      const pickupMs = promptPickupMs ?? currentTimeouts().lostPromptSeconds * 1000;
+      const grace = emptyWelcome ? Math.min(pickupMs, EMPTY_WELCOME_PICKUP_MS) : pickupMs;
       if (pickup.idleMs < grace) return;
       const action = !pickup.resent ? 'Retrying prompt delivery.' : restartedAttempt ? 'Ending attempt.' : 'Restarting agent.';
       const observation = emptyWelcome ? 'Empty Muse welcome' : 'Idle prompt';
@@ -1358,6 +1375,7 @@ export function createRunEngine({
       handle.workflow = workflow;
 
       attachAudit(runId, workflow);
+      applyWorkflowTimeouts(workflow);
       workflow.start({
         requestId,
         command,
@@ -1915,6 +1933,7 @@ export function createRunEngine({
 
         try {
           attachAudit(run.id, workflow);
+          applyWorkflowTimeouts(workflow);
           workflow.reattach(savedState, workflowOptions);
         } catch (err) {
           console.warn(`[pipeline-run] startup workflow reattach failed for ${run.id} (${sessionId}): ${err?.message || err}`);

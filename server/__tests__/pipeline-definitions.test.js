@@ -14,6 +14,8 @@ import {
   validateWorkflowBody,
 } from '../../shared/pipeline-definitions.mjs';
 
+const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+
 const UUID = '6f1c0000-0000-4000-8000-000000000001';
 const UUID2 = '6f1c0000-0000-4000-8000-000000000002';
 
@@ -242,26 +244,39 @@ describe('validateWorkflowBody', () => {
 });
 
 describe('validateSettingsBody', () => {
+  const timeouts = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+  it('requires and validates every timeout field', () => {
+    const body = { setupAgentId: null, defaultBaseBranch: null, revision: 1, timeouts };
+    expect(validateSettingsBody(body)).toEqual([]);
+    expect(fields(validateSettingsBody({ ...body, timeouts: undefined }))).toContain('timeouts');
+    expect(fields(validateSettingsBody({ ...body, timeouts: { ...timeouts, extra: 1 } }))).toContain('timeouts.extra');
+    expect(fields(validateSettingsBody({ ...body, timeouts: { ...timeouts, toString: 1 } }))).toContain('timeouts.toString');
+    for (const [field, min, max] of [['agentReadySeconds', 10, 3600], ['resetSettleSeconds', 5, 600], ['finalSignalIdleSeconds', 5, 600], ['lostPromptSeconds', 5, 600], ['stallWarningMinutes', 1, 240]]) {
+      for (const value of [min - 1, max + 1, 1.5, undefined]) {
+        expect(fields(validateSettingsBody({ ...body, timeouts: { ...timeouts, [field]: value } }))).toContain(`timeouts.${field}`);
+      }
+    }
+  });
   it('accepts null or UUID setupAgentId with revision', () => {
-    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, revision: 1 })).toEqual([]);
-    expect(validateSettingsBody({ setupAgentId: UUID, defaultBaseBranch: null, revision: 2 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: UUID, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 })).toEqual([]);
   });
 
   it('accepts a branch name or null as the default base branch, and requires it', () => {
-    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: 'develop', revision: 1 })).toEqual([]);
-    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: 'release/2.1', revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
+    expect(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: 'release/2.1', timeouts: TIMEOUTS, revision: 1 })).toEqual([]);
     for (const bad of ['', ' develop', '-x', 'a b', 'a..b', 'x.lock', 'x/', '/x', 'a~b', 'a^b', 'a:b', 'a?b', 'a*b', 'a[b', 'a\\b', '@', 'a@{b', 'x'.repeat(201), 3, undefined]) {
-      expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: bad, revision: 1 }))).toContain('defaultBaseBranch');
+      expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: bad, timeouts: TIMEOUTS, revision: 1 }))).toContain('defaultBaseBranch');
     }
   });
 
   it('rejects invalid setupAgentId and revision', () => {
-    expect(fields(validateSettingsBody({ setupAgentId: 'x', defaultBaseBranch: null, revision: 1 }))).toContain('setupAgentId');
-    expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, revision: 0 }))).toContain('revision');
+    expect(fields(validateSettingsBody({ setupAgentId: 'x', defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }))).toContain('setupAgentId');
+    expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 0 }))).toContain('revision');
   });
 
   it('rejects unknown fields', () => {
-    expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, revision: 1, extra: 1 }))).toContain('extra');
+    expect(fields(validateSettingsBody({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1, extra: 1 }))).toContain('extra');
   });
 });
 

@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PipelineApiError } from '../pipelinesApi';
 import { loadDefinitions, parseTeam, parseAgent, parsePreflight, parseRunPlan, parseSettings, parseStepPreset, parseTemplate, parseWorkflow, parseWorktree } from '../pipelineRecords';
 
+const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+
 const A1 = '11111111-1111-4111-8111-111111111111';
 const W1 = '33333333-3333-4333-8333-333333333333';
 
@@ -149,18 +151,29 @@ describe('parseWorkflow', () => {
 });
 
 describe('parseSettings', () => {
+  it('rejects every missing or out-of-range timeout field', () => {
+    const timeouts = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+    const settings = { setupAgentId: null, defaultBaseBranch: null, revision: 1, timeouts };
+    expect(parseSettings(settings).timeouts).toEqual(timeouts);
+    expect(() => parseSettings({ ...settings, timeouts: { ...timeouts, toString: 1 } })).toThrow('timeouts.toString');
+    for (const [field, max] of [['agentReadySeconds', 3600], ['resetSettleSeconds', 600], ['finalSignalIdleSeconds', 600], ['lostPromptSeconds', 600], ['stallWarningMinutes', 240]]) {
+      for (const value of [undefined, 0, max + 1, 1.5]) {
+        expect(() => parseSettings({ ...settings, timeouts: { ...timeouts, [field]: value } })).toThrow(`timeouts.${field}`);
+      }
+    }
+  });
   it('accepts no setup agent or an agent id', () => {
-    expect(parseSettings({ setupAgentId: null, defaultBaseBranch: null, revision: 1 })).toEqual({ setupAgentId: null, defaultBaseBranch: null, revision: 1 });
-    expect(parseSettings({ setupAgentId: A1, defaultBaseBranch: null, revision: 9 })).toEqual({ setupAgentId: A1, defaultBaseBranch: null, revision: 9 });
-    expect(parseSettings({ setupAgentId: null, defaultBaseBranch: 'develop', revision: 2 }).defaultBaseBranch).toBe('develop');
+    expect(parseSettings({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 })).toEqual({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
+    expect(parseSettings({ setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 9 })).toEqual({ setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 9 });
+    expect(parseSettings({ setupAgentId: null, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 2 }).defaultBaseBranch).toBe('develop');
   });
 
   it.each([
-    ['setupAgentId', { setupAgentId: undefined, defaultBaseBranch: null, revision: 1 }],
-    ['setupAgentId', { setupAgentId: '', defaultBaseBranch: null, revision: 1 }],
-    ['revision', { setupAgentId: null, defaultBaseBranch: null, revision: 0 }],
+    ['setupAgentId', { setupAgentId: undefined, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }],
+    ['setupAgentId', { setupAgentId: '', defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }],
+    ['revision', { setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 0 }],
     ['defaultBaseBranch', { setupAgentId: null, revision: 1 }],
-    ['defaultBaseBranch', { setupAgentId: null, defaultBaseBranch: 'a b', revision: 1 }],
+    ['defaultBaseBranch', { setupAgentId: null, defaultBaseBranch: 'a b', timeouts: TIMEOUTS, revision: 1 }],
     ['settings', 'nope'],
   ])('rejects settings with a bad %s', (field, record) => {
     rejects(parseSettings, record, field);
@@ -170,7 +183,7 @@ describe('parseSettings', () => {
 describe('loadDefinitions', () => {
   const page = data => ({ ok: true, status: 200, json: async () => ({ data, page: { hasNextPage: false } }) });
 
-  function stubBackend({ agents = [agent()], roles = [], workflows = [workflow()], settings = { setupAgentId: A1, defaultBaseBranch: null, revision: 3 }, templates = [], stepPresets = [] } = {}) {
+  function stubBackend({ agents = [agent()], roles = [], workflows = [workflow()], settings = { setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 3 }, templates = [], stepPresets = [] } = {}) {
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (String(url).includes('/agents')) return page(agents);
       if (String(url).includes('/roles')) return page(roles);
@@ -187,7 +200,7 @@ describe('loadDefinitions', () => {
       agents: [parseAgent(agent())],
       roles: [],
       workflows: [workflow()],
-      settings: { setupAgentId: A1, defaultBaseBranch: null, revision: 3 },
+      settings: { setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 3 },
       templates: [],
       stepPresets: [],
     });
@@ -376,7 +389,7 @@ describe('kind, description, roles and what the owner saved', () => {
       if (String(url).includes('/workflows')) return page([workflow()]);
       if (String(url).includes('/templates')) return page(templates);
       if (String(url).includes('/step-presets')) return page(presets);
-      return { ok: true, status: 200, json: async () => ({ setupAgentId: A1, defaultBaseBranch: null, revision: 3 }) };
+      return { ok: true, status: 200, json: async () => ({ setupAgentId: A1, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 3 }) };
     }));
     stub([template()], [preset()]);
     await expect(loadDefinitions()).resolves.toMatchObject({ roles: [role], templates: [template()], stepPresets: [preset()] });

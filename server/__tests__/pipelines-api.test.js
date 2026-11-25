@@ -31,6 +31,8 @@ import { create as createRunWorktree, planNames as realPlanNames } from '../pipe
 import { AttachmentPublishError, publishAttachmentBatch } from '../pipelines/attachment-publisher.js';
 import { reconcileAttachmentStarts } from '../pipelines/attachment-reconcile.js';
 
+const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+
 const base = '/api/pipelines';
 const cleanup = [];
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); });
@@ -332,7 +334,7 @@ function staff(ctx, agent) {
 
 async function seedReady(ctx, { withInput = true } = {}) {
   const agent = ctx.agentStore.create(agentBody());
-  ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+  ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
   const workflow = ctx.workflowStore.create({
     name: 'Feature', agentsDecide: false,
     nodes: [node(agent.id, withInput ? {} : { prompt: 'No placeholder' })],
@@ -399,7 +401,7 @@ describe('pipelines API — agents', () => {
     const setupDelete = await request(ctx.app).delete(`${base}/agents/${agent.id}`);
     expect(setupDelete.status).toBe(409);
 
-    ctx.settingsStore.update({ setupAgentId: null, defaultBaseBranch: null, revision: 2 });
+    ctx.settingsStore.update({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 2 });
     const usedDelete = await request(ctx.app).delete(`${base}/agents/${agent.id}`);
     expect(usedDelete.status).toBe(409);
 
@@ -505,7 +507,7 @@ describe('pipelines API — progress file start boundary', () => {
     const ctx = await setup(overrides);
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     const body = { requestId: 'progress-boundary', workflowId: workflow.id, project: 'Demo', input: 'feature' };
     return { ctx, workflow, body };
@@ -724,19 +726,25 @@ describe('pipelines API — workflows and settings', () => {
     expect(created.body.revision).toBe(1);
 
     const settings = await request(app).get(`${base}/settings`);
-    expect(settings.body).toEqual({ setupAgentId: null, defaultBaseBranch: null, revision: 1 });
+    expect(settings.body).toEqual({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
 
     const updated = await request(app).put(`${base}/settings`).send({
       setupAgentId: agent.id,
       defaultBaseBranch: 'develop',
+      timeouts: TIMEOUTS,
       revision: 1,
     });
     expect(updated.status).toBe(200);
-    expect(updated.body).toEqual({ setupAgentId: agent.id, defaultBaseBranch: 'develop', revision: 2 });
+    expect(updated.body).toEqual({ setupAgentId: agent.id, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: 2 });
 
     const unnamed = await request(app).put(`${base}/settings`).send({ setupAgentId: agent.id, revision: 2 });
     expect(unnamed.status).toBe(400);
-    expect(unnamed.body.errors.map(error => error.field)).toEqual(['defaultBaseBranch']);
+    expect(unnamed.body.errors.map(error => error.field)).toContain('defaultBaseBranch');
+    const invalidTimeout = await request(app).put(`${base}/settings`).send({
+      setupAgentId: agent.id, defaultBaseBranch: 'develop', timeouts: { ...TIMEOUTS, resetSettleSeconds: 4 }, revision: 2,
+    });
+    expect(invalidTimeout.status).toBe(400);
+    expect(invalidTimeout.body.errors).toEqual([{ field: 'timeouts.resetSettleSeconds', message: 'Use an integer from 5 to 600' }]);
   });
 
   it('rejects a workflow node whose role is absent from the catalog', async () => {
@@ -758,7 +766,7 @@ describe('pipelines API — workflows and settings', () => {
     const dup = await request(app).post(`${base}/workflows`).send({ name: 'feature', agentsDecide: false, nodes: [node(agent.id)] });
     expect(dup.status).toBe(409);
 
-    const stale = await request(app).put(`${base}/settings`).send({ setupAgentId: null, defaultBaseBranch: null, revision: 9 });
+    const stale = await request(app).put(`${base}/settings`).send({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 9 });
     expect(stale.status).toBe(409);
   });
 });
@@ -1003,7 +1011,7 @@ describe('pipelines API — preflight and runs', () => {
     });
     const fixedCtx = await setup({ routerDeps: { execFile } });
     staff(fixedCtx, fixedCtx.agentStore.create(agentBody()));
-    fixedCtx.settingsStore.update({ setupAgentId: fixedCtx.agentStore.list()[0].id, defaultBaseBranch: null, revision: 1 });
+    fixedCtx.settingsStore.update({ setupAgentId: fixedCtx.agentStore.list()[0].id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const fixedWorkflow = fixedCtx.workflowStore.create({
       name: 'FixedProgress', agentsDecide: false, progressFile: 'docs/todo.md',
       nodes: [node(fixedCtx.agentStore.list()[0].id, { prompt: 'Work' })],
@@ -1104,7 +1112,7 @@ describe('pipelines API — preflight and runs', () => {
     const settingsStore = createSettingsStore(db);
     const runStore = createRunStore(db, { now: () => times[Math.min(i++, times.length - 1)] });
     const agent = agentStore.create(agentBody());
-    settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = workflowStore.create({ name: 'Feature', agentsDecide: false, nodes: [node(agent.id)] });
 
     const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'];
@@ -2367,7 +2375,7 @@ describe('pipelines API — loops and who decides', () => {
   async function seedLoop(ctx, { agentsDecide = true } = {}) {
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const body = {
       name: 'Build',
       agentsDecide,
@@ -2850,7 +2858,7 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup({ routerDeps: { progressReader: { read } } });
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const body = { name: 'Progress', agentsDecide: false, nodes: [node(agent.id, { prompt: 'Work' })] };
     const workflow = ctx.workflowStore.create(body);
     const start = (requestId, input) => request(ctx.app).post(`${base}/runs`).send({ requestId, workflowId: workflow.id, project: 'Demo', input });
@@ -2897,7 +2905,7 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup({ routerDeps: { progressReader: { read }, execFile } });
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const body = { name: 'Progress', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] };
     const created = await request(ctx.app).post(`${base}/workflows`).send(body);
     const started = await request(ctx.app).post(`${base}/runs`).send({ requestId: 'progress-status', workflowId: created.body.id, project: 'Demo', input: '' });
@@ -2923,7 +2931,7 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup({ routerDeps: { progressReader: { read }, execFile } });
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflowBody = { name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}', nodes: [node(agent.id)] };
     const created = await request(ctx.app).post(`${base}/workflows`).send(workflowBody);
     expect(created.status).toBe(201);
@@ -2958,7 +2966,7 @@ describe('pipelines API — progress file', () => {
     const ctx = await setup();
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Progress', agentsDecide: false, progressFile: 'docs/{input}.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     for (const input of ['', '../bad', 'x'.repeat(510)]) {
       const response = await request(ctx.app).post(`${base}/runs`).send({ requestId: `progress-${input.length}`, workflowId: workflow.id, project: 'Demo', input });
@@ -3216,7 +3224,7 @@ describe('pipelines API — runs in tasks', () => {
 
   it('cuts a new task from the default base branch of the settings when the run names none', async () => {
     const ctx = await setupTasks();
-    ctx.settingsStore.update({ setupAgentId: ctx.settingsStore.get().setupAgentId, defaultBaseBranch: 'develop', revision: ctx.settingsStore.get().revision });
+    ctx.settingsStore.update({ setupAgentId: ctx.settingsStore.get().setupAgentId, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: ctx.settingsStore.get().revision });
     const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'From default' } }));
     expect(started.status).toBe(201);
     expect(ctx.taskService.plan).toHaveBeenCalledWith({ project: 'Demo', host: 'local', title: 'From default', titleSource: 'owner', baseBranch: 'develop' });
@@ -3224,7 +3232,7 @@ describe('pipelines API — runs in tasks', () => {
 
   it('cuts a new task from the branch the run names, over the default', async () => {
     const ctx = await setupTasks();
-    ctx.settingsStore.update({ setupAgentId: ctx.settingsStore.get().setupAgentId, defaultBaseBranch: 'develop', revision: ctx.settingsStore.get().revision });
+    ctx.settingsStore.update({ setupAgentId: ctx.settingsStore.get().setupAgentId, defaultBaseBranch: 'develop', timeouts: TIMEOUTS, revision: ctx.settingsStore.get().revision });
     const started = await request(ctx.app).post(`${base}/runs`).send(ctx.body({ newTask: { title: 'Hotfix', baseBranch: 'release/2.1' } }));
     expect(started.status).toBe(201);
     expect(ctx.taskService.plan).toHaveBeenCalledWith({ project: 'Demo', host: 'local', title: 'Hotfix', titleSource: 'owner', baseBranch: 'release/2.1' });
@@ -3405,7 +3413,7 @@ describe('pipelines API — kind, description and step roles', () => {
     const ctx = await setup();
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const created = await request(ctx.app).post(`${base}/workflows`).send({
       name: 'Hunt', kind: 'troubleshoot', description: ' Find the cause ', agentsDecide: false, nodes: [node(agent.id, { role: ' Investigator ' })],
     });
@@ -3587,7 +3595,7 @@ describe('POST /api/pipelines/runs — one worktree, two starts at once', () => 
     } });
     const agent = ctx.agentStore.create(agentBody());
     staff(ctx, agent);
-    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: agent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = ctx.workflowStore.create({ name: 'Occupancy', agentsDecide: false, progressFile: 'docs/todo.md', nodes: [node(agent.id, { prompt: 'Work' })] });
     const post = id => request(ctx.app).post(`${base}/runs`).send({ requestId: `start-${id}`, workflowId: workflow.id, project: 'Demo', input: 'feature', worktreePath: wt });
     const occupying = () => ctx.db.prepare("SELECT request_id FROM pipeline_runs WHERE worktree_path = ? AND worktree_state != 'released'").all(wt).length;

@@ -60,3 +60,11 @@
 .pipeline-subtab-dirty { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
 .pipeline-tabpanel { display: flex; flex-direction: column; gap: 16px; }
 .pipeline-tabpanel[hidden] { display: none; }
+.pipeline-advanced-toggle { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--text-primary); font: inherit; font-weight: 600; cursor: pointer; padding: 0; }
+.pipeline-advanced-toggle:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
+.pipeline-timeout-settings { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+.pipeline-timeout-field { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.pipeline-timeout-field .ui-input { width: 110px; }
+.pipeline-timeout-field .pipeline-hint { margin: 0; }
+.pipeline-timeout-error { color: var(--danger); }
+.pipeline-timeout-actions { display: flex; gap: 8px; }

@@ -5,7 +5,7 @@ const request = { requestId: 'request-1', command: '/feature-dev docs/todos/demo
 function setup() {
   const write = vi.fn();
   const notify = vi.fn();
-  const workflow = createTerminalWorkflow({ write, notify });
+  const workflow = createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs: 24000 });
   return { workflow, write, notify };
 }
 function token(write) {
@@ -16,6 +16,47 @@ const signal = (id, status) => `[[CDW:${id}:${status}]]`;
 describe('terminal workflow', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+  it('requires positive integer timeout options', () => {
+    const write = vi.fn();
+    const notify = vi.fn();
+    for (const resetTimeoutMs of [undefined, 0, 1.5]) {
+      expect(() => createTerminalWorkflow({ write, notify, resetTimeoutMs, handoffIdleMs: 24000 })).toThrow(/resetTimeoutMs/);
+    }
+    for (const handoffIdleMs of [undefined, 0, 1.5]) {
+      expect(() => createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs })).toThrow(/handoffIdleMs/);
+    }
+  });
+  it('uses the configured reset deadline and names its seconds', () => {
+    const write = vi.fn();
+    const workflow = createTerminalWorkflow({ write, notify: vi.fn(), resetTimeoutMs: 5000, handoffIdleMs: 24000 });
+    workflow.start({ ...request, resetFirst: true });
+    vi.advanceTimersByTime(4999);
+    expect(workflow.snapshot().status).toBe('resetting');
+    vi.advanceTimersByTime(1);
+    expect(workflow.snapshot().error).toBe('Reset did not settle within 5 seconds. Check the terminal before starting again.');
+  });
+
+  it('reads its timeouts when it sets each timer, so a change reaches the next pass of the same step', () => {
+    const { workflow, write } = setup();
+    let current = { resetTimeoutMs: 15000, handoffIdleMs: 24000 };
+    workflow.readTimeoutsFrom(() => current);
+    workflow.start(request);
+    current = { resetTimeoutMs: 40000, handoffIdleMs: 24000 };
+    workflow.output(signal(token(write), 'CONTINUE'));
+    vi.advanceTimersByTime(16000);
+    expect(workflow.snapshot().status).toBe('resetting');
+    vi.advanceTimersByTime(25000);
+    expect(workflow.snapshot().error).toBe('Reset did not settle within 40 seconds. Check the terminal before starting again.');
+  });
+  it('rejects a timeout source that is not a function, and invalid timeouts when it reads them', () => {
+    const { workflow } = setup();
+    expect(() => workflow.readTimeoutsFrom({ resetTimeoutMs: 15000, handoffIdleMs: 24000 })).toThrow(/function/);
+    workflow.readTimeoutsFrom(() => ({ resetTimeoutMs: 0, handoffIdleMs: 24000 }));
+    expect(() => workflow.start({ ...request, resetFirst: true })).toThrow(/resetTimeoutMs/);
+    const other = setup().workflow;
+    other.readTimeoutsFrom(() => ({ resetTimeoutMs: 15000, handoffIdleMs: 24000, extra: 1 }));
+    expect(() => other.start({ ...request, resetFirst: true })).toThrow(/unknown/i);
+  });
 
   it('uses a short copyable token and advances its counter across workflow restarts', () => {
     const { workflow, write } = setup();
@@ -405,7 +446,7 @@ describe('terminal workflow', () => {
   });
 
   it.each([{ write: null, notify: vi.fn() }, { write: vi.fn(), notify: null }])('validates dependencies %#', dependencies => {
-    expect(() => createTerminalWorkflow(dependencies)).toThrow();
+    expect(() => createTerminalWorkflow({ resetTimeoutMs: 15000, handoffIdleMs: 24000, ...dependencies })).toThrow();
   });
   it.each([null, 1, undefined])('validates output data %#', data => {
     const { workflow } = setup();

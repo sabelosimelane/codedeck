@@ -26,6 +26,8 @@ import { createAnswerStore } from '../pipelines/answer-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
 import { createReviewStore } from '../pipelines/review-store.js';
 
+const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+
 const WORKFLOW_ID = 'a2d0b1c2-3456-4789-8abc-def012345678';
 const AGENT_ID = 'c410a1b2-3456-4789-8abc-def012345678';
 const BASE_COMMIT = 'a'.repeat(40);
@@ -114,6 +116,23 @@ function executionState(overrides = {}) {
   };
 }
 
+// Most fakes below only model start/stop; the engine also hands every workflow its timeouts.
+// pipeline-run-live.test.js drives the real ws-handler workflow, which must have the method itself.
+function giveTimeouts(workflow) {
+  if (workflow && typeof workflow === 'object' && typeof workflow.readTimeoutsFrom !== 'function') workflow.readTimeoutsFrom = () => {};
+  return workflow;
+}
+function withTimeouts(createWorkflow) {
+  return (...args) => giveTimeouts(createWorkflow(...args));
+}
+function withTimeoutsOnAttachment(attachBackground) {
+  return async (...args) => {
+    const attachment = await attachBackground(...args);
+    giveTimeouts(attachment?.workflow);
+    return attachment;
+  };
+}
+
 function setupEngine(overrides = {}) {
   const db = new Database(overrides.databasePath ?? ':memory:');
   databases.push(db);
@@ -184,8 +203,8 @@ function setupEngine(overrides = {}) {
     runStore,
     createWorktree,
     startSession,
-    attachBackground,
-    createWorkflow,
+    attachBackground: withTimeoutsOnAttachment(attachBackground),
+    createWorkflow: withTimeouts(createWorkflow),
     classifyReadiness,
     readExecutionState,
     readScreen,
@@ -208,7 +227,8 @@ function setupEngine(overrides = {}) {
     clearTimeout: overrides.clearTimeout ?? clearTimeout,
     now: overrides.now ?? (() => new Date().toISOString()),
     readinessPollMs: overrides.readinessPollMs ?? 1000,
-    readinessTimeoutMs: overrides.readinessTimeoutMs ?? 120_000,
+    readinessTimeoutMs: overrides.readinessTimeoutMs,
+    readTimeouts: overrides.readTimeouts ?? (() => TIMEOUTS),
     launchEnterDelayMs: overrides.launchEnterDelayMs ?? 100,
     ...overrides.engineExtras,
   });
@@ -818,6 +838,24 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     expect(ctx.createWorkflow).not.toHaveBeenCalled();
   });
 
+  it('reads the current agent-ready setting while waiting', async () => {
+    let timeouts = TIMEOUTS;
+    const ctx = setupEngine({
+      readTimeouts: () => timeouts,
+      readinessQueue: Array.from({ length: 20 }, () => executionState({
+        executionReason: 'agent_marker_stale', foregroundCommand: 'codex', profile: { promptVisible: () => false },
+      })),
+    });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(5100);
+    expect(ctx.runStore.get(run.id).status).toBe('running');
+    timeouts = { ...TIMEOUTS, agentReadySeconds: 10 };
+    await vi.advanceTimersByTimeAsync(6000);
+    await done;
+    expect(ctx.runStore.get(run.id).error).toContain('within 10 seconds');
+  });
+
   it('errors when the launch command exited', async () => {
     const ctx = setupEngine({
       readinessQueue: [
@@ -980,6 +1018,53 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     expect(ctx.getWorkflowStartArgs().command).toBe('Implement ship it');
   });
 
+  it('rejects a readiness timeout or poll interval that is not a positive integer', () => {
+    for (const readinessTimeoutMs of ['5000', -1, 1.5]) {
+      expect(() => setupEngine({ readinessTimeoutMs })).toThrow(/readinessTimeoutMs/);
+    }
+    for (const readinessPollMs of ['1000', 0, 1.5]) {
+      expect(() => setupEngine({ readinessPollMs })).toThrow(/readinessPollMs/);
+    }
+  });
+
+  it('names the stored settings when a timeout read during a run is invalid', async () => {
+    const stuck = () => executionState({ executionReason: 'agent_marker_stale', foregroundCommand: 'codex', profile: { promptVisible: () => false } });
+    const ctx = setupEngine({ readinessQueue: Array.from({ length: 5 }, stuck), readTimeouts: () => ({ ...TIMEOUTS, agentReadySeconds: 0 }) });
+    const created = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(created.id);
+    await vi.advanceTimersByTimeAsync(3000);
+    await done;
+    expect(ctx.runStore.get(created.id).error).toMatch(/^pipeline run: settings timeouts\.agentReadySeconds/);
+  });
+
+  it('gives a terminal-owned workflow the current reset and final-signal timeouts before its pass', async () => {
+    let observed;
+    const calls = [];
+    const sharedWorkflow = {
+      readTimeoutsFrom(read) { calls.push(['readTimeoutsFrom', read()]); },
+      start(args) {
+        calls.push(['start']);
+        queueMicrotask(() => observed({ status: 'complete', active: false, error: null, requestId: args.requestId, iteration: 1, limitReached: false }));
+      },
+      stop() {},
+      snapshot: () => ({ status: 'stopped', active: false }),
+    };
+    const attachBackground = vi.fn(() => ({
+      workflow: sharedWorkflow, write: () => {}, observe: (fn) => { observed = fn; }, release: () => {},
+    }));
+    const ctx = setupEngine({
+      readinessQueue: [executionState()],
+      attachBackground,
+      readTimeouts: () => ({ ...TIMEOUTS, resetSettleSeconds: 45, finalSignalIdleSeconds: 90 }),
+    });
+    const run = ctx.runStore.create(validRun());
+    const done = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(calls.slice(0, 2)).toEqual([['readTimeoutsFrom', { resetTimeoutMs: 45000, handoffIdleMs: 90000 }], ['start']]);
+  });
+
   it('prefers attachment.workflow over createWorkflow so PTY-fed engines are used', async () => {
     let observed;
     const sharedWorkflow = {
@@ -1096,7 +1181,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
       readExecutionState: vi.fn(async id => screens.get(id) ?? executionState()),
       attachBackground: vi.fn(id => ({ write: data => inputs.push([id, data]), release() {} })),
       createWorkflow: options => {
-        const workflow = createTerminalWorkflow(options);
+        const workflow = createTerminalWorkflow({ ...options, resetTimeoutMs: 15000, handoffIdleMs: 24000 });
         terminals.push(workflow);
         return workflow;
       },
@@ -1308,7 +1393,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const screens = new Map();
     const ctx = setupEngine({
       readExecutionState: async id => screens.get(id) ?? executionState(),
-      createWorkflow: createTerminalWorkflow,
+      createWorkflow: options => createTerminalWorkflow({ ...options, resetTimeoutMs: 15000, handoffIdleMs: 24000 }),
     });
     const run = ctx.runStore.create(validRun());
     const done = ctx.engine.start(run.id);
@@ -1445,7 +1530,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const ctx = setupEngine({
       attachBackground: vi.fn(sessionId => ({ write: data => inputs.push([sessionId, data]), release() {} })),
       createWorkflow: options => {
-        const workflow = createTerminalWorkflow(options);
+        const workflow = createTerminalWorkflow({ ...options, resetTimeoutMs: 15000, handoffIdleMs: 24000 });
         terminals.push(workflow);
         return workflow;
       },
@@ -3591,6 +3676,28 @@ describe('createRunEngine — a prompt the agent never took', () => {
   ];
   const museScreens = lines => Array.from({length: 20}, () => executionState({lines, profile: muse, foregroundCommand: 'muse-bin-1.4.25'}));
 
+  it('uses the live lost-prompt setting for a running pass', async () => {
+    let timeouts = { ...TIMEOUTS, lostPromptSeconds: 30 };
+    const { loop } = await startPass([], { promptPickupMs: undefined, readTimeouts: () => timeouts });
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    timeouts = { ...timeouts, lostPromptSeconds: 5 };
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the configured stall-warning duration', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const working = Array.from({ length: 40 }, () => WORKING());
+      const { run } = await startPass(working, { promptPickupMs: undefined, readTimeouts: () => ({ ...TIMEOUTS, stallWarningMinutes: 1 }) });
+      await vi.advanceTimersByTimeAsync(62_000);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${run.id}: step Develop has shown no screen change`));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it.each([
     ['with a resume hint', welcome],
     ['below the shell launch command', ['bash-3.2$ muse --model muse-spark-1.3-contributor --effort high --yolo', ...welcome]],
@@ -3763,7 +3870,7 @@ it.skipIf(process.env.CODEDECK_MUSE_PICKUP_CANARY !== '1')('recovers one dropped
   const ctx = setupEngine({
     classifyReadiness,
     readinessPollMs: 500,
-    createWorkflow: options => (workflow = createTerminalWorkflow(options)),
+    createWorkflow: options => (workflow = createTerminalWorkflow({ ...options, resetTimeoutMs: 15000, handoffIdleMs: 24000 })),
     attachBackground: () => ({
       release() {},
       write(data) {
@@ -3908,6 +4015,29 @@ describe('createRunEngine — a step reuses the terminal of its agent', () => {
     expect(run.steps.map(s => s.sessionId)).toEqual(['Demo-1', 'Demo-2', 'Demo-2']);
     expect(ctx.startSession).toHaveBeenCalledTimes(2);
     expect(script.starts.map(start => start.resetFirst)).toEqual([false, false, true]);
+  });
+
+  it('uses changed readiness settings for the next step without recreating the engine', async () => {
+    let timeouts = TIMEOUTS;
+    let firstStepComplete = false;
+    const waiting = executionState({ executionReason: 'agent_marker_stale', foregroundCommand: 'claude', profile: { promptVisible: () => false } });
+    const { ctx } = engineWith({
+      readTimeouts: () => timeouts,
+      readExecutionState: async () => firstStepComplete ? waiting : executionState(),
+      createWorkflow: ({ notify }) => ({
+        start(args) {
+          timeouts = { ...TIMEOUTS, agentReadySeconds: 10 };
+          firstStepComplete = true;
+          queueMicrotask(() => notify({ status: 'complete', active: false, error: null, requestId: args.requestId, iteration: 1, limitReached: false }));
+        },
+        stop() {},
+        snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+      }),
+    });
+    const run = await runToEnd(ctx, { definition: definition({ steps: [node('Develop', CODEX), node('Review', FABLE)] }) }, 15);
+    expect(run.status).toBe('error');
+    expect(run.error).toContain('within 10 seconds');
+    expect(ctx.startSession).toHaveBeenCalledTimes(2);
   });
 
   it('applies current, sibling, finished and closed muting without touching an unrelated terminal', async () => {
@@ -4650,10 +4780,11 @@ describe('CLI and UI sync — restart recovery & mid-pass exit detection', () =>
       release: vi.fn(),
     }));
     const createWorkflow = vi.fn(({ write, notify }) => {
-      activeWorkflow = createTerminalWorkflow({ write, notify });
+      activeWorkflow = createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs: 24000 });
       return activeWorkflow;
     });
     const engine = createRunEngine({
+      readTimeouts: overrides.readTimeouts ?? (() => TIMEOUTS),
       runStore,
       createWorktree: vi.fn(async () => ({ baseCommit: BASE_COMMIT })),
       startSession: vi.fn(async () => 'Demo-1'),

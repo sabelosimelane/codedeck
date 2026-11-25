@@ -11,6 +11,8 @@ vi.mock('lucide-react', () => {
 
 import RunWorkflowDialog from '../RunWorkflowDialog';
 
+const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+
 const stamp = { revision: 1, createdAt: '2026-11-13T11:00:00.000Z', updatedAt: '2026-11-13T11:00:00.000Z' };
 const agents = ['Default', 'Team dev', 'Trial'].map((name, index) => ({
   ...stamp, id: `11111111-1111-4111-8111-11111111111${index}`, name, launchCommand: 'agent', resetCommand: '/clear',
@@ -37,7 +39,7 @@ function mockApi({ preflight = eligible(), worktrees = [HOME, worktree()], candi
   global.fetch = vi.fn(async (url) => {
     const target = String(url);
     const json = body => ({ ok: true, status: 200, json: async () => body });
-    if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch, revision: 1 });
+    if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch, timeouts: TIMEOUTS, revision: 1 });
     if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
     if (target.includes('/workflows')) return json({ data: workflows, page: { hasNextPage: false } });
     if (target.includes('/preflight')) return json(preflight);
@@ -492,7 +494,7 @@ describe('RunWorkflowDialog', () => {
   it('shows the API message when worktrees cannot be listed', async () => {
     global.fetch = vi.fn(async (url) => {
       const target = String(url);
-      if (target.endsWith('/pipelines/settings')) return { ok: true, json: async () => ({ setupAgentId: null, defaultBaseBranch: null, revision: 1 }) };
+      if (target.endsWith('/pipelines/settings')) return { ok: true, json: async () => ({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 }) };
       if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return { ok: true, json: async () => ({ data: workflows, page: { hasNextPage: false } }) };
       if (target.includes('/preflight')) return { ok: true, json: async () => eligible() };
@@ -679,7 +681,7 @@ describe('RunWorkflowDialog reading a todo\'s Repositories line', () => {
         const answer = typeof plans === 'function' ? plans(body) : plans[body.input] ?? NOTHING;
         return answer instanceof Error ? { ok: false, status: 409, json: async () => ({ message: answer.message }) } : json(answer);
       }
-      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch: null, revision: 1 });
+      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: null, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
       if (target.includes('/agents') || target.includes('/teams')) return { ok: true, json: async () => ({ data: target.includes('/teams') ? [team] : agents, page: { hasNextPage: false } }) };
       if (target.includes('/workflows')) return json({ data: TEMPLATED, page: { hasNextPage: false } });
       if (target.includes('/preflight')) return json(eligible());

@@ -1,4 +1,4 @@
-import { validateRoleBody, validateTeamBody, isBranchName, isUuid, loopTargetIndex, WORKFLOW_KINDS } from '../../../shared/pipeline-definitions.mjs';
+import { validateRoleBody, validateTeamBody, isBranchName, isUuid, loopTargetIndex, WORKFLOW_KINDS, RUN_TIMEOUT_LIMITS } from '../../../shared/pipeline-definitions.mjs';
 import { isUuidV4 } from '../../../shared/workflow-package.mjs';
 import { PipelineApiError, getPipelineSettings, isImportTimestamp as isTimestamp, listAgents, listRoles, listStepPresets, listTemplates, listWorkflows } from './pipelinesApi';
 
@@ -185,11 +185,18 @@ export function parseStepPreset(record) {
 
 export function parseSettings(record) {
   if (!isObject(record)) throw invalid('settings', 'settings');
-  const { setupAgentId, defaultBaseBranch, revision } = record;
+  const { setupAgentId, defaultBaseBranch, revision, timeouts } = record;
   if (setupAgentId !== null && !isUuid(setupAgentId)) throw invalid('settings', 'setupAgentId');
   if (defaultBaseBranch !== null && !isBranchName(defaultBaseBranch)) throw invalid('settings', 'defaultBaseBranch');
   if (!isRevision(revision)) throw invalid('settings', 'revision');
-  return { setupAgentId, defaultBaseBranch, revision };
+  if (!isObject(timeouts)) throw invalid('settings', 'timeouts');
+  for (const [field, { min, max }] of Object.entries(RUN_TIMEOUT_LIMITS)) {
+    if (!Number.isInteger(timeouts[field]) || timeouts[field] < min || timeouts[field] > max) throw invalid('settings', `timeouts.${field}`);
+  }
+  for (const field of Object.keys(timeouts)) {
+    if (!Object.hasOwn(RUN_TIMEOUT_LIMITS, field)) throw invalid('settings', `timeouts.${field}`);
+  }
+  return { setupAgentId, defaultBaseBranch, revision, timeouts: { ...timeouts } };
 }
 
 const COMMIT_ID = /^[0-9a-f]{40}$/;

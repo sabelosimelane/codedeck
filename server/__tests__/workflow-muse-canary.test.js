@@ -19,6 +19,7 @@ it.skipIf(!host).each(['clean', 'damaged'])('remote Muse disposition (%s)', asyn
   const events = [];
   const record = (kind, detail) => events.push({time:new Date().toISOString(),kind,detail});
   const workflow = createTerminalWorkflow({
+    resetTimeoutMs: 15000, handoffIdleMs: 24000,
     write(data) {
       if (data === '\r') ssh(tmux + ' send-keys -t sample Enter');
       else {

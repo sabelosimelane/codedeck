@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Field, TextInput } from '../ui/index.jsx';
-import { BRANCH_NAME_RULE, isBranchName } from '../../../../shared/pipeline-definitions.mjs';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import { BRANCH_NAME_RULE, isBranchName, RUN_TIMEOUT_LIMITS, DEFAULT_RUN_TIMEOUTS } from '../../../../shared/pipeline-definitions.mjs';
 import { listTeams, updatePipelineSettings } from '../../utils/pipelinesApi';
 import { loadDefinitions, parseTeam, parseSettings } from '../../utils/pipelineRecords';
 import { useToast } from '../ToastContext';
@@ -23,6 +24,13 @@ export const WORKFLOW_SUBTABS = [
 const subtabId = id => `pipeline-subtab-${id}`;
 const subpanelId = id => `pipeline-subtabpanel-${id}`;
 const NEXT_TAB_KEYS = { ArrowRight: 1, ArrowLeft: -1 };
+const TIMEOUT_FIELDS = [
+  ['agentReadySeconds', 'Agent ready (seconds)', 'Wait for the agent to reach its prompt before failing the step.', 's'],
+  ['resetSettleSeconds', 'Reset settle (seconds)', 'Wait for a reset command to settle before failing the step.', 's'],
+  ['finalSignalIdleSeconds', 'Final signal idle (seconds)', 'Wait while the agent is idle after being asked for its final signal.', 's'],
+  ['lostPromptSeconds', 'Lost prompt (seconds)', 'Resend a prompt left idle and unchanged; then restart the terminal.', 's'],
+  ['stallWarningMinutes', 'Stall warning (minutes)', 'Log a warning when a running step’s screen stays unchanged.', 'min'],
+];
 
 /**
  * Settings → Workflows: workflows, teams, roles, agents and the defaults, each on its own tab. Nothing here is authoritative;
@@ -36,6 +44,9 @@ export default function PipelineSettings({ onDirtyChange }) {
   // What the owner is typing as the default base branch; null while it is the saved value.
   const [baseDraft, setBaseDraft] = useState(null);
   const [savingBase, setSavingBase] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [timeoutDraft, setTimeoutDraft] = useState(null);
+  const [savingTimeouts, setSavingTimeouts] = useState(false);
   const [rolesDirty, setRolesDirty] = useState(false);
   const [teamDirty, setTeamDirty] = useState(false);
   const [agentsDirty, setAgentsDirty] = useState(false);
@@ -64,6 +75,7 @@ export default function PipelineSettings({ onDirtyChange }) {
       const settings = parseSettings(await updatePipelineSettings({
         setupAgentId: value === '' ? null : value,
         defaultBaseBranch: definitions.settings.defaultBaseBranch,
+        timeouts: definitions.settings.timeouts,
         revision: definitions.settings.revision,
       }));
       setDefinitions(current => ({ ...current, settings }));
@@ -81,12 +93,23 @@ export default function PipelineSettings({ onDirtyChange }) {
   const typedBase = (baseDraft ?? savedBase).trim();
   const baseError = typedBase !== '' && !isBranchName(typedBase) ? BRANCH_NAME_RULE : null;
   const baseChanged = baseDraft !== null && typedBase !== savedBase;
+  const savedTimeouts = definitions?.settings.timeouts;
+  const displayedTimeouts = timeoutDraft ?? savedTimeouts;
+  const timeoutErrors = Object.fromEntries(TIMEOUT_FIELDS.map(([field]) => {
+    const { min, max } = RUN_TIMEOUT_LIMITS[field];
+    const value = Number(displayedTimeouts?.[field]);
+    return [field, displayedTimeouts?.[field] === '' || !Number.isInteger(value) || value < min || value > max
+      ? `Use an integer from ${min} to ${max}` : null];
+  }));
+  const timeoutsChanged = timeoutDraft !== null && TIMEOUT_FIELDS.some(([field]) =>
+    String(timeoutDraft[field]) !== String(savedTimeouts[field]));
+  const timeoutsValid = Object.values(timeoutErrors).every(error => error === null);
 
   useEffect(() => {
-    onDirtyChange(rolesDirty || agentsDirty || workflowsDirty || teamDirty || baseChanged);
-  }, [rolesDirty, agentsDirty, workflowsDirty, teamDirty, baseChanged, onDirtyChange]);
+    onDirtyChange(rolesDirty || agentsDirty || workflowsDirty || teamDirty || baseChanged || timeoutsChanged);
+  }, [rolesDirty, agentsDirty, workflowsDirty, teamDirty, baseChanged, timeoutsChanged, onDirtyChange]);
 
-  const tabDirty = { workflows: workflowsDirty, teams: teamDirty, roles: rolesDirty, agents: agentsDirty, defaults: baseChanged };
+  const tabDirty = { workflows: workflowsDirty, teams: teamDirty, roles: rolesDirty, agents: agentsDirty, defaults: baseChanged || timeoutsChanged };
   const tabCount = {
     workflows: definitions?.workflows.length,
     teams: definitions?.teams.length,
@@ -124,6 +147,7 @@ export default function PipelineSettings({ onDirtyChange }) {
       const settings = parseSettings(await updatePipelineSettings({
         setupAgentId: definitions.settings.setupAgentId,
         defaultBaseBranch: typedBase === '' ? null : typedBase,
+        timeouts: definitions.settings.timeouts,
         revision: definitions.settings.revision,
       }));
       setDefinitions(current => ({ ...current, settings }));
@@ -134,6 +158,26 @@ export default function PipelineSettings({ onDirtyChange }) {
       await load();
     } finally {
       setSavingBase(false);
+    }
+  };
+
+  const saveTimeouts = async () => {
+    setSavingTimeouts(true);
+    try {
+      const settings = parseSettings(await updatePipelineSettings({
+        setupAgentId: definitions.settings.setupAgentId,
+        defaultBaseBranch: definitions.settings.defaultBaseBranch,
+        timeouts: Object.fromEntries(TIMEOUT_FIELDS.map(([field]) => [field, Number(displayedTimeouts[field])])),
+        revision: definitions.settings.revision,
+      }));
+      setDefinitions(current => ({ ...current, settings }));
+      setTimeoutDraft(null);
+      showToast({ type: 'success', message: 'Workflow timeouts saved' });
+    } catch (failure) {
+      showToast({ type: 'error', message: failureMessage(failure) });
+      await load();
+    } finally {
+      setSavingTimeouts(false);
     }
   };
 
@@ -222,6 +266,31 @@ export default function PipelineSettings({ onDirtyChange }) {
               </Field>
               <Button onClick={saveDefaultBase} disabled={!baseChanged || Boolean(baseError) || savingBase}
                 aria-label="Save default base branch">{savingBase ? 'Saving…' : 'Save'}</Button>
+            </section>
+            <section className="pipeline-section">
+              <button type="button" className="pipeline-advanced-toggle" aria-expanded={advancedOpen}
+                aria-controls="pipeline-timeout-settings" onClick={() => setAdvancedOpen(open => !open)}>
+                {advancedOpen ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}Advanced</button>
+              {advancedOpen && <div id="pipeline-timeout-settings" className="pipeline-timeout-settings">
+                <p className="pipeline-hint">Workflow run timing</p>
+                {TIMEOUT_FIELDS.map(([field, label, help, unit]) => (
+                  <div className="pipeline-timeout-field" key={field}>
+                    <label htmlFor={`pipeline-timeout-${field}`}>{label}</label>
+                    <input id={`pipeline-timeout-${field}`} type="number" className="ui-input"
+                      min={RUN_TIMEOUT_LIMITS[field].min} max={RUN_TIMEOUT_LIMITS[field].max} step="1"
+                      value={displayedTimeouts[field]} aria-invalid={Boolean(timeoutErrors[field])}
+                      aria-describedby={`pipeline-timeout-help-${field}`}
+                      onChange={event => setTimeoutDraft(current => ({ ...(current ?? savedTimeouts), [field]: event.target.value }))} />
+                    <span id={`pipeline-timeout-help-${field}`} className="pipeline-hint">{help} Default: {RUN_TIMEOUT_LIMITS[field].default} {unit}.</span>
+                    {timeoutErrors[field] && <span role="alert" className="pipeline-timeout-error">{timeoutErrors[field]}</span>}
+                  </div>
+                ))}
+                <div className="pipeline-timeout-actions">
+                  <Button onClick={() => setTimeoutDraft({ ...DEFAULT_RUN_TIMEOUTS })} disabled={savingTimeouts}>Restore defaults</Button>
+                  <Button onClick={saveTimeouts} disabled={!timeoutsChanged || !timeoutsValid || savingTimeouts}
+                    aria-label="Save timeouts">{savingTimeouts ? 'Saving…' : 'Save'}</Button>
+                </div>
+              </div>}
             </section>
           </div>
         </>

@@ -265,6 +265,8 @@ and sends the prompt, with nothing to clear. If the agent started again still ta
 nothing, the run fails and says so, instead of showing a step as running that nothing
 works on.
 
+The agent-ready, reset-settle, final-signal idle, lost-prompt and stall-warning times described here are defaults. Owners can change them under Settings → Workflows → Defaults → Advanced.
+
 The launch command itself is checked the same way. When the shell in a step's terminal
 shows no sign of it for three seconds (its screen has not changed, or the command is
 nowhere on it), CodeDeck logs what the terminal and its attachments were doing and

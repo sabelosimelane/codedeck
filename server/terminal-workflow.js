@@ -5,15 +5,11 @@ import { stripVTControlCharacters } from 'node:util';
 const ACTIVE = new Set(['running', 'resetting', 'needs_input']);
 const QUIET_MS = 1000;
 const SUBMIT_DELAY_MS = 100;
-const RESET_TIMEOUT_MS = 15000;
 const MAX_OUTPUT = 65536;
 const MAX_BAD_IDENTIFIER_RETRIES = 1;
 // Cursor-positioning CSI sequences (CUP, CUU, CUD, CUF, CUB, CNL, CPL, CHA, HVP) jump over
 // existing cells on a 2D TUI screen; bytes before and after a cursor jump are not contiguous text.
 const CURSOR_MOVEMENT_CSI = /\x1b\[\d*(?:;\d*)*[ABCDEFGHf]/g;
-// How long an agent asked for its final signal may stay idle before the handoff fails.
-// The clock restarts whenever the agent is seen working, so it bounds idleness, not work.
-const HANDOFF_IDLE_MS = 24000;
 // `resetFirst` clears the agent's context before the first pass, for a terminal whose agent
 // already worked. `guidance` is one more sentence or two of instruction for every pass.
 // A step's guidance names every repository of its task with its path, so it has room for several.
@@ -108,9 +104,33 @@ export function findPassSignal(screenText, { status, phase, identifier, passIden
 }
 
 /** A terminal session owns a loop in backend memory, independently of its browser socket. */
-export function createTerminalWorkflow({ write, notify }) {
+function requireTimeouts({ resetTimeoutMs, handoffIdleMs }) {
+  if (!Number.isInteger(resetTimeoutMs) || resetTimeoutMs <= 0) throw new Error('Workflow resetTimeoutMs must be a positive integer.');
+  if (!Number.isInteger(handoffIdleMs) || handoffIdleMs <= 0) throw new Error('Workflow handoffIdleMs must be a positive integer.');
+}
+
+export function createTerminalWorkflow({ write, notify, resetTimeoutMs, handoffIdleMs }) {
   if (typeof write !== 'function') throw new Error('Workflow write must be a function.');
   if (typeof notify !== 'function') throw new Error('Workflow notify must be a function.');
+  requireTimeouts({ resetTimeoutMs, handoffIdleMs });
+  // Until the run engine names a source, the values given at creation apply.
+  let readTimeouts = null;
+  // How long a reset may take to settle; how long an agent asked for its final signal may stay
+  // idle before the handoff fails (the clock restarts whenever the agent is seen working).
+  const timeouts = () => {
+    if (readTimeouts === null) return { resetTimeoutMs, handoffIdleMs };
+    const value = readTimeouts();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Workflow timeouts must be an object.');
+    for (const field of Object.keys(value)) {
+      if (!['resetTimeoutMs', 'handoffIdleMs'].includes(field)) throw new Error(`Workflow timeouts contain an unknown field: ${field}.`);
+    }
+    requireTimeouts(value);
+    return value;
+  };
+  const armReset = () => {
+    const ms = timeouts().resetTimeoutMs;
+    resetTimer = setTimeout(() => finish('error', `Reset did not settle within ${ms / 1000} seconds. Check the terminal before starting again.`), ms);
+  };
   let status = 'stopped';
   let error = null;
   let request = null;
@@ -140,7 +160,7 @@ export function createTerminalWorkflow({ write, notify }) {
     badIdentifierRetries = 1;
     rawOutput = '';
     clearTimeout(enterTimer);
-    handoffDeadline = Date.now() + HANDOFF_IDLE_MS;
+    handoffDeadline = Date.now() + timeouts().handoffIdleMs;
     armHandoffDeadline();
     audit?.('disposition_requested', seenIdentifier === null
       ? 'Idle or invalid final signal; requested disposition only'
@@ -247,7 +267,7 @@ export function createTerminalWorkflow({ write, notify }) {
     if (yieldDispatch()) return;
     phase = 'reset_output';
     rawOutput = '';
-    resetTimer = setTimeout(() => finish('error', 'Reset did not settle within 15 seconds. Check the terminal before starting again.'), RESET_TIMEOUT_MS);
+    armReset();
     // Boundaries prevent paste heuristics; a separate Enter lets TUIs process
     // the paste before handling submission.
     pasteAndSubmit(request.resetCommand);
@@ -305,6 +325,15 @@ export function createTerminalWorkflow({ write, notify }) {
     },
     /** Serializable state of the active pass for backend-restart recovery, or null when inactive. */
     exportState,
+    /**
+     * The workflow of a terminal outlives one run, so the run engine gives it the owner's
+     * settings to read. They are read each time a timer is set, so a change reaches the next
+     * reset or handoff, also between passes of one step.
+     */
+    readTimeoutsFrom(read) {
+      if (typeof read !== 'function') throw new Error('Workflow timeouts source must be a function.');
+      readTimeouts = read;
+    },
     /** The identifier the agent copies into its signal for the pass in progress, or null. */
     signalIdentifier: () => identifier,
     submittedPass: () => status === 'running' && phase === 'waiting' && promptSubmitted && !acceptedSignal ? identifier : null,
@@ -377,7 +406,7 @@ export function createTerminalWorkflow({ write, notify }) {
 
       if (status === 'resetting') {
         if (phase === 'reset_output') {
-          resetTimer = setTimeout(() => finish('error', 'Reset did not settle within 15 seconds. Check the terminal before starting again.'), RESET_TIMEOUT_MS);
+          armReset();
           scheduleQuiet(iteration);
         } else {
           startBeforePassReset();
@@ -456,7 +485,7 @@ export function createTerminalWorkflow({ write, notify }) {
         publish();
       } else if (turn === 'working' && handoffDeadline !== null) {
         // The agent went back to work after being asked for its signal: not idle, so not timed out.
-        handoffDeadline = Date.now() + HANDOFF_IDLE_MS;
+        handoffDeadline = Date.now() + timeouts().handoffIdleMs;
         armHandoffDeadline();
         publish();
       } else if (turn === 'idle' && handoffDeadline === null) {

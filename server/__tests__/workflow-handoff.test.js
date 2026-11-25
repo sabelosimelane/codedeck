@@ -4,13 +4,24 @@ import { createTerminalWorkflow } from '../terminal-workflow.js';
 
 const finalScreen = '◆ Pass 2 done.\n  [[CDW;b724d8c0-1:CONTINUE]]\n◆ Worked for 23m 34s · 12:04 AM · 23/Nov\n❯ ctrl+alt(option)+b sends the selected task to the background queue\n  muse-spark-1.3-contributor · high · ~ · YOLO';
 const request = { requestId: 'run-incident', command: 'Develop the SOS feature', resetCommand: '/clear', maxIterations: 1 };
-function setup() {
+function setup(handoffIdleMs = 24000) {
   const write = vi.fn();
-  const workflow = createTerminalWorkflow({ write, notify: vi.fn() });
+  const workflow = createTerminalWorkflow({ write, notify: vi.fn(), resetTimeoutMs: 15000, handoffIdleMs });
   return { workflow, write };
 }
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
+
+it('uses the configured final-signal idle deadline', () => {
+  const { workflow } = setup(5000);
+  workflow.start(request);
+  workflow.observeTurn('working', 'Working');
+  workflow.observeTurn('idle', '› ');
+  vi.advanceTimersByTime(4999);
+  expect(workflow.snapshot().status).toBe('running');
+  vi.advanceTimersByTime(1);
+  expect(workflow.snapshot().error).toMatch(/Handoff timed out/);
+});
 
 it('recognizes the completed Muse incident pane on a versioned executable', () => {
   expect(classifyTerminalExecution({ paneCurrentCommand: 'muse-bin-1.4.25-R9361.1', paneDead: 0, snapshotText: finalScreen, subagentPanes: [], quietSeconds: 50 })).toMatchObject({agentCli:'muse', executionReason:'agent_prompt_idle'});

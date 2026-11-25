@@ -383,8 +383,8 @@ export function getPipelineSettings({ signal } = {}) {
   return request('/settings', { signal });
 }
 
-export function updatePipelineSettings({ setupAgentId, defaultBaseBranch, revision }, { signal } = {}) {
-  return request('/settings', { method: 'PUT', body: { setupAgentId, defaultBaseBranch, revision }, signal });
+export function updatePipelineSettings({ setupAgentId, defaultBaseBranch, revision, timeouts }, { signal } = {}) {
+  return request('/settings', { method: 'PUT', body: { setupAgentId, defaultBaseBranch, revision, timeouts }, signal });
 }
 
 export function preflightProject(project, { host, signal } = {}) {

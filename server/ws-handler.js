@@ -22,6 +22,7 @@ import {
 import { isTransportFailure } from './command-runner.js';
 import { INITIAL_COLS, INITIAL_ROWS } from './mobile-session-start.js';
 import { createTerminalWorkflow } from './terminal-workflow.js';
+import { DEFAULT_RUN_TIMEOUTS } from '../shared/pipeline-definitions.mjs';
 
 const CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -637,6 +638,8 @@ function ensureSessionWorkflow(entry, ops) {
   if (entry.workflow) return entry.workflow;
   entry.workflowObservers ??= [];
   const workflow = createTerminalWorkflow({
+    resetTimeoutMs: DEFAULT_RUN_TIMEOUTS.resetSettleSeconds * 1000,
+    handoffIdleMs: DEFAULT_RUN_TIMEOUTS.finalSignalIdleSeconds * 1000,
     write: data => {
       if (!entry.alive || !ops.sessionExists()) throw new Error('Workflow terminal attachment is unavailable.');
       entry.pty.write(data);

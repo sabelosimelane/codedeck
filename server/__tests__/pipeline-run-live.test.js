@@ -35,6 +35,8 @@ import { INITIAL_COLS, INITIAL_ROWS } from '../mobile-session-start.js';
 import { classify as classifyAgentReadiness } from '../pipelines/agent-readiness.js';
 import { findAgentProfile } from '../agent-profiles/index.js';
 
+const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+
 function hasGit() {
   try {
     execFileSync('git', ['--version'], { stdio: 'pipe' });
@@ -208,7 +210,7 @@ describeLive('pipeline run live (Phase 3)', () => {
       launchCommand: repeatStub,
       resetCommand: '/clear',
     });
-    settings.update({ setupAgentId: setupAgent.id, defaultBaseBranch: null, revision: 1 });
+    settings.update({ setupAgentId: setupAgent.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
     const workflow = workflows.create({
       name: 'Live',
       agentsDecide: false,
@@ -283,6 +285,7 @@ describeLive('pipeline run live (Phase 3)', () => {
     });
 
     const engine = createRunEngine({
+      readTimeouts: () => TIMEOUTS,
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
@@ -326,7 +329,7 @@ describeLive('pipeline run live (Phase 3)', () => {
         sessionId, sessions, runtime, deletedSessionIds, { cwd },
       ),
       terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
-      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs: 24000 }),
       // Live classifier needs a real agent CLI; stub readiness once the process is up.
       classifyReadiness: () => 'ready',
       readExecutionState: async () => ({
@@ -419,6 +422,7 @@ describeLive('pipeline run live notes', () => {
     });
     let sessionSeq = 0;
     const engine = createRunEngine({
+      readTimeouts: () => TIMEOUTS,
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
@@ -440,7 +444,7 @@ describeLive('pipeline run live notes', () => {
         return attachment;
       },
       terminalAvailable: sessionId => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
-      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs: 24000 }),
       classifyReadiness: classifyAgentReadiness,
       readExecutionState: async sessionId => {
         // The stub enables raw input before printing its greeting. Reporting
@@ -561,6 +565,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
     };
 
     const engine = createRunEngine({
+      readTimeouts: () => TIMEOUTS,
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
@@ -583,7 +588,7 @@ describeLive('pipeline run live — an agent that needs input', () => {
         sessionId, sessions, runtime, deletedSessionIds, { cwd },
       ),
       terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
-      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs: 24000 }),
       classifyReadiness: () => 'ready',
       readExecutionState: async () => ({
         executionReason: 'agent_prompt_idle',
@@ -794,6 +799,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
     let sessionSeq = 0;
 
     const engine = createRunEngine({
+      readTimeouts: () => TIMEOUTS,
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
@@ -821,7 +827,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         sessionId, sessions, runtime, deletedSessionIds, { cwd },
       ),
       terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
-      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs: 24000 }),
       classifyReadiness: () => 'ready',
       readExecutionState: async () => ({
         executionReason: 'agent_prompt_idle',
@@ -988,6 +994,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
     };
 
     const engine = createRunEngine({
+      readTimeouts: () => TIMEOUTS,
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
@@ -1010,7 +1017,7 @@ describeLive('pipeline run live — a dialog shown after the prompt was sent', (
         sessionId, sessions, runtime, deletedSessionIds, { cwd },
       ),
       terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
-      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs: 24000 }),
       classifyReadiness: classifyAgentReadiness,
       readExecutionState,
       readinessPollMs: 50,
@@ -1150,6 +1157,7 @@ describeLive('pipeline run live — Resume', () => {
 
     const started = [];
     const engine = createRunEngine({
+      readTimeouts: () => TIMEOUTS,
       runStore: runs,
       restartAgentTerminal: (sessionId, cwd) => runtime.respawnMainPaneAsync(sessionId, cwd),
       typeIntoTerminal: (sessionId, text) => runtime.typeLineAsync(sessionId, text),
@@ -1175,7 +1183,7 @@ describeLive('pipeline run live — Resume', () => {
       ),
       // The server's own check, against the real tmux server.
       terminalAvailable: (sessionId) => backgroundSessionAvailable(sessionId, sessions, runtime, deletedSessionIds),
-      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+      createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify, resetTimeoutMs: 15000, handoffIdleMs: 24000 }),
       classifyReadiness: classifyAgentReadiness,
       readExecutionState,
       readinessPollMs: 50,

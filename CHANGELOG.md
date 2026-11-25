@@ -22,6 +22,10 @@
   * `docs/specifications/2026-11-24-172650-run-step-agents-and-role-fallbacks-spec.md` — full requirements, boundaries, persistence, recovery, error and acceptance design.
 # Changelog
 
+## [2026-11-25] - Configurable workflow run timeouts
+
+* Owners can set five workflow run timeouts under Settings → Workflows → Defaults → Advanced. Existing installations retain the previous timings until changed.
+
 ## [2026-11-25] - Settings → Workflows split into sub-tabs
 
 ### Executive Summary

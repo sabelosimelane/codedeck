@@ -1232,7 +1232,11 @@ const pipelineRunEngine = createRunEngine({
   terminalAvailable: (sessionId) => backgroundSessionAvailableAsync(
     sessionId, sessions, runtimeForSession(sessionId), deletedSessionIds,
   ),
-  createWorkflow: ({ write, notify }) => createTerminalWorkflow({ write, notify }),
+  readTimeouts: () => pipelineSettingsStore.get().timeouts,
+  createWorkflow: ({ write, notify }) => {
+    const { resetSettleSeconds, finalSignalIdleSeconds } = pipelineSettingsStore.get().timeouts;
+    return createTerminalWorkflow({ write, notify, resetTimeoutMs: resetSettleSeconds * 1000, handoffIdleMs: finalSignalIdleSeconds * 1000 });
+  },
   classifyReadiness: classifyAgentReadiness,
   readScreen: async (sessionId) => {
     const rt = runtimeForSession(sessionId);

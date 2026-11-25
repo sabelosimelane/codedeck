@@ -17,6 +17,8 @@ import { createPipelinesRouter } from '../routes/pipelines.js';
 import { BUILT_IN_ROLES } from '../../shared/workflow-templates.mjs';
 import { loopbackTestServer } from './helpers/loopback-test-server.js';
 
+const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+
 const base = '/api/pipelines';
 const cleanup = [];
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); });
@@ -189,7 +191,7 @@ describe('structured roles API, role-only workflows, and team compatibility', ()
     const ctx = await setup();
     const claude = ctx.agentStore.create({ name: 'Claude', launchCommand: 'claude', resetCommand: '/clear' });
     const codex = ctx.agentStore.create({ name: 'Codex', launchCommand: 'codex', resetCommand: '/clear' });
-    ctx.settingsStore.update({ setupAgentId: claude.id, defaultBaseBranch: null, revision: 1 });
+    ctx.settingsStore.update({ setupAgentId: claude.id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
 
     // Add Brainstorm to spec (Thinking partner, Planner, Committer)
     const added = await request(ctx.app).post(`${base}/builtin-workflows/brainstorm-to-spec/additions`);

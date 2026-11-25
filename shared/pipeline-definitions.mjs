@@ -7,6 +7,33 @@ const REQUEST_ID_RE = /^[\w-]{1,128}$/;
 const COMPOSED_PROMPT_MAX = 16384;
 const PROGRESS_CONTROL = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
 const RUN_INPUT_MAX = 4096;
+export const RUN_TIMEOUT_LIMITS = Object.freeze({
+  agentReadySeconds: Object.freeze({ min: 10, max: 3600, default: 120 }),
+  resetSettleSeconds: Object.freeze({ min: 5, max: 600, default: 15 }),
+  finalSignalIdleSeconds: Object.freeze({ min: 5, max: 600, default: 24 }),
+  lostPromptSeconds: Object.freeze({ min: 5, max: 600, default: 30 }),
+  stallWarningMinutes: Object.freeze({ min: 1, max: 240, default: 15 }),
+});
+export const DEFAULT_RUN_TIMEOUTS = Object.freeze(Object.fromEntries(
+  Object.entries(RUN_TIMEOUT_LIMITS).map(([field, limit]) => [field, limit.default]),
+));
+
+export function validateRunTimeouts(value) {
+  const errors = [];
+  if (!isPlainObject(value)) {
+    add(errors, 'timeouts', 'A timeouts object is required');
+    return errors;
+  }
+  for (const field of Object.keys(value)) {
+    if (!Object.hasOwn(RUN_TIMEOUT_LIMITS, field)) add(errors, `timeouts.${field}`, 'Unknown field');
+  }
+  for (const [field, { min, max }] of Object.entries(RUN_TIMEOUT_LIMITS)) {
+    if (!Number.isInteger(value[field]) || value[field] < min || value[field] > max) {
+      add(errors, `timeouts.${field}`, `Use an integer from ${min} to ${max}`);
+    }
+  }
+  return errors;
+}
 
 /** CRLF and lone CR become LF before validation and persistence. */
 export function normalizeRunInput(value) {
@@ -391,7 +418,7 @@ export function isBranchName(value) {
 
 export function validateSettingsBody(body) {
   const errors = [];
-  if (!rejectUnknown(errors, body, ['setupAgentId', 'defaultBaseBranch', 'revision'])) return errors;
+  if (!rejectUnknown(errors, body, ['setupAgentId', 'defaultBaseBranch', 'revision', 'timeouts'])) return errors;
   if (body.setupAgentId !== null && !isUuid(body.setupAgentId)) {
     add(errors, 'setupAgentId', 'Use null or a UUID of an existing agent');
   }
@@ -400,6 +427,7 @@ export function validateSettingsBody(body) {
     add(errors, 'defaultBaseBranch', `${BRANCH_NAME_RULE}, or null for the branch Main is on`);
   }
   requireRevision(errors, body.revision, true);
+  errors.push(...validateRunTimeouts(body.timeouts));
   return errors;
 }
 

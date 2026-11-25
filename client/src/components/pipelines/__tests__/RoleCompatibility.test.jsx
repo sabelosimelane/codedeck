@@ -13,6 +13,8 @@ import RoleList from '../RoleList';
 import TeamList from '../TeamList';
 import RunWorkflowDialog from '../RunWorkflowDialog';
 
+const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalIdleSeconds: 24, lostPromptSeconds: 30, stallWarningMinutes: 15 };
+
 const STAMPS = { revision: 1, createdAt: '2026-11-24T11:00:00.000Z', updatedAt: '2026-11-24T11:00:00.000Z' };
 const LOCAL = { kind: 'local', id: null, version: null, latestVersion: null, updateAvailable: false, updatedToVersionAt: null, shipped: null };
 const HEAD = 'a'.repeat(40);
@@ -96,7 +98,7 @@ describe('RunWorkflowDialog team role compatibility', () => {
     global.fetch = vi.fn(async (url) => {
       const target = String(url);
       const json = body => ({ ok: true, status: 200, json: async () => body });
-      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: AGENTS[0].id, defaultBaseBranch: null, revision: 1 });
+      if (target.endsWith('/pipelines/settings')) return json({ setupAgentId: AGENTS[0].id, defaultBaseBranch: null, timeouts: TIMEOUTS, revision: 1 });
       if (target.includes('/agents')) return json({ data: AGENTS, page: { hasNextPage: false } });
       if (target.includes('/teams')) return json({ data: teams, page: { hasNextPage: false } });
       if (target.includes('/workflows')) return json({ data: [BRAINSTORM], page: { hasNextPage: false } });
