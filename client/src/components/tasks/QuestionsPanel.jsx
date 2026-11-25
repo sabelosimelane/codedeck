@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Button, Note, TextArea } from '../ui';
-import { composeAnswer, parseQuestions } from '../../utils/inputQuestions.js';
+import { composeAnswer, parseQuestions, recommendationLead } from '../../utils/inputQuestions.js';
 
 const ANSWER_MAX = 4000;
 const answerDrafts = new Map();
@@ -22,7 +22,7 @@ function QuestionCard({ item, answer, disabled, onChange }) {
             {item.options.map(option => {
               const chosen = answer.choice === 'option' && answer.letter === option.letter;
               const recommended = item.recommendedLetter === option.letter;
-              const reason = recommended ? item.recommended.replace(/^(?:\([a-f]\)|[a-f][.)]?)(?:\s+|$)/i, '') : null;
+              const reason = recommended ? recommendationLead(item.recommended)?.reason : null;
               return (
                 <label key={option.letter} className="task-question-choice" data-chosen={chosen}>
                   <input type="radio" name={`question-${item.number}`} checked={chosen} disabled={disabled}

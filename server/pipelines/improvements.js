@@ -64,6 +64,16 @@ export function createImprovements(deps) {
   }
   db.prepare('INSERT OR IGNORE INTO improvement_rubrics VALUES(1,?)').run(rubric);
   const modelRow = () => db.prepare('SELECT * FROM improvement_model WHERE id=1').get();
+  const warnedModels = new Set();
+  const warnLegacy = message => { if (!warnedModels.has(message)) { warnedModels.add(message); console.warn(`[workflow-reviewer] ${message}`); } };
+  const storedSelection = () => {
+    const row = modelRow();
+    if (!row) return null;
+    let value;
+    try { value = JSON.parse(row.value); }
+    catch { warnLegacy('saved selection is not valid JSON'); return null; }
+    return value && typeof value === 'object' ? { agentId: value.agentId, effort: value.effort } : null;
+  };
   const readModel = () => {
     const row = modelRow();
     if (!row) return settings();
@@ -73,8 +83,16 @@ export function createImprovements(deps) {
         const parsed = parseLaunchCommand(agent.launchCommand);
         return parsed?.provider === value.provider && parsed.model === value.model;
       });
-      if (matches.length !== 1) return settings();
-      const migrated = validateCliSettings({ agentId: matches[0].id, effort: value.effort }, agentStore);
+      if (matches.length !== 1) {
+        warnLegacy(`saved ${value.provider}/${value.model} selection has ${matches.length === 0 ? 'no match' : `${matches.length} matches`}; reviewer is unconfigured`);
+        return null;
+      }
+      let migrated;
+      try { migrated = validateCliSettings({ agentId: matches[0].id, effort: value.effort }, agentStore); }
+      catch (error) {
+        warnLegacy(`saved ${value.provider}/${value.model} selection failed validation for ${error.errors?.map(item => item.field).join(', ') || 'selection'}; reviewer is unconfigured`);
+        return null;
+      }
       db.prepare('UPDATE improvement_model SET value=? WHERE id=1').run(JSON.stringify(migrated));
       return migrated;
     }
@@ -478,10 +496,12 @@ export function createImprovements(deps) {
     return holdouts().filter((h) => !training.some((r) => r.id === h.run));
   }
   function benchmarkKey(cases, config) {
+    const selection = config ? resolveNamingAgent(config.agentId, agentStore).selection : null;
     return fingerprint({
       ids: cases.map((h) => h.run),
-      provider: config?.provider,
-      model: config?.model,
+      agentId: config?.agentId,
+      provider: selection?.provider,
+      model: selection?.model,
       effort: config?.effort,
     });
   }
@@ -494,8 +514,9 @@ export function createImprovements(deps) {
       throw conflict('Label at least two independent cases with different outcomes');
     const config = readModel();
     if (!config) throw conflict('Configure the review model first');
+    const chosen = resolveNamingAgent(config.agentId, agentStore).selection;
     const call = db
-      .transaction(() => reserveCall(p.workflowId, p.revision, config.provider + '/' + config.model))
+      .transaction(() => reserveCall(p.workflowId, p.revision, chosen.provider + '/' + chosen.model))
       .immediate();
     if (!call) throw conflict('Daily review budget reached');
     try {
@@ -609,7 +630,8 @@ export function createImprovements(deps) {
       check(typeof accept === 'function', 'accept');
       const config = readModel();
       if (!config) return false;
-      const call = db.transaction(() => reserveCall(workflowId, revision, config.provider + '/' + config.model, 'team')).immediate();
+      const chosen = resolveNamingAgent(config.agentId, agentStore).selection;
+      const call = db.transaction(() => reserveCall(workflowId, revision, chosen.provider + '/' + chosen.model, 'team')).immediate();
       if (!call) return false;
       try {
         const result = await generate(config, packet);
@@ -625,6 +647,7 @@ export function createImprovements(deps) {
       }
     },
     configure,
+    storedSelection,
     outcomes: outcomesWithFindings,
     proposals,
     packet: (id) => {

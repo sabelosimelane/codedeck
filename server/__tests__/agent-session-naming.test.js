@@ -30,16 +30,20 @@ it('validates each setting against an existing preset agent and provider effort'
 
 it('migrates a unique legacy provider and model on hydration and clears ambiguous or unmatched rows', () => {
   const { db, agents, add, store } = setup(); const first = add('claude', 'fable');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   db.prepare('INSERT INTO session_naming_settings VALUES (1, ?)').run(JSON.stringify({ provider: 'claude', model: 'fable', effort: 'low' }));
   expect(store.settings()).toEqual({ agentId: first.id, effort: 'low' });
   expect(JSON.parse(db.prepare('SELECT value FROM session_naming_settings').get().value)).toEqual({ agentId: first.id, effort: 'low' });
   db.prepare('UPDATE session_naming_settings SET value=?').run(JSON.stringify({ provider: 'claude', model: 'missing', effort: null }));
   expect(store.settings()).toBeNull();
   expect(db.prepare('SELECT value FROM session_naming_settings').get()).toBeUndefined();
+  expect(warn).toHaveBeenCalledWith(expect.stringMatching(/claude\/missing.*no match/i));
   add('claude', 'fable');
   db.prepare('INSERT INTO session_naming_settings VALUES (1, ?)').run(JSON.stringify({ provider: 'claude', model: 'fable', effort: null }));
   expect(store.settings()).toBeNull();
   expect(agents.list()).toHaveLength(2);
+  expect(warn).toHaveBeenCalledWith(expect.stringMatching(/claude\/fable.*2 match/i));
+  warn.mockRestore();
 });
 
 it('rejects corrupt current rows per field and keeps legacy Conduit rows unset', () => {
@@ -50,6 +54,14 @@ it('rejects corrupt current rows per field and keeps legacy Conduit rows unset',
   }
   write({ baseUrl: 'https://old', provider: 'x', model: 'y', effort: null });
   expect(store.settings()).toBeNull();
+});
+
+it('reads the stored agent id without validating an unusable selection', () => {
+  const { db, store, add } = setup(); const agent = add('codex');
+  db.prepare('INSERT INTO session_naming_settings VALUES (1, ?)').run(JSON.stringify({ agentId: agent.id, effort: 'invalid' }));
+  expect(store.storedSelection()).toEqual({ agentId: agent.id, effort: 'invalid' });
+  db.prepare('UPDATE session_naming_settings SET value=?').run('{');
+  expect(store.storedSelection()).toBeNull();
 });
 
 it.each([

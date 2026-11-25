@@ -52,6 +52,7 @@ export function createNamingService({ store, generate, capture }) {
   const pending = new Set();
   const deleted = new Set();
   const retryTimers = new Map();
+  const warnedSettings = new Set();
   const cancelRetry = id => { clearTimeout(retryTimers.get(id)); retryTimers.delete(id); };
   let running = 0;
   let stopped = false;
@@ -71,8 +72,14 @@ export function createNamingService({ store, generate, capture }) {
     } catch (error) {
       const reason = error instanceof NamingError ? error.message : 'Could not generate a title. Check the naming CLI login and selection.';
       const deadline = job.deadline ?? Date.now() + 60000;
-      const canRetry = !stopped && Date.now() + 10000 <= deadline && JSON.stringify(store.settings()) === JSON.stringify(job.settings);
-      const updated = store.update(job.id, { state: canRetry ? 'queued' : 'failed', error: reason }, record.revision);
+      let sameSettings = false;
+      try { sameSettings = JSON.stringify(store.settings()) === JSON.stringify(job.settings); }
+      catch (settingsError) {
+        if (!(settingsError instanceof NamingError)) throw settingsError;
+      }
+      const canRetry = !stopped && Date.now() + 10000 <= deadline && sameSettings;
+      const failureReason = sameSettings ? reason : 'Naming settings changed';
+      const updated = store.update(job.id, { state: canRetry ? 'queued' : 'failed', error: failureReason }, record.revision);
       if (updated && canRetry) {
         const timer = setTimeout(() => {
           retryTimers.delete(job.id);
@@ -114,7 +121,10 @@ export function createNamingService({ store, generate, capture }) {
       try { if (!store.settings()) return; }
       catch (error) {
         if (error instanceof NamingError) {
-          store.ensure(id); store.update(id, { state: 'failed', error: error.message });
+          if (!warnedSettings.has(error.message)) {
+            warnedSettings.add(error.message);
+            console.warn(`[session-naming] ${error.message}`);
+          }
           return;
         }
         throw error;

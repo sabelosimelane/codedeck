@@ -35,7 +35,8 @@ import {
   isUuid,
   loopTargetIndex,
 } from '../../shared/pipeline-definitions.mjs';
-import { launchCommandAtEffort } from '../../shared/agent-presets.mjs';
+import { AGENT_PRESETS, launchCommandAtEffort, parseLaunchCommand } from '../../shared/agent-presets.mjs';
+import { defaultNamingProviders } from '../../shared/naming-providers.mjs';
 import { renameRoleEverywhere } from '../pipelines/role-migration.js';
 import { buildPackage, packageFileName, validatePackage } from '../../shared/workflow-package.mjs';
 import { canonicalDefinition } from '../../shared/workflow-changes.mjs';
@@ -625,6 +626,24 @@ export function createPipelinesRouter(deps) {
     return broken;
   }
 
+  function selectedAgentBrokenBy(agentId, launchCommand) {
+    const selected = parseLaunchCommand(launchCommand);
+    const broken = [];
+    for (const [label, choice, reviewer] of [
+      ['Session naming', namingStore?.storedSelection?.(), false],
+      ['Workflow reviewer', deps.improvements?.storedSelection?.(), true],
+    ]) {
+      if (choice?.agentId !== agentId) continue;
+      let reason = null;
+      if (!selected) reason = 'this is a custom command';
+      else if (!defaultNamingProviders.some(profile => profile.id === selected.provider)) reason = 'this provider has no naming profile';
+      else if (reviewer && !['claude', 'codex'].includes(selected.provider)) reason = 'background review requires a Claude or Codex agent';
+      else if (choice.effort !== null && !AGENT_PRESETS.find(preset => preset.id === selected.provider)?.efforts.includes(choice.effort)) reason = `effort ${choice.effort} is not offered by this provider`;
+      if (reason) broken.push({ field: 'launchCommand', message: `${label} uses this agent; ${reason}. Change that setting first` });
+    }
+    return broken;
+  }
+
   router.put(`${BASE}/agents/:id`, route((req, res) => {
     if (!isUuid(req.params.id)) throw new PipelineError('Agent not found', 404);
     const errors = validateAgentBody(req.body, { revisionRequired: true });
@@ -634,6 +653,8 @@ export function createPipelinesRouter(deps) {
       throw new PipelineError('This command does not offer an effort chosen for this agent', 409,
         broken.map(where => ({ field: 'launchCommand', message: `${where} is not offered by this command; change that effort first` })));
     }
+    const selectedBroken = selectedAgentBrokenBy(req.params.id, req.body.launchCommand);
+    if (selectedBroken.length) throw new PipelineError('This command would break an agent selection', 409, selectedBroken);
     try {
       res.json(agentStore.update(req.params.id, req.body));
     } catch (err) {
@@ -649,8 +670,11 @@ export function createPipelinesRouter(deps) {
     if (settings.setupAgentId === agent.id) {
       throw new PipelineError('Cannot delete the current setup agent', 409);
     }
-    if (namingStore?.settings()?.agentId === agent.id) {
+    if (namingStore?.storedSelection?.()?.agentId === agent.id) {
       throw new PipelineError('Cannot delete the agent used for session naming', 409);
+    }
+    if (deps.improvements?.storedSelection?.()?.agentId === agent.id) {
+      throw new PipelineError('Cannot delete the agent used as the workflow reviewer', 409);
     }
     if (teamStore.list().some(team => team.members.some(member => member.agentId === agent.id || member.fallbackAgentId === agent.id))) {
       throw new PipelineError('Cannot delete an agent used by a team', 409);

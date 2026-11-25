@@ -186,6 +186,7 @@ it('blinds a reviewer benchmark, fences activation and uses the approved rubric 
     service.label(r.id, label);
   }
   expect(await service.evaluate(p.id)).toMatchObject({ passed: true, count: 2 });
+  expect(service.calls().at(-1).model).toBe('codex/test');
   expect(generate.mock.calls.at(-1)[1].cases.every((c) => !('label' in c))).toBe(true);
   service.decide(p.id, { action: 'approve' });
   expect(service.status().reviewerRevision).toBe(2);
@@ -289,6 +290,7 @@ it('enforces its daily workflow call budget across processes without starving te
   const packet = { instructions: 'Assess criteria', rubric: 'Cite evidence' };
   let teamSaved = 0;
   expect(await service.reviewDelivery(workflowId, 2, packet, () => teamSaved++)).toBe(true);
+  expect(service.calls().at(-1).model).toBe('codex/test');
   expect(teamSaved).toBe(1);
 });
 it('validates the public dashboard records on read for every field', async () => {
@@ -332,8 +334,42 @@ it('invalidates a passed reviewer evaluation if the chosen model changes', async
     service.label(r.id, label);
   }
   expect((await service.evaluate(p.id)).passed).toBe(true);
+  const firstKey = service.proposals().find(item => item.id === p.id).evaluation.key;
   service.configure({ revision: 0, agentId: '11111111-1111-4111-8111-111111111111', effort: 'low' });
+  // The same model with a different saved effort must invalidate the benchmark.
+  expect(service.proposals().find(item => item.id === p.id).evaluation.key).toBe(firstKey);
   expect(() => service.decide(p.id, { action: 'approve' })).toThrow(/benchmark/);
+});
+
+it('reports unmappable legacy reviewer settings unconfigured, once, without borrowing naming settings', () => {
+  const { db, service, deps } = setup([], vi.fn());
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const write = value => db.prepare('INSERT OR REPLACE INTO improvement_model VALUES(1,1,?)').run(JSON.stringify(value));
+  write({ provider: 'codex', model: 'missing', effort: null });
+  expect(service.status().configured).toBe(false);
+  expect(service.status().configured).toBe(false);
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls[0][0]).toMatch(/codex\/missing.*no match/i);
+  const id = '11111111-1111-4111-8111-111111111111';
+  deps.agentStore.list = () => [deps.agentStore.get(id), { id: randomUUID(), launchCommand: deps.agentStore.get(id).launchCommand }];
+  write({ provider: 'codex', model: 'test', effort: null });
+  expect(service.status().configured).toBe(false);
+  expect(warn).toHaveBeenCalledTimes(2);
+  expect(warn.mock.calls[1][0]).toMatch(/codex\/test.*2 match/i);
+  deps.agentStore.list = () => [deps.agentStore.get(id)];
+  write({ provider: 'codex', model: 'test', effort: 'invalid' });
+  expect(service.status().configured).toBe(false);
+  expect(warn).toHaveBeenCalledTimes(3);
+  expect(warn.mock.calls[2][0]).toMatch(/codex\/test.*effort/i);
+  warn.mockRestore();
+});
+
+it('reads the raw reviewer agent id even when its saved selection is invalid', () => {
+  const { db, service } = setup([], vi.fn());
+  db.prepare('INSERT INTO improvement_model VALUES(1,1,?)').run(JSON.stringify({ agentId: '11111111-1111-4111-8111-111111111111', effort: 'invalid' }));
+  expect(service.storedSelection()).toEqual({ agentId: '11111111-1111-4111-8111-111111111111', effort: 'invalid' });
+  db.prepare('UPDATE improvement_model SET value=?').run('{');
+  expect(service.storedSelection()).toBeNull();
 });
 
 it('requires a task lookup for workload matching at startup', () => {

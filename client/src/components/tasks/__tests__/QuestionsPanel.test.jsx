@@ -37,6 +37,11 @@ describe('QuestionsPanel', () => {
     expect(screen.getByText('1 of 1 still needs your answer')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Send answers' }).disabled).toBe(true);
   });
+  it('keeps an uppercase prose opening visible and does not preselect option a', () => {
+    mount({ run: run({ inputRequest: { questions: '1. Which database?\na) Shared\nb) Dedicated\nRecommended: A fresh index is safest.', truncated: false } }) });
+    expect(card(1).getAllByRole('radio').every(radio => !radio.checked)).toBe(true);
+    expect(card(1).getByText('Recommended: A fresh index is safest.')).toBeTruthy();
+  });
 
   it('shows each question on its own, with the recommendation already chosen', () => {
     mount();

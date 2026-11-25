@@ -18,8 +18,20 @@ export function createNamingStore(db, { agentStore } = {}) {
     db.prepare('INSERT INTO terminal_titles VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET value=excluded.value').run(r.sessionId, JSON.stringify(r));
     return r;
   };
+  let warnedInvalidSelection = false;
   const store = {
     get,
+    storedSelection() {
+      const row = db.prepare('SELECT value FROM session_naming_settings WHERE id=1').get();
+      if (!row) return null;
+      let value;
+      try { value = JSON.parse(row.value); }
+      catch {
+        if (!warnedInvalidSelection) { console.warn('[session-naming] saved selection is not valid JSON'); warnedInvalidSelection = true; }
+        return null;
+      }
+      return value && typeof value === 'object' ? { agentId: value.agentId, effort: value.effort } : null;
+    },
     settings() {
       const row = db.prepare('SELECT value FROM session_naming_settings WHERE id=1').get();
       if (!row) return null;
@@ -40,6 +52,7 @@ export function createNamingStore(db, { agentStore } = {}) {
             console.warn(`[session-naming] the saved ${value.provider}/${value.model} selection was not moved to agent ${matches[0].id}: ${error.message}`);
           }
         }
+        if (matches.length !== 1) console.warn(`[session-naming] saved ${value.provider}/${value.model} selection has ${matches.length === 0 ? 'no match' : `${matches.length} matches`}; clearing it`);
         db.prepare('DELETE FROM session_naming_settings WHERE id=1').run();
         return null;
       }

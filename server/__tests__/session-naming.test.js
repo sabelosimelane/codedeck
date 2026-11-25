@@ -22,7 +22,7 @@ function setup(generate = vi.fn(async () => 'Fix login redirects')) {
 }
 afterEach(() => { services.splice(0).forEach(service => service.stop()); databases.splice(0).forEach(db => db.close()); vi.useRealTimers(); });
 const activity = { executionStatus: 'running', snapshotText: '› Fix login redirects\nWorking…' };
-const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+const deferred = () => { let resolve, reject; const promise = new Promise((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; };
 
 describe('session naming', () => {
   it('waits for a submission and activity, then names exactly once', async () => {
@@ -93,12 +93,31 @@ describe('session naming', () => {
     service.input('Demo-1', 'task\r'); service.observe('Demo-1', activity);
     await service.waitForIdle(); expect(generate).not.toHaveBeenCalled();
   });
-  it('shows a failed title when the selected agent has disappeared from SQLite', async () => {
+  it('preserves manual and named records when settings fail and logs each distinct reason once', async () => {
     const { service, store, agentStore } = setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    service.rename('Manual', 'My title');
+    store.ensure('Named'); store.update('Named', { title: 'Generated title', state: 'named', source: 'generated' });
+    const manual = store.get('Manual'), named = store.get('Named');
     agentStore.remove(AGENT_ID);
-    service.input('Demo-1', 'fix login\r');
-    service.observe('Demo-1', activity);
-    expect(store.get('Demo-1')).toMatchObject({ state: 'failed', error: 'The session naming agent no longer exists; choose one in Settings' });
+    service.input('Manual', 'a'); service.input('Manual', 'b'); service.input('Named', 'c'); service.input('New', 'd');
+    expect(store.get('Manual')).toEqual(manual);
+    expect(store.get('Named')).toEqual(named);
+    expect(store.get('New')).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('The session naming agent no longer exists');
+    warn.mockRestore();
+  });
+  it('fails a generating job without retry when settings throw during the catch path', async () => {
+    const pending = deferred();
+    const { service, store, agentStore, generate } = setup(vi.fn(() => pending.promise));
+    service.input('Demo-1', 'task\r'); service.observe('Demo-1', activity);
+    await vi.waitFor(() => expect(store.get('Demo-1').state).toBe('generating'));
+    agentStore.remove(AGENT_ID);
+    pending.reject(new Error('offline'));
+    await service.waitForIdle();
+    expect(store.get('Demo-1')).toMatchObject({ state: 'failed', error: 'Naming settings changed' });
+    expect(generate).toHaveBeenCalledTimes(1);
   });
   it('retains a real submission made while the startup-context check is pending', async () => {
     const pending = deferred(); const generate = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce('Fix login redirects');

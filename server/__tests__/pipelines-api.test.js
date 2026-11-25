@@ -416,6 +416,42 @@ describe('pipelines API — agents', () => {
     expect((await request(ctx.app).put(`${base}/agents/${agent.id}`).send(sameProvider)).status).toBe(200);
   });
 
+  it.each([
+    ['Session naming', 'custom --model x', null, 'custom command'],
+    ['Session naming', 'command agent --model auto', 'high', 'effort'],
+    ['Workflow reviewer', 'command agent --model auto', null, 'Claude or Codex'],
+    ['Workflow reviewer', 'custom --model x', null, 'custom command'],
+    ['Workflow reviewer', 'command codex --model gpt-6-sol', 'max', 'effort'],
+  ])('refuses %s agent edits that break its saved selection: %s', async (setting, launchCommand, effort, reason) => {
+    let selectedId;
+    const ctx = await setup({ routerDeps: {
+      namingStore: { storedSelection: () => setting === 'Session naming' ? { agentId: selectedId, effort } : null },
+      improvements: { storedSelection: () => setting === 'Workflow reviewer' ? { agentId: selectedId, effort } : null },
+    } });
+    const agent = ctx.agentStore.create(agentBody({ name: 'Selected', launchCommand: 'command claude --model sonnet' }));
+    selectedId = agent.id;
+    const response = await request(ctx.app).put(`${base}/agents/${agent.id}`).send({ ...agentBody({ name: 'Selected', launchCommand }), revision: agent.revision });
+    expect(response.status).toBe(409);
+    expect(response.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ field: 'launchCommand', message: expect.stringContaining(setting) })]));
+    expect(JSON.stringify(response.body)).toContain(reason);
+    expect(ctx.agentStore.get(agent.id).launchCommand).toBe(agent.launchCommand);
+  });
+
+  it('guards reviewer deletion and ignores corrupt selections on unrelated agents', async () => {
+    let selectedId;
+    const ctx = await setup({ routerDeps: {
+      namingStore: { storedSelection: () => null, settings: () => { throw new Error('corrupt naming'); } },
+      improvements: { storedSelection: () => ({ agentId: selectedId, effort: null }) },
+    } });
+    const selected = ctx.agentStore.create(agentBody({ name: 'Reviewer' }));
+    const other = ctx.agentStore.create(agentBody({ name: 'Other' }));
+    selectedId = selected.id;
+    const refused = await request(ctx.app).delete(`${base}/agents/${selected.id}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.message).toBe('Cannot delete the agent used as the workflow reviewer');
+    expect((await request(ctx.app).delete(`${base}/agents/${other.id}`)).status).toBe(204);
+  });
+
   it('blocks deletion while an agent is staffed on a team, then permits it while the workflow keeps its role', async () => {
     const ctx = await setup();
     const { agent, workflow, team } = await seedReady(ctx);

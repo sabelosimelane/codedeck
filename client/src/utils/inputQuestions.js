@@ -1,5 +1,13 @@
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../../shared/pipeline-definitions.mjs';
 
+export function recommendationLead(text) {
+  if (typeof text !== 'string') throw new TypeError('recommendation must be text');
+  const explicit = /^(?:\(([a-f])\)|([a-f])[.)])(?:\s+|$)/i.exec(text);
+  if (explicit) return { letter: (explicit[1] ?? explicit[2]).toLowerCase(), reason: text.slice(explicit[0].length).trim() };
+  const bare = /^([a-f])(?:(?:\s+[-—:,]|[:,-])(?:\s+|$)|$)/.exec(text);
+  return bare ? { letter: bare[1], reason: text.slice(bare[0].length).trim() } : null;
+}
+
 /**
  * The questions an agent listed before it paused, read from the text CodeDeck took off its
  * screen: a numbered list, each item a question and, after "Recommended:", the answer the
@@ -27,8 +35,7 @@ export function parseQuestions(questions) {
       && options.every((option, index) => option && option[1] === String.fromCharCode(97 + index));
     const question = (validOptions ? questionLines.slice(0, firstOption) : questionLines).join(' ').replace(/\s+/g, ' ').trim();
     const choices = validOptions ? options.map(option => ({ letter: option[1], text: option[2].trim() })) : [];
-    const lead = recommended === null ? null : /^(?:\(([a-f])\)|([a-f])[.)]?)(?=\s|$)/i.exec(recommended);
-    const letter = lead?.[1]?.toLowerCase() ?? lead?.[2]?.toLowerCase() ?? null;
+    const letter = recommended === null ? null : recommendationLead(recommended)?.letter ?? null;
     const recommendedLetter = choices.some(option => option.letter === letter) ? letter : null;
     return { number, question, recommended, options: choices, recommendedLetter };
   });

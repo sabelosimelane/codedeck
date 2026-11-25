@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { composeAnswer, parseQuestions } from '../inputQuestions.js';
+import { composeAnswer, parseQuestions, recommendationLead } from '../inputQuestions.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../../../shared/pipeline-definitions.mjs';
 
 const LIST = `1. Should we really store first name and last name separately, or just speak the first word
@@ -44,6 +44,13 @@ describe('reading the questions an agent listed', () => {
 
   it('does not mark a choice recommended when the recommendation has no listed letter', () => {
     expect(parseQuestions('1. Which database?\na) Shared\nb) Dedicated\nRecommended: It depends on capacity.')[0].recommendedLetter).toBeNull();
+  });
+  it.each(['A fresh index is best.', 'A — because it is fast', 'B because it is isolated'])('does not treat prose as a recommendation letter: %s', recommendation => {
+    expect(parseQuestions(`1. Which?\na) Shared\nb) Dedicated\nRecommended: ${recommendation}`)[0].recommendedLetter).toBeNull();
+    expect(recommendationLead(recommendation)).toBeNull();
+  });
+  it.each([['(B) because', 'b', 'because'], ['B) because', 'b', 'because'], ['b. because', 'b', 'because'], ['b — because', 'b', 'because'], ['b: because', 'b', 'because'], ['b', 'b', '']])('extracts valid recommendation lead %s', (text, letter, reason) => {
+    expect(recommendationLead(text)).toEqual({ letter, reason });
   });
 });
 
