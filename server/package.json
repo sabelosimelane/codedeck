@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.106.0",
+    "@agentclientprotocol/sdk": "2.6.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "better-sqlite3": "^12.8.0",
     "busboy": "^1.6.0",
