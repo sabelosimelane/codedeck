@@ -38,12 +38,18 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Task view — a run is shown as its task: status in words, the steps as a rail, and the selected step's questions, approval, notes, decisions and reviews above its terminal
 - Workflow builder — a full screen with workflows, a draggable step rail, a large prompt editor and a backend-composed preview of what the agent is sent; workflow kinds, step roles, built-in templates (Bug fix, Feature build, Feature from requirements, Troubleshoot, Review only, Brainstorm to spec), owner-saved templates and reusable saved steps
 - Run progress and sidebar counts — persisted run progress with automatic terminal-tab adoption; backend restarts require explicit Resume
+- Project Assistant — a right-hand panel for the project on screen. Its header lists flags, read live, naming the facts most likely to mislead the owner (a run marked complete whose step stopped at its round limit while the todo is open, uncommitted work on a task branch, a dirty Main refusing a merge, a todo waiting on another). The owner asks Claude Code over the Agent Client Protocol; the transcript is stored and comes back after a reload. The agent reads the project through the composed situation brief and token-scoped read tools, and acts only through proposals (commit, merge, pull request, close, new task, start a run) that run through the same service as the matching button once the owner approves. Local projects only, Claude Code only.
 
 ## Domain Model
 - **Project**: a named directory on disk. Stored as `{ name, path, repositories }` in SQLite config. `path` is its own repository; `repositories` lists the others that belong with it (`{ name, path }`, the path being the checkout tasks start from and merge into). The grouping exists only in CodeDeck.
 - **Task**: a titled piece of work in a project, stored in SQLite with its title and state (`active`, `pr_open`, `merged`, `closed`) and one worktree per repository it includes, each with its path, branch, base branch and commit, its own state and pull request URL. A task is open while any of its worktrees is. Its Git facts are read live, never stored. A workflow run may belong to one task.
 - **Terminal session**: a tmux-backed PTY attachment keyed by `${projectName}-N`. Live browser attachments are tracked in server memory, while the underlying tmux session survives WebSocket reconnects, browser closes, and server restarts.
 - **Config**: generic key-value store in SQLite. Currently holds `projects` list and `defaultPath` setting.
+- **Situation**: a bounded, read-only snapshot of one local project composed on request from Git, the open tasks and their worktrees, their runs, and the todos and specifications in Main and the tasks. Never stored. Its `markdown` rendering is what the agent is briefed with.
+- **Flag**: one finding in the situation that is likely to mislead the owner, with a code, a message and the evidence behind it, in a fixed order. Shown in the panel header without a prompt.
+- **Conversation**: an owner's chat with the assistant for one project, stored in `assistant_conversations`. A project has at most one current conversation; **New conversation** ends it and starts another.
+- **Message**: one stored turn or notice of a conversation (`assistant_messages`), with role `owner`, `agent`, `tool` or `notice`.
+- **Proposal**: a change the assistant suggests — `commit`, `merge`, `pull_request`, `close`, `new_task` or `start_run` — with a validated payload, a summary and a reason (`assistant_proposals`). It does nothing until the owner approves, and is `pending`, `approved`, `done`, `failed`, `declined` or `expired`.
 
 ## Domain Terminology
 - **PTY**: pseudo-terminal — the OS-level terminal emulator that runs the user's shell
@@ -54,6 +60,8 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - **Main**: the project's own checkout, as opposed to a task's copy of it
 - **Landing**: getting a task's work back into the project: commit, merge, pull request or close
 - **Waiting (tab)**: a user-set mark on a tab, keyed to its first pane's session, meaning "an agent is working here — stay quiet until it lands". Distinct from project waiting (which parks a whole project) and from status muting (which is permanent until undone).
+- **Situation brief**: the assistant's first prompt context, built from the situation's `markdown` when its session starts.
+- **Approve / Decline**: the owner's decision on a proposal. Approve runs the matching CodeDeck service once; Decline calls no service. Nothing the assistant proposes happens without Approve.
 
 ## Business Rules
 - Projects are directories — they must exist on disk when added
@@ -68,6 +76,9 @@ Developers who juggle multiple codebases daily. The core pain points are:
 - Close run closes the terminals that run's steps used and no other: a terminal the owner opened in the same task or in Main stays, and so does one another open run uses. Only the owner's Close run does this; a run closed because another run started in its place keeps its terminals for that run to reuse
 - The backend is the source of truth for all state — frontend never holds authoritative state
 - Every user action that modifies state must round-trip through the backend
+- The assistant acts only through proposals, and a proposal runs only after the owner approves it, through the same service as the matching button: every landing and run blocker still applies, and Close never deletes files Git ignores
+- The assistant is for local projects and Claude Code only; a remote project's situation is refused with 409, and the panel says when another CLI or no sign-in is available
+- A project has one current assistant conversation; starting another expires its pending proposals and revokes its session tokens. Session read tokens are in memory and scoped to one project and conversation, and are ended when the agent exits or the socket closes
 
 Pipeline definitions and run snapshots are persisted in SQLite. A task owns its worktree: a
 run never removes it. The folder goes when the task is merged or closed, never by force;

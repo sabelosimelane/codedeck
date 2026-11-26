@@ -17,6 +17,7 @@ const SHORTCUTS = [
     { label: 'Close pane', mac: ['⌘', '⇧', 'X'], other: ['Ctrl', '⇧', 'X'] },
   ]},
   { category: 'Workspace', items: [
+    { label: 'Toggle project assistant', mac: ['⌘', '⇧', 'L'], other: ['Ctrl', '⇧', 'L'] },
     { label: 'Toggle sidebar', mac: ['⌘', 'B'], other: ['Ctrl', 'B'] },
     { label: 'Toggle file tree', mac: ['⌘', '⇧', 'F'], other: ['Ctrl', '⇧', 'F'] },
     { label: 'Keyboard shortcuts', mac: ['⌘', '/'], other: ['Ctrl', '/'] },

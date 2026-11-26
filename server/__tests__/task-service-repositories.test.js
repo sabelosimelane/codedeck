@@ -179,7 +179,7 @@ describe('a task across the repositories of a project', { timeout: 30_000 }, () 
     it('opens a terminal in the worktree asked for, and in the one the task started in when none is', async () => {
       const { tasks, start, folder } = await setup();
       const task = await tasks.create({ project: 'Demo', title: 'WhatsApp replies', repositories: ['mobile-app', 'backend'] });
-      expect(await tasks.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo', worktreeId: task.worktrees[0].id });
+      expect(await tasks.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo', host: 'local', worktreeId: task.worktrees[0].id });
       expect(start).toHaveBeenLastCalledWith('Demo', { cwd: path.join(folder, 'mobile-app') });
       expect(await tasks.openTerminal(ID, { worktreeId: task.worktrees[1].id })).toMatchObject({ worktreeId: task.worktrees[1].id });
       expect(start).toHaveBeenLastCalledWith('Demo', { cwd: path.join(folder, 'backend') });

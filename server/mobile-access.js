@@ -52,7 +52,7 @@ export function createPrivateAccess({ owner = null, serveOrigin = null, localOri
     authorize,
     authorizeUpgrade(req) {
       try {
-        if (typeof req.url !== 'string' || !req.url.startsWith('/') || new URL(req.url, 'http://localhost').pathname !== '/ws/terminal') return { status: 403, message: 'Private instance access denied' };
+        if (typeof req.url !== 'string' || !req.url.startsWith('/') || !['/ws/terminal', '/ws/assistant'].includes(new URL(req.url, 'http://localhost').pathname)) return { status: 403, message: 'Private instance access denied' };
         return authorize(req, { upgrade: true });
       } catch { return { status: 403, message: 'Private instance access denied' }; }
     },

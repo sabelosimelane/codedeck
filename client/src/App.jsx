@@ -8,6 +8,7 @@ import FileTree from './components/FileTree';
 import FileBrowserPanel from './components/FileBrowserPanel';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import ShortcutsOverlay from './components/ShortcutsOverlay';
+import AssistantPanel from './components/assistant/AssistantPanel';
 import SessionSearch from './components/SessionSearch';
 import RunWorkflowDialog from './components/pipelines/RunWorkflowDialog';
 import Improvements from './components/pipelines/builder/Improvements';
@@ -69,6 +70,14 @@ function AppContent() {
   const [fileBrowserProject, setFileBrowserProject] = useState(null);
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
   const [showShortcutsOverlay, setShowShortcutsOverlay] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(() => {
+    try { return localStorage.getItem('codedeck-assistant-open') === 'true'; }
+    catch (error) { console.warn('Could not read assistant panel preference', error); return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('codedeck-assistant-open', String(assistantOpen)); }
+    catch (error) { console.warn('Could not save assistant panel preference', error); }
+  }, [assistantOpen]);
   const [showSessionSearch, setShowSessionSearch] = useState(false);
   const [sessionSearchHost, setSessionSearchHost] = useState(null);
   const [showRunWorkflow, setShowRunWorkflow] = useState(false);
@@ -253,6 +262,13 @@ function AppContent() {
       if (key === 's' && isCmdOrCtrl && event.shiftKey && !event.altKey) {
         event.preventDefault();
         setShowSessionSearch(prev => !prev);
+        return;
+      }
+
+      // Cmd/Ctrl + Shift + L: Toggle project assistant
+      if (key === 'l' && isCmdOrCtrl && event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setAssistantOpen(prev => !prev);
         return;
       }
 
@@ -498,6 +514,7 @@ function AppContent() {
       <nav className="codedeck-navigation" aria-label="Main navigation">
         <a href="#workspace" aria-current={!dashboardOpen ? 'page' : undefined}>Workspace</a>
         <a href="#improvements" aria-current={dashboardOpen ? 'page' : undefined}>Improvements</a>
+        {activeProject && <button type="button" aria-label="Toggle project assistant" aria-pressed={assistantOpen} onClick={() => setAssistantOpen(value => !value)}>Assistant</button>}
       </nav>
       {dashboardOpen && <Improvements workflows={dashboardWorkflows} projects={projects} />}
       <div style={{ display: dashboardOpen ? 'none' : 'flex', flex: 1, minHeight: 0 }}>
@@ -633,6 +650,7 @@ function AppContent() {
           </div>
         )}
       </div>
+      {activeProject && assistantOpen && <AssistantPanel projectName={activeProject.name} onClose={() => setAssistantOpen(false)} />}
       {fileBrowserProject && (
         <FileBrowserPanel
           project={fileBrowserProject}

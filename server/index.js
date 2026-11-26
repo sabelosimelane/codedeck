@@ -93,6 +93,14 @@ import { createHostToolsResolver } from './host-tools.js';
 import { createHostsRouter } from './routes/hosts.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createProjectRepositoriesRouter, REPOSITORIES_PATH } from './routes/project-repositories.js';
+import { createAssistantRouter, ASSISTANT_PATH } from './routes/assistant.js';
+import { composeSituation } from './assistant/situation.js';
+import { createConversationStore } from './assistant/conversation-store.js';
+import { createProposalStore } from './assistant/proposal-store.js';
+import { createProposalExecutor } from './assistant/proposal-executor.js';
+import { createSessionTokens } from './assistant/session-tokens.js';
+import { createAssistantSocketHandler, routeUpgrade } from './assistant/ws-upgrade.js';
+import { createRunViewBuilder } from './pipelines/run-view.js';
 import { createProjectRepositories } from './project-repositories.js';
 import { createProjectDeletionService } from './project-deletion-service.js';
 import { collectSystemResources } from './system-resources.js';
@@ -152,7 +160,7 @@ const privateAccess = createPrivateAccess({
 });
 app.use(privateAccess.middleware);
 // Naming and terminal waiting own their parsers so malformed bodies also use their Problem Details handlers.
-app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/terminal-worktrees') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') || REPOSITORIES_PATH.test(req.path) ? next() : express.json()(req, res, next));
+app.use((req, res, next) => req.path.startsWith('/api/session-naming/') || req.path.startsWith('/api/terminal-waiting') || req.path.startsWith('/api/terminal-worktrees') || req.path.startsWith('/api/pipelines') || req.path.startsWith('/api/agent-sessions') || req.path.startsWith('/api/mobile/v1') || REPOSITORIES_PATH.test(req.path) || ASSISTANT_PATH.test(req.path) ? next() : express.json()(req, res, next));
 
 // -------------------------------------------------------------------
 // Config helpers (SQLite-backed)
@@ -270,14 +278,15 @@ app.use(createProjectsRouter({
   deleteProject: name => deleteProject(name),
 }));
 // A project's other repositories: a list in CodeDeck's configuration, nothing changed on disk.
-app.use(createProjectRepositoriesRouter({ service: createProjectRepositories({
+const projectRepositories = createProjectRepositories({
   loadProjects,
   saveProjects,
   execFile,
   resolveHostTools,
   // The session starter is set up further down; it is read when a terminal is asked for.
   startSession: (project, options) => startSessionWithWorktree(project, options),
-}) }));
+});
+app.use(createProjectRepositoriesRouter({ service: projectRepositories }));
 
 // -------------------------------------------------------------------
 // REST API: Config (generic key-value)
@@ -861,12 +870,9 @@ app.get('/api/health', (req, res) => {
 // -------------------------------------------------------------------
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+const assistantWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 server.on('upgrade', (req, socket, head) => {
-  if (privateAccess.authorizeUpgrade(req)) {
-    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-    return;
-  }
-  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+  routeUpgrade(req, socket, head, { authorizeUpgrade: request => privateAccess.authorizeUpgrade(request), terminal: wss, assistant: assistantWss });
 });
 
 // Active PTY sessions: Map<string, { pty, ws, cwd, startedAt, lastOutputAt, alive }>
@@ -1316,7 +1322,7 @@ const reconciledRuns = await pipelineRunEngine.reconcileOnStartup();
 if (reconciledRuns.reattached.length || reconciledRuns.interrupted.length) {
   console.log(`[pipelines] reconciled startup runs reattached=${reconciledRuns.reattached.length} interrupted=${reconciledRuns.interrupted.length}`);
 }
-app.use(createPipelinesRouter({
+const pipelinesRouter = createPipelinesRouter({
   db,
   attachmentStagingRoot: pipelineAttachmentStagingRoot,
   improvements,
@@ -1350,6 +1356,55 @@ app.use(createPipelinesRouter({
   }),
   execFile,
   resolveHostTools,
+});
+app.use(pipelinesRouter);
+
+const assistantRunView = createRunViewBuilder({ runStore: pipelineRunStore, taskStore, workflowStore: pipelineWorkflowStore, decisionStore: pipelineDecisionStore, noteStore: pipelineNoteStore, progressReader: pipelineProgressReader, resolveHostTools });
+const assistantConversationStore = createConversationStore(db);
+const assistantProposalStore = createProposalStore(db);
+const assistantProposalExecutor = createProposalExecutor({
+  proposalStore: assistantProposalStore,
+  landing: taskLanding,
+  taskService,
+  startRun: pipelinesRouter.startRun,
+});
+const assistantSessionTokens = createSessionTokens();
+const findAssistantProject = name => loadProjects().find(project => project.name === name) ?? null;
+const composeAssistantSituation = name => composeSituation({
+  projectName: name,
+  findProject: findAssistantProject,
+  repositoryService: projectRepositories,
+  taskStore,
+  landing: taskLanding,
+  runStore: pipelineRunStore,
+  runView: assistantRunView,
+  execFile,
+});
+const assistantUrl = `http://127.0.0.1:${process.env.PORT || 43001}`;
+const assistantSocketHandler = createAssistantSocketHandler({
+  findProject: findAssistantProject,
+  store: assistantConversationStore,
+  proposalStore: assistantProposalStore,
+  compose: composeAssistantSituation,
+  sessionTokens: assistantSessionTokens,
+  assistantUrl,
+});
+assistantWss.on('connection', assistantSocketHandler);
+app.use(createAssistantRouter({
+  store: assistantConversationStore,
+  proposalStore: assistantProposalStore,
+  proposalExecutor: assistantProposalExecutor,
+  findProject: findAssistantProject,
+  compose: composeAssistantSituation,
+  sessionTokens: assistantSessionTokens,
+  repositoryService: projectRepositories,
+  taskStore,
+  landing: taskLanding,
+  runStore: pipelineRunStore,
+  noteStore: pipelineNoteStore,
+  runView: assistantRunView,
+  onProposal: assistantSocketHandler.pushProposal,
+  onSituationFlags: assistantSocketHandler.pushSituation,
 }));
 
 const agentHistory = createAgentHistory({ home: os.homedir(), fs: fsSync, Database: db.constructor });

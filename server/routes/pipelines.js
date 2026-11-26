@@ -1,4 +1,4 @@
-import { attributedAgent, publicRoleFallback, workloadKey } from '../pipelines/team-attribution.js';
+import { attributedAgent, workloadKey } from '../pipelines/team-attribution.js';
 import { mountTeamScoring } from './team-scoring.js';
 import { mountImprovements } from './improvements.js';
 import express from 'express';
@@ -43,7 +43,6 @@ import { canonicalDefinition } from '../../shared/workflow-changes.mjs';
 import { WORKFLOW_TEMPLATES } from '../../shared/workflow-templates.mjs';
 import { builtinTemplateDefinition } from '../pipelines/workflow-store.js';
 import { computeActions, progressForAgent } from '../pipelines/run-machine.js';
-import { publicAttachments } from '../pipelines/attachments.js';
 import { cleanupAttempt, parsePipelineStartMultipart } from '../pipelines/multipart-start.js';
 import { PROVISIONING_STATES, reservedAttachmentIdentities, serializeStartParams } from '../pipelines/request-store.js';
 import {
@@ -53,8 +52,8 @@ import {
   removeUnpublishedAttachments as defaultRemoveManagedAttachments,
 } from '../pipelines/attachment-publisher.js';
 import os from 'node:os';
-import { createRunProgressReader, readRunProgress, isProgressFileInWorktree } from '../pipelines/run-progress.js';
-import { notePath, feedbackPath } from '../pipelines/run-notes.js';
+import { createRunProgressReader, isProgressFileInWorktree } from '../pipelines/run-progress.js';
+import { feedbackPath } from '../pipelines/run-notes.js';
 import { buildStepGuidance } from '../pipelines/step-guidance.js';
 import { buildPrompt as buildPassPrompt } from '../terminal-workflow.js';
 import {
@@ -75,7 +74,7 @@ import { parseTodoRepositories } from '../../shared/todo-repositories.mjs';
 import { GUIDANCE_MAX } from '../terminal-workflow.js';
 import { parseCollectionQuery as parseQuery, paginate } from './collection-query.js';
 import { provisionalTaskTitle } from '../tasks/task-naming.js';
-import { canReclaimReleasedTaskRun } from '../pipelines/released-task-run.js';
+import { createRunViewBuilder } from '../pipelines/run-view.js';
 import { holdsWorktree, isOpenRun } from '../pipelines/run-worktree-hold.js';
 import { getProjectLocation, LOCAL_HOST, normalizeHostName, normalizeProject } from '../project-config.js';
 import { syncProjectLocation } from '../git-sync-service.js';
@@ -134,86 +133,6 @@ function rejectUnknownQuery(query, allowed) {
 }
 
 const parseCollectionQuery = (query, spec) => parseQuery(query, spec, fieldError);
-
-/** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
-function buildRunView(run, decisionCount, progress, latestNotes) {
-  const currentNote = latestNotes.get(run.currentStepIndex);
-  const approvalNote = currentNote === undefined ? null : (({ status, summary, attempt, pass, createdAt }) => ({ status, summary, attempt, pass, createdAt }))(currentNote);
-  return {
-    id: run.id,
-    requestId: run.requestId,
-    workflowId: run.workflowId,
-    taskId: run.taskId,
-    workflowName: run.definition.workflowName,
-    // Whether this run's agents settle their own questions, as the workflow said when it started.
-    agentsDecide: run.definition.agentsDecide,
-    decisionCount,
-    notesDir: run.definition.notesDir,
-    // The team this run is labelled with, or null; `changed` when its lineup was changed after it started.
-    team: run.definition.team ?? null,
-    progress,
-    project: run.project,
-    host: run.host ?? 'local',
-    input: run.input,
-    attachments: publicAttachments(run.attachments),
-    status: run.status,
-    approvalRequest: run.status === 'awaiting_approval' ? { stepIndex: run.currentStepIndex, stepName: run.definition.steps[run.currentStepIndex].name, note: approvalNote } : null,
-    stopReason: run.stopReason,
-    error: run.error,
-    currentStepIndex: run.currentStepIndex,
-    steps: run.definition.steps.map((defStep, index) => {
-      const progress = run.steps[index];
-      return {
-        index,
-        kind: defStep.kind,
-        name: defStep.name,
-        role: defStep.role,
-        askOwner: defStep.askOwner,
-        readOnly: defStep.readOnly,
-        approval: defStep.approval,
-        agentName: defStep.agent.name,
-        agentId: defStep.agent.id,
-        ...(defStep.agent.assignment && { agentSource: defStep.agent.assignment.source }),
-        ...(defStep.agent.fallbackAgent && { fallbackAgent: publicRoleFallback(defStep.agent.fallbackAgent) }),
-        ...(defStep.nextAgent && {
-          nextAgentId: defStep.nextAgent.id,
-          nextAgentName: defStep.nextAgent.name,
-          ...(defStep.nextAgent.assignment && { nextAgentSource: defStep.nextAgent.assignment.source }),
-          ...(defStep.nextAgent.fallbackAgent && { nextFallbackAgent: publicRoleFallback(defStep.nextAgent.fallbackAgent) }),
-        }),
-        notePath: notePath(run.definition, index),
-        note: latestNotes.get(index) === undefined ? null : (({ status, summary, attempt, pass, createdAt }) => ({ status, summary, attempt, pass, createdAt }))(latestNotes.get(index)),
-        repeat: defStep.repeat,
-        status: progress.status,
-        sessionId: progress.sessionId,
-        priorSessionIds: progress.priorSessionIds,
-        attempt: progress.attempt,
-        iteration: progress.iteration,
-        roundsCompleted: progress.roundsCompleted,
-        detail: progress.detail,
-        startedAt: progress.startedAt,
-        finishedAt: progress.finishedAt,
-        elapsedMs: progress.elapsedMs,
-      };
-    }),
-    worktree: {
-      path: run.worktreePath,
-      branch: run.worktreeBranch,
-      baseCommit: run.baseCommit,
-      state: run.worktreeState,
-      detail: run.worktreeDetail,
-    },
-    // What an agent that signalled NEEDS_INPUT asked for; null when the run is not waiting on one.
-    inputRequest: run.inputRequest === null ? null : {
-      questions: run.inputRequest.questions,
-      truncated: run.inputRequest.truncated,
-    },
-    actions: computeActions(run),
-    createdAt: run.createdAt,
-    updatedAt: run.updatedAt,
-    finishedAt: run.finishedAt,
-  };
-}
 
 function pendingStep() {
   return {
@@ -544,14 +463,7 @@ export function createPipelinesRouter(deps) {
   if (typeof closeRunTerminals !== 'function') throw new Error('pipelines router: closeRunTerminals must be a function');
   if (typeof findProject !== 'function') throw new Error('pipelines router: findProject must be a function');
 
-  const asRunView = async run => {
-    const viewRun = run.worktreeState === 'released' && canReclaimReleasedTaskRun({ run, taskStore, runStore })
-      ? { ...run, reclaimableTaskWorktree: true } : run;
-    const inspected = await readRunProgress({ run: viewRun, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: run.host !== 'local' && resolveHostTools ? createRunProgressReader({fs:resolveHostTools(run.host).fs}) : progressReader });
-    // `tasksDone`/`tasksTotal` count every phase; `phase` is the first one with work left.
-    const progress = inspected === null ? null : { file: inspected.file, status: inspected.status, phaseCount: inspected.phaseCount, phase: inspected.phase, tasksDone: inspected.tasksDone, tasksTotal: inspected.tasksTotal };
-    return buildRunView(viewRun, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
-  };
+  const asRunView = createRunViewBuilder({ runStore, taskStore, workflowStore, decisionStore, noteStore, progressReader, resolveHostTools });
 
   const router = express.Router();
   const route = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch(next);
@@ -2383,6 +2295,19 @@ export function createPipelinesRouter(deps) {
       ...(error instanceof PipelineError && error.extra ? error.extra : {}),
     });
   });
+
+  router.startRun = async (body) => {
+    const outcome = await startRun({ body: { ...body } }, null);
+    if (outcome.status === 201 && engine && typeof engine.start === 'function') {
+      const runId = outcome.run.id;
+      scheduleStart(() => {
+        Promise.resolve(engine.start(runId)).catch(err => {
+          console.warn(`[pipelines] engine.start failed runId=${runId} error=${err?.message || err}`);
+        });
+      });
+    }
+    return outcome.view;
+  };
 
   return router;
 }

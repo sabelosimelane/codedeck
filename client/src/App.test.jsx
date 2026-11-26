@@ -67,6 +67,10 @@ vi.mock('./components/ShortcutsOverlay', () => ({
   default: () => null,
 }));
 
+vi.mock('./components/assistant/AssistantPanel', () => ({
+  default: ({ projectName, onClose }) => <aside aria-label="Project assistant">{projectName}<button onClick={onClose}>Close assistant</button></aside>,
+}));
+
 vi.mock('./components/PaneDivider', () => ({
   default: () => null,
 }));
@@ -445,5 +449,26 @@ describe('App polling', () => {
     await act(async () => { await Promise.resolve(); });
     expect(mocks.showToast).toHaveBeenCalledWith({ type: 'error', message: 'Could not close Gamma-1.' });
     expect(screen.getByRole('button', { name: 'Gamma' })).toBeTruthy();
+  });
+
+  it('toggles the project assistant from the top bar and Cmd or Ctrl Shift L', async () => {
+    global.fetch = vi.fn(url => {
+      if (url === '/api/projects') return okJson([{ name: 'Gamma', path: '/tmp/gamma', repositories: [] }]);
+      if (url === '/api/sessions') return okJson([]);
+      if (url === SYSTEM_RESOURCES_URL) return mockSystemResources();
+      if (String(url).startsWith('/api/tasks')) return okJson({ data: [], page: { currentPage: 0, size: 100, totalElements: 0, totalPages: 0, hasNextPage: false } });
+      return okJson([]);
+    });
+    render(<App />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    fireEvent.click(screen.getByRole('button', { name: 'Gamma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle project assistant' }));
+    expect(screen.getByRole('complementary', { name: 'Project assistant' }).textContent).toContain('Gamma');
+    expect(localStorage.getItem('codedeck-assistant-open')).toBe('true');
+    fireEvent.keyDown(window, { key: 'L', metaKey: true, shiftKey: true });
+    expect(screen.queryByRole('complementary', { name: 'Project assistant' })).toBeNull();
+    expect(localStorage.getItem('codedeck-assistant-open')).toBe('false');
+    fireEvent.keyDown(window, { key: 'l', ctrlKey: true, shiftKey: true });
+    expect(screen.getByRole('complementary', { name: 'Project assistant' })).toBeTruthy();
   });
 });

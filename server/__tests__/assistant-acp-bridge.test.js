@@ -1,0 +1,358 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { createConversationStore } from '../assistant/conversation-store.js';
+import { createProposalStore } from '../assistant/proposal-store.js';
+import { createSessionTokens } from '../assistant/session-tokens.js';
+import { adapterCommand, handleAssistantConnection } from '../assistant/acp-bridge.js';
+
+const fixture = fileURLToPath(new URL('./fixtures/assistant-fake-acp-agent.js', import.meta.url));
+const dbs = []; const sockets = [];
+afterEach(() => { sockets.splice(0).forEach(ws => ws.close()); dbs.splice(0).forEach(db => db.close()); });
+class Socket extends EventEmitter {
+  readyState = 1; sent = []; close() { if (this.readyState !== 1) return; this.readyState = 3; this.emit('close'); }
+  send(value) { this.sent.push(JSON.parse(value)); this.emit('sent'); }
+  receive(value) { this.emit('message', JSON.stringify(value)); }
+}
+function waitFor(ws, type) { const existing = ws.sent.find(frame => frame.type === type); if (existing) return Promise.resolve(existing); return new Promise((resolve, reject) => { const timeout = setTimeout(() => reject(new Error(`No ${type}: ${JSON.stringify(ws.sent)}`)), 3000); ws.on('sent', function onSent() { const frame = ws.sent.find(item => item.type === type); if (frame) { clearTimeout(timeout); ws.off('sent', onSent); resolve(frame); } }); }); }
+function setup(options = {}) {
+  const db = new Database(':memory:'); dbs.push(db); const store = createConversationStore(db);
+  const ws = new Socket(); sockets.push(ws); const conversation = store.current('Demo');
+  return { db, store, ws, conversation, connect: () => handleAssistantConnection(ws, { project: 'Demo', cwd: process.cwd(), conversation, store, command: process.execPath, args: [fixture], ...options }) };
+}
+describe('ACP bridge with fake stdio agent', () => {
+  it('switches an auto session to default before ready and before prompts', async () => {
+    const { ws, connect } = setup(); connect();
+    await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'empty' });
+    expect(await waitFor(ws, 'turn_end')).toMatchObject({ messageId: null });
+  });
+  it.each(['missing-modes', 'no-default', 'set-mode-error'])('fails closed when safe mode is unavailable: %s', async scenario => {
+    const { ws, connect } = setup({ args: [fixture, scenario] }); connect();
+    expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('ask before acting') });
+    expect(ws.sent.some(frame => frame.type === 'ready')).toBe(false);
+    expect(ws.readyState).toBe(3);
+  });
+  it('reverts an unsafe mode update and refuses prompts until default succeeds', async () => {
+    const { ws, connect } = setup({ args: [fixture, 'slow-restore'] }); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'mode-flip' });
+    expect(await waitFor(ws, 'error')).toMatchObject({ message: expect.stringContaining('mode') });
+    await waitFor(ws, 'turn_end');
+    ws.receive({ type: 'prompt', text: 'empty' });
+    expect(ws.sent.filter(frame => frame.type === 'message' && frame.message.role === 'owner')).toHaveLength(1);
+    expect(ws.sent.at(-1)).toMatchObject({ type: 'error', message: expect.stringContaining('ask before acting') });
+    await new Promise(resolve => setTimeout(resolve, 80));
+    ws.sent.length = 0;
+    ws.receive({ type: 'prompt', text: 'empty' });
+    expect(await waitFor(ws, 'turn_end')).toMatchObject({ messageId: null });
+  });
+  it('forwards real v1 updates, auth state, and stores the final tool title and command once', async () => {
+    const { ws, store, conversation, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'real-frames' }); await waitFor(ws, 'turn_end');
+    for (const kind of ['available_commands_update', 'session_info_update', 'usage_update', 'tool_call', 'tool_call_update', 'agent_message_chunk']) expect(ws.sent.some(frame => frame.type === 'update' && frame.update.sessionUpdate === kind)).toBe(true);
+    expect(ws.sent).toContainEqual({ type: 'auth', state: 'authenticated', label: 'Claude Ultra' });
+    expect(ws.sent.filter(frame => frame.type === 'error')).toHaveLength(0);
+    expect(store.messages(conversation.id).data.filter(item => item.role === 'tool')).toEqual([expect.objectContaining({ toolName: 'git status --short', content: expect.stringContaining('completed') })]);
+    expect(store.messages(conversation.id).data.at(-1).content).toBe('Done');
+  });
+  it('reports unauthenticated prompt errors and ends the turn', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'auth-error' });
+    expect(await waitFor(ws, 'turn_end')).toEqual({ type: 'turn_end', messageId: null });
+    expect(ws.sent).toContainEqual({ type: 'auth', state: 'unauthenticated', label: null });
+    expect(ws.sent).toContainEqual({ type: 'error', message: 'Claude Code is not signed in on this machine. Run `claude` in a terminal, sign in, then send again.' });
+  });
+  it('handshakes, stores the owner before prompt, and combines chunks into one turn', async () => {
+    const { store, ws, conversation, connect } = setup(); connect();
+    expect(await waitFor(ws, 'ready')).toMatchObject({ conversationId: conversation.id, restarted: false });
+    ws.receive({ type: 'prompt', text: 'hello' });
+    expect(store.messages(conversation.id).data[0]).toMatchObject({ role: 'owner', content: 'hello' });
+    expect(await waitFor(ws, 'turn_end')).toMatchObject({ messageId: expect.any(Number) });
+    expect(store.messages(conversation.id).data.map(m => m.role)).toEqual(['owner', 'tool', 'agent']);
+    expect(store.messages(conversation.id).data[2].content).toBe('Hello owner');
+  });
+  it('forwards a permission response unchanged and rejects unknown ids', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'permission' });
+    const requested = await waitFor(ws, 'permission_request');
+    expect(requested).toMatchObject({ requestId: 90, toolCall: { title: 'Edit file' } });
+    ws.receive({ type: 'permission_response', requestId: 91, outcome: { outcome: 'selected', optionId: 'allow' } });
+    expect(await waitFor(ws, 'error')).toMatchObject({ type: 'error' });
+    ws.receive({ type: 'permission_response', requestId: 90, outcome: { outcome: 'selected', optionId: 'reject' } });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(ws.sent.some(frame => frame.update?.content?.text === '{"outcome":"selected","optionId":"reject"}')).toBe(true);
+  });
+  it('announces a restart when the transcript exists', async () => {
+    const { store, ws, conversation, connect } = setup(); store.append(conversation.id, { role: 'owner', content: 'old' }); connect();
+    expect(await waitFor(ws, 'ready')).toMatchObject({ restarted: true });
+    expect(store.messages(conversation.id).data.at(-1)).toMatchObject({ role: 'notice', content: expect.stringContaining('does not remember') });
+  });
+  it('reports spawn errors and exits, and strips Claude session markers', async () => {
+    const bad = setup({ command: '/not/a/command', args: [] }); bad.connect(); expect(await waitFor(bad.ws, 'spawn_error')).toMatchObject({ message: expect.any(String) });
+    const good = setup(); good.connect(); await waitFor(good.ws, 'ready'); good.ws.receive({ type: 'prompt', text: 'exit' });
+    expect(await waitFor(good.ws, 'agent_exit')).toMatchObject({ code: 7, stderrTail: 'fake exit' });
+  });
+  it('resolves the pinned adapter bin and removes Claude session markers from the child environment', async () => {
+    const resolved = adapterCommand();
+    expect(resolved.command).toBe(process.execPath);
+    expect(resolved.args[0]).toMatch(/claude-agent-acp\/dist\/index\.js$/);
+    const previous = [process.env.CLAUDECODE, process.env.CLAUDE_CODE_ENTRYPOINT];
+    process.env.CLAUDECODE = 'parent'; process.env.CLAUDE_CODE_ENTRYPOINT = 'parent';
+    try {
+      let childEnv;
+      const fixtureRun = setup({ spawnFn: (command, args, options) => { childEnv = options.env; return spawn(command, args, options); } });
+      fixtureRun.connect(); await waitFor(fixtureRun.ws, 'ready');
+      expect(childEnv).not.toHaveProperty('CLAUDECODE');
+      expect(childEnv).not.toHaveProperty('CLAUDE_CODE_ENTRYPOINT');
+    } finally {
+      if (previous[0] === undefined) delete process.env.CLAUDECODE; else process.env.CLAUDECODE = previous[0];
+      if (previous[1] === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT; else process.env.CLAUDE_CODE_ENTRYPOINT = previous[1];
+    }
+  });
+  it('does not crash when a tool update arrives after New conversation ends the old one', async () => {
+    const { store, ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'delayed' });
+    store.startNew('Demo');
+    expect(await waitFor(ws, 'error')).toMatchObject({ message: expect.stringContaining('ended') });
+    expect(ws.readyState).toBe(3);
+  });
+  it('ends an empty turn without an agent message and stores a repeated tool call only once', async () => {
+    const { store, ws, conversation, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'empty' });
+    expect(await waitFor(ws, 'turn_end')).toMatchObject({ messageId: null });
+    ws.sent.length = 0;
+    ws.receive({ type: 'prompt', text: 'duplicate' });
+    await waitFor(ws, 'turn_end');
+    expect(store.messages(conversation.id).data.filter(item => item.role === 'tool')).toHaveLength(1);
+    expect(store.messages(conversation.id).data.filter(item => item.role === 'agent')).toHaveLength(0);
+  });
+  it('rejects invalid prompts, forwards cancel, and denies unknown agent methods', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: '' });
+    expect(await waitFor(ws, 'error')).toMatchObject({ message: expect.stringContaining('1–20000') });
+    ws.receive({ type: 'prompt', text: 'unsupported' });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(ws.sent.some(frame => frame.update?.content?.text === '-32601')).toBe(true);
+    ws.receive({ type: 'cancel' });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(ws.sent.some(frame => frame.update?.content?.text === 'cancelled')).toBe(true);
+  });
+  it('rejects malformed browser frames without losing the socket', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive(null); ws.receive('x');
+    expect(ws.sent.filter(frame => frame.type === 'error')).toHaveLength(2);
+    expect(ws.readyState).toBe(1);
+    ws.receive({ type: 'prompt', text: 'empty' });
+    expect(await waitFor(ws, 'turn_end')).toMatchObject({ messageId: null });
+  });
+  it('closes cleanly when child stdin fails', async () => {
+    const { ws, connect } = setup(); const bridge = connect(); await waitFor(ws, 'ready');
+    bridge.child.stdin.destroy();
+    bridge.child.stdin.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }));
+    ws.receive({ type: 'prompt', text: 'hello' });
+    expect(ws.sent.filter(frame => frame.type === 'error')).toHaveLength(1);
+    expect(ws.readyState).toBe(3);
+  });
+  it.each(['prompt', 'cancel', 'permission_response'])('handles destroyed child stdin while sending %s', async type => {
+    const { ws, connect } = setup(); const bridge = connect(); await waitFor(ws, 'ready');
+    if (type === 'cancel') ws.receive({ type: 'prompt', text: 'delayed' });
+    if (type === 'permission_response') { ws.receive({ type: 'prompt', text: 'permission' }); await waitFor(ws, 'permission_request'); }
+    bridge.child.stdin.destroy();
+    if (type === 'prompt') ws.receive({ type: 'prompt', text: 'hello' });
+    if (type === 'cancel') ws.receive({ type: 'cancel' });
+    if (type === 'permission_response') ws.receive({ type: 'permission_response', requestId: 90, outcome: { outcome: 'cancelled' } });
+    expect(await waitFor(ws, 'error')).toMatchObject({ message: expect.stringContaining('ACP stream failed') });
+    expect(ws.sent.filter(frame => frame.type === 'error')).toHaveLength(1);
+    expect(ws.readyState).toBe(3);
+  });
+  it('preserves a UTF-8 reply split inside a character', async () => {
+    const { ws, store, conversation, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'unicode' }); await waitFor(ws, 'turn_end');
+    expect(store.messages(conversation.id).data.at(-1).content).toBe('Sawubona 👋 ünïcödé');
+  });
+  it('ignores late adapter output after close', async () => {
+    const { ws, store, conversation, connect } = setup(); const bridge = connect(); await waitFor(ws, 'ready');
+    bridge.close(); ws.close(); const before = store.messages(conversation.id).data.length;
+    bridge.child.stdout.emit('data', `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'tool_call', toolCallId: 'late', title: 'Late tool' } } })}\n`);
+    expect(store.messages(conversation.id).data).toHaveLength(before);
+  });
+  it('sends stored owner message and does not prompt when storing fails', async () => {
+    const { ws, store, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'empty' });
+    expect(await waitFor(ws, 'message')).toMatchObject({ message: { role: 'owner', content: 'empty', id: expect.any(Number) } });
+    await waitFor(ws, 'turn_end');
+    const original = store.append; store.append = () => { throw new Error('store failed'); };
+    ws.sent.length = 0; ws.receive({ type: 'prompt', text: 'hello' });
+    expect(await waitFor(ws, 'error')).toMatchObject({ message: 'store failed' });
+    expect(ws.sent.some(frame => frame.type === 'message')).toBe(false);
+    store.append = original;
+  });
+  it('rejects browser fields and permission outcomes outside the offered request', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'hello', extra: true });
+    ws.receive({ type: 'cancel' });
+    expect(ws.sent.filter(frame => frame.type === 'error')).toHaveLength(2);
+    ws.receive({ type: 'prompt', text: 'permission' }); await waitFor(ws, 'permission_request');
+    ws.receive({ type: 'permission_response', requestId: 90, outcome: { outcome: 'selected', optionId: 'not-offered' } });
+    expect(ws.sent.filter(frame => frame.type === 'error')).toHaveLength(3);
+    expect(ws.readyState).toBe(1);
+  });
+  it('reports malformed ACP notifications and unknown methods', async () => {
+    const { ws, connect } = setup(); const bridge = connect(); await waitFor(ws, 'ready');
+    const send = frame => bridge.child.stdout.emit('data', `${JSON.stringify(frame)}\n`);
+    send({ jsonrpc: '2.0', method: 'session/unknown', params: {} });
+    send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'other', update: { sessionUpdate: 'tool_call', toolCallId: 't', title: 'Read' } } });
+    send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'tool_call', toolCallId: 't' } } });
+    send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'unrecognized' } } });
+    expect(ws.sent.filter(frame => frame.type === 'error')).toHaveLength(4);
+  });
+  it('rejects malformed nested ACP tool content and permission options', async () => {
+    const { ws, connect } = setup(); const bridge = connect(); await waitFor(ws, 'ready');
+    const send = frame => bridge.child.stdout.emit('data', `${JSON.stringify(frame)}\n`);
+    send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'tool_call', toolCallId: 't', title: 'Read', content: [{ type: 'content', content: { type: 'text', text: 42 } }] } } });
+    send({ jsonrpc: '2.0', id: 200, method: 'session/request_permission', params: { sessionId: 'fake-session', toolCall: { toolCallId: 't', title: 'Read' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once', _meta: 'bad' }] } });
+    expect(ws.sent.filter(frame => frame.type === 'error')).toHaveLength(2);
+  });
+  it('passes codedeck MCP server and assistant brief systemPrompt in session/new, emits briefed notice, and ends token on close', async () => {
+    const sessionTokens = createSessionTokens();
+    const compose = async project => ({
+      project,
+      markdown: `# ${project} — where things stand\n## Attention\n- Phase 2 has 4 of 6 tasks done.`,
+      flags: [],
+    });
+    const { ws, store, conversation, connect } = setup({
+      compose,
+      sessionTokens,
+      assistantUrl: 'http://127.0.0.1:43001',
+    });
+    const bridge = connect();
+    await waitFor(ws, 'ready');
+
+    expect(sessionTokens.size()).toBe(1);
+    expect(store.messages(conversation.id).data).toContainEqual(
+      expect.objectContaining({ role: 'notice', content: 'Assistant briefed on the current situation.' }),
+    );
+    expect(ws.sent).toContainEqual(
+      expect.objectContaining({ type: 'message', message: expect.objectContaining({ role: 'notice', content: 'Assistant briefed on the current situation.' }) }),
+    );
+
+    ws.receive({ type: 'prompt', text: 'inspect-session' });
+    await waitFor(ws, 'turn_end');
+    const agentReply = store.messages(conversation.id).data.filter(m => m.role === 'agent').at(-1).content;
+    const params = JSON.parse(agentReply);
+
+    expect(params.mcpServers).toHaveLength(1);
+    expect(params.mcpServers[0]).toMatchObject({
+      name: 'codedeck',
+      command: process.execPath,
+      args: [expect.stringMatching(/server\/assistant\/mcp-server\.js$/)],
+    });
+    const envMap = Object.fromEntries(params.mcpServers[0].env.map(item => [item.name, item.value]));
+    expect(envMap.CODEDECK_ASSISTANT_URL).toBe('http://127.0.0.1:43001');
+    expect(envMap.CODEDECK_ASSISTANT_TOKEN).toMatch(/^[a-f0-9]{64}$/);
+    expect(sessionTokens.verify(envMap.CODEDECK_ASSISTANT_TOKEN)).toMatchObject({ project: 'Demo', conversationId: conversation.id });
+
+    expect(params.systemPrompt).toEqual({
+      mode: 'append',
+      content: [{ type: 'text', text: expect.stringContaining('# Demo — where things stand') }],
+    });
+    expect(params.systemPrompt.content[0].text).toContain('Phase 2 has 4 of 6 tasks done.');
+
+    bridge.close();
+    expect(sessionTokens.size()).toBe(0);
+    expect(sessionTokens.verify(envMap.CODEDECK_ASSISTANT_TOKEN)).toBeNull();
+  });
+
+  it('reports a situation failure as such, issues no token and never becomes ready', async () => {
+    const sessionTokens = createSessionTokens();
+    const compose = async () => { throw new Error('situation: task t-1 worktree w-1 branch must be text'); };
+    const { ws, connect } = setup({ compose, sessionTokens, assistantUrl: 'http://127.0.0.1:43001' });
+    connect();
+    const failure = await waitFor(ws, 'spawn_error');
+    expect(failure.message).toBe('The assistant could not read the project situation: situation: task t-1 worktree w-1 branch must be text');
+    expect(failure.message).not.toContain('ask before acting');
+    expect(ws.sent.some(frame => frame.type === 'ready')).toBe(false);
+    expect(sessionTokens.size()).toBe(0);
+    expect(ws.readyState).toBe(3);
+  });
+
+  it('prefixes newly decided proposals to the next prompt once and pushes proposal and situation frames', async () => {
+    const { db, store, ws, conversation, connect } = setup();
+    const proposalStore = createProposalStore(db);
+    const bridge = handleAssistantConnection(ws, {
+      project: 'Demo',
+      cwd: process.cwd(),
+      conversation,
+      store,
+      proposalStore,
+      command: process.execPath,
+      args: [fixture],
+    });
+    await waitFor(ws, 'ready');
+
+    const p1 = proposalStore.create({
+      conversationId: conversation.id,
+      project: 'Demo',
+      kind: 'commit',
+      payload: { taskId: '11111111-1111-4111-8111-111111111111', message: 'wip' },
+      summary: 'Commit changes',
+      reason: 'Checkpoint.',
+    });
+    bridge.pushProposal(p1);
+    expect(ws.sent).toContainEqual({ type: 'proposal', proposal: p1 });
+
+    proposalStore.claimApprove(p1.id);
+    const done = proposalStore.finish(p1.id, { state: 'done', result: { commitsAhead: 1 } });
+    bridge.pushProposal(done);
+    bridge.pushSituation([{ code: 'merge_blocked', message: 'Blocked', where: {} }]);
+    expect(ws.sent).toContainEqual({ type: 'situation', flags: [{ code: 'merge_blocked', message: 'Blocked', where: {} }] });
+
+    ws.receive({ type: 'prompt', text: 'echo-prompt first' });
+    await waitFor(ws, 'turn_end');
+    const firstAgentReply = store.messages(conversation.id).data.filter(m => m.role === 'agent').at(-1).content;
+    expect(firstAgentReply).toContain(`[CodeDeck] Proposal ${p1.id} (commit): done`);
+    expect(firstAgentReply).toContain('echo-prompt first');
+    // Stored owner message stays clean without the system prefix.
+    expect(store.messages(conversation.id).data.filter(m => m.role === 'owner').at(-1).content).toBe('echo-prompt first');
+
+    // Second prompt does not repeat the already-reported decision.
+    ws.sent.length = 0;
+    ws.receive({ type: 'prompt', text: 'echo-prompt second' });
+    await waitFor(ws, 'turn_end');
+    const secondAgentReply = store.messages(conversation.id).data.filter(m => m.role === 'agent').at(-1).content;
+    expect(secondAgentReply).toBe('echo-prompt second');
+    expect(connect).toBeTypeOf('function');
+  });
+});
+
+describe('ACP bridge process lifecycle', () => {
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const exited = child => new Promise(resolve => { if (child.exitCode !== null || child.signalCode !== null) resolve({ code: child.exitCode, signal: child.signalCode }); else child.once('exit', (code, signal) => resolve({ code, signal })); });
+
+  it('ends the adapter process when the socket closes', async () => {
+    let child;
+    const { ws, connect } = setup({ spawnFn: (command, args, options) => (child = spawn(command, args, options)) });
+    connect();
+    await waitFor(ws, 'ready');
+    expect(alive(child.pid)).toBe(true);
+    ws.close();
+    const result = await exited(child);
+    expect(result.signal).toBe('SIGTERM');
+    expect(alive(child.pid)).toBe(false);
+  });
+
+  it('kills an adapter that ignores SIGTERM after three seconds', async () => {
+    let child;
+    const stubborn = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+    const { ws, connect } = setup({ command: process.execPath, args: ['-e', stubborn], spawnFn: (command, args, options) => (child = spawn(command, args, options)) });
+    connect();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const started = Date.now();
+    ws.close();
+    const result = await exited(child);
+    expect(result.signal).toBe('SIGKILL');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2900);
+  }, 8000);
+});

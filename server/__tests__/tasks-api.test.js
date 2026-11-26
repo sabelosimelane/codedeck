@@ -188,7 +188,7 @@ describe('tasks API', () => {
     const response = await request(server).post(base).send({ project: 'Demo', title: 'WhatsApp replies' });
     expect(response.status).toBe(201);
     expect(response.body).toEqual({
-      id: id(1), project: 'Demo', title: 'WhatsApp replies', state: 'active',
+      id: id(1), project: 'Demo', host: 'local', title: 'WhatsApp replies', state: 'active',
       worktreePath: '/tmp/worktrees/t-1', branch: 'task/t-1', baseBranch: 'main', baseCommit: 'a'.repeat(40),
       prUrl: null, revision: 1, createdAt: '2026-11-18T10:00:00.000Z', updatedAt: '2026-11-18T10:00:00.000Z', finishedAt: null,
       folder: null,

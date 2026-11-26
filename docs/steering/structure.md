@@ -63,7 +63,23 @@ codedeck/
 │   │   ├── tasks.js              # Tasks: list, create, worktree candidates/adoption, rename, terminals, landing (RFC 9457 errors)
 │   │   ├── project-repositories.js # A project's repositories: list, candidates, add, remove, terminal (RFC 9457 errors)
 │   │   ├── collection-query.js   # Shared page/size/sort/filter parsing and the page envelope
+│   │   ├── assistant.js          # Situation, conversations/messages, token read routes, proposals (RFC 9457 errors)
 │   │   └── agent-sessions.js     # Paginated local agent conversations + resume API
+│   ├── assistant/
+│   │   ├── situation.js          # Composes the read-only situation: repositories, tasks/landing, runs, docs, flags, markdown
+│   │   ├── situation-flags.js    # Pure flag rules, one function per code, in spec order
+│   │   ├── todo-docs.js          # Lists and reads docs/todos and docs/specifications with bounds, skipped and truncated
+│   │   ├── brief.js              # The assistant brief built from the situation markdown
+│   │   ├── session-tokens.js     # In-memory per-session tokens scoped to one project and conversation
+│   │   ├── session-reads.js      # Token-read path parsing and containment, with the 512 KiB limit
+│   │   ├── mcp-server.js         # stdio MCP server: five read tools and six propose tools
+│   │   ├── conversation-store.js # assistant_conversations + assistant_messages, guarded hydration
+│   │   ├── proposal-store.js     # assistant_proposals: 10-pending limit, atomic claim, finish, decline, expire
+│   │   ├── proposal-payloads.js  # Pure per-kind payload validation, reporting every field
+│   │   ├── proposal-executor.js  # Maps a proposal kind to the matching CodeDeck service
+│   │   ├── acp-bridge.js         # ACP child process, v1 frames, mode guard, messages, proposals, brief
+│   │   ├── ws-upgrade.js         # /ws/assistant upgrade routing, one agent per project socket
+│   │   └── project.js            # Local-project check for the assistant
 │   ├── project-repositories.js # A project's other repositories: rules, Git check, the repositories beside it, terminals in them
 │   ├── launch-settings.js # Companion settings read from ~/.codedeck/launch.env at startup
 │   ├── shutdown.js       # On SIGTERM/SIGINT, lets landing actions finish before the backend exits
@@ -99,6 +115,10 @@ codedeck/
 │       │   ├── FileBrowserPanel.jsx  # Modal overlay for per-project file browsing
 │       │   ├── DirectoryBrowser.jsx  # Modal filesystem navigator (project picker)
 │       │   ├── ToastContext.jsx      # Toast notification context, hook, and container
+│       │   ├── assistant/
+│       │   │   ├── AssistantPanel.jsx # Right-hand panel: flags header, refresh, open state, project switch
+│       │   │   ├── AssistantChat.jsx  # Transcript, socket, Markdown, tool and permission cards, proposal cards, New conversation
+│       │   │   └── AssistantPanel.css # Panel, chat, and proposal-card styles
 │       │   └── SettingsPanel.jsx     # Settings modal
 │       ├── hooks/
 │       │   ├── useTasks.js           # Open tasks from the backend, polled every two seconds
@@ -107,6 +127,7 @@ codedeck/
 │       │   ├── terminalWaiting.js    # Waiting tab identity, left grouping, auto-clear rules, quiet indicator sets
 │       │   ├── worktreeGroups.js    # Pure grouping of a project into Main and its tasks, display name and session edge guard
 │       │   ├── tasksApi.js          # Validated client for tasks and landing
+│       │   ├── assistantApi.js      # Validated client for the situation, conversations, messages, proposals and socket frames
 │       │   ├── workflowBuilder.js   # Window event that asks the app to open the workflow builder
 │       │   ├── pipelineRunStatus.js # Pure run and step display states
 │       └── styles/
@@ -287,3 +308,34 @@ project's path when asked); another repository's checkout is stored on the row.
   project in Main (`groupKeyForPath` in `utils/worktreeGroups.js`); a group's key is still a path.
 - The phone reads tasks with `parseTaskSummary`, the fields every backend release sends, because
   an installed phone build also talks to an instance older or newer than itself.
+
+## Project Assistant
+
+The panel reads and acts only through the modules below; the assistant never gets a shell or a
+Git command of its own.
+
+- `server/assistant/situation.js` composes the situation on request over
+  `createProjectRepositories().list`, the task landing service, the run view builder
+  (`server/pipelines/run-view.js`, exported from the pipelines route) and `todo-docs.js`.
+  It is read-only, bounded (50 dirty paths per repository, the last 50 files per docs location,
+  512 KiB per file) and guards every field with the id it belongs to. `situation-flags.js` is pure,
+  one rule per flag code, and `situation-flags.test.js` covers each code raised and not raised.
+- `POST /api/assistant/sessions/:token/...` reads and proposals go through
+  `session-tokens.js`; the token is in memory, 32 random bytes, scoped to one project and
+  conversation, compared with `timingSafeEqual`, and ended when the agent exits or the socket
+  closes. `session-reads.js` checks a doc path against the four locations with `realpath`
+  containment. `mcp-server.js` runs over stdio and is passed to the adapter in `session/new`
+  together with the brief from `brief.js` as `systemPrompt`.
+- `proposal-store.js` owns the state machine: `pending → approved → done|failed`, or
+  `pending → declined|expired`, with the conditional update doing the arbitration (concurrent
+  approvals run the service once). `proposal-payloads.js` validates a payload per kind before it is
+  stored; `proposal-executor.js` maps a kind to `task-landing`, `task-service.create` or
+  `pipelinesRouter.startRun` and never passes `deleteIgnored: true`.
+- `acp-bridge.js` owns the child process: ACP v1 updates, forced `default` mode, stored messages,
+  decisions prefixed once to the next prompt, and the `proposal`/`situation` frames.
+  `ws-upgrade.js` routes `/ws/assistant` after `privateAccess.authorizeUpgrade`, one agent per
+  project socket.
+- The client keeps no authoritative state: `assistantApi.js` parses and validates every response
+  and socket frame, `AssistantPanel.jsx` holds the open state and flags header, and
+  `AssistantChat.jsx` renders the transcript and proposal cards and toasts every decision.
+
