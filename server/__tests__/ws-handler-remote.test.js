@@ -646,6 +646,21 @@ describe('remote multiple attachment ordering', () => {
     expect(hostRuntime.ptys[0].write).not.toHaveBeenCalled();
     expect(sentMessages(a.ws).at(-1).type).toBe('control_error');
   });
+  it('keeps the controller in control while its own remote resize is still running', async () => {
+    const sessions = new Map(); const hostRuntime = createFakeHostRuntime();
+    const a = attachRemote({sessions,hostRuntime}); await a.result;
+    a.ws._emit('message', JSON.stringify({type:'claim_control',requestId:'a',cols:80,rows:24}));
+    await flushAsync();
+    let release;
+    hostRuntime.resizeSessionAsync.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    a.ws._emit('message', JSON.stringify({type:'resize',cols:90,rows:30,controlRevision:1}));
+    a.ws._emit('message', JSON.stringify({type:'resize',cols:91,rows:30,controlRevision:1}));
+    a.ws._emit('message', JSON.stringify({type:'input',data:'x',controlRevision:1}));
+    release(); await flushAsync();
+    expect(sentMessages(a.ws).filter(m=>m.type==='control_error')).toEqual([]);
+    expect(hostRuntime.ptys[0].write).toHaveBeenCalledWith('x');
+    expect(hostRuntime.ptys[0].resize).toHaveBeenLastCalledWith(91, 30);
+  });
   it('rehydrates only the requesting client while another continues receiving output', async () => {
     const sessions = new Map(); const hostRuntime = createFakeHostRuntime();
     const a=attachRemote({sessions,hostRuntime});await a.result;

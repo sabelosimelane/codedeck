@@ -1287,13 +1287,29 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
       finish();
     };
     const afterHydration = () => hydrationHolds.length ? Promise.all(hydrationHolds).then(operation) : operation();
-    if (entry.controlPending) entry.controlPending = entry.controlPending.then(afterHydration).catch(controlFailure);
+    enqueueControl(afterHydration);
+  };
+  // Runs a control operation now, or after the one in flight (a remote resize, a
+  // hydration hold), so the controller's own messages keep their order.
+  const enqueueControl = (operation) => {
+    if (entry.controlPending) entry.controlPending = entry.controlPending.then(operation).catch(controlFailure);
     else {
-      const pending = afterHydration();
+      const pending = operation();
       if (pending?.then) entry.controlPending = pending.catch(controlFailure);
     }
     const pending = entry.controlPending;
     if (pending) pending.finally(() => { if (entry.controlPending === pending) entry.controlPending = null; });
+  };
+  const notController = (parsed) => entry.controllerId !== attachment.id || parsed.controlRevision !== entry.controlRevision;
+  const rejectControl = () => {
+    entry.controlConflicts++;
+    ws.send(JSON.stringify({...controlState(entry), type:'control_error', message:'Control changed. Interact again to take control.'}));
+  };
+  const writeInput = (parsed) => {
+    if (workflow.snapshot().status === 'resetting') return;
+    entry.pty.write(parsed.data);
+    observeInput(parsed.data);
+    workflow.input(parsed.data);
   };
   // Browser -> PTY
   ws.on('message', (msg) => {
@@ -1312,17 +1328,17 @@ function registerSessionSocketHandlers(ws, entry, sessionId, ops) {
         try { resizeAndPublish(parsed, true); } catch { controlFailure(); }
         return;
       }
-      if (['input','resize'].includes(parsed.type)
-        && (entry.controlPending || entry.controllerId !== attachment.id || parsed.controlRevision !== entry.controlRevision)) {
-        entry.controlConflicts++;
-        ws.send(JSON.stringify({...controlState(entry), type:'control_error', message:'Control changed. Interact again to take control.'}));
+      if (['input','resize'].includes(parsed.type) && notController(parsed)) {
+        rejectControl();
         return;
       }
       if (parsed.type === 'input') {
-        if (workflow.snapshot().status === 'resetting') return;
-        entry.pty.write(parsed.data);
-        observeInput(parsed.data);
-        workflow.input(parsed.data);
+        if (!entry.controlPending) writeInput(parsed);
+        else enqueueControl(() => {
+          if (!entry.attachments.has(ws) || ws.readyState !== 1 || !ops.sessionExists()) return;
+          if (notController(parsed)) rejectControl();
+          else writeInput(parsed);
+        });
       } else if (parsed.type === 'resize') {
         try { resizeAndPublish(parsed, false); } catch { controlFailure(); }
       } else if (parsed.type === 'heartbeat') {
