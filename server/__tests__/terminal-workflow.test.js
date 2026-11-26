@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTerminalWorkflow } from '../terminal-workflow.js';
+import { createTerminalWorkflow, findPassSignal } from '../terminal-workflow.js';
 
 const request = { requestId: 'request-1', command: '/feature-dev docs/todos/demo.md', resetCommand: '/clear' };
 function setup() {
@@ -879,5 +879,26 @@ describe('terminal workflow — guidance for the pass', () => {
       expect(workflow.replayScreen(`• [[CDW:${nextId}:QUESTIONS]]\n1. Defer iOS?\nRecommended: Yes\n[[CDW:${nextId}:NEEDS_INPUT]]`)).toBe(true);
       expect(workflow.snapshot()).toMatchObject({ status: 'needs_input', error: null });
     });
+  });
+
+});
+
+describe('signals a markdown renderer changed', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  // OpenCode renders [[x]] as a link: one pair of brackets is dropped and the inside is underlined.
+  const rendered = (id, status) => `[\x1b[4m\x1b[38;5;73mCDW:${id}:${status}\x1b[0m\x1b[38;5;255m]`;
+
+  it('ends the pass on a signal OpenCode showed with single brackets', () => {
+    const { workflow, write } = setup();
+    workflow.start(request);
+    workflow.output(rendered(token(write), 'COMPLETE'));
+    expect(workflow.snapshot()).toMatchObject({ status: 'complete', active: false });
+  });
+
+  it('finds a single-bracket signal on a captured screen', () => {
+    const screen = `Note written.\n${rendered('74be6d45-3', 'CONTINUE')}\n`;
+    expect(findPassSignal(screen, { status: 'running', phase: 'waiting', identifier: '74be6d45-3', passIdentifiers: ['74be6d45-3'] }))
+      .toEqual({ id: '74be6d45-3', signal: 'CONTINUE' });
   });
 });

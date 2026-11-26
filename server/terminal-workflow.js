@@ -87,6 +87,8 @@ function buildBadIdentifierPrompt(identifier) {
   return `CodeDeck: the signal identifier you emitted did not match the current iteration. Do not redo any work — emit your final signal again using the exact iteration identifier ${identifier}. Construct the signal by joining these parts without spaces: opening [[CDW: ; ${identifier} ; a colon ; your chosen uppercase status (CONTINUE, COMPLETE, or NEEDS_INPUT) ; closing ]] .`;
 }
 
+// Agents are told to emit [[CDW:<id>:<STATUS>]]. A CLI that renders its answer as markdown
+// (OpenCode) shows [[x]] as a link, [x], so the screen may hold one bracket on each side.
 /**
  * Find the last signal in captured terminal screen text that belongs to the active pass.
  * Signals from earlier passes or other runs in the same terminal are ignored.
@@ -96,7 +98,7 @@ export function findPassSignal(screenText, { status, phase, identifier, passIden
   if (!ACTIVE.has(status) || phase !== 'waiting') return null;
   const known = passIdentifiers instanceof Set ? passIdentifiers : new Set(Array.isArray(passIdentifiers) ? passIdentifiers : []);
   const text = stripVTControlCharacters(screenText).replace(/\s/g, '');
-  const matches = [...text.matchAll(/\[\[CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]/g)]
+  const matches = [...text.matchAll(/\[\[?CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]?/g)]
     .filter(candidate => !(status === 'needs_input' && candidate[1] === identifier && candidate[2] === 'NEEDS_INPUT'))
     .filter(candidate => (candidate[2] === 'NEEDS_INPUT' ? candidate[1] === identifier : known.has(candidate[1])));
   const last = matches.at(-1);
@@ -492,7 +494,7 @@ export function createTerminalWorkflow({ write, notify, resetTimeoutMs, handoffI
         // A fast turn may finish between polls. A near-ID can request a correction,
         // but can never authorize a state transition.
         if (!workObserved) {
-          const candidates = screen.matchAll(/\[\[CDW[;:]([\w-]+)[;:](?:CONTINUE|COMPLETE|NEEDS_INPUT)\]\]/g);
+          const candidates = screen.matchAll(/\[\[?CDW[;:]([\w-]+)[;:](?:CONTINUE|COMPLETE|NEEDS_INPUT)\]\]?/g);
           const belongs = [...candidates].some(([, id]) => id.length === identifier.length
             && (id === identifier || !issuedIdentifiers.has(id))
             && [...id].filter((letter, i) => letter !== identifier[i]).length <= 1);
@@ -561,7 +563,7 @@ export function createTerminalWorkflow({ write, notify, resetTimeoutMs, handoffI
       const text = stripVTControlCharacters(rawOutput.replace(CURSOR_MOVEMENT_CSI, '\0')).replace(/\s/g, '');
       // Known older signals can be redrawn by the terminal. An unknown ID is
       // an invalid result, not a reason to wait forever or accept a near match.
-      const match = [...text.matchAll(/\[\[CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]/g)]
+      const match = [...text.matchAll(/\[\[?CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]?/g)]
         .filter(candidate => !(status === 'needs_input' && candidate[1] === identifier && candidate[2] === 'NEEDS_INPUT'))
         // A request for input counts only under the current identifier: under an earlier one of
         // this pass it is the answered request, redrawn. The end of the pass counts under any of them.

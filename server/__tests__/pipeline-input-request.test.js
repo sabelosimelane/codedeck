@@ -68,6 +68,12 @@ describe('extractQuestions', () => {
     ].join('\n'));
   });
 
+  it('reads questions whose markers OpenCode showed with single brackets', () => {
+    const single = status => `[\x1b[4mCDW:${ID}:${status}\x1b[0m]`;
+    const lines = [single('QUESTIONS'), '1. Which port? Recommended: 43100.', single('NEEDS_INPUT')];
+    expect(extractQuestions(lines, ID)).toEqual({ questions: '1. Which port? Recommended: 43100.', truncated: false });
+  });
+
   it('uses the last signal on screen and the questions marker nearest above it', () => {
     const lines = [QUESTIONS, '1. First question?', NEEDS_INPUT, 'the owner answered', QUESTIONS, '1. Second question?', NEEDS_INPUT];
     expect(extractQuestions(lines, ID).questions).toBe('1. Second question?');

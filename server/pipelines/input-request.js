@@ -35,7 +35,8 @@ export function extractQuestions(lines, identifier) {
   }
 
   const text = lines.map(line => stripVTControlCharacters(line));
-  const holds = (line, status) => line.replace(/\s/g, '').includes(`[[CDW:${identifier}:${status}]]`);
+  // OpenCode renders [[x]] as a markdown link, [x]: one bracket on each side is enough.
+  const holds = (line, status) => new RegExp(`\\[\\[?CDW:${identifier}:${status}\\]\\]?`).test(line.replace(/\s/g, ''));
   const none = { questions: null, truncated: false };
 
   const signalAt = text.findLastIndex(line => holds(line, 'NEEDS_INPUT'));
