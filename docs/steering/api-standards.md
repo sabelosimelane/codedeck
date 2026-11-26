@@ -187,6 +187,112 @@ Coverage: `server/__tests__/project-repositories.test.js` and `project-repositor
 (real throwaway repositories), `client/src/utils/__tests__/projectRepositoriesApi.test.js`,
 `client/src/components/__tests__/ProjectRepositoriesDialog.test.jsx`.
 
+## Assistant
+
+`GET /api/projects/:name/situation` returns one bounded, read-only situation document for a
+local project. It accepts no query parameters. The response has `project`, `generatedAt`,
+`repositories`, open tasks (`active`/`pr_open`) with their worktrees and open runs,
+`todos`, `specifications`,
+`skipped`, ordered `flags`, `truncated`, and an agent-readable `markdown` rendering. Dirty
+paths are limited to 50 per repository; todo and specification files are limited to the
+last 50 by file name per location. Files over 512 KiB appear in `skipped` with their size.
+Every repository has `usable`; one the repository service cannot read as a Git working tree is `{name, own, path, usable: false, reason: {code, message}}` and no Git command runs in it. A readable repository also has `strayFiles` (untracked names that are blank or only whitespace, backslashes and escape letters). Dirty and untracked paths are kept untrimmed, so a file named `" "` is a valid path. A run whose progress file is missing or unreadable has `progress` with null `phaseCount`, `tasksDone` and `tasksTotal`. Missing locations report `missing: true`. Todos are keyed by repository and path. A task copy
+identical in content to its repository's Main copy appears in Main's `alsoIn`; a changed copy is
+listed separately. Run status passes through as `complete`.
+
+The endpoint returns 404 for an unknown project, 409 for a remote project, and 400 with
+field `errors` for any query parameter or invalid project name. Every response has
+`X-Trace-Id`; errors are RFC 9457 `application/problem+json` documents with `timestamp`,
+`status`, `error`, `message`, `path`, and `traceId`.
+
+Coverage: `server/__tests__/assistant-*.test.js`, `client/src/utils/assistantApi.test.js`,
+`client/src/components/assistant/AssistantPanel.test.jsx`, and
+`client/src/components/assistant/AssistantChat.test.jsx`.
+
+Phase 2 adds `GET /api/assistant/conversations/current?project=` (creates the current
+conversation if absent), `POST /api/assistant/conversations` with `{project}` (ends the
+old current conversation and creates another, 201), and paginated
+`GET /api/assistant/conversations/:id/messages`. Messages use zero-based `page`,
+`size` 1–100 (default 20), and `sort=createdAt,asc|desc` (default ascending),
+with message ID as the stable tiebreaker. The response uses `{data,page}`.
+Unknown body/query fields, malformed JSON, and invalid paging return 400 with field
+`errors`; the router owns a 4 KB parser and returns 413 for a larger body. Unknown projects/conversations return 404,
+and remote projects return 409. All responses carry `X-Trace-Id`; errors are
+RFC 9457 problems with the matching `traceId`. SQLite permits one current
+conversation per project and never edits or deletes messages.
+
+`/ws/assistant?project=` uses exactly the same private access rules as
+`/ws/terminal`: an allowed local or owner Serve origin and loopback connection are
+required for an upgrade. Other upgrade paths are refused. Missing or malformed,
+unknown, and remote projects close with 4400, 4404, and 4409 respectively;
+a bridge start failure sends `spawn_error` then closes with 1011. One socket and ACP child may run per project; a new socket ends the
+older one. Owner messages are saved before `session/prompt`, agent text once at
+turn end, and each tool call once when it finishes or the turn ends, using its
+latest title, status, and execute command summary. The browser reloads the paginated transcript
+before opening the socket. The new agent session sends a restart notice when
+that transcript already contains messages. Phase 2 uses ACP v1 as negotiated
+by the pinned `claude-agent-acp` 0.106.0 adapter; MCP and assistant briefing
+are introduced in Phase 3.
+After `session/new`, the bridge requires the v1 `default` mode and successfully
+calls `session/set_mode` before sending `ready` or accepting prompts. It closes
+with `spawn_error` if the mode is unavailable or cannot be set. A later mode
+change away from `default` blocks prompts until the bridge restores it.
+ACP notifications whose method begins with `_` are extension notifications and
+are ignored. Other unknown methods produce an `error` frame.
+
+Browser to server frames are JSON objects with only these fields:
+
+| Type | Fields |
+| --- | --- |
+| `prompt` | `text`: 1–20,000 characters |
+| `cancel` | No other fields; valid only during a running turn |
+| `permission_response` | `requestId`: pending ACP string or integer ID; `outcome`: `{outcome:'cancelled'}` or `{outcome:'selected', optionId}` where `optionId` belongs to that request |
+
+Server to browser frames are:
+
+| Type | Fields |
+| --- | --- |
+| `ready` | `conversationId`: UUID; `restarted`: boolean |
+| `notice` | `message`: text; `messageId`: stored positive integer ID (reserved for compatibility; current notices use `message`) |
+| `message` | `message`: persisted `{id, conversationId, role, content, toolName, proposalId, createdAt}` |
+| `update` | `update`: ACP session update with `sessionUpdate` and its type-specific fields; text chunks carry `content:{type:'text',text}`, tool calls carry `toolCallId` and `title` |
+| `auth` | `state`: `authenticated` or `unauthenticated`; `label`: active account label or `null` |
+| `permission_request` | `requestId`: ACP string or integer ID; `toolCall`: ACP tool call including `toolCallId` and `title`; `options`: ACP `{optionId,name,kind}` list |
+| `turn_end` | `messageId`: saved agent message ID, or `null` for an empty or failed turn |
+| `error` | `message`: recoverable error text; the socket stays open |
+| `spawn_error` | `message`: ACP process start failure text; the socket closes |
+| `agent_exit` | `code`: integer or `null` after a signal; `signal`: signal name or `null`; `stderrTail`: text; the socket closes |
+
+The bridge stores an owner message before sending the prompt and emits its `message`
+frame only after storage succeeds. Notices also use persisted `message` frames.
+
+Phase 3 adds per-session in-memory tokens (32 random bytes, hex, scoped to one project and
+conversation, ended when the agent exits or the socket closes) and five token-authorised read
+endpoints used by `server/assistant/mcp-server.js` over stdio:
+
+- `GET /api/assistant/sessions/:token/situation` — returns `{project, generatedAt, flags, markdown, truncated, skipped}` for the token's project; no query parameters allowed.
+- `GET /api/assistant/sessions/:token/tasks/:taskId/landing` — returns `{taskId, project, worktrees}` for a task of the token's project (404 for another project's task).
+- `GET /api/assistant/sessions/:token/todo?location=&path=` — reads a `.md` file directly under `docs/todos/` or `docs/specifications/` inside `main:<repository>` or `task:<taskId>/<worktreeId>`, enforcing `realpath` containment and a 512 KiB limit (413 when exceeded).
+- `GET /api/assistant/sessions/:token/runs/:runId/notes?stepIndex=` — returns `{runId, stepIndex, note}` (the latest written note for `stepIndex` 0–32, or `null`) for a run of the token's project.
+- `GET /api/assistant/sessions/:token/runs` — paginated (`{data, page}`, `size` 1–100 default 20, `sort=createdAt,asc|desc` default `desc`, optional exact `taskId` UUID filter) scoped to the token's project.
+
+Unknown, malformed, or ended tokens return 401 RFC 9457 problems; validation and path containment
+failures return 400 with `errors`; oversized files return 413. On `session/new`, the ACP bridge
+passes the `codedeck` stdio MCP server in `mcpServers` and the assistant brief with the current
+situation `markdown` in `systemPrompt: {mode: 'append', content: [{type: 'text', text}]}`,
+storing and emitting the briefed notice.
+
+Phase 4 adds proposals and approval (`assistant_proposals`, `server/assistant/proposal-store.js`,
+`server/assistant/proposal-payloads.js`, `server/assistant/proposal-executor.js`):
+
+- `POST /api/assistant/sessions/:token/proposals` — `{kind, payload, summary, reason}` (16 KB JSON limit). Validates all fields per kind (`commit`, `merge`, `pull_request`, `close`, `new_task`, `start_run`), rejecting tasks of other projects, unknown worktrees, `deleteIgnored`, and over-long fields with 400 and all field `errors`. Returns 201 with the pending proposal, 401 for an invalid/ended token, or 409 when the conversation already has 10 pending proposals.
+- `GET /api/assistant/proposals` — Paginated (`{data, page}`, `size` 1–100 default 20, `sort=createdAt,asc|desc` default `desc`). Requires exact `project` filter (400/404/409); optional `conversationId` UUID and `state` filters.
+- `GET /api/assistant/proposals/:id` — Returns one proposal (200), 400 for a malformed UUID, or 404 when unknown.
+- `POST /api/assistant/proposals/:id/approve` — Empty body only (4 KB JSON limit). Atomically transitions `pending → approved`, executes the matching CodeDeck service directly (using the proposal id as `requestId` for `start_run` and never passing `deleteIgnored: true` on `close`), and sets `done` (200) or `failed` (409 with `reasons`/`conflicts` and `proposal`, or 500 on unexpected error). Concurrent approvals execute the service once; the loser gets 409.
+- `POST /api/assistant/proposals/:id/decline` — Empty body only. Transitions `pending → declined` without calling any service (200; 409 if already decided; 404 if unknown).
+- `POST /api/assistant/conversations` expires all pending proposals of the ended conversation and revokes its session tokens.
+- MCP adds `propose_commit`, `propose_merge`, `propose_pull_request`, `propose_close`, `propose_new_task`, and `propose_start_run`. Decisions since the previous prompt are prefixed to the next `session/prompt` as `[CodeDeck] Proposal <id> (<kind>): <state> — <one-line result>`. The WebSocket pushes `{type: 'proposal', proposal}` and refreshed `{type: 'situation', flags}` frames to the panel.
+
 ## Workflow pipelines
 
 All paths below are under `/api/pipelines`; the router owns a 512 KB JSON parser.

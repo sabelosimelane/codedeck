@@ -22,6 +22,7 @@ A browser-based terminal workspace for developers who juggle multiple projects. 
 - **Tasks** — give a piece of work a title and it gets its own copy of the project, so several things can be built at once; commit, merge, open a pull request or close it from the same place
 - **Several repositories in one project** — list the repositories that belong together; a task then works across the ones you tick, each landed on its own, and Main reaches all of them without a project per repository
 - **Workflow pipelines** — build multi-step workflows from templates or your own saved steps, run them inside a task, and follow each step, its notes and its terminal in one view
+- **Project Assistant** — a right-hand panel that says, unprompted, what misled you about a project (stale run progress, uncommitted work, a dirty Main, a blocked todo), lets you ask Claude Code about it, and acts only through proposal cards you approve
 - **Descriptive session titles** — optional background naming through configurable local CLIs, with manual rename and retry
 - **Session search** — find past agent-CLI conversations and resume one in its project
 - **Toast notifications** — success/error feedback on every action, no silent failures
@@ -123,6 +124,20 @@ With repositories listed:
 On the phone, a task in several repositories lists them and says which one its run works in.
 
 A project that lists no other repository works exactly as before.
+
+## Project Assistant
+
+The **Project Assistant** is a panel on the right of the workspace for the project on screen. Open it with the assistant button in the top bar or <kbd>⌘/Ctrl</kbd>+<kbd>⇧</kbd>+<kbd>L</kbd>; the open state is remembered in the browser.
+
+**Where things stand.** Before you ask anything, the header lists the facts that are most likely to mislead you, as **flags**, read live from Git, the open tasks and their worktrees, the runs, and the todos and specifications under `docs/todos` and `docs/specifications` in Main and in the tasks. Examples: a finished run whose Test step stopped at its round limit while the todo is still open, a task with uncommitted work and no commits, a merge refused because Main is dirty, a todo that cannot start until another todo's phase is done. Nothing is stored, the flags cost no agent tokens, and **Refresh** reads them again; the panel also refreshes itself while it is open. A repository that is not a Git working tree, a missing docs folder, and files over 512 KiB are named rather than treated as empty.
+
+**Chat.** The panel talks to Claude Code over the Agent Client Protocol, with the same private-access rule as terminal sessions: loopback from an allowed local origin, or you over Tailscale. It says so when Claude Code is not signed in or another CLI is configured; no other agent CLI is supported. An answer is Markdown, and tool calls and permission requests appear in the transcript, which is stored in SQLite and comes back after a reload. The agent process itself starts fresh each time the panel connects (the transcript is kept, its own context is not), and the panel says when it restarted. **New conversation** starts a new transcript and expires the old conversation's pending proposals; it asks first when proposals are pending.
+
+For every project the assistant is started with an **assistant brief**: the composed situation as Markdown, plus a set of read-only tools scoped to that project by a per-session token — the situation, a task's landing state, a todo or specification file, a run's step notes, and the runs. It answers "where am I and what should I do next?" from those instead of guessing.
+
+**Acting only after asking.** The assistant can propose work, never do it: a **commit**, a **merge**, a **pull request**, closing a task, a **new task**, or starting a **workflow run**. Each arrives as a card with its reason and the exact change. Nothing happens until you choose **Approve**; **Decline** changes nothing. An approved proposal runs through the same CodeDeck service as the matching button, so every blocker still applies — a dirty Main still refuses a merge, an uncommitted task still refuses Close, and Close never deletes files Git ignores. A refusal shows on the card with its reasons and conflicts; a failure to reach the backend keeps the buttons and shows the message. Decisions are reported to the agent on the next prompt as `[CodeDeck] Proposal … done — …` lines, so it knows what happened.
+
+Remote projects have no assistant (the situation is refused), and a project folder that is not a Git repository is named as such.
 
 ## Workflow pipelines
 

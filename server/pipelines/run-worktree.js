@@ -337,7 +337,22 @@ export async function listWorktrees({ projectPath, execFile } = {}) {
 /**
  * Parse `git status --porcelain` into path strings only (no statuses, no contents).
  */
-function parsePorcelainPaths(stdout) {
+export function parsePorcelainPaths(stdout, { nulTerminated = false, detailed = false } = {}) {
+  if (nulTerminated) {
+    if (typeof stdout !== 'string') throw new Error('Git status output must be text');
+    const records = stdout.split('\0').filter(Boolean);
+    const paths = [];
+    const untracked = [];
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      if (record.length < 4 || record[2] !== ' ') throw new Error('Invalid Git status record');
+      const file = record.slice(3);
+      paths.push(file);
+      if (record.startsWith('??')) untracked.push(file);
+      if (/[RC]/.test(record.slice(0, 2))) i++;
+    }
+    return detailed ? { paths, untracked } : paths;
+  }
   return String(stdout ?? '')
     .split('\n')
     .map(line => line.trimEnd())
@@ -355,11 +370,11 @@ function parsePorcelainPaths(stdout) {
  * List dirty paths in a worktree (Setup guard, Spec §8.5).
  * @returns {Promise<string[]>}
  */
-export async function listDirtyPaths({ worktreePath, execFile } = {}) {
+export async function listDirtyPaths({ worktreePath, execFile, detailed = false } = {}) {
   const { stdout } = await runGit(execFile, [
-    '-C', worktreePath, 'status', '--porcelain',
+    ...(detailed ? ['--no-optional-locks'] : []), '-C', worktreePath, 'status', ...(detailed ? ['--porcelain=v1', '-z', '--untracked-files=all'] : ['--porcelain']),
   ]);
-  return parsePorcelainPaths(stdout);
+  return parsePorcelainPaths(stdout, { nulTerminated: detailed, detailed });
 }
 
 /**

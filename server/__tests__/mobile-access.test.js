@@ -39,6 +39,12 @@ it('denies malformed upgrade request targets without throwing', () => {
   expect(access().authorizeUpgrade({ ...req(), url: '/ws/other' })).toMatchObject({ status: 403 });
   expect(access().authorizeUpgrade({ ...req(), url: '/ws/terminal?protocol=2' })).toBeNull();
 });
+it('authorizes assistant upgrades under the same private access rules', () => {
+  const local = { ...req({ host: 'localhost:43001', origin: 'http://localhost:43000', 'tailscale-user-login': undefined }), url: '/ws/assistant?project=Demo' };
+  expect(access().authorizeUpgrade(local)).toBeNull();
+  expect(access().authorizeUpgrade({ ...local, headers: { ...local.headers, origin: 'https://foreign.test' } })).toMatchObject({ status: 403 });
+  expect(access().authorizeUpgrade({ ...local, url: '/ws/other' })).toMatchObject({ status: 403 });
+});
 function problemResponse() {
   const res = { statusCode: 0, body: null, status(code) { this.statusCode = code; return this; }, type() { return this; }, json(value) { this.body = value; return this; } };
   return res;

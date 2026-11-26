@@ -1,0 +1,29 @@
+.assistant-panel { width: min(380px, 42vw); min-width: 300px; flex: none; display: flex; flex-direction: column; overflow: auto; padding: 16px; border-left: 1px solid var(--border); background: var(--bg-surface); color: var(--text-primary); }
+.assistant-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.assistant-panel-heading h2 { margin: 0; font-size: 15px; }
+.assistant-panel-actions { display: flex; gap: 6px; }
+.assistant-panel-actions button { border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; }
+.assistant-panel-flags { margin: 16px 0 0; padding-left: 20px; display: grid; gap: 12px; line-height: 1.4; font-size: 13px; }
+.assistant-panel-error { color: var(--danger); }
+.assistant-chat { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; min-height: 240px; gap: 8px; font-size: 13px; }
+.assistant-chat-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.assistant-chat-heading h2 { margin: 0; font-size: 15px; }
+.assistant-chat-heading span, .assistant-chat-status, .assistant-chat-notice { color: var(--text-muted); font-size: 11px; }
+.assistant-chat-heading button, .assistant-chat-compose button, .assistant-chat-permission button { background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; cursor: pointer; }
+.assistant-chat-transcript { flex: 1; overflow: auto; display: grid; align-content: start; gap: 8px; }
+.assistant-chat-message { padding: 8px; border-radius: 6px; overflow-wrap: anywhere; }
+.assistant-chat-message.owner { background: var(--bg-hover); }
+.assistant-chat-message.agent { border: 1px solid var(--border); }
+.assistant-chat-message p { margin: 0; }
+.assistant-chat-tool, .assistant-chat-permission { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.assistant-chat-permission { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.assistant-chat-compose { display: flex; gap: 6px; }
+.assistant-chat-compose textarea { flex: 1; min-width: 0; background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+.assistant-proposal-card { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-hover); display: grid; gap: 4px; }
+.assistant-proposal-reason, .assistant-proposal-detail, .assistant-proposal-outcome { margin: 0; font-size: 12px; }
+.assistant-proposal-detail, .assistant-proposal-outcome.muted, .assistant-proposal-working { color: var(--text-muted); }
+.assistant-proposal-actions { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.assistant-proposal-actions button { background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.assistant-proposal-actions button:disabled { opacity: 0.6; cursor: not-allowed; }
+.assistant-proposal-outcome.failed { color: var(--danger); }
+.assistant-proposal-outcome.failed ul { margin: 4px 0 0; padding-left: 16px; }

@@ -16,7 +16,7 @@ export function resolveRunProgressFile({ definitionProgressFile, workflowProgres
   return isProgressFilePath(composed, 512) ? { file: composed, optional: false } : null;
 }
 
-export function parsePhaseProgress(markdown) {
+export function parsePhaseBreakdown(markdown) {
   if (typeof markdown !== 'string') throw new TypeError('markdown must be a string');
   const phases = [];
   let current = null;
@@ -31,19 +31,25 @@ export function parsePhaseProgress(markdown) {
     if (/^#{1,2}[ \t]/.test(line)) current = null;
     const heading = line.match(/^##[ \t]+Phase[ \t]+(\d+)(?:[ \t]*[:.\-–—][ \t]*(.*))?[ \t]*#*[ \t]*$/i);
     if (heading) {
-      current = { number: Number(heading[1]), title: (heading[2] ?? '').trim().replace(/#+$/, '').trim().slice(0, 120), tasksDone: 0, tasksTotal: 0 };
+      current = { number: Number(heading[1]), title: (heading[2] ?? '').trim().replace(/#+$/, '').trim().slice(0, 120), done: 0, total: 0 };
       phases.push(current);
       continue;
     }
     const task = current && line.match(/^\s*[-*+]\s+\[( |x|X)\]\s/);
     if (task) {
-      current.tasksTotal += 1;
-      if (task[1].toLowerCase() === 'x') current.tasksDone += 1;
+      current.total += 1;
+      if (task[1].toLowerCase() === 'x') current.done += 1;
     }
   }
-  return { phaseCount: phases.length, phase: phases.find(phase => phase.tasksDone < phase.tasksTotal) ?? null,
-    tasksDone: phases.reduce((sum, phase) => sum + phase.tasksDone, 0),
-    tasksTotal: phases.reduce((sum, phase) => sum + phase.tasksTotal, 0) };
+  return phases;
+}
+
+export function parsePhaseProgress(markdown) {
+  const phases = parsePhaseBreakdown(markdown);
+  const current = phases.find(phase => phase.done < phase.total);
+  return { phaseCount: phases.length, phase: current ? { number: current.number, title: current.title, tasksDone: current.done, tasksTotal: current.total } : null,
+    tasksDone: phases.reduce((sum, phase) => sum + phase.done, 0),
+    tasksTotal: phases.reduce((sum, phase) => sum + phase.total, 0) };
 }
 
 const inside = (root, target) => target !== root && !path.relative(root, target).startsWith('..' + path.sep) && path.relative(root, target) !== '..' && !path.isAbsolute(path.relative(root, target));
