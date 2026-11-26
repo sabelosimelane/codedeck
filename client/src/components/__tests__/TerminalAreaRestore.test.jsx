@@ -590,3 +590,51 @@ it('renders persisted titles on tabs and panes without changing terminal identit
     expect(view.container.querySelector('.pane-close-btn')).toBeTruthy();
   });
 });
+
+describe('TerminalArea project switching', () => {
+  const OTHER = { name: 'Delta', path: '/tmp/delta' };
+  const OTHER_KEY = `codedeck-layout-${OTHER.name}`;
+  const gammaSessions = [{ sessionId: 'Gamma-9', cwd: '/tmp/gamma', alive: true, wsAttached: true }];
+
+  beforeEach(() => { localStorage.clear(); mocks.terminalApis.clear(); });
+  afterEach(() => { cleanup(); localStorage.clear(); });
+
+  it('does not save the previous project\'s tabs as the layout of a project left before it finished restoring', async () => {
+    let releaseDelta;
+    const deltaPending = new Promise(resolve => { releaseDelta = resolve; });
+    let current = PROJECT.name;
+    global.fetch = vi.fn(async url => {
+      if (url === '/api/health') return { ok: true, json: async () => ({ terminalCreationAllowed: true }) };
+      if (current === OTHER.name) await deltaPending;
+      return { ok: true, json: async () => gammaSessions };
+    });
+
+    const view = render(<TerminalArea project={PROJECT} sessionStatus={gammaSessions} />);
+    await waitFor(() => expect(mocks.terminalApis.has('Gamma-9')).toBe(true));
+
+    current = OTHER.name;
+    view.rerender(<TerminalArea project={OTHER} sessionStatus={gammaSessions} />);
+    await waitFor(() => expect(global.fetch.mock.calls.filter(([url]) => url === '/api/sessions')).toHaveLength(2));
+
+    current = PROJECT.name;
+    view.rerender(<TerminalArea project={PROJECT} sessionStatus={gammaSessions} />);
+    releaseDelta();
+    await waitFor(() => expect(global.fetch.mock.calls.filter(([url]) => url === '/api/sessions')).toHaveLength(3));
+
+    const deltaLayout = JSON.parse(localStorage.getItem(OTHER_KEY) ?? 'null');
+    const deltaSessionIds = (deltaLayout?.tabs ?? []).flatMap(tab => tab.panes.map(pane => pane.sessionId));
+    expect(deltaSessionIds).not.toContain('Gamma-9');
+  });
+
+  it('does not show another project\'s live terminal that a saved layout lists', async () => {
+    localStorage.setItem(OTHER_KEY, JSON.stringify(SAVED_LAYOUT));
+    global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : gammaSessions }));
+
+    const refreshed = vi.fn();
+    const view = render(<TerminalArea project={OTHER} sessionStatus={gammaSessions} onSessionStatusRefresh={refreshed} />);
+
+    await waitFor(() => expect(refreshed).toHaveBeenCalled());
+    await waitFor(() => expect(view.getByText('No terminals open')).toBeTruthy());
+    expect(mocks.terminalApis.has('Gamma-9')).toBe(false);
+  });
+});

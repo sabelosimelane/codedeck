@@ -399,6 +399,8 @@ export default function TerminalArea({
   const createdTasksRef = useRef(new Map());
   const attachedAdoptRef = useRef(null);
   const prevProjectRef = useRef(null);
+  // The project whose restored tabs the state holds; null while a project's restore is in flight.
+  const stateProjectRef = useRef(null);
   const saveTimerRef = useRef(null);
   const restoringRef = useRef(false);
   const awaitingSessionHydrationRef = useRef(false);
@@ -580,10 +582,12 @@ export default function TerminalArea({
   // Save/restore layout when project changes
   useEffect(() => {
     // Save the outgoing project's layout before switching
-    if (prevProjectRef.current && prevProjectRef.current !== project.name) {
+    // Only when the tabs on screen are that project's: until a project's restore finishes they are still the one before it.
+    if (prevProjectRef.current && prevProjectRef.current !== project.name && stateProjectRef.current === prevProjectRef.current) {
       // Flush immediately — the debounced save may not have fired yet
       saveLayout(prevProjectRef.current, state);
     }
+    stateProjectRef.current = null;
     prevProjectRef.current = project.name;
     restoringRef.current = true;
     setTerminalRuntimeStatus(null);
@@ -630,6 +634,7 @@ export default function TerminalArea({
         tabCounter = resolved.tabCounter;
         sessionCounter = resolved.sessionCounter;
         awaitingSessionHydrationRef.current = resolved.state.tabs.length === 0;
+        stateProjectRef.current = project.name;
         setState(resolved.state);
       } catch {
         if (cancelled) return;
@@ -670,6 +675,7 @@ export default function TerminalArea({
     sessionCounter = resolved.sessionCounter;
     layoutPersistenceSuspendedRef.current = false;
     awaitingSessionHydrationRef.current = false;
+    stateProjectRef.current = project.name;
     setState(resolved.state);
   }, [project.name, project.path, sessionStatus, tabs.length]);
 

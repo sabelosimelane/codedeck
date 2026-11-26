@@ -157,6 +157,19 @@ function highestTabNumber(tabs) {
   return getNextTabNumber(tabs) - 1;
 }
 
+// A pane whose session is live but belongs to another project is not this project's terminal, whatever the saved layout says.
+function withoutOtherProjectsSessions(layout, liveSessions, projectLiveSessions) {
+  const ownIds = new Set(projectLiveSessions.map(session => session.sessionId));
+  const foreignIds = new Set(liveSessions
+    .filter(session => session.alive && !ownIds.has(session.sessionId))
+    .map(session => session.sessionId));
+  if (foreignIds.size === 0) return layout;
+  const tabs = layout.tabs
+    .map(tab => ({ ...tab, panes: tab.panes.filter(pane => !foreignIds.has(pane.sessionId)) }))
+    .filter(tab => tab.panes.length > 0);
+  return { ...layout, tabs };
+}
+
 function preserveSavedLayout(savedLayout) {
   const tabs = savedLayout.tabs.map(tab => {
     const panes = tab.panes.map(pane => ({
@@ -204,7 +217,11 @@ export function resolveInitialTerminalState({ projectName, projectPath, savedLay
   );
 
   if (savedLayout) {
-    const repairedLayout = { ...savedLayout, tabs: repairDuplicateTabIds(savedLayout.tabs) };
+    const repairedLayout = withoutOtherProjectsSessions(
+      { ...savedLayout, tabs: repairDuplicateTabIds(savedLayout.tabs) },
+      liveSessions,
+      projectLiveSessions,
+    );
     const restored = filterLayoutByLiveSessions(repairedLayout, projectLiveSessions, projectName);
     if (restored) {
       const maxSessionNumber = projectLiveSessions.reduce((max, session) => {
