@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile, readRunProgress, isProgressFileInWorktree } from '../pipelines/run-progress.js';
+import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile, readRunProgress, isProgressFileInWorktree, createCachedProgressReader } from '../pipelines/run-progress.js';
 
 describe('isProgressFileInWorktree preconditions', () => {
   it.each([undefined, '', 'relative', 7])('rejects worktreePath %s', async worktreePath => {
@@ -158,5 +158,47 @@ describe('createRunProgressReader', () => {
     const reader = createRunProgressReader({ fs });
     await expect(reader.read({ worktreePath: 'relative', progressFile: 'x.md' })).rejects.toThrow();
     await expect(reader.read({ worktreePath: '/tmp', progressFile: '' })).rejects.toThrow();
+  });
+});
+
+describe('createCachedProgressReader', () => {
+  const PROGRESS = { file: 'docs/todo.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'One', tasksDone: 0, tasksTotal: 1 }, tasksDone: 0, tasksTotal: 2 };
+  function setup() {
+    let clock = 1_000;
+    const inner = { worktreeExists: vi.fn(async () => true), read: vi.fn(async () => PROGRESS) };
+    const reader = createCachedProgressReader(inner, { ttlMs: 5_000, now: () => clock });
+    return { inner, reader, advance: ms => { clock += ms; } };
+  }
+  const ask = { worktreePath: '/srv/wt', progressFile: 'docs/todo.md' };
+
+  it('answers a repeated read from the last answer while it is fresh, and asks again once it is not', async () => {
+    const { inner, reader, advance } = setup();
+    expect(await reader.read(ask)).toEqual(PROGRESS);
+    expect(await reader.worktreeExists('/srv/wt')).toBe(true);
+    advance(4_999);
+    await reader.read(ask); await reader.worktreeExists('/srv/wt');
+    expect(inner.read).toHaveBeenCalledTimes(1);
+    expect(inner.worktreeExists).toHaveBeenCalledTimes(1);
+    advance(2);
+    await reader.read(ask); await reader.worktreeExists('/srv/wt');
+    expect(inner.read).toHaveBeenCalledTimes(2);
+    expect(inner.worktreeExists).toHaveBeenCalledTimes(2);
+  });
+  it('keeps answers apart per worktree and file, and shares one read between concurrent askers', async () => {
+    const { inner, reader } = setup();
+    await Promise.all([reader.read(ask), reader.read(ask), reader.read({ ...ask, progressFile: 'docs/other.md' }), reader.read({ ...ask, worktreePath: '/srv/other' })]);
+    expect(inner.read).toHaveBeenCalledTimes(3);
+  });
+  it('does not keep a failure', async () => {
+    const { inner, reader } = setup();
+    inner.read.mockRejectedValueOnce(new Error('ssh: connection lost'));
+    await expect(reader.read(ask)).rejects.toThrow('ssh: connection lost');
+    expect(await reader.read(ask)).toEqual(PROGRESS);
+    expect(inner.read).toHaveBeenCalledTimes(2);
+  });
+  it('requires a reader, a positive freshness and a clock', () => {
+    expect(() => createCachedProgressReader({}, { ttlMs: 1, now: () => 0 })).toThrow('reader');
+    expect(() => createCachedProgressReader({ read() {}, worktreeExists() {} }, { ttlMs: 0, now: () => 0 })).toThrow('ttlMs');
+    expect(() => createCachedProgressReader({ read() {}, worktreeExists() {} }, { ttlMs: 1, now: 'x' })).toThrow('now');
   });
 });

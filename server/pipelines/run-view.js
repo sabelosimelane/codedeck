@@ -2,8 +2,12 @@ import { publicRoleFallback } from './team-attribution.js';
 import { computeActions } from './run-machine.js';
 import { publicAttachments } from './attachments.js';
 import { notePath } from './run-notes.js';
-import { readRunProgress, createRunProgressReader } from './run-progress.js';
+import { readRunProgress, createRunProgressReader, createCachedProgressReader } from './run-progress.js';
 import { canReclaimReleasedTaskRun } from './released-task-run.js';
+
+// How long a remote run's progress answer is reused: views poll every two seconds, and every
+// read on a remote host is several SSH round trips.
+const REMOTE_PROGRESS_TTL_MS = 5_000;
 
 /** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
 function buildRunView(run, decisionCount, progress, latestNotes) {
@@ -90,10 +94,24 @@ export function createRunViewBuilder({ runStore, taskStore, workflowStore, decis
   for (const [name, value] of Object.entries({ runStore, taskStore, workflowStore, decisionStore, noteStore, progressReader })) {
     if (!value) throw new TypeError(`run view requires ${name}`);
   }
+  // Recent answers per remote host are kept for the builder's lifetime; the host's tools are resolved
+  // on each real read, so a changed host setting or reachability applies at once.
+  const remoteReaders = new Map();
+  const readerFor = host => {
+    if (host === 'local' || !resolveHostTools) return progressReader;
+    if (!remoteReaders.has(host)) {
+      const current = () => createRunProgressReader({ fs: resolveHostTools(host).fs });
+      remoteReaders.set(host, createCachedProgressReader({
+        worktreeExists: worktreePath => current().worktreeExists(worktreePath),
+        read: request => current().read(request),
+      }, { ttlMs: REMOTE_PROGRESS_TTL_MS }));
+    }
+    return remoteReaders.get(host);
+  };
   return async run => {
     const viewRun = run.worktreeState === 'released' && canReclaimReleasedTaskRun({ run, taskStore, runStore })
       ? { ...run, reclaimableTaskWorktree: true } : run;
-    const inspected = await readRunProgress({ run: viewRun, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: run.host !== 'local' && resolveHostTools ? createRunProgressReader({ fs: resolveHostTools(run.host).fs }) : progressReader });
+    const inspected = await readRunProgress({ run: viewRun, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: readerFor(run.host) });
     const progress = inspected === null ? null : { file: inspected.file, status: inspected.status, phaseCount: inspected.phaseCount, phase: inspected.phase, tasksDone: inspected.tasksDone, tasksTotal: inspected.tasksTotal };
     return buildRunView(viewRun, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
   };

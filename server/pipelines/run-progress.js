@@ -129,6 +129,33 @@ export function createRunProgressReader({ fs = defaultFs } = {}) {
   };
 }
 
+/**
+ * A progress reader that answers a repeated question from its last answer while that answer is
+ * younger than `ttlMs`, and lets concurrent askers share one read. For a remote host, where every
+ * stat, realpath and read is an SSH round trip and several views poll every two seconds. A failed
+ * read is never kept.
+ */
+export function createCachedProgressReader(reader, { ttlMs, now = Date.now } = {}) {
+  if (!reader || typeof reader.read !== 'function' || typeof reader.worktreeExists !== 'function') throw new TypeError('reader must support read and worktreeExists');
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw new TypeError('ttlMs must be a positive number');
+  if (typeof now !== 'function') throw new TypeError('now must be a function');
+  const answers = new Map();
+  const ask = (key, load) => {
+    const kept = answers.get(key);
+    if (kept && now() - kept.at < ttlMs) return kept.promise;
+    const promise = load();
+    const entry = { at: now(), promise };
+    answers.set(key, entry);
+    promise.catch(() => { if (answers.get(key) === entry) answers.delete(key); });
+    if (answers.size > 200) answers.delete(answers.keys().next().value);
+    return promise;
+  };
+  return {
+    worktreeExists: worktreePath => ask(`exists\0${worktreePath}`, () => reader.worktreeExists(worktreePath)),
+    read: ({ worktreePath, progressFile }) => ask(`read\0${worktreePath}\0${progressFile}`, () => reader.read({ worktreePath, progressFile })),
+  };
+}
+
 export async function readRunProgress({ run, workflowProgressFile, progressReader }) {
   if (!run || typeof run !== 'object' || Array.isArray(run)) throw new TypeError('run must be an object');
   if (!run.definition || typeof run.definition !== 'object') throw new TypeError('run.definition must be an object');

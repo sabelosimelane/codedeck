@@ -67,6 +67,21 @@ function blockerMessage(code, { several, repository, worktree, checkoutBranch, m
 
 // Ignored files the owner agreed may go with a task's folder; any other ignored file is kept.
 const DISPOSABLE = new Set(['node_modules', 'dist', 'build', 'target', '.gradle', '.codedeck']);
+// $1 is the task's folder, $2 the checkout's. Prints SAME when every non-disposable entry under $1
+// is a regular file (not a link) with the same bytes at the same place under $2, else DIFF. A folder
+// find cannot read was never compared, so find's failure is passed down the pipe as a line no path
+// can be (find prints every path from "./") and answers DIFF.
+const SAME_FOLDER_SCRIPT = [
+  'cd "$1" || exit 2',
+  `{ find . \\( ${[...DISPOSABLE].map(name => `-name '${name}'`).join(' -o ')} \\) -prune -o ! -type d -print || echo '//find-failed'; } | {`,
+  '  while IFS= read -r f; do',
+  '    if [ "$f" = //find-failed ]; then echo DIFF; exit 0; fi',
+  '    if [ -f "$f" ] && [ ! -L "$f" ] && [ -f "$2/$f" ] && [ ! -L "$2/$f" ] && cmp -s "$f" "$2/$f"; then continue; fi',
+  '    echo DIFF; exit 0',
+  '  done',
+  '  echo SAME',
+  '}',
+].join('\n');
 
 function run(execFile, file, args, { cwd, timeout = GIT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
@@ -108,9 +123,12 @@ export function createTaskLanding({
   // Runs that published attachments into a worktree: only their verified copies are disposable.
   listRunAttachmentsForWorktree = async () => [],
   resolveHostTools = null,
+  // How long comparing one ignored folder with Main may take; a large one over SSH can take a while.
+  folderCompareTimeoutMs = 120_000,
 } = {}) {
   if (typeof taskStore?.get !== 'function' || typeof taskStore?.setWorktreeState !== 'function') throw new TypeError('taskStore is required');
   if (typeof listRunAttachmentsForWorktree !== 'function') throw new TypeError('listRunAttachmentsForWorktree must be a function');
+  if (!Number.isSafeInteger(folderCompareTimeoutMs) || folderCompareTimeoutMs <= 0) throw new TypeError('folderCompareTimeoutMs must be a positive integer');
   for (const [name, value] of Object.entries({ findProject, execFile, pathExists, hasActiveRun, onTaskFinished, onWorktreeFinished, closeTerminals, rmdir })) {
     if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   }
@@ -202,30 +220,25 @@ export function createTaskLanding({
    * Whether removing a worktree's folder loses nothing: every regular file in it, at any depth,
    * is a regular file of the same bytes at the same place in the checkout. A link or any other
    * kind of entry cannot be shown to be a copy, so it counts as one that would be lost. Disposable
-   * folders inside are not looked into, as at the top level. Stops at the first difference.
+   * entries inside are not looked into, as at the top level. Stops at the first difference.
+   *
+   * It runs as one command on the folder's host: there each call is an SSH round trip and status
+   * is read every few seconds, so a call per file kept the host's connection busy for minutes.
+   * A name the loop cannot read back (one with a newline) is not found, so it counts as not copied.
    */
   async function sameFolder(taskDir, homeDir, tools) {
-    for (const entry of await tools.readdir(taskDir, { withFileTypes: true })) {
-      if (DISPOSABLE.has(entry.name)) continue;
-      const inTask = path.join(taskDir, entry.name);
-      const inHome = path.join(homeDir, entry.name);
-      if (entry.isDirectory()) {
-        if (!(await sameFolder(inTask, inHome, tools))) return false;
-      } else if (!entry.isFile() || !(await sameFile(inTask, inHome, tools))) {
-        return false;
-      }
+    let stdout;
+    try {
+      ({ stdout } = await run(tools.execFile, 'sh', ['-c', SAME_FOLDER_SCRIPT, 'same-folder', taskDir, homeDir], { timeout: folderCompareTimeoutMs }));
+    } catch (error) {
+      // A comparison cut short has not shown the folder to be a copy, so it counts as one that would be lost.
+      if (error?.killed !== true) throw error;
+      console.warn(`[tasks] comparing ${taskDir} with ${homeDir} took longer than ${folderCompareTimeoutMs} ms; it counts as not copied`);
+      return false;
     }
-    return true;
-  }
-
-  async function sameFile(inTask, inHome, tools) {
-    const home = await tools.lstat(inHome).catch(error => {
-      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
-      throw error;
-    });
-    if (!home?.isFile() || home.size !== (await tools.lstat(inTask)).size) return false;
-    const [task, main] = await Promise.all([tools.digest(inTask), tools.digest(inHome)]);
-    return task === main;
+    const verdict = stdout.trim();
+    if (verdict !== 'SAME' && verdict !== 'DIFF') throw new Error(`Comparing ${taskDir} with ${homeDir} gave an unexpected answer`);
+    return verdict === 'SAME';
   }
 
   /**

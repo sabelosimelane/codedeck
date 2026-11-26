@@ -46,6 +46,10 @@ function fakeRunner(responses = {}) {
 }
 
 const HOST = 'devbox';
+// One session's part of the batched status output: \u0001, the tmux name, a newline, then what
+// the single-session script printed; \u0002 at its end when that session's script failed.
+const statusRecord = (name, body, failed = false) => `\u0001${name}\n${body}${failed ? '\u0002' : ''}`;
+const PANE = clock => `${clock}\u00000\tzsh\t0\t${clock}\t/srv/app/sub\n\u0000$ \n\u0000`;
 
 function makeRuntime(runner) {
   return createHostTerminalRuntime(runner, HOST);
@@ -382,7 +386,7 @@ describe('createHostTerminalRuntime auxiliary ops', () => {
 
   it('fetches cwd and execution state through one aggregate remote command', async () => {
     const runner = fakeRunner({
-      sh: `1794348000\u00000\tzsh\t0\t1794348000\t/srv/app/sub\n\u0000$ \n\u0000`,
+      sh: statusRecord('proj-1', PANE(1794348000)),
     });
     const runtime = makeRuntime(runner);
 
@@ -396,11 +400,12 @@ describe('createHostTerminalRuntime auxiliary ops', () => {
 
   it('reads the remote clock after the pane activity time it is compared against', async () => {
     const runner = fakeRunner({
-      sh: `1794348000\u00000\tzsh\t0\t1794348000\t/srv/app\n\u0000$ \n\u0000`,
+      sh: statusRecord('proj-1', PANE(1794348000)),
     });
     await makeRuntime(runner).getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
 
-    const script = runner.calls[0].args[1];
+    // The batch command passes the single-session script as its first argument.
+    const script = runner.calls[0].args[3];
     const paneRead = script.indexOf('tmux -u list-panes');
     const clockRead = script.indexOf('date +%s');
     expect(paneRead).toBeGreaterThanOrEqual(0);
@@ -408,10 +413,83 @@ describe('createHostTerminalRuntime auxiliary ops', () => {
   });
 
   it('rejects invalid remote clock through the existing lookup failure state', async () => {
-    const runner = fakeRunner({ sh: 'bad\u00000\tzsh\t0\t1\t/srv/app\n\u0000$ \n\u0000' });
+    const runner = fakeRunner({ sh: statusRecord('proj-1', 'bad\u00000\tzsh\t0\t1\t/srv/app\n\u0000$ \n\u0000') });
     const status = await makeRuntime(runner).getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
     expect(status.executionState.executionReason).toBe('tmux_lookup_failed');
     expect(runner.calls).toHaveLength(1);
+  });
+
+  it('asks for the status of sessions requested together in one remote command', async () => {
+    // Every remote command is an SSH round trip and a login session on the host; the status cache
+    // refreshes every terminal every few seconds.
+    const runner = fakeRunner({ sh: args => args.slice(4).map((name, i) => statusRecord(name, PANE(1794348000 + i))).join('') });
+    const runtime = makeRuntime(runner);
+
+    const [one, two, three] = await Promise.all(['proj-1', 'proj-2', 'proj 3'].map(id => runtime.getSessionStatusAsync({ cwd: '/srv/app' }, id)));
+
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0].args.slice(4)).toEqual(['proj-1', 'proj-2', 'proj_3']);
+    for (const status of [one, two, three]) {
+      expect(status.cwd).toBe('/srv/app/sub');
+      expect(status.executionState.executionReason).not.toBe('tmux_lookup_failed');
+    }
+  });
+
+  it('marks only the session whose part of a batch failed as a failed lookup', async () => {
+    const runner = fakeRunner({ sh: statusRecord('proj-1', PANE(1794348000)) + statusRecord('gone-2', 'can\'t find session', true) });
+    const runtime = makeRuntime(runner);
+
+    const [alive, gone] = await Promise.all([runtime.getSessionStatusAsync({ cwd: '/srv/a' }, 'proj-1'), runtime.getSessionStatusAsync({ cwd: '/srv/b' }, 'gone-2')]);
+
+    expect(alive.cwd).toBe('/srv/app/sub');
+    expect(alive.executionState.executionReason).not.toBe('tmux_lookup_failed');
+    expect(gone).toMatchObject({ cwd: '/srv/b', executionState: { executionReason: 'tmux_lookup_failed' } });
+  });
+
+  it('marks a session whose tmux read fails part way, running the real script in a shell', async () => {
+    // A fake tmux first on PATH: list-panes answers for every session, capture-pane fails for "broken".
+    const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { execFile } = await import('node:child_process');
+    const bin = mkdtempSync(`${tmpdir()}/fake-tmux-`);
+    writeFileSync(`${bin}/tmux`, [
+      '#!/bin/sh',
+      'case "$*" in',
+      '  *capture-pane*broken*) exit 1 ;;',
+      '  *capture-pane*) echo "$ " ;;',
+      '  "-u list-panes"*) printf "0\\tzsh\\t0\\t1794348000\\t/srv/app\\n" ;;',
+      '  *list-panes*) echo 0 ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(`${bin}/tmux`, 0o755);
+    const runner = { run: (cmd, args, opts) => new Promise((resolve, reject) => execFile(cmd, args, { timeout: opts?.timeout, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }, (error, stdout, stderr) => (error ? reject(error) : resolve({ stdout, stderr })))), spawnPty() {} };
+    try {
+      const runtime = makeRuntime(runner);
+      const [alive, broken] = await Promise.all([runtime.getSessionStatusAsync({ cwd: '/srv/a' }, 'proj-1'), runtime.getSessionStatusAsync({ cwd: '/srv/b' }, 'broken')]);
+      expect(alive.cwd).toBe('/srv/app');
+      expect(alive.executionState.executionReason).not.toBe('tmux_lookup_failed');
+      expect(broken).toMatchObject({ cwd: '/srv/b', executionState: { executionReason: 'tmux_lookup_failed' } });
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it('gives a batch the time of each session it asks about', async () => {
+    const runner = fakeRunner({ sh: args => args.slice(4).map(name => statusRecord(name, PANE(1794348000))).join('') });
+    const runtime = makeRuntime(runner);
+    await runtime.getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
+    await Promise.all(['proj-1', 'proj-2', 'proj-3'].map(id => runtime.getSessionStatusAsync({ cwd: '/srv/app' }, id)));
+    expect(runner.calls[1].opts.timeout).toBe(runner.calls[0].opts.timeout * 3);
+  });
+
+  it('starts a new batch for a request made after the previous one was sent', async () => {
+    const runner = fakeRunner({ sh: args => args.slice(4).map(name => statusRecord(name, PANE(1794348000))).join('') });
+    const runtime = makeRuntime(runner);
+
+    await runtime.getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-1');
+    await runtime.getSessionStatusAsync({ cwd: '/srv/app' }, 'proj-2');
+
+    expect(runner.calls.map(call => call.args.slice(4))).toEqual([['proj-1'], ['proj-2']]);
   });
 
   it('lists remote session ids and returns [] when the host cannot be reached', async () => {

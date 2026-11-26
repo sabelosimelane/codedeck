@@ -1366,6 +1366,57 @@ export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sl
     `done`,
   ].join('\n');
 
+  // The statuses of several sessions in one remote command: each session's part starts with \001,
+  // its tmux name and a newline, then the single-session script's output. $1 is that script; it runs
+  // in its own sh per session, where its `set -e` holds (a subshell tested by || would ignore it), so
+  // a session whose tmux read fails marks only its own part, with \002.
+  const batchStatusScript = [
+    'script=$1; shift',
+    'for name in "$@"; do',
+    `  printf '\\001%s\\n' "$name"`,
+    `  sh -c "$script" codedeck-session-status "$name" || printf '\\002'`,
+    'done',
+  ].join('\n');
+
+  // Every remote command is an SSH round trip and, on most hosts, a login session; the status cache
+  // refreshes each terminal every few seconds. Requests made in the same tick share one command.
+  let pendingStatus = null;
+  function requestSessionStatus(tmuxName) {
+    if (!pendingStatus) {
+      const batch = { waiters: new Map() };
+      pendingStatus = batch;
+      queueMicrotask(() => { pendingStatus = null; sendStatusBatch(batch); });
+    }
+    return new Promise((resolve, reject) => {
+      const waiters = pendingStatus.waiters.get(tmuxName) ?? [];
+      waiters.push({ resolve, reject });
+      pendingStatus.waiters.set(tmuxName, waiters);
+    });
+  }
+  async function sendStatusBatch({ waiters }) {
+    const names = [...waiters.keys()];
+    const settle = (name, outcome) => { for (const waiter of waiters.get(name)) outcome(waiter); };
+    let stdout;
+    try {
+      // Each session keeps the time it had on its own, so a large batch is not cut short.
+      ({ stdout } = await runner.run('sh', ['-c', batchStatusScript, 'codedeck-session-statuses', sessionStatusScript, ...names], { timeout: STATUS_POLL_TIMEOUT_MS * names.length }));
+    } catch (error) {
+      for (const name of names) settle(name, waiter => waiter.reject(error));
+      return;
+    }
+    const parts = new Map();
+    for (const record of stdout.split('\u0001').slice(1)) {
+      const newline = record.indexOf('\n');
+      if (newline > 0) parts.set(record.slice(0, newline), record.slice(newline + 1));
+    }
+    for (const name of names) {
+      const part = parts.get(name);
+      if (part === undefined) settle(name, waiter => waiter.reject(new Error(`remote session status for ${name} missing`)));
+      else if (part.endsWith('\u0002')) settle(name, waiter => waiter.reject(new Error(`remote session status for ${name} failed`)));
+      else settle(name, waiter => waiter.resolve(part));
+    }
+  }
+
   return {
     type: 'tmux',
     host: hostName,
@@ -1604,15 +1655,11 @@ export function createHostTerminalRuntime(runner, hostName, { now = Date.now, sl
       }
     },
 
-    /** One SSH round-trip for the status cache's cwd + execution snapshot. */
+    /** The status cache's cwd + execution snapshot, sharing one SSH round trip with the other sessions asked for in the same tick. */
     async getSessionStatusAsync(entry, sessionId, { onSnapshot } = {}) {
       const tmuxName = sanitizeTmuxName(sessionId);
       try {
-        const { stdout } = await runner.run(
-          'sh',
-          ['-c', sessionStatusScript, 'codedeck-session-status', tmuxName],
-          { timeout: STATUS_POLL_TIMEOUT_MS },
-        );
+        const stdout = await requestSessionStatus(tmuxName);
         const parts = stdout.split('\0');
         if (parts.length < 4 || parts.at(-1) !== '') throw new Error('remote session status separators missing');
         const clock = parts[0].trim();

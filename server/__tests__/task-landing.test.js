@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
@@ -18,7 +18,7 @@ const write = (dir, file, text) => writeFileSync(path.join(dir, file), text);
 const commitAll = (dir, message) => { git(dir, ['add', '--all']); git(dir, ['commit', '-m', message]); };
 
 /** A real repository with one task; `exec` lets a test stand in for the hosting CLI. */
-async function setup({ exec = execFile, activeRun = false, listRunAttachmentsForWorktree } = {}) {
+async function setup({ exec = execFile, activeRun = false, listRunAttachmentsForWorktree, resolveHostTools, folderCompareTimeoutMs } = {}) {
   const base = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'codedeck-landing-')));
   const repo = path.join(base, 'repo');
   mkdirSync(repo);
@@ -48,6 +48,8 @@ async function setup({ exec = execFile, activeRun = false, listRunAttachmentsFor
     onWorktreeFinished: vi.fn(),
     closeTerminals,
     ...(listRunAttachmentsForWorktree ? { listRunAttachmentsForWorktree } : {}),
+    ...(resolveHostTools ? { resolveHostTools } : {}),
+    ...(folderCompareTimeoutMs ? { folderCompareTimeoutMs } : {}),
   });
   const task = await service.create({ project: 'Demo', title: 'Replies' });
   return { base, repo, taskStore, service, landing, task, wt: task.worktreePath, state, onTaskFinished, closeTerminals };
@@ -583,8 +585,8 @@ describe('task landing — work that ordinary status does not show', () => {
         write(path.join(root, 'secrets'), file, text);
       }
     };
-    async function ignoring() {
-      const ctx = await setup();
+    async function ignoring(options) {
+      const ctx = await setup(options);
       write(ctx.wt, '.gitignore', 'secrets/\n');
       commitAll(ctx.wt, 'ignore the secrets folder');
       return ctx;
@@ -633,6 +635,60 @@ describe('task landing — work that ordinary status does not show', () => {
       symlinkSync('api.key', path.join(wt, 'secrets', 'link.key'));
 
       expect(codes((await landing.status(ID)).blockers.close)).toEqual(['ignored_files']);
+    });
+
+    it('compares a folder of many copied files in a few host calls, not several per file', async () => {
+      // On a remote host every call is an SSH round trip, and status is read every few seconds.
+      const calls = { execFile: 0, lstat: 0, readdir: 0, sha256: 0 };
+      const fsp = await import('node:fs/promises');
+      const resolveHostTools = () => ({
+        host: 'local',
+        execFile: (...args) => { calls.execFile += 1; return execFile(...args); },
+        pathExists: async target => existsSync(target),
+        fs: {
+          lstat: p => { calls.lstat += 1; return fsp.lstat(p); },
+          readdir: (p, opts) => { calls.readdir += 1; return fsp.readdir(p, opts); },
+          rmdir: p => fsp.rmdir(p),
+        },
+        sha256: async p => { calls.sha256 += 1; return (await import('node:crypto')).createHash('sha256').update(readFileSync(p)).digest('hex'); },
+      });
+      const ctx = await setup({ resolveHostTools });
+      write(ctx.wt, '.gitignore', 'secrets/\n');
+      commitAll(ctx.wt, 'ignore the secrets folder');
+      const files = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`font-${i}.woff2`, `font ${i}\n`]));
+      secrets(ctx.wt, files);
+      secrets(ctx.repo, files);
+      for (const key of Object.keys(calls)) calls[key] = 0;
+
+      expect((await ctx.landing.status(ID)).blockers.close).toEqual([]);
+      expect(calls.lstat + calls.sha256).toBe(0);
+      expect(calls.execFile + calls.readdir).toBeLessThan(25);
+    });
+
+    it('is kept when a folder inside it cannot be read, so its contents were never compared', async () => {
+      const { wt, repo, landing } = await ignoring();
+      secrets(wt, { 'api.key': 'key-one\n', 'private/token': 'only in the task\n' });
+      secrets(repo, { 'api.key': 'key-one\n', 'private/token': 'only in the task\n' });
+      chmodSync(path.join(wt, 'secrets', 'private'), 0o000);
+      try {
+        expect(codes((await landing.status(ID)).blockers.close)).toEqual(['ignored_files']);
+      } finally {
+        chmodSync(path.join(wt, 'secrets', 'private'), 0o700);
+      }
+    });
+
+    it('is kept, not an error, when comparing it takes longer than allowed', async () => {
+      const { wt, repo, landing: slow } = await ignoring({ folderCompareTimeoutMs: 1 });
+      const files = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`f-${i}.bin`, `same ${i}\n`]));
+      secrets(wt, files);
+      secrets(repo, files);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        expect(codes((await slow.status(ID)).blockers.close)).toEqual(['ignored_files']);
+        expect(warn.mock.calls.flat().join(' ')).toContain('secrets');
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('does not look inside disposable folders it contains', async () => {
