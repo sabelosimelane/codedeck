@@ -326,7 +326,8 @@ const overlayStyle = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  zIndex: 1000,
+  // Above the shared ui dialogs it is opened from (.ui-overlay, 1600); below menus and toasts.
+  zIndex: 1700,
   animation: 'fadeIn 0.15s ease-out',
 };
 
