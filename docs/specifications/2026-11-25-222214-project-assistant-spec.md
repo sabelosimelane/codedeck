@@ -7,7 +7,7 @@
 ## 1. Overview
 
 An owner who works across Main, several tasks and several repositories of one project loses track
-of where things stand. The case that prompted this (GRS, 2026-11-25):
+of where things stand. The case that prompted this (Acme, 2026-11-25):
 
 - A run read **Complete**. Its Test step had stopped at its round limit and the owner had continued,
   so the todo was really on Phase 2 (4 of 6 tasks), with Phases 3–5 not started.
@@ -227,16 +227,16 @@ reason.
 
 ```json
 {
-  "project": "GRS Local",
+  "project": "Acme Local",
   "generatedAt": "2026-11-25T20:10:12Z",
   "repositories": [
-    { "name": "backend", "own": true, "path": "/Users/x/git/grs/backend", "branch": "main",
+    { "name": "backend", "own": true, "path": "/Users/x/git/acme/backend", "branch": "main",
       "dirtyCount": 30, "dirty": ["src/main/.../DeskMcpClient.java"] }
   ],
   "tasks": [
     { "id": "t-1", "title": "Build integration provider Phase 1", "state": "active",
       "worktrees": [
-        { "worktreeId": "w-1", "repository": "backend", "worktreePath": "/Users/x/git/grs/worktrees/backend-integration-provider-spec",
+        { "worktreeId": "w-1", "repository": "backend", "worktreePath": "/Users/x/git/acme/worktrees/backend-integration-provider-spec",
           "branch": "docs/integration-provider-spec", "baseBranch": "main",
           "uncommittedCount": 22, "commitsAhead": 0, "commitsBehind": 0,
           "blockers": { "commit": [], "merge": [{ "code": "main_dirty", "message": "Main has uncommitted changes. Commit or stash them before merging." }],
@@ -264,7 +264,7 @@ reason.
       "where": { "taskId": "t-1", "runId": "r-1", "path": "docs/todos/2026-11-25-165446-integration-provider.md" } }
   ],
   "truncated": { "dirty": false, "todos": false },
-  "markdown": "# GRS Local — where things stand\n…"
+  "markdown": "# Acme Local — where things stand\n…"
 }
 ```
 
@@ -274,7 +274,7 @@ file is untracked or modified in that working copy.
 ### 7.2 Conversation and message
 
 ```json
-{ "id": "c-1", "project": "GRS Local", "state": "current", "createdAt": "…", "endedAt": null }
+{ "id": "c-1", "project": "Acme Local", "state": "current", "createdAt": "…", "endedAt": null }
 ```
 ```json
 { "id": 41, "conversationId": "c-1", "role": "agent", "content": "…", "toolName": null,
@@ -284,7 +284,7 @@ file is untracked or modified in that working copy.
 ### 7.3 Proposal
 
 ```json
-{ "id": "p-1", "conversationId": "c-1", "project": "GRS Local", "kind": "commit",
+{ "id": "p-1", "conversationId": "c-1", "project": "Acme Local", "kind": "commit",
   "payload": { "taskId": "t-1", "worktreeId": "w-1", "message": "wip(integration): provider phases 1–2" },
   "summary": "Commit 22 files in “Build integration provider Phase 1” (backend)",
   "reason": "Nothing is committed on the task branch yet; a checkpoint protects the work.",
@@ -481,7 +481,7 @@ sequenceDiagram
   participant S as CodeDeck server
   participant A as Claude Code (ACP)
   participant M as MCP server
-  O->>S: open /ws/assistant?project=GRS
+  O->>S: open /ws/assistant?project=Acme
   S->>S: compose situation, make token
   S->>A: spawn, initialize, session/new {mcpServers: codedeck}
   S->>A: session/prompt (assistant brief + situation)
@@ -501,7 +501,7 @@ sequenceDiagram
 
 1. `parsePhaseBreakdown` returns every phase with its done and total counts. `parsePhaseProgress`
    returns the same results as before for all its existing tests.
-2. With temporary Git repositories set up like the GRS case (§1), the composer reports:
+2. With temporary Git repositories set up like the Acme case (§1), the composer reports:
    - Phase 2 at 4 of 6
    - `run_complete_todo_unfinished`
    - `work_uncommitted_no_commits`
@@ -577,4 +577,4 @@ depict the adapter's own behaviour and are not verified here beyond a fake agent
 - ASSUMPTION: The header refreshes every 30 seconds while open. The composer runs several Git
   commands per worktree, and 2-second polling like the task list would be wasteful.
 - ASSUMPTION: A dependency is named in a todo header note when the note contains a `docs/todos/…md`
-  path, which is how the GRS todo states it. Free-form wording is not interpreted.
+  path, which is how the Acme todo states it. Free-form wording is not interpreted.

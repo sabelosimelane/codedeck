@@ -21,7 +21,7 @@
 > The riskiest and most useful slice: CodeDeck says, unprompted, what misled the owner.
 > **Inputs:** a local project, with its repositories, open tasks, runs and docs.
 > **Outputs:** `GET /api/projects/:name/situation`, and a right-hand panel listing the flags.
-> **Closed when:** the GRS-shaped fixture produces every flag of Spec §9.2, the endpoint passes the
+> **Closed when:** the Acme-shaped fixture produces every flag of Spec §9.2, the endpoint passes the
 > six API dimensions, and the panel shows the flags in the browser.
 
 - [x] `server/pipelines/run-progress.js`: `parsePhaseBreakdown(markdown)` returning
@@ -48,7 +48,7 @@
   toggle and ⌘/Ctrl+⇧L listed in `ShortcutsOverlay.jsx`; open state in `localStorage` with
   try/catch. Component tests: flags rendered, "Nothing needs your attention", failure shown,
   shortcut toggles.
-- [x] Check by an agent in the browser against the live GRS project: the header lists the flags of
+- [x] Check by an agent in the browser against the live Acme project: the header lists the flags of
   Spec §9.2.
 
 ## Phase 2: Conversation storage and the chat over ACP (advise only)
@@ -108,7 +108,7 @@
 - [x] Bridge: pass `mcpServers` in `session/new` and send the assistant brief with the situation
   `markdown` as the first prompt, shown as a `notice` (Spec §8.5.2, §8.5.4). Fake-agent tests assert
   both.
-- [x] Check by an agent in the browser on GRS: "where am I and what should I do next?" is answered
+- [x] Check by an agent in the browser on Acme: "where am I and what should I do next?" is answered
   with the Phase 2 count, the unfinished todo, the Main blocker and the stray files.
 
 ## Phase 4: Proposals and approval (act after asking)
@@ -204,7 +204,7 @@
 **Key files**: `server/assistant/situation.js`, `server/assistant/situation-flags.js`, `server/assistant/todo-docs.js`, `server/routes/assistant.js`, `server/pipelines/run-view.js` (run view builder moved out of `routes/pipelines.js`), `server/pipelines/run-worktree.js` (detailed `-z` status with `--no-optional-locks`), `client/src/components/assistant/AssistantPanel.jsx`, `client/src/utils/assistantApi.js`
 **Built by**: Codex gpt-6-sol@high (implementation, then a fix pass over 3 parallel reviews: correctness, conventions, simplicity). Targeted verify: server 11 files / 626 tests, client 3 files / 21 tests, Vite build OK.
 **Bug fixes**: path-only todo matching judged a run by another task's copy; closed (`released`) runs were still listed; `git status` could take `index.lock` while agents commit; stray regex flagged files named `0`/`t`/`n`; the panel showed the previous project's flags after a switch.
-**Quirks**: Codex rewrote the main checkout's `.remember/remember.md` handoff (restored by the coordinator). The live-GRS browser check was done by Codex before the fix pass; `feature-test` should repeat it.
+**Quirks**: Codex rewrote the main checkout's `.remember/remember.md` handoff (restored by the coordinator). The live-Acme browser check was done by Codex before the fix pass; `feature-test` should repeat it.
 **Next**: Phase 2: Conversation storage and the chat over ACP. Plan the new dependencies first (adapter, marked, dompurify): `node_modules` is the main checkout's.
 
 ### Deviations
@@ -231,7 +231,7 @@
 - **[Phase 1 / feature-test] — Five bugs found only against real data (logged during feature-test)**
   - **Planned**: tests with one-project fixtures; Spec §8.1 silent on non-Git folders, untrimmed names and null progress counts.
   - **Found**: on a copy of the live database, each of these returned 500 or wrong wording:
-    - GRS Local: a run of another project (mlondolozi) failed the per-run project guard before runs were filtered by task.
+    - Acme Local: a run of another project failed the per-run project guard before runs were filtered by task.
     - codedeck: a Main checkout holding a file named `" "` failed the trimmed-text guard on dirty paths.
     - Equinox Local: a run whose progress file is missing has null counts, which the server and client guards refused.
     - nav-billing and job-broker (5 projects in all): their folder is not a Git repository, and `git status` failed.
@@ -256,7 +256,7 @@
   - Vite build OK
 - **Full suites**: server 4,312 passed, 4 failed; client 2,040 passed, 14 failed. All failures are in files listed as failing on `main` (`project-config`, `project-repositories-api`, Sidebar mocks, mobile `runsApi`), except one `assistant-flags` failure: a red test caught mid-edit, which passes now.
 - **One unexplained flake**: `assistant-api` "409 for remote" returned 400 once in 7 runs, while the full suites ran beside it. It did not reproduce in 6 reruns.
-- **Boot**: the worktree backend booted clean on port 43111 with an isolated HOME and a backup copy of the live database. Session naming was cleared and unfinished runs were marked interrupted, both in the copy only, so the test backend could not reattach live runs or launch review CLIs. The first boot had reattached a live mlondolozi run; it was stopped within about 70 s, with no prompt sent, and the copy was then fixed.
+- **Boot**: the worktree backend booted clean on port 43111 with an isolated HOME and a backup copy of the live database. Session naming was cleared and unfinished runs were marked interrupted, both in the copy only, so the test backend could not reattach live runs or launch review CLIs. The first boot had reattached a live run of another project; it was stopped within about 70 s, with no prompt sent, and the copy was then fixed.
 - **Live API**:
   - all 66 local projects return 200 (slowest 0.76 s)
   - 404 for an unknown project, 409 for a remote one
@@ -264,7 +264,7 @@
   - trace ids on every response; parallel requests return equal flags
   - no backend errors after the fixes
 - **Browser** (Claude in Chrome, served from `client/dist` on 43111):
-  - the GRS panel shows the 9 expected flags
+  - the Acme panel shows the 9 expected flags
   - ⌘⇧L closes and reopens the panel
   - Refresh sends a second GET, which returns 200
   - switching to Equinox shows its own 3 flags with nothing stale
@@ -378,8 +378,8 @@
 - Tests: `server/__tests__/assistant-session-tokens.test.js`, `server/__tests__/assistant-session-reads-api.test.js`, `server/__tests__/assistant-mcp-server.test.js`, updated `server/__tests__/assistant-acp-bridge.test.js` & `server/__tests__/fixtures/assistant-fake-acp-agent.js`
 **Verification**:
 - Targeted server suite: 13 files / 104 tests passed (`cd server && npx vitest run __tests__/assistant-*.test.js --maxWorkers=1`).
-- Real ACP adapter GRS probe (`@agentclientprotocol/claude-agent-acp@0.106.0` with owner's login, in-memory DB, live Express HTTP server, real `mcp-server.js`): `session/new` accepted `systemPrompt` and `codedeck` MCP server, emitted `Assistant briefed on the current situation.`, and answered "Where am I and what should I do next?" with Phase 2 at 4 of 6, the unfinished & dependent todos, backend Main's 30 dirty paths / merge blocker, frontend's 4 dirty paths, and stray files `" "` and `"\n"`. Token count dropped from 1 to 0 on close.
-- Live worktree server boot on port 43115 (isolated HOME + throwaway Git repo): `/ws/assistant?project=GRS%20Demo` reached `ready`, persisted and emitted `Assistant briefed on the current situation.`, and `GET /api/assistant/conversations/:id/messages` returned the stored notice. Note: `chrome-devtools` MCP tool failed in this environment due to a missing module in the global npx cache (`McpResponse.js`), so browser UI rendering was not re-clicked in Chrome during Develop; Test can verify in a working browser if available.
+- Real ACP adapter Acme probe (`@agentclientprotocol/claude-agent-acp@0.106.0` with owner's login, in-memory DB, live Express HTTP server, real `mcp-server.js`): `session/new` accepted `systemPrompt` and `codedeck` MCP server, emitted `Assistant briefed on the current situation.`, and answered "Where am I and what should I do next?" with Phase 2 at 4 of 6, the unfinished & dependent todos, backend Main's 30 dirty paths / merge blocker, frontend's 4 dirty paths, and stray files `" "` and `"\n"`. Token count dropped from 1 to 0 on close.
+- Live worktree server boot on port 43115 (isolated HOME + throwaway Git repo): `/ws/assistant?project=Acme%20Demo` reached `ready`, persisted and emitted `Assistant briefed on the current situation.`, and `GET /api/assistant/conversations/:id/messages` returned the stored notice. Note: `chrome-devtools` MCP tool failed in this environment due to a missing module in the global npx cache (`McpResponse.js`), so browser UI rendering was not re-clicked in Chrome during Develop; Test can verify in a working browser if available.
 **Next**: Phase 4: Proposals and approval (`assistant_proposals`, `proposal-store.js`, `proposal-payloads.js`, `proposal-executor.js`, proposal routes + `POST /api/assistant/sessions/:token/proposals`, MCP `propose_*` tools, decision lines prefixed to next prompt, bridge push frames, and panel proposal cards).
 
 ### Deviations (Phase 3)
@@ -398,7 +398,7 @@
 ### Feature test — 2026-11-26 (Phase 3)
 **Verdict**: FULLY TESTED (one limit, stated below); no Phase 3 task unticked.
 - **Targeted suites**: `cd server && npx vitest run __tests__/assistant-session-tokens.test.js __tests__/assistant-session-reads-api.test.js __tests__/assistant-mcp-server.test.js __tests__/assistant-acp-bridge.test.js --maxWorkers=1` → 4 files / 43 tests passed.
-- **Independent probe** (`.codedeck/runs/8750d349/probe-phase3.mjs`, run from the worktree; not committed): a real §1 GRS-shaped fixture (two Git repos, a task worktree with 22 uncommitted files, stray `" "` and `"\n"`, a `complete` run whose Test step is `limit_accepted`, todo 1 on Phase 2 at 4 of 6, todo 2 depending on it) driven through the real `composeSituation`, `createProjectRepositories`, `createTaskLanding`, `createRunViewBuilder` and `createNoteStore`. 23 of 23 checks passed:
+- **Independent probe** (`.codedeck/runs/8750d349/probe-phase3.mjs`, run from the worktree; not committed): a real §1 Acme-shaped fixture (two Git repos, a task worktree with 22 uncommitted files, stray `" "` and `"\n"`, a `complete` run whose Test step is `limit_accepted`, todo 1 on Phase 2 at 4 of 6, todo 2 depending on it) driven through the real `composeSituation`, `createProjectRepositories`, `createTaskLanding`, `createRunViewBuilder` and `createNoteStore`. 23 of 23 checks passed:
   - `/situation` 200 with `X-Trace-Id`; all seven §9.2 codes; markdown carries "4 of 6" and the Main blocker.
   - the real stdio MCP server, launched by the SDK client with a minted token: five read tools; `get_situation` returns the composed flags; `get_task_landing` returns the real worktree (22 uncommitted); `read_todo` reads the real worktree todo by `task:<taskId>/<worktreeId>` and a Main todo by `main:backend`; `read_run_notes` returns the written note; `list_runs` returns the composed run.
   - a wrong token is refused over MCP and 401 as a problem document over HTTP; a path outside the doc locations is 400 with `errors[0].field = path`; a 512 KiB + 1 byte todo is 413; the ended token is 401.

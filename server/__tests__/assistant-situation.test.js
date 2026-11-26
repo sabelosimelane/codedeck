@@ -25,7 +25,7 @@ async function repository(base, name) {
 }
 
 describe('composeSituation', () => {
-  it('reads real repositories, task worktree, landing and run store like the GRS case', async () => {
+  it('reads real repositories, task worktree, landing and run store like the Acme case', async () => {
     const base = await fs.mkdtemp(path.join(os.tmpdir(), 'assistant-situation-')); roots.push(base);
     const backend = await repository(base, 'backend');
     const frontend = await repository(base, 'frontend');
