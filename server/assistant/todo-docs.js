@@ -62,16 +62,22 @@ export async function readTodoDocs({ root, location, dirtyPaths, execFile = defa
     for (const name of matches.slice(0, MAX_DOCS)) {
       const rel = `docs/${folder}/${name}`;
       const absolute = path.join(root, rel);
-      const stat = await fs.stat(absolute);
+      // A file the reader cannot use is named in `skipped` with why, so one odd file never hides the rest.
+      let stat;
+      try { stat = await fs.stat(absolute); }
+      catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        skipped.push({ path: rel, size: null, reason: 'missing' }); continue;
+      }
+      if (!stat.isFile()) { skipped.push({ path: rel, size: null, reason: 'not_a_file' }); continue; }
       count(stat.size, 'size', rel);
-      if (!stat.isFile()) throw new Error(`${rel}: must be a regular file`);
-      if (stat.size > MAX_BYTES) { skipped.push({ path: rel, size: stat.size }); continue; }
+      if (stat.size > MAX_BYTES) { skipped.push({ path: rel, size: stat.size, reason: 'too_large' }); continue; }
       const committed = !dirty.has(rel);
       if (kind === 'specifications') { docs.push({ path: rel, location, committed }); continue; }
       const markdown = await fs.readFile(absolute, 'utf8');
       if (typeof markdown !== 'string') throw new Error(`${rel}: contents must be text`);
       const title = markdown.split(/\r?\n/).find(line => line.startsWith('# '))?.slice(2).trim();
-      requireText(title, 'title', rel);
+      if (!title) { skipped.push({ path: rel, size: stat.size, reason: 'no_title' }); continue; }
       const beforeSection = markdown.split(/^##[ \t]/m)[0];
       const dependsOn = [...new Set(beforeSection.split(/\r?\n/).filter(line => line.startsWith('>')).flatMap(line => line.match(/docs\/todos\/[\w./-]+\.md/g) ?? []))];
       const spec = headerLine(markdown, 'Spec');

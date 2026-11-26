@@ -43,6 +43,14 @@ describe('AssistantPanel header', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close assistant' }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+  it('keeps the flags on screen while a refresh of the same project is pending', async () => {
+    mock.fetchSituation.mockResolvedValueOnce(situation([{ code: 'old', message: 'Project A is dirty.', where: {} }])).mockImplementationOnce(() => new Promise(() => {}));
+    render(<AssistantPanel projectName="A" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Project A is dirty.')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(mock.fetchSituation).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Project A is dirty.')).toBeTruthy();
+  });
   it('clears the previous project while the next request is pending', async () => {
     mock.fetchSituation.mockResolvedValueOnce(situation([{ code: 'old', message: 'Project A is dirty.', where: {} }])).mockImplementationOnce(() => new Promise(() => {}));
     const { rerender } = render(<AssistantPanel projectName="A" onClose={() => {}} />);

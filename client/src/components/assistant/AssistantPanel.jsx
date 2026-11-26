@@ -14,10 +14,11 @@ export default function AssistantPanel({ projectName, onClose }) {
   const [refresh, setRefresh] = useState(0);
   const [situation, setSituation] = useState(null);
   const [error, setError] = useState(null);
+  // Another project's flags are cleared at once; the same project's stay on screen while a refresh loads.
+  useEffect(() => { setSituation(null); setError(null); }, [projectName]);
   useEffect(() => {
     const controller = new AbortController();
-    setSituation(null); setError(null);
-    fetchSituation(projectName, { signal: controller.signal }).then(value => { if (!controller.signal.aborted) setSituation(value); }).catch(failure => {
+    fetchSituation(projectName, { signal: controller.signal }).then(value => { if (!controller.signal.aborted) { setSituation(value); setError(null); } }).catch(failure => {
       if (failure?.name !== 'AbortError') { setSituation(null); setError(failure.message); }
     });
     return () => controller.abort();

@@ -49,7 +49,7 @@ describe('AssistantChat chat', () => {
     expect(await screen.findByText('hello')).toBeTruthy();
     sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial reply' } } });
     expect(await screen.findByText('partial reply')).toBeTruthy();
-    sockets[0].receive({ type: 'error', message: 'Prompt failed' });
+    sockets[0].receive({ type: 'error', message: 'Prompt failed', turnRunning: false });
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(false));
     expect(screen.queryByText('partial reply')).toBeNull();
     expect(screen.getByRole('alert').textContent).toContain('Prompt failed');
@@ -62,6 +62,37 @@ describe('AssistantChat chat', () => {
     expect(container.querySelector('script')).toBeNull();
     expect(container.querySelector('[onerror]')).toBeNull();
     expect(sockets[0].url).toContain('/ws/assistant?project=Demo');
+  });
+  it('keeps the streamed answer and the running state through an error raised mid-turn', async () => {
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first half ' } } });
+    sockets[0].receive({ type: 'error', message: 'Claude Code switched to plan mode; restoring ask before acting.', turnRunning: true });
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('plan mode'));
+    expect(screen.getByText(/first half/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'second half' } } });
+    sockets[0].receive({ type: 'turn_end', messageId: 9 });
+    expect(await screen.findByText('first half second half')).toBeTruthy();
+  });
+  it('removes unanswered permission cards when the turn ends', async () => {
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ type: 'permission_request', requestId: 90, toolCall: { toolCallId: 'c1', title: 'Edit file' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }] });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy());
+    sockets[0].receive({ type: 'turn_end', messageId: null });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull());
+  });
+  it('says a commit count is unknown instead of 0 in the approval toast', async () => {
+    const pending = { id: '00000000-0000-4000-8000-000000000003', conversationId: conversation.id, project: 'Demo', kind: 'commit', payload: { taskId: conversation.id, message: 'wip' }, summary: 'Commit changes', reason: 'Save work.', state: 'pending', result: null, createdAt: conversation.createdAt, decidedAt: null, finishedAt: null };
+    mock.fetchProposals.mockResolvedValue({ data: [pending], page: { currentPage: 0, size: 100, totalElements: 1, totalPages: 1, hasNextPage: false } });
+    mock.approveProposal.mockResolvedValue({ ...pending, state: 'done', result: { commitsAhead: null, uncommittedCount: 0 }, decidedAt: conversation.createdAt, finishedAt: conversation.createdAt });
+    render(<AssistantChat projectName="Demo" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(mock.showToast).toHaveBeenCalledWith({ type: 'success', message: 'Committed (commits ahead unknown, 0 uncommitted).' }));
   });
   it('sends the selected permission outcome and shows the choice', async () => {
     mock.fetchSituation.mockResolvedValue(situation([])); render(<AssistantChat projectName="Demo"  />);

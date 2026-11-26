@@ -37,7 +37,21 @@ describe('readTodoDocs', () => {
     expect(result.todos).toHaveLength(50);
     expect(result.todos.map(todo => todo.path)).not.toContain('docs/todos/00.md');
     expect(result.truncated).toMatchObject({ todos: true, specifications: false });
-    expect(result.skipped).toEqual([{ path: 'docs/specifications/large.md', size: 512 * 1024 + 1 }]);
+    expect(result.skipped).toEqual([{ path: 'docs/specifications/large.md', size: 512 * 1024 + 1, reason: 'too_large' }]);
+  });
+  it('skips a todo without a title, a folder and a broken link instead of failing the whole read', async () => {
+    const root = await repo();
+    await fs.writeFile(path.join(root, 'docs/todos/notes.md'), 'Just a paragraph.\n');
+    await fs.mkdir(path.join(root, 'docs/todos/folder.md'));
+    await fs.symlink(path.join(root, 'nowhere.md'), path.join(root, 'docs/todos/broken.md'));
+    await fs.writeFile(path.join(root, 'docs/todos/good.md'), '# Good\n');
+    const result = await readTodoDocs({ root, location: 'main:backend', execFile });
+    expect(result.todos.map(todo => todo.path)).toEqual(['docs/todos/good.md']);
+    expect(result.skipped).toEqual([
+      { path: 'docs/todos/notes.md', size: 18, reason: 'no_title' },
+      { path: 'docs/todos/folder.md', size: null, reason: 'not_a_file' },
+      { path: 'docs/todos/broken.md', size: null, reason: 'missing' },
+    ]);
   });
   it('reports a missing location without running Git', async () => {
     const result = await readTodoDocs({ root: '/definitely/missing/assistant', location: 'task:t/w', execFile: () => { throw new Error('Git was called'); } });

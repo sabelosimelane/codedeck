@@ -57,12 +57,22 @@ function launchProgramNotFound(state, launchCommand) {
   const words = launchCommand.trim().split(/\s+/).filter(word => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
   const program = words[0] === 'command' ? words[1] : words[0];
   if (!program) return null;
-  const lines = Array.isArray(state?.lines) ? state.lines : [];
-  const found = lines.some(line => {
-    const text = String(line);
-    return text.includes(`${program}: command not found`) || text.includes(`command not found: ${program}`);
-  });
-  return found ? program : null;
+  // Only output after the latest echo of the launch command counts: a "not found" left on screen by
+  // an earlier attempt says nothing about this one. Whitespace is ignored, since a long command wraps.
+  const flat = text => text.replace(/\s/g, '');
+  const screen = flat((Array.isArray(state?.lines) ? state.lines : []).map(String).join('\n'));
+  const command = flat(launchCommand);
+  const notFound = [flat(`${program}: command not found`), flat(`command not found: ${program}`)];
+  let since = 0;
+  for (let at = screen.indexOf(command); at !== -1; at = screen.indexOf(command, at + 1)) {
+    const inMessage = notFound.some(message => {
+      const offset = message.indexOf(command);
+      return offset !== -1 && screen.startsWith(message, at - offset);
+    });
+    if (!inMessage) since = at + command.length;
+  }
+  const after = screen.slice(since);
+  return notFound.some(message => after.includes(message)) ? program : null;
 }
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
 // Execution reasons that say the agent, or a sub-agent it started, is in the middle of a turn.

@@ -154,3 +154,18 @@ describe('proposal store', () => {
     expect(() => proposals.get(created.id)).toThrow(new RegExp(`${created.id}.*kind`));
   });
 });
+
+describe('proposal store after a restart', () => {
+  it('fails a proposal left approved by a backend that stopped while it ran, saying the outcome is unknown', () => {
+    const { db, proposals, conversation } = setup();
+    const created = proposals.create({ conversationId: conversation.id, project: 'Demo', kind: 'commit', payload: { taskId: TASK_ID, message: 'wip' }, summary: 'Commit 3 files in task', reason: 'Save work.' });
+    const pending = proposals.create({ conversationId: conversation.id, project: 'Demo', kind: 'commit', payload: { taskId: TASK_ID, message: 'later' }, summary: 'Commit later', reason: 'Later.' });
+    proposals.claimApprove(created.id);
+    const restarted = createProposalStore(db);
+    const failed = restarted.get(created.id);
+    expect(failed).toMatchObject({ state: 'failed', result: { status: 500, message: expect.stringContaining('restarted') } });
+    expect(failed.finishedAt).toEqual(expect.any(String));
+    expect(restarted.get(pending.id).state).toBe('pending');
+    expect(restarted.listDecided(conversation.id).map(item => item.id)).toEqual([created.id]);
+  });
+});

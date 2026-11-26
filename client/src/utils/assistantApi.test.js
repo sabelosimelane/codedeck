@@ -13,7 +13,7 @@ describe('assistant socket frames', () => {
     { type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } } },
     { type: 'permission_request', requestId: 90, toolCall: { toolCallId: 't', title: 'Read file' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }] },
     { type: 'turn_end', messageId: null },
-    { type: 'error', message: 'error' },
+    { type: 'error', message: 'error', turnRunning: false },
     { type: 'spawn_error', message: 'missing' },
     { type: 'agent_exit', code: null, signal: 'SIGTERM', stderrTail: '' },
     { type: 'auth', state: 'authenticated', label: 'Claude Ultra' },
@@ -58,6 +58,13 @@ describe('assistant API', () => {
     const worktree = { worktreeId: 'w', repository: 'backend', worktreePath: '/tmp/task', branch: 'feature/task', baseBranch: 'main', uncommittedCount: 1, commitsAhead: 0, commitsBehind: 0, blockers: { commit: [], merge: [], pullRequest: [], close: [] }, strayFiles: [' ', '\\n'] };
     const task = { id: 't', title: 'Build', state: 'active', worktrees: [worktree], runs: [] };
     expect(parseSituation({ ...good, tasks: [task] }).tasks[0].worktrees[0].strayFiles).toEqual([' ', '\\n']);
+  });
+  it('reads why each skipped file was skipped, with a size only for a file that has one', () => {
+    const skipped = [{ path: 'docs/specifications/large.md', location: 'main:backend', size: 600000, reason: 'too_large' }, { path: 'docs/todos/notes.md', location: 'main:backend', size: 18, reason: 'no_title' }, { path: 'docs/todos/folder.md', location: 'main:backend', size: null, reason: 'not_a_file' }, { path: 'docs/todos/broken.md', location: 'main:backend', size: null, reason: 'missing' }];
+    expect(parseSituation({ ...good, skipped }).skipped).toEqual(skipped);
+    expect(() => parseSituation({ ...good, skipped: [{ ...skipped[0], reason: 'odd' }] })).toThrow('skipped[0].reason');
+    expect(() => parseSituation({ ...good, skipped: [{ ...skipped[0], reason: undefined }] })).toThrow('skipped[0].reason');
+    expect(() => parseSituation({ ...good, skipped: [{ ...skipped[0], size: null }] })).toThrow('skipped[0].size');
   });
   it('rejects malformed response sections and optional missing flags', () => {
     for (const section of ['repositories', 'tasks', 'todos', 'specifications', 'skipped', 'flags']) {

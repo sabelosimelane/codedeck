@@ -195,7 +195,7 @@ local project. It accepts no query parameters. The response has `project`, `gene
 `todos`, `specifications`,
 `skipped`, ordered `flags`, `truncated`, and an agent-readable `markdown` rendering. Dirty
 paths are limited to 50 per repository; todo and specification files are limited to the
-last 50 by file name per location. Files over 512 KiB appear in `skipped` with their size.
+last 50 by file name per location. A docs file left out appears in `skipped` as `{path, location, size, reason}`: `too_large` (over 512 KiB) and `no_title` (a todo without a `# ` title) carry the file's size; `not_a_file` (a folder named `*.md`) and `missing` (a broken link) have `size: null`. One such file never fails the situation.
 Every repository has `usable`; one the repository service cannot read as a Git working tree is `{name, own, path, usable: false, reason: {code, message}}` and no Git command runs in it. A readable repository also has `strayFiles` (untracked names that are blank or only whitespace, backslashes and escape letters). Dirty and untracked paths are kept untrimmed, so a file named `" "` is a valid path. A run whose progress file is missing or unreadable has `progress` with null `phaseCount`, `tasksDone` and `tasksTotal`. Missing locations report `missing: true`. Todos are keyed by repository and path. A task copy
 identical in content to its repository's Main copy appears in Main's `alsoIn`; a changed copy is
 listed separately. Run status passes through as `complete`.
@@ -245,7 +245,7 @@ Browser to server frames are JSON objects with only these fields:
 | Type | Fields |
 | --- | --- |
 | `prompt` | `text`: 1–20,000 characters |
-| `cancel` | No other fields; valid only during a running turn |
+| `cancel` | No other fields; valid only during a running turn. Each permission request still open is answered `{outcome:'cancelled'}` to the agent |
 | `permission_response` | `requestId`: pending ACP string or integer ID; `outcome`: `{outcome:'cancelled'}` or `{outcome:'selected', optionId}` where `optionId` belongs to that request |
 
 Server to browser frames are:
@@ -259,7 +259,7 @@ Server to browser frames are:
 | `auth` | `state`: `authenticated` or `unauthenticated`; `label`: active account label or `null` |
 | `permission_request` | `requestId`: ACP string or integer ID; `toolCall`: ACP tool call including `toolCallId` and `title`; `options`: ACP `{optionId,name,kind}` list |
 | `turn_end` | `messageId`: saved agent message ID, or `null` for an empty or failed turn |
-| `error` | `message`: recoverable error text; the socket stays open |
+| `error` | `message`: recoverable error text; `turnRunning`: whether a turn is still running after it (when `true`, the turn's streamed answer is kept and ends with `turn_end`); the socket stays open |
 | `spawn_error` | `message`: ACP process start failure text; the socket closes |
 | `agent_exit` | `code`: integer or `null` after a signal; `signal`: signal name or `null`; `stderrTail`: text; the socket closes |
 
@@ -288,7 +288,7 @@ Phase 4 adds proposals and approval (`assistant_proposals`, `server/assistant/pr
 - `POST /api/assistant/sessions/:token/proposals` — `{kind, payload, summary, reason}` (16 KB JSON limit). Validates all fields per kind (`commit`, `merge`, `pull_request`, `close`, `new_task`, `start_run`), rejecting tasks of other projects, unknown worktrees, `deleteIgnored`, and over-long fields with 400 and all field `errors`. Returns 201 with the pending proposal, 401 for an invalid/ended token, or 409 when the conversation already has 10 pending proposals.
 - `GET /api/assistant/proposals` — Paginated (`{data, page}`, `size` 1–100 default 20, `sort=createdAt,asc|desc` default `desc`). Requires exact `project` filter (400/404/409); optional `conversationId` UUID and `state` filters.
 - `GET /api/assistant/proposals/:id` — Returns one proposal (200), 400 for a malformed UUID, or 404 when unknown.
-- `POST /api/assistant/proposals/:id/approve` — Empty body only (4 KB JSON limit). Atomically transitions `pending → approved`, executes the matching CodeDeck service directly (using the proposal id as `requestId` for `start_run` and never passing `deleteIgnored: true` on `close`), and sets `done` (200) or `failed` (409 with `reasons`/`conflicts` and `proposal`, or 500 on unexpected error). Concurrent approvals execute the service once; the loser gets 409.
+- `POST /api/assistant/proposals/:id/approve` — Empty body only (4 KB JSON limit). Atomically transitions `pending → approved`, executes the matching CodeDeck service directly (using the proposal id as `requestId` for `start_run` and never passing `deleteIgnored: true` on `close`), and sets `done` (200) or `failed` (409 with `reasons`/`conflicts` and `proposal`, or 500 on unexpected error). Concurrent approvals execute the service once; the loser gets 409. A proposal still `approved` when the backend starts was being carried out when it stopped: it becomes `failed` with `{status: 500, message}` saying whether it finished is not known.
 - `POST /api/assistant/proposals/:id/decline` — Empty body only. Transitions `pending → declined` without calling any service (200; 409 if already decided; 404 if unknown).
 - `POST /api/assistant/conversations` expires all pending proposals of the ended conversation and revokes its session tokens.
 - MCP adds `propose_commit`, `propose_merge`, `propose_pull_request`, `propose_close`, `propose_new_task`, and `propose_start_run`. Decisions since the previous prompt are prefixed to the next `session/prompt` as `[CodeDeck] Proposal <id> (<kind>): <state> — <one-line result>`. The WebSocket pushes `{type: 'proposal', proposal}` and refreshed `{type: 'situation', flags}` frames to the panel.

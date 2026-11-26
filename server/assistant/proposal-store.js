@@ -92,6 +92,12 @@ export function createProposalStore(db) {
   const finishStmt = db.prepare("UPDATE assistant_proposals SET state = ?, result = ?, finished_at = ? WHERE id = ? AND state = 'approved'");
   const declineStmt = db.prepare("UPDATE assistant_proposals SET state = 'declined', decided_at = ? WHERE id = ? AND state = 'pending'");
   const expireStmt = db.prepare("UPDATE assistant_proposals SET state = 'expired', decided_at = ? WHERE conversation_id = ? AND state = 'pending'");
+  // The store is created once at startup, when no proposal can still be running: one left approved
+  // was being carried out when the backend stopped, so it is failed with the outcome said to be unknown.
+  db.prepare("UPDATE assistant_proposals SET state = 'failed', result = ?, finished_at = ? WHERE state = 'approved'").run(
+    JSON.stringify({ status: 500, message: 'CodeDeck restarted while this was being carried out, so whether it finished is not known. Check the task before proposing it again.' }),
+    new Date().toISOString(),
+  );
   const decidedStmt = db.prepare("SELECT * FROM assistant_proposals WHERE conversation_id = ? AND state IN ('done','failed','declined','expired') ORDER BY decided_at ASC, id ASC");
 
   const createTx = db.transaction(({ conversationId, project, kind, payload, summary, reason, maxPending = MAX_PENDING_PROPOSALS }) => {

@@ -2071,6 +2071,20 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     expect(finished.error).toBe('The launch command for agent codex exited: the shell could not find codex, so it is not installed on the machine this run works on, or not on its PATH. Install it there or choose another agent, then Resume.');
   });
 
+  it('does not blame a missing CLI that an earlier launch reported, when the latest launch exited for another reason', async () => {
+    const exited = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['me@host demo % codex', 'zsh: command not found: codex', 'me@host demo %'] });
+    const exitedAgain = executionState({ executionReason: 'shell_prompt', foregroundCommand: 'zsh', lines: ['me@host demo % codex', 'zsh: command not found: codex', 'me@host demo % codex', 'error: model not supported', 'me@host demo %'] });
+    const ctx = setupEngine({ readinessQueue: [exited, exitedAgain] });
+    const created = interruptedRun(ctx);
+
+    await ctx.engine.resume(created.id);
+    await advanceReadiness(2);
+
+    const finished = ctx.runStore.get(created.id);
+    expect(finished.status).toBe('error');
+    expect(finished.error).toBe('The launch command for agent codex exited.');
+  });
+
   describe('a terminal that is no longer in the run\'s worktree', () => {
     it('opens a new terminal in the worktree instead of returning to it', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

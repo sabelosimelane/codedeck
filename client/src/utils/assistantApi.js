@@ -4,6 +4,8 @@ const list = (value, field) => { valid(Array.isArray(value), field); return valu
 const text = (value, field) => valid(typeof value === 'string' && value.trim().length > 0, field);
 const pathText = (value, field) => valid(typeof value === 'string' && value.length > 0, field);
 const nullableText = (value, field) => { if (value !== null) text(value, field); };
+// Why a docs file was left out of the situation; only a file that was read has a size.
+const SKIPPED_REASONS = ['too_large', 'no_title', 'not_a_file', 'missing'];
 const number = (value, field) => valid(Number.isSafeInteger(value) && value >= 0, field);
 const nullableNumber = (value, field) => { if (value !== null) number(value, field); };
 const boolean = (value, field) => valid(typeof value === 'boolean', field);
@@ -74,7 +76,7 @@ export function parseSituation(value) {
     if (todo.alsoIn !== undefined) strings(todo.alsoIn, `${key}.alsoIn`);
   });
   list(value.specifications, 'specifications').forEach((spec, index) => { const key = `specifications[${index}]`; object(spec, key); text(spec.path, `${key}.path`); text(spec.location, `${key}.location`); boolean(spec.committed, `${key}.committed`); });
-  list(value.skipped, 'skipped').forEach((item, index) => { const key = `skipped[${index}]`; object(item, key); text(item.path, `${key}.path`); text(item.location, `${key}.location`); number(item.size, `${key}.size`); });
+  list(value.skipped, 'skipped').forEach((item, index) => { const key = `skipped[${index}]`; object(item, key); text(item.path, `${key}.path`); text(item.location, `${key}.location`); valid(SKIPPED_REASONS.includes(item.reason), `${key}.reason`); if (item.size === null) valid(item.reason === 'not_a_file' || item.reason === 'missing', `${key}.size`); else number(item.size, `${key}.size`); });
   list(value.flags, 'flags').forEach((flag, index) => {
     const key = `flags[${index}]`; object(flag, key); text(flag.code, `${key}.code`); text(flag.message, `${key}.message`); object(flag.where, `${key}.where`);
     for (const part of ['taskId', 'worktreeId', 'runId', 'repository', 'path']) if (Object.hasOwn(flag.where, part)) (part === 'path' ? pathText : text)(flag.where[part], `${key}.where.${part}`);
@@ -205,7 +207,8 @@ export function parseAssistantFrame(raw) {
     case 'auth': valid(['authenticated', 'unauthenticated'].includes(frame.state), 'state'); valid(frame.label === null || (typeof frame.label === 'string' && frame.label.trim().length > 0), 'label'); break;
     case 'proposal': parseProposal(frame.proposal); break;
     case 'situation': parseFlags(frame.flags, 'flags'); break;
-    case 'error': case 'spawn_error': text(frame.message, 'message'); break;
+    case 'error': text(frame.message, 'message'); boolean(frame.turnRunning, 'turnRunning'); break;
+    case 'spawn_error': text(frame.message, 'message'); break;
     case 'agent_exit': valid(frame.code === null || Number.isSafeInteger(frame.code), 'code'); valid(frame.signal === null || (typeof frame.signal === 'string' && frame.signal.length > 0), 'signal'); valid(typeof frame.stderrTail === 'string', 'stderrTail'); break;
     default: throw new Error(`Invalid assistant frame type ${frame.type}`);
   }

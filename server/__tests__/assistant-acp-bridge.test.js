@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { createConversationStore } from '../assistant/conversation-store.js';
 import { createProposalStore } from '../assistant/proposal-store.js';
 import { createSessionTokens } from '../assistant/session-tokens.js';
-import { adapterCommand, handleAssistantConnection } from '../assistant/acp-bridge.js';
+import { adapterCommand, describeProposalDecision, handleAssistantConnection } from '../assistant/acp-bridge.js';
 
 const fixture = fileURLToPath(new URL('./fixtures/assistant-fake-acp-agent.js', import.meta.url));
 const dbs = []; const sockets = [];
@@ -62,7 +62,7 @@ describe('ACP bridge with fake stdio agent', () => {
     ws.receive({ type: 'prompt', text: 'auth-error' });
     expect(await waitFor(ws, 'turn_end')).toEqual({ type: 'turn_end', messageId: null });
     expect(ws.sent).toContainEqual({ type: 'auth', state: 'unauthenticated', label: null });
-    expect(ws.sent).toContainEqual({ type: 'error', message: 'Claude Code is not signed in on this machine. Run `claude` in a terminal, sign in, then send again.' });
+    expect(ws.sent).toContainEqual({ type: 'error', message: 'Claude Code is not signed in on this machine. Run `claude` in a terminal, sign in, then send again.', turnRunning: false });
   });
   it('handshakes, stores the owner before prompt, and combines chunks into one turn', async () => {
     const { store, ws, conversation, connect } = setup(); connect();
@@ -327,6 +327,45 @@ describe('ACP bridge with fake stdio agent', () => {
   });
 });
 
+describe('ACP bridge review fixes', () => {
+  const texts = ws => ws.sent.filter(frame => frame.type === 'update' && frame.update.sessionUpdate === 'agent_message_chunk').map(frame => frame.update.content.text);
+  it('accepts an update that arrives in the same chunk as the session/new reply', async () => {
+    const { ws, connect } = setup({ args: [fixture, 'update-with-session'] }); connect();
+    await waitFor(ws, 'ready');
+    expect(ws.sent.filter(frame => frame.type === 'error')).toEqual([]);
+    expect(ws.sent.some(frame => frame.type === 'update' && frame.update.sessionUpdate === 'available_commands_update')).toBe(true);
+  });
+  it('keeps reading the rest of a chunk after one frame fails validation', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'bad-then-end' });
+    await waitFor(ws, 'turn_end');
+    expect(texts(ws)).toContain('after bad');
+  });
+  it('answers a refused permission request with a JSON-RPC error so the turn can end', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'bad-permission' });
+    await waitFor(ws, 'turn_end');
+    expect(texts(ws)).toContain('refused -32602');
+  });
+  it('says on every error frame whether a turn is still running', async () => {
+    const { ws, connect } = setup({ args: [fixture, 'slow-restore'] }); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'cancel' });
+    expect(ws.sent.filter(frame => frame.type === 'error').at(-1)).toMatchObject({ message: 'No turn is running.', turnRunning: false });
+    ws.receive({ type: 'prompt', text: 'permission' }); await waitFor(ws, 'permission_request');
+    ws.receive({ type: 'prompt', text: 'again' });
+    expect(ws.sent.filter(frame => frame.type === 'error').at(-1)).toMatchObject({ message: 'A turn is already running.', turnRunning: true });
+  });
+  it('answers open permission requests as cancelled when the owner cancels the turn', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'permission' }); await waitFor(ws, 'permission_request');
+    ws.receive({ type: 'cancel' });
+    await new Promise(resolve => { const check = () => (texts(ws).includes('cancelled') ? resolve() : setTimeout(check, 10)); check(); });
+    expect(texts(ws)).toContain(JSON.stringify({ outcome: 'cancelled' }));
+    ws.receive({ type: 'permission_response', requestId: 90, outcome: { outcome: 'selected', optionId: 'allow' } });
+    expect(ws.sent.filter(frame => frame.type === 'error').at(-1)).toMatchObject({ message: 'Unknown permission requestId.' });
+  });
+});
+
 describe('ACP bridge process lifecycle', () => {
   const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const exited = child => new Promise(resolve => { if (child.exitCode !== null || child.signalCode !== null) resolve({ code: child.exitCode, signal: child.signalCode }); else child.once('exit', (code, signal) => resolve({ code, signal })); });
@@ -355,4 +394,16 @@ describe('ACP bridge process lifecycle', () => {
     expect(result.signal).toBe('SIGKILL');
     expect(Date.now() - started).toBeGreaterThanOrEqual(2900);
   }, 8000);
+});
+
+describe('describeProposalDecision', () => {
+  const done = (kind, result) => ({ kind, state: 'done', result });
+  it('says a count is unknown instead of reporting it as 0', () => {
+    expect(describeProposalDecision(done('commit', { commitsAhead: null, uncommittedCount: 0 }))).toBe('committed (commits ahead unknown, 0 uncommitted)');
+    expect(describeProposalDecision(done('commit', { commitsAhead: 2, uncommittedCount: 1 }))).toBe('committed (2 ahead, 1 uncommitted)');
+  });
+  it('does not name a branch the merge result did not give', () => {
+    expect(describeProposalDecision(done('merge', {}))).toBe('merged');
+    expect(describeProposalDecision(done('merge', { mergedInto: 'main' }))).toBe('merged into main');
+  });
 });

@@ -37,8 +37,10 @@ function describePayload(proposal) {
 
 function describeDoneResult(proposal) {
   const result = proposal.result ?? {};
-  if (proposal.kind === 'commit') return `Committed (${result.commitsAhead ?? 0} ahead, ${result.uncommittedCount ?? 0} uncommitted).`;
-  if (proposal.kind === 'merge') return `Merged into ${result.mergedInto ?? 'base branch'}.`;
+  // A count the result does not carry is said to be unknown, never filled in as 0.
+  const countOf = (value, label, unknown) => (Number.isSafeInteger(value) ? `${value} ${label}` : unknown);
+  if (proposal.kind === 'commit') return `Committed (${countOf(result.commitsAhead, 'ahead', 'commits ahead unknown')}, ${countOf(result.uncommittedCount, 'uncommitted', 'uncommitted unknown')}).`;
+  if (proposal.kind === 'merge') return typeof result.mergedInto === 'string' && result.mergedInto ? `Merged into ${result.mergedInto}.` : 'Merged.';
   if (proposal.kind === 'pull_request') return result.prUrl ? `Opened ${result.prUrl}.` : 'Pull request opened.';
   if (proposal.kind === 'close') return result.taskFinished ? 'Task closed.' : 'Worktree closed.';
   if (proposal.kind === 'new_task') return result.title ? `Created task “${result.title}”.` : 'Task created.';
@@ -130,11 +132,17 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
           if (frame.type === 'turn_end') {
             const content = streamRef.current;
             if (content && frame.messageId !== null) setMessages(previous => [...previous, { id: frame.messageId, role: 'agent', content }]);
+            // A permission request the turn ended without is no longer answerable.
+            setPermissions(previous => previous.filter(item => item.choice !== null));
             streamRef.current = ''; setStream(''); setStatus('ready'); return;
           }
           if (frame.type === 'spawn_error') { setChatError(`Claude Code: ${frame.message}`); setStatus('error'); return; }
           if (frame.type === 'agent_exit') { setChatError(`Claude Code exited (${frame.code === null ? `signal ${frame.signal}` : `code ${frame.code}`}). ${frame.stderrTail}`); setStatus('ended'); return; }
-          if (frame.type === 'error') { streamRef.current = ''; setStream(''); setChatError(frame.message); setStatus('ready'); }
+          if (frame.type === 'error') {
+            setChatError(frame.message);
+            // An error raised mid-turn leaves the turn and its streamed answer alone; turn_end finishes them.
+            if (!frame.turnRunning) { streamRef.current = ''; setStream(''); setStatus(previous => (previous === 'running' ? 'ready' : previous)); }
+          }
         };
         ws.onclose = () => { if (!controller.signal.aborted) { setStatus(previous => previous === 'error' ? previous : 'ended'); setChatError(previous => previous || 'Assistant connection closed.'); } };
       } catch (failure) { if (!controller.signal.aborted) { setChatError(failure.message); setStatus('error'); } }

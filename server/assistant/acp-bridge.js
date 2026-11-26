@@ -28,7 +28,9 @@ export function adapterCommand() {
   return { command: process.execPath, args: [path.resolve(path.dirname(manifest), bin)] };
 }
 
-function describeProposalDecision(proposal) {
+// A count the result does not carry is said to be unknown, never filled in as 0.
+const countOf = (value, label, unknown) => (Number.isSafeInteger(value) ? `${value} ${label}` : unknown);
+export function describeProposalDecision(proposal) {
   const oneLine = value => String(value ?? '').replace(/\s+/g, ' ').trim();
   if (proposal.state === 'declined') return 'declined by the owner';
   if (proposal.state === 'expired') return 'expired when the conversation ended';
@@ -40,8 +42,8 @@ function describeProposalDecision(proposal) {
     return reasons ? `${msg} (${reasons})` : msg;
   }
   const result = proposal.result ?? {};
-  if (proposal.kind === 'commit') return oneLine(`committed (${result.commitsAhead ?? 0} ahead, ${result.uncommittedCount ?? 0} uncommitted)`);
-  if (proposal.kind === 'merge') return oneLine(`merged into ${result.mergedInto ?? 'base branch'}`);
+  if (proposal.kind === 'commit') return oneLine(`committed (${countOf(result.commitsAhead, 'ahead', 'commits ahead unknown')}, ${countOf(result.uncommittedCount, 'uncommitted', 'uncommitted unknown')})`);
+  if (proposal.kind === 'merge') return oneLine(typeof result.mergedInto === 'string' && result.mergedInto ? `merged into ${result.mergedInto}` : 'merged');
   if (proposal.kind === 'pull_request') return oneLine(`opened ${result.prUrl ?? 'pull request'}`);
   if (proposal.kind === 'close') return oneLine(result.taskFinished ? 'task closed' : 'worktree closed');
   if (proposal.kind === 'new_task') return oneLine(`created task ${result.id ?? ''} ${result.title ?? ''}`);
@@ -52,7 +54,9 @@ function describeProposalDecision(proposal) {
 export function handleAssistantConnection(ws, { project, cwd, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, mcpServerPath = DEFAULT_MCP_SERVER_PATH, command, args, spawnFn = spawn } = {}) {
   if (typeof project !== 'string' || !project || typeof cwd !== 'string' || !path.isAbsolute(cwd) || conversation?.project !== project || conversation?.state !== 'current' || !store) throw new TypeError('Invalid assistant connection');
   if (compose !== undefined && typeof compose !== 'function') throw new TypeError('Invalid assistant compose function');
-  const send = frame => { if (ws.readyState === 1) ws.send(JSON.stringify(frame)); };
+  // An error frame says whether a turn is still running, so the panel keeps a streaming answer
+  // through errors raised in the middle of a turn and re-enables Send only after one that ended it.
+  const send = frame => { if (ws.readyState === 1) ws.send(JSON.stringify(frame.type === 'error' ? { ...frame, turnRunning: activeTurn } : frame)); };
   const adapter = command ? { command, args } : adapterCommand();
   if (typeof adapter.command !== 'string' || !Array.isArray(adapter.args)) throw new TypeError('Invalid ACP command');
   const env = { ...process.env };
@@ -79,7 +83,7 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
     if (child.stdin.destroyed || !child.stdin.writable) { streamError(new Error('ERR_STREAM_DESTROYED')); return; }
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...frame })}\n`);
   };
-  const request = (method, params) => new Promise((resolve, reject) => { const id = nextId++; pending.set(id, { resolve, reject }); write({ id, method, params }); });
+  const request = (method, params) => new Promise((resolve, reject) => { const id = nextId++; pending.set(id, { method, resolve, reject }); write({ id, method, params }); });
   const shutdown = () => {
     if (closed) return;
     closed = true;
@@ -113,6 +117,8 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
       const entry = pending.get(frame.id);
       if (!entry) throw new Error('Unknown ACP response id.');
       pending.delete(frame.id);
+      // Updates may follow the session/new reply in the same chunk, before the awaiting code runs.
+      if (entry.method === 'session/new' && !frame.error && typeof frame.result?.sessionId === 'string' && frame.result.sessionId) sessionId = frame.result.sessionId;
       if (frame.error) entry.reject(new Error(frame.error.message)); else entry.resolve(frame.result);
       return;
     }
@@ -175,8 +181,10 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         handleFrame(frame);
       } catch (error) {
         send(errorFrame(error.message));
-        if (/ended/.test(error.message)) shutdown();
-        return;
+        if (/ended/.test(error.message)) { shutdown(); return; }
+        // A refused request is answered, or the adapter would wait for it forever.
+        if (plain(frame) && idValid(frame.id) && typeof frame.method === 'string') write({ id: frame.id, error: { code: -32602, message: error.message } });
+        continue;
       }
     }
   });
@@ -263,6 +271,9 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
     } else if (frame.type === 'cancel') {
       if (!activeTurn) { send(errorFrame('No turn is running.')); return; }
       write({ method: 'session/cancel', params: { sessionId } });
+      // ACP: a cancelled turn's open permission requests are answered with the cancelled outcome.
+      for (const requestId of permissions.keys()) write({ id: requestId, result: { outcome: { outcome: 'cancelled' } } });
+      permissions.clear();
     } else if (frame.type === 'permission_response') {
       if (!idValid(frame.requestId) || !permissions.has(frame.requestId)) { send({ type: 'error', message: 'Unknown permission requestId.' }); return; }
       if (!fields(frame.outcome, frame.outcome?.outcome === 'selected' ? ['outcome', 'optionId'] : ['outcome']) || !['selected', 'cancelled'].includes(frame.outcome.outcome) || (frame.outcome.outcome === 'selected' && !permissions.get(frame.requestId).has(frame.outcome.optionId))) { send({ type: 'error', message: 'Invalid permission outcome.' }); return; }
