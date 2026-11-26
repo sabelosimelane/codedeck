@@ -50,6 +50,20 @@ function launchNeverArrived(state, before, launchCommand) {
   const flat = text => text.replace(/\s/g, '');
   return !flat(screen).includes(flat(launchCommand));
 }
+// The program a launch command runs ("command opencode mini …" runs opencode), when the shell on
+// screen said it cannot find it: bash prints "opencode: command not found", zsh "command not found: opencode".
+function launchProgramNotFound(state, launchCommand) {
+  if (typeof launchCommand !== 'string') return null;
+  const words = launchCommand.trim().split(/\s+/).filter(word => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+  const program = words[0] === 'command' ? words[1] : words[0];
+  if (!program) return null;
+  const lines = Array.isArray(state?.lines) ? state.lines : [];
+  const found = lines.some(line => {
+    const text = String(line);
+    return text.includes(`${program}: command not found`) || text.includes(`command not found: ${program}`);
+  });
+  return found ? program : null;
+}
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
 // Execution reasons that say the agent, or a sub-agent it started, is in the middle of a turn.
 const AGENT_AT_WORK = new Set(['agent_working', 'agent_delegated']);
@@ -551,7 +565,10 @@ export function createRunEngine({
           failRun(runId, `The launch command for agent ${agentName} never reached its terminal ${sessionId}, also when typed into it directly. Check the terminal, then Resume.`);
           return { ok: false, reason: 'launch_lost' };
         }
-        failRun(runId, `The launch command for agent ${agentName} exited.`);
+        const missing = launchProgramNotFound(lastState, launchCommand);
+        failRun(runId, missing
+          ? `The launch command for agent ${agentName} exited: the shell could not find ${missing}, so it is not installed on the machine this run works on, or not on its PATH. Install it there or choose another agent, then Resume.`
+          : `The launch command for agent ${agentName} exited.`);
         return { ok: false, reason: 'exited' };
       }
       lostReadings = 0;
