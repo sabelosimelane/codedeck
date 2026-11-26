@@ -39,6 +39,12 @@ describe('readTodoDocs', () => {
     expect(result.truncated).toMatchObject({ todos: true, specifications: false });
     expect(result.skipped).toEqual([{ path: 'docs/specifications/large.md', size: 512 * 1024 + 1, reason: 'too_large' }]);
   });
+  it('reads an empty Spec or Status header line as no value instead of failing the whole read', async () => {
+    const root = await repo();
+    await fs.writeFile(path.join(root, 'docs/todos/empty.md'), '# Empty headers\n**Spec**:\n**Status**:   \n');
+    const result = await readTodoDocs({ root, location: 'main:backend', execFile });
+    expect(result.todos).toMatchObject([{ path: 'docs/todos/empty.md', title: 'Empty headers', spec: null, status: null }]);
+  });
   it('skips a todo without a title, a folder and a broken link instead of failing the whole read', async () => {
     const root = await repo();
     await fs.writeFile(path.join(root, 'docs/todos/notes.md'), 'Just a paragraph.\n');

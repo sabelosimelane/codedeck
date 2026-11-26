@@ -59,3 +59,10 @@ describe('situationFlags for repository stray files', () => {
     expect(flags).toEqual([{ code: 'stray_files', message: 'Repository codedeck has an untracked stray file " ".', where: { repository: 'codedeck', path: ' ' } }]);
   });
 });
+
+describe('strayPaths', () => {
+  it('names blank files and files made only of whitespace and backslash escapes, not ordinary short names', async () => {
+    const { strayPaths } = await import('../assistant/situation.js');
+    expect(strayPaths([' ', '\t', '\\n', 'dir/\\n\\t', '\\', ' \\r ', 'n t', '0 0', 'r n', 'notes.md', 'tn'])).toEqual([' ', '\t', '\\n', 'dir/\\n\\t', '\\', ' \\r ']);
+  });
+});

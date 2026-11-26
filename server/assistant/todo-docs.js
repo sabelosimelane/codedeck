@@ -27,7 +27,9 @@ function checkedRepositories(value, identity) {
 
 function headerLine(markdown, field) {
   const line = markdown.split(/\r?\n/).find(item => item.startsWith(`**${field}**:`));
-  return line ? line.slice(field.length + 5).trim().replace(/^`(.*)`$/, '$1') : null;
+  // A header line with nothing after it gives no value, as if the line were not there.
+  const value = line ? line.slice(field.length + 5).trim().replace(/^`(.*)`$/, '$1') : '';
+  return value === '' ? null : value;
 }
 
 export async function readTodoDocs({ root, location, dirtyPaths, execFile = defaultExecFile } = {}) {

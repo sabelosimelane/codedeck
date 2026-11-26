@@ -43,10 +43,11 @@ const locationMissing = async root => {
   }
 };
 
-function strayPaths(paths) {
+export function strayPaths(paths) {
   return paths.filter(file => {
     const name = path.basename(file);
-    return name.trim() === '' || (/^[\s\\nrt0]+$/.test(name) && /[\s\\]/.test(name));
+    // Blank, or only whitespace and backslash escapes (`\n`, `\t`, a lone `\`): never a name like `n t`.
+    return name.trim() === '' || (/^(?:\s|\\[nrt0]?)+$/.test(name) && name.includes('\\'));
   });
 }
 
