@@ -703,7 +703,7 @@ export function createRunEngine({
     let quotaBaseline = null;
     let quotaReadings = 0;
     let lastState = initialState;
-    const watchPickup = (readiness, screen, state) => {
+    const watchPickup = async (readiness, screen, state) => {
       const pass = workflow.snapshot();
       if (pass.iteration !== pickup.pass) pickup = { pass: pass.iteration, idleMs: 0, resent: false, asked: false, screen: null };
       if (pass.iteration !== silentStall.pass) silentStall = { pass: pass.iteration, unchangedMs: 0, warned: false, screen: null };
@@ -738,6 +738,17 @@ export function createRunEngine({
       const pickupMs = promptPickupMs ?? currentTimeouts().lostPromptSeconds * 1000;
       const grace = emptyWelcome || draft ? Math.min(pickupMs, EMPTY_WELCOME_PICKUP_MS) : pickupMs;
       if (pickup.idleMs < grace) return;
+      // A remote terminal whose ssh waits at a Tailscale check never passes input on: retrying or
+      // restarting the agent cannot help, so the run says what is in the way.
+      const sshAuthCheck = (await inspectTerminal(sessionId))?.attachment?.sshAuthCheck ?? null;
+      if (sshAuthCheck !== null) {
+        if (typeof sshAuthCheck !== 'string') throw new Error(`inspectTerminal: attachment.sshAuthCheck must be a link or null for ${sessionId}`);
+        runStore.recordAudit(runId, 'prompt_unclaimed', `Idle prompt unchanged for ${pickup.idleMs} ms. Terminal connection waits for Tailscale SSH authentication.`);
+        failRun(runId, `The prompt for step ${stepName} cannot reach agent ${agentName}: the SSH connection to its terminal ${sessionId} is waiting for Tailscale SSH authentication. Approve it at ${sshAuthCheck}, reload the terminal, then Resume.`);
+        workflow.stop();
+        settle();
+        return;
+      }
       const action = draft ? 'Pressing Enter.' : !pickup.resent ? 'Retrying prompt delivery.' : restartedAttempt ? 'Ending attempt.' : 'Restarting agent.';
       const observation = draft ? 'Unsent draft' : emptyWelcome ? 'Empty Muse welcome' : 'Idle prompt';
       runStore.recordAudit(runId, 'prompt_unclaimed', `${observation} unchanged for ${pickup.idleMs} ms. ${action}`);
@@ -831,7 +842,7 @@ export function createRunEngine({
           }
         }
         const observed = (working || (idleTurnReadings >= 2 && settledIdleReadings >= IDLE_SETTLE_READINGS)) && workflow.observeTurn?.(working ? 'working' : 'idle', screen ?? '');
-        if (!observed) watchPickup(readiness, screen, state);
+        if (!observed) await watchPickup(readiness, screen, state);
         if (over()) return;
         if (!showsDialog) {
           dialogReadings = 0;

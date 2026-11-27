@@ -3755,6 +3755,28 @@ describe('createRunEngine — a prompt the agent never took', () => {
     ]);
   });
 
+  it('fails at once, naming the link, when the terminal connection waits at a Tailscale SSH check', async () => {
+    const restartAgentTerminal = vi.fn(async () => {});
+    const link = 'https://login.tailscale.com/a/0123456789abcd';
+    const inspectTerminal = vi.fn(async () => ({ pane: {}, attachment: { alive: true, sshAuthCheck: link } }));
+    const { ctx, run, loop } = await startPass(museScreens(welcome), { promptPickupMs: 30_000, restartAgentTerminal, inspectTerminal });
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(inspectTerminal).toHaveBeenCalledWith('Demo-1');
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    expect(restartAgentTerminal).not.toHaveBeenCalled();
+    expect(ctx.runStore.get(run.id)).toMatchObject({
+      status: 'error',
+      error: `The prompt for step Develop cannot reach agent codex: the SSH connection to its terminal Demo-1 is waiting for Tailscale SSH authentication. Approve it at ${link}, reload the terminal, then Resume.`,
+    });
+  });
+
+  it('retries as before when the terminal connection shows no SSH check', async () => {
+    const inspectTerminal = vi.fn(async () => ({ pane: {}, attachment: { alive: true, sshAuthCheck: null } }));
+    const { loop } = await startPass(museScreens(welcome), { promptPickupMs: 30_000, inspectTerminal });
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(loop.resubmit).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['a staged draft', welcome.map(line => line === '❯' ? '❯ pending instructions' : line)],
     ['a prior turn', [...welcome.slice(0, 5), '◆ Worked for 23m 34s', ...welcome.slice(5)]],

@@ -142,6 +142,7 @@ import { createMobileRouter } from './routes/mobile.js';
 import { createMobileDiscovery, runNeedsOwner } from './mobile-integration.js';
 import { createMobileNotifications, DESKTOP_PRESENCE_MS, initializeFcmProvider } from './mobile-notifications.js';
 import { prepareMobileDatabase } from './mobile-migration.js';
+import { pendingSshAuthCheck } from './ssh-auth-check.js';
 
 // Node's watch supervisor injects this internal flag into the backend child.
 // Keep it out of every terminal and tool process spawned by CodeDeck.
@@ -1165,6 +1166,7 @@ const pipelineRunEngine = createRunEngine({
       attachment: entry ? {
         alive: entry.alive, wsAttached: entry.wsAttached, clientDetached: entry.clientDetached ?? false,
         backgroundHolds: entry.backgroundHolds ?? 0, controllerId: entry.controllerId ?? null,
+        sshAuthCheck: pendingSshAuthCheck(entry.replayBuffer.map(chunk => chunk.data)),
       } : null,
     };
   },
