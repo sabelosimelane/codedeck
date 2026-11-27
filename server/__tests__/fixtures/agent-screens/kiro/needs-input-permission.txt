@@ -1,0 +1,5 @@
+> Run the tests
+
+● execute_bash  npm test
+
+Allow this action? [y/n/t]:

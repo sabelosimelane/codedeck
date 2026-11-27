@@ -1,0 +1,11 @@
+> Read docs/todos/feature.md and set up the worktree
+
+I read the todo and installed the dependencies. Thinking... was not needed here.
+
+▸ Credits: 0.12 • Time: 3s
+────────────────────────────────────────────────────────────────────────────────────────────
+Default · claude-haiku-5.5 · thinking · medium · ◔ 4%       ~/git/worktrees/demo ·
+(task/demo)
+
+› ask a question or describe a task ↵
+                                                          /sessions to resume · /copy to clipboard

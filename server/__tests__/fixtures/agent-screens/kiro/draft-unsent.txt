@@ -1,0 +1,6 @@
+────────────────────────────────────────────────────────────────────────────────────────────
+Default · claude-haiku-5.5 · thinking · medium · ◔ 2%       ~/git/worktrees/demo ·
+(task/demo)
+
+› Read docs/todos/feature.md and set up the worktree
+                                                          /sessions to resume · /copy to clipboard

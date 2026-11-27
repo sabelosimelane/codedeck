@@ -1,0 +1,17 @@
+
+
+▸ Kiro CLI 3.0 launches at the end of October   ctrl+o to expand
+  If you have auto-updates on, you'll be upgraded to 3.0 automatically.
+  It brings Approve for me, cloud sessions, memory, workflows, local sandbox, an improved trust
+  model, expanded hooks and specs.
+  Note: 3.0 doesn't support the legacy --classic experience and the legacy desktop app.
+
+────────────────────────────────────────────────────────────────────────────────────────────
+ Trust All Tools active, confirmations are off · /quit to exit
+────────────────────────────────────────────────────────────────────────────────────────────
+Default · claude-haiku-5.5 · thinking · medium · ◔ 2%       ~/git/worktrees/mcp-pengine-let-s-resolve-al-the-critical-cv-f5fe0ad4 ·
+(task/let-s-resolve-al-the-critical-cv-f5fe0ad4)
+
+› ask a question or describe a task ↵
+                                                          /sessions to resume · /copy to clipboard
+
