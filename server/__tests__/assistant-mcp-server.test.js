@@ -58,7 +58,7 @@ async function startTestServer() {
     taskStore: { get: id => (id === TASK_A ? { id: TASK_A, project: 'Demo', title: 'Demo task', state: 'active', worktrees: [{ id: WT_A, repository: 'backend', worktreePath: tmpDir }] } : null) },
     landing: { worktrees: async () => [{ worktreeId: WT_A, repository: 'backend', worktreePath: tmpDir, branch: 'feat/demo', commitsAhead: 0, uncommittedCount: 5 }] },
     runStore: {
-      get: id => (id === RUN_A ? { id: RUN_A, project: 'Demo', taskId: TASK_A, status: 'complete', createdAt: '2026-11-26T00:00:00.000Z' } : null),
+      get: id => (id === RUN_A ? { id: RUN_A, project: 'Demo', taskId: TASK_A, status: 'complete', createdAt: '2026-11-26T00:00:00.000Z', updatedAt: '2026-11-26T00:00:00.000Z' } : null),
       list: () => [{ id: RUN_A, project: 'Demo', taskId: TASK_A, status: 'complete', createdAt: '2026-11-26T00:00:00.000Z' }],
     },
     noteStore: {
@@ -272,7 +272,8 @@ describe('assistant MCP tools for driving runs', () => {
       expect(result.isError, `${name}: ${result.content[0].text}`).toBeFalsy();
       const { proposalId, state } = text(result);
       expect(state).toBe('pending');
-      expect(proposalStore.get(proposalId)).toMatchObject({ kind, state: 'pending', payload: args });
+      const recorded = ['answer_run', 'change_team'].includes(kind) ? { ...args, expectedUpdatedAt: '2026-11-26T00:00:00.000Z' } : args;
+      expect(proposalStore.get(proposalId)).toMatchObject({ kind, state: 'pending', payload: recorded });
     }
     const refused = await client.callTool({ name: 'propose_stop_run', arguments: { runId: '99999999-9999-4999-8999-999999999999', summary: 'Stop', reason: 'r' } });
     expect(refused.isError).toBe(true);

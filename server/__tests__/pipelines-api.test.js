@@ -1577,14 +1577,14 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       expect(continued).toMatchObject({ id, status: 'running' });
       expect(ctx.engine.continue).toHaveBeenCalledWith(id, { stepIndex: 1, roundsCompleted: 0 });
       ctx.engine.answer = vi.fn(async () => ctx.runStore.get(id));
-      await ctx.router().runActions.answer(id, '1. (a) Close Batch 1 first');
+      await ctx.router().runActions.answer(id, '1. (a) Close Batch 1 first', ctx.runStore.get(id).updatedAt);
       expect(ctx.engine.answer).toHaveBeenCalledWith(id, '1. (a) Close Batch 1 first');
     });
     it('refuses a bad answer or grant with field errors before the engine sees it', async () => {
       const ctx = await setup();
       const { id } = await seedRun(ctx);
       ctx.engine.answer = vi.fn();
-      await expect(ctx.router().runActions.answer(id, '')).rejects.toMatchObject({ status: 400, errors: [expect.objectContaining({ field: 'answer' })] });
+      await expect(ctx.router().runActions.answer(id, '', ctx.runStore.get(id).updatedAt)).rejects.toMatchObject({ status: 400, errors: [expect.objectContaining({ field: 'answer' })] });
       await expect(ctx.router().runActions.continue(id, { stepIndex: 40, roundsCompleted: 0 })).rejects.toMatchObject({ status: 400, errors: [expect.objectContaining({ field: 'stepIndex' })] });
       expect(ctx.engine.answer).not.toHaveBeenCalled();
     });
@@ -1593,14 +1593,27 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
       const { id, agent } = await seedRun(ctx);
       ctx.runStore.update(id, { status: 'stopped', stopReason: 'user', finishedAt: new Date().toISOString() });
       const team = createTeamStore(ctx.db).create({ name: 'Second team', members: BUILT_IN_ROLES.map(role => ({ role: role.name, agentId: agent.id })) });
-      const changed = await ctx.router().runActions.changeTeam(id, team.id);
+      const stale = ctx.runStore.get(id).updatedAt;
+      await expect(ctx.router().runActions.changeTeam(id, randomUUID(), stale)).rejects.toMatchObject({ status: 400, errors: [expect.objectContaining({ field: 'teamId' })] });
+      const changed = await ctx.router().runActions.changeTeam(id, team.id, stale);
       expect(changed.team).toEqual({ name: 'Second team', changed: true });
-      await expect(ctx.router().runActions.changeTeam(id, randomUUID())).rejects.toMatchObject({ status: 400, errors: [expect.objectContaining({ field: 'teamId' })] });
+      // The card was written for the run as it was: once it changed, the same card is refused.
+      await expect(ctx.router().runActions.changeTeam(id, team.id, stale)).rejects.toMatchObject({ status: 409 });
+    });
+    it('refuses an answer written for an earlier state of the run', async () => {
+      const ctx = await setup();
+      const { id } = await seedRun(ctx);
+      const written = ctx.runStore.get(id).updatedAt;
+      await new Promise(resolve => setTimeout(resolve, 5));
+      ctx.runStore.update(id, { input: 'docs/todos/other.md' });
+      ctx.engine.answer = vi.fn();
+      await expect(ctx.router().runActions.answer(id, '1. Yes', written)).rejects.toMatchObject({ status: 409, message: expect.stringContaining('changed') });
+      expect(ctx.engine.answer).not.toHaveBeenCalled();
     });
     it('answers 404 for a run that does not exist', async () => {
       const ctx = await setup();
       for (const action of ['stop', 'resume']) await expect(ctx.router().runActions[action](randomUUID())).rejects.toMatchObject({ status: 404 });
-      await expect(ctx.router().runActions.changeTeam(randomUUID(), randomUUID())).rejects.toMatchObject({ status: 404 });
+      await expect(ctx.router().runActions.changeTeam(randomUUID(), randomUUID(), new Date().toISOString())).rejects.toMatchObject({ status: 404 });
     });
   });
 

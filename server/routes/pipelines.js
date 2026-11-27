@@ -2315,10 +2315,12 @@ export function createPipelinesRouter(deps) {
   router.runActions = Object.freeze({
     stop: runId => ownerAction(runId, 'stop'),
     resume: runId => ownerAction(runId, 'resume'),
-    answer: async (runId, answer) => {
-      loadRun(runId);
+    // An answer is written for the run as it was; once it changed, the question may be another one.
+    answer: async (runId, answer, expectedUpdatedAt) => {
+      const run = loadRun(runId);
       const errors = validateRunAnswerBody({ answer });
       if (errors.length > 0) throw fieldErrors(errors);
+      if (run.updatedAt !== expectedUpdatedAt) throw new PipelineError('The run changed after this answer was proposed. Ask the assistant again for its current question.', 409);
       return ownerAction(runId, 'answer', answer);
     },
     continue: async (runId, grant) => {
@@ -2327,7 +2329,7 @@ export function createPipelinesRouter(deps) {
       if (errors.length > 0) throw fieldErrors(errors);
       return ownerAction(runId, 'continue', grant);
     },
-    changeTeam: async (runId, teamId) => asRunView(changeRunTeam(runId, { expectedUpdatedAt: loadRun(runId).updatedAt, teamId })),
+    changeTeam: async (runId, teamId, expectedUpdatedAt) => asRunView(changeRunTeam(runId, { expectedUpdatedAt, teamId })),
   });
 
   router.startRun = async (body) => {
