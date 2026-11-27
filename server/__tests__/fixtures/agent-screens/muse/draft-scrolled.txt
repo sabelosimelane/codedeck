@@ -1,0 +1,12 @@
+To continue this session, run muse resume 01a21a27-d463-7300-bf07-2d24c8e071f7
+── Voice input (alt(option)+v to start) ────────────────────────────────────────────────────────────────────────────────
+  item-one | src/demo/one.py | Return each failed field and report it by name.
+  item-two | src/demo/two.py | Keep the response status when a delete commits first.
+  item-three | src/demo/three.py | Build each response from the committed change.
+
+  [Pasted Content 2867 chars]
+  Iteration identifier: e2be7a47-1
+  Copy the iteration identifier verbatim; do not reconstruct or invent it.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-spark-1.3 · medium · ~/work/demo · YOLO

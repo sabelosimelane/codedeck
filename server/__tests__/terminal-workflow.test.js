@@ -769,6 +769,32 @@ describe('terminal workflow — guidance for the pass', () => {
     expect(workflow.snapshot()).toMatchObject({ status: 'running', iteration: 1 });
   });
 
+  it('presses Enter on a prompt left unsent, without pasting it again', () => {
+    const { workflow, write } = setup();
+    workflow.start(request);
+    vi.advanceTimersByTime(100);
+    write.mockClear();
+    workflow.submitDraft();
+    expect(write.mock.calls).toEqual([['\r']]);
+    expect(workflow.snapshot()).toMatchObject({ status: 'running', iteration: 1 });
+  });
+
+  it('says the prompt is untaken only while a pass runs and no work was seen', () => {
+    const { workflow } = setup();
+    expect(workflow.promptUntaken()).toBe(false);
+    workflow.start(request);
+    vi.advanceTimersByTime(100);
+    expect(workflow.promptUntaken()).toBe(true);
+    workflow.observeTurn('working', 'busy');
+    expect(workflow.promptUntaken()).toBe(false);
+  });
+
+  it('refuses to press Enter on a draft when no pass is running', () => {
+    const { workflow, write } = setup();
+    expect(() => workflow.submitDraft()).toThrow('A draft can be submitted only while a pass is running.');
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it('refuses to send the prompt again when no pass is running', () => {
     const { workflow, write } = setup();
     expect(() => workflow.resubmit()).toThrow('The prompt can be sent again only while a pass is running.');

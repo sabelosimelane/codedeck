@@ -18,7 +18,24 @@ export function matches({ foregroundCommand, lines }) {
 }
 
 export function promptVisible(lines) {
-  return Boolean(promptRegion(lines, line => INPUT_PROMPT.test(line)).prompt);
+  return Boolean(promptRegion(lines, line => INPUT_PROMPT.test(line)).prompt) || inputBox(lines) !== null;
+}
+
+// The input box at the bottom: the voice-input rule, its text, a closing rule and the footer.
+// Muse scrolls a draft taller than the box inside it, so the `❯` line can be off screen.
+function inputBox(lines) {
+  const text = screenLines(lines);
+  let end = text.length - 1;
+  while (end >= 0 && !text[end]) end -= 1;
+  if (end < 2 || !STATUS_FOOTER.test(text[end]) || !/^─+$/.test(text[end - 1])) return null;
+  const start = text.findLastIndex((line, index) => index < end - 1 && VOICE_RULE.test(line));
+  return start < 0 ? null : text.slice(start + 1, end - 1);
+}
+
+/** Text typed or pasted into the input box and not yet sent. */
+export function draftPending(lines) {
+  const box = inputBox(lines);
+  return box !== null && box.some(line => line && line !== '❯');
 }
 
 // Match the untouched startup screen in full. An empty input box alone is
@@ -44,8 +61,10 @@ export function read(lines) {
     return { turn: 'needs_input', backgroundShells: 0 };
   }
 
+  // A draft taller than the input box hides `❯`; the status then sits above the voice-input rule.
   const region = promptRegion(lines, line => INPUT_PROMPT.test(line));
-  const turn = region.above.some(line => LIVE_STATUS.test(line)) ? 'working' : 'idle';
+  const above = region.prompt ? region.above : promptRegion(lines, line => VOICE_RULE.test(line)).above;
+  const turn = above.some(line => LIVE_STATUS.test(line)) ? 'working' : 'idle';
   return { turn, backgroundShells: 0 };
 }
 

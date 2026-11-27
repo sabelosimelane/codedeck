@@ -509,6 +509,19 @@ export function createTerminalWorkflow({ write, notify, resetTimeoutMs, handoffI
       }
       return workObserved || askedForInput;
     },
+    /** The pass's prompt was sent and the agent has neither worked on it nor asked for input. */
+    promptUntaken() {
+      return status === 'running' && identifier !== null && !workObserved && !askedForInput;
+    },
+    /** Presses Enter on a prompt left in the agent's input box, as `resubmit` does without pasting. */
+    submitDraft() {
+      if (workObserved || askedForInput) throw new Error('Cannot submit a draft after work was observed.');
+      if (status !== 'running' || identifier === null) {
+        throw new Error('A draft can be submitted only while a pass is running.');
+      }
+      clearTimeout(enterTimer);
+      if (submit('\r')) audit?.('prompt_submitted', 'Controller pressed Enter on an unsent prompt');
+    },
     resubmit() {
       if (workObserved || askedForInput) throw new Error('Cannot resend a prompt after work was observed.');
       if (status !== 'running' || identifier === null) {

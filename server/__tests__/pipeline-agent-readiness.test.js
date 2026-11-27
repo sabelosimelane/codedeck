@@ -249,3 +249,32 @@ describe('classify agent readiness (Spec §8.4)', () => {
     })).toBe('closed');
   });
 });
+
+// A pasted prompt whose Enter Muse took as a newline stays in the input box. Muse scrolls a
+// tall draft inside the box, so its `❯` line goes off screen while the box frame stays.
+describe('muse with an unsent draft taller than its input box', () => {
+  const lines = screen('muse', 'draft-scrolled.txt');
+
+  it('is idle at its prompt, ready, and holding a draft', () => {
+    const execution = classifyTerminalExecution({
+      paneCurrentCommand: 'muse', paneDead: '0', snapshotText: lines.join('\n'), subagentPanes: [], quietSeconds: 0,
+    });
+    expect(execution.executionReason).toBe('agent_prompt_idle');
+    expect(muse.promptVisible(lines)).toBe(true);
+    expect(classify({ executionReason: execution.executionReason, foregroundCommand: 'muse', lines, profile: muse, ...alive })).toBe('ready');
+    expect(muse.draftPending(lines)).toBe(true);
+  });
+
+  it('still reads a working turn when the draft hides its `❯` line', () => {
+    const voice = lines.findIndex(line => line.startsWith('── Voice input'));
+    const working = [...lines.slice(0, voice), '◈ Thinking (5s · esc to interrupt)', ...lines.slice(voice)];
+    expect(muse.read(working).turn).toBe('working');
+    expect(muse.read(lines).turn).toBe('idle');
+  });
+
+  it('holds no draft at an empty prompt or after a finished turn', () => {
+    expect(muse.draftPending(screen('muse', 'idle-fresh.txt'))).toBe(false);
+    expect(muse.draftPending(screen('muse', 'turn-complete.txt'))).toBe(false);
+    expect(muse.draftPending(screen('muse', 'working-thinking.txt'))).toBe(false);
+  });
+});

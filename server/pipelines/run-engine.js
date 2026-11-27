@@ -730,13 +730,24 @@ export function createRunEngine({
       }
       pickup.idleMs += dialogPollMs;
       const emptyWelcome = state.profile?.emptyWelcomePrompt?.(state.lines);
+      // A prompt still sitting in the input box was pasted but its Enter was taken as a newline
+      // (Muse does so right after a long paste): pressing Enter sends it, pasting it again would not.
+      // It is plain on screen, so it gets the short grace too.
+      const draft = !pickup.resent && workflow.promptUntaken?.() === true
+        && Boolean(state.profile?.draftPending?.(state.lines));
       const pickupMs = promptPickupMs ?? currentTimeouts().lostPromptSeconds * 1000;
-      const grace = emptyWelcome ? Math.min(pickupMs, EMPTY_WELCOME_PICKUP_MS) : pickupMs;
+      const grace = emptyWelcome || draft ? Math.min(pickupMs, EMPTY_WELCOME_PICKUP_MS) : pickupMs;
       if (pickup.idleMs < grace) return;
-      const action = !pickup.resent ? 'Retrying prompt delivery.' : restartedAttempt ? 'Ending attempt.' : 'Restarting agent.';
-      const observation = emptyWelcome ? 'Empty Muse welcome' : 'Idle prompt';
+      const action = draft ? 'Pressing Enter.' : !pickup.resent ? 'Retrying prompt delivery.' : restartedAttempt ? 'Ending attempt.' : 'Restarting agent.';
+      const observation = draft ? 'Unsent draft' : emptyWelcome ? 'Empty Muse welcome' : 'Idle prompt';
       runStore.recordAudit(runId, 'prompt_unclaimed', `${observation} unchanged for ${pickup.idleMs} ms. ${action}`);
       pickup.idleMs = 0;
+      if (draft) {
+        pickup.resent = true;
+        console.warn(`[pipeline-run] ${runId}: step ${stepName} left its prompt unsent in ${sessionId}; pressing Enter`);
+        workflow.submitDraft();
+        return;
+      }
       if (!pickup.resent) {
         pickup.resent = true;
         console.warn(`[pipeline-run] ${runId}: step ${stepName} left its prompt untaken in ${sessionId}; sending it again`);

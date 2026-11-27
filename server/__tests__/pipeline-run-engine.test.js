@@ -3660,6 +3660,8 @@ describe('createRunEngine — a prompt the agent never took', () => {
     const snap = () => ({ status: state.status, active: !['complete', 'stopped'].includes(state.status), error: null, requestId: 'r', iteration: state.iteration, limitReached: false });
     const publish = (status) => { state.status = status; state.notify(snap()); };
     const resubmit = vi.fn();
+    const submitDraft = vi.fn();
+    const promptUntaken = vi.fn(() => true);
     const stop = vi.fn(() => publish('stopped'));
     const starts = [];
     const createWorkflow = vi.fn(({ notify }) => {
@@ -3668,6 +3670,8 @@ describe('createRunEngine — a prompt the agent never took', () => {
         start(args) { starts.push(args); state.iteration = 1; queueMicrotask(() => publish('running')); },
         stop,
         resubmit,
+        submitDraft,
+        promptUntaken,
         snapshot: snap,
         signalIdentifier: () => 'abc-1',
         answerText: text => text,
@@ -3675,7 +3679,7 @@ describe('createRunEngine — a prompt the agent never took', () => {
       };
     });
     return {
-      createWorkflow, resubmit, stop, starts,
+      createWorkflow, resubmit, submitDraft, promptUntaken, stop, starts,
       ask: () => publish('needs_input'),
       answered: () => publish('running'),
       nextPass: () => { state.iteration += 1; publish('running'); },
@@ -3760,6 +3764,42 @@ describe('createRunEngine — a prompt the agent never took', () => {
     const {loop} = await startPass(museScreens(lines), {promptPickupMs: 30_000});
     await vi.advanceTimersByTimeAsync(12_000);
     expect(loop.resubmit).not.toHaveBeenCalled();
+  });
+
+  // trade-relay-33: Muse took the Enter after a long paste as a newline, so the whole prompt sat
+  // unsent in its input box, scrolled so that its `❯` line was off screen.
+  it('presses Enter when the prompt sits unsent in a Muse input box taller than the screen', async () => {
+    const rule = '─'.repeat(60);
+    const draft = [
+      '── Voice input (alt(option)+v to start) ──────',
+      '  item-one | src/demo/one.py | Return each failed field.',
+      '  [Pasted Content 2867 chars]',
+      '  Iteration identifier: e2be7a47-1',
+      '',
+      rule,
+      '  muse-spark-1.3 · medium · ~/work/demo · YOLO',
+    ];
+    const {ctx, run, loop} = await startPass(museScreens(draft), {promptPickupMs: 30_000});
+    // An unsent draft is plain on screen, so it gets the short grace, not the lost-prompt window.
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(loop.submitDraft).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(loop.submitDraft).toHaveBeenCalledTimes(1);
+    expect(loop.resubmit).not.toHaveBeenCalled();
+    const events = ctx.runStore.auditPage(run.id, {page:0, size:50, direction:'asc', stepIndex:0}).data;
+    expect(events.filter(e => e.kind === 'prompt_unclaimed').map(e => e.detail)[0])
+      .toBe('Unsent draft unchanged for 4000 ms. Pressing Enter.');
+  });
+
+  it('leaves text in the Muse input box alone once the agent has taken its prompt', async () => {
+    const draft = [
+      '── Voice input (alt(option)+v to start) ──────', '❯ something the owner is typing', '',
+      '─'.repeat(60), '  muse-spark-1.3 · medium · ~/work/demo · YOLO',
+    ];
+    const {loop} = await startPass(museScreens(draft), {promptPickupMs: 30_000});
+    loop.promptUntaken.mockReturnValue(false);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(loop.submitDraft).not.toHaveBeenCalled();
   });
 
   it('sends the prompt again when the agent stays idle at an unchanged prompt after it was sent', async () => {
