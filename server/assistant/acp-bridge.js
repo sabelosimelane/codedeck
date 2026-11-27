@@ -76,7 +76,7 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
   let child;
   try { child = spawnFn(adapter.command, adapter.args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] }); }
   catch (error) { send({ type: 'spawn_error', message: error.message }); ws.close(); return null; }
-  let closed = false; let stderrTail = ''; let buffer = ''; let nextId = 1; let sessionId = null; let turnText = ''; let modeReady = false; let authState = null; let firstPromptBrief = null; let setHeldMode;
+  let closed = false; let stderrTail = ''; let buffer = ''; let nextId = 1; let sessionId = null; let turnText = ''; let modeReady = false; let authState = null; let firstPromptBrief = null; let setHeldMode; let started = false; let modeLost = false;
   let issuedToken = null;
   const reportedDecisions = new Set((proposalStore?.listDecided?.(conversation.id) ?? []).map(item => item.id));
   const pending = new Map(); const permissions = new Map(); const toolCalls = new Map();
@@ -157,8 +157,10 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         if (update.status !== undefined) tool.status = update.status;
         toolCalls.set(update.toolCallId, tool);
         if (tool.status === 'completed' || tool.status === 'failed') saveTool(tool);
-      } else if ((profile.heldMode.via === 'set_mode' && update.sessionUpdate === 'current_mode_update' && update.currentModeId !== profile.heldMode.id) || (profile.heldMode.via === 'config_option' && update.sessionUpdate === 'config_option_update' && update.configOptions?.some(option => option.id === 'mode' && option.currentValue !== profile.heldMode.id))) {
+      } else if ((update.sessionUpdate === 'current_mode_update' && update.currentModeId !== profile.heldMode.id) || (update.sessionUpdate === 'config_option_update' && update.configOptions?.some(option => option?.id === 'mode' && option.currentValue !== profile.heldMode.id))) {
+        // Either report counts for every profile: an agent may say it changed mode in either way.
         modeReady = false;
+        if (!started) { modeLost = true; send({ type: 'update', update }); return; }
         send(errorFrame(`${profile.label} changed mode; restoring ${profile.heldMode.id}.`));
         setHeldMode().then(() => { modeReady = true; }).catch(error => { if (!closed) { send(errorFrame(`Could not restore ${profile.heldMode.id}: ${error.message}`)); shutdown(); } });
       }
@@ -260,11 +262,18 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         if (!acpSchema.zSetSessionModeResponse.safeParse(result).success) throw new Error('Invalid set_mode response');
       };
       await setHeldMode();
+      modeLost = false;
       for (const [id, value] of [[profile.modelOption, selection.model || null], [profile.effortOption, selected.effort]]) {
         if (value === null) continue;
         failurePrefix = `The assistant could not use ${id} "${value}"`;
         await setOption(id, value);
       }
+      // Setting a model or effort can move an agent out of its mode, so the mode is checked again.
+      failurePrefix = `The assistant could not keep ${profile.label} in its ${profile.heldMode.id} mode`;
+      const modeOption = configOptions?.find(option => option?.id === 'mode');
+      if (profile.heldMode.via === 'config_option' && !modeOption) throw new Error(`${profile.label} no longer reports its mode`);
+      if (modeLost || (modeOption && modeOption.currentValue !== profile.heldMode.id)) throw new Error(`${profile.label} left its ${profile.heldMode.id} mode after its model or effort was set`);
+      started = true;
       modeReady = true;
       failurePrefix = `The assistant could not start ${profile.label}`;
       const restarted = store.hasMessages(conversation.id);
