@@ -1,0 +1,11 @@
+ Trust All Tools active, confirmations are off · /quit to exit
+────────────────────────────────────────────────────────────────────────────────────────────
+> Read docs/todos/feature.md and set up the worktree
+
+ᗣ Thinking... (esc to cancel)
+────────────────────────────────────────────────────────────────────────────────────────────
+Default · claude-haiku-5.5 · thinking · medium · ◔ 3%       ~/git/worktrees/demo ·
+(task/demo)
+
+› Kiro is working · 4s · Type to steer · Ctrl+S to queue
+                                                          /sessions to resume · /copy to clipboard
