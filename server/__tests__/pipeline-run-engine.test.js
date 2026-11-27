@@ -3766,7 +3766,7 @@ describe('createRunEngine — a prompt the agent never took', () => {
     expect(loop.resubmit).not.toHaveBeenCalled();
   });
 
-  // trade-relay-33: Muse took the Enter after a long paste as a newline, so the whole prompt sat
+  // Seen live: Muse took the Enter after a long paste as a newline, so the whole prompt sat
   // unsent in its input box, scrolled so that its `❯` line was off screen.
   it('presses Enter when the prompt sits unsent in a Muse input box taller than the screen', async () => {
     const rule = '─'.repeat(60);
