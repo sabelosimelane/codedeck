@@ -8,7 +8,7 @@ import { repairFindings, sourceFingerprint } from '../pipelines/repair-evidence.
 it('requires attributable, current-attempt repair findings and ignores earlier appended notes', () => {
   const note='REPAIR 1 AC1 | old.kt | missing focus\nREPAIR 2 AC2 | detector.kt | chord fails';
   expect(repairFindings(note,2)).toEqual(['AC2 | detector.kt | chord fails']);
-  expect(()=>repairFindings(note,3)).toThrow(/REPAIR 3/);
+  expect(repairFindings(note,3)).toEqual([]);
   expect(()=>repairFindings('REPAIR 2 AC1 | | failed',2)).toThrow(/path/);
 });
 it('fingerprints tracked and new sources on the selected host without run-note churn', async () => {
@@ -55,6 +55,9 @@ it('rejects control characters at the edge of a repair path or reason', () => {
 it('keeps a pipe inside the reason verbatim and measures the reason as written', () => {
   expect(repairFindings('REPAIR 4 P2-1 | a.kt | expected A | got B',4)).toEqual(['P2-1 | a.kt | expected A | got B']);
   expect(()=>repairFindings(`REPAIR 4 P2-1 | a.kt | ${'a'.repeat(499)} | ${'b'.repeat(499)}`,4)).toThrow(/P2-1.*reason.*1001.*1000/);
+});
+it('returns no findings when the round passed and only later phases remain', () => {
+  expect(repairFindings('# Phase 5 passed\nThere are no repair findings for this round.',8)).toEqual([]);
 });
 it('rejects a reason made only of pipes', () => {
   expect(()=>repairFindings('REPAIR 4 P2-1 | a.kt | |',4)).toThrow(/P2-1 requires a failure/);
