@@ -40,6 +40,20 @@ function inputRow(text) {
   return { status, index, input: text[index].replace(PROMPT, '').trim() };
 }
 
+/**
+ * Kiro is live at the bottom of the screen: its input row with only its hint line below, or its
+ * approval question as the last line. Used when tmux names a shell, because Kiro's shell integration
+ * (`zsh (kiro-cli-term)`) hides Kiro from tmux; after Kiro exits, the shell prompt is below this.
+ */
+export function liveAtBottom(lines) {
+  const text = screenLines(lines);
+  const row = inputRow(text);
+  // Kiro draws its hint line under the input row; a shell prompt that looks like the row has none.
+  const below = text.slice(row ? row.index + 1 : 0).filter(Boolean);
+  if (row && below.length > 0 && below.every(line => CHROME.some(pattern => pattern.test(line)))) return true;
+  return /^Allow this action\? \[y\/n\/t\]:/u.test(text.filter(Boolean).at(-1) ?? '');
+}
+
 export function promptVisible(lines) {
   return inputRow(screenLines(lines)) !== null;
 }

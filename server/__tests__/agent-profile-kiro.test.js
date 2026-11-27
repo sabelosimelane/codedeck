@@ -85,6 +85,43 @@ describe('Kiro CLI live profile', () => {
     expect(kiro.draftPending(lines)).toBe(true);
   });
 
+  // Kiro's shell integration wraps the shell in a terminal of its own (`zsh (kiro-cli-term)`), so tmux
+  // names the shell however long Kiro runs inside it. Kiro's input row at the bottom is then the evidence.
+  describe('under the kiro-cli-term wrapper, where tmux names the shell', () => {
+    it.each(['idle-fresh.txt', 'turn-complete.txt', 'working.txt', 'draft-unsent.txt'])('is found from %s', name => {
+      expect(findAgentProfile({ foregroundCommand: 'zsh', lines: screen(name) })?.id).toBe('kiro');
+    });
+
+    it('reads the idle screen as ready', () => {
+      const lines = screen('idle-fresh.txt');
+      const state = classify('zsh', 'idle-fresh.txt');
+      expect(state).toMatchObject({ agentCli: 'kiro', executionStatus: 'idle', executionReason: 'agent_prompt_idle' });
+      expect(classifyReadiness({ ...state, lines, profile: findAgentProfile({ foregroundCommand: 'zsh', lines }), isAlive: true, entryExists: true })).toBe('ready');
+    });
+
+    it('reads a pending approval at the bottom as needing input', () => {
+      expect(classify('zsh', 'needs-input-permission.txt')).toMatchObject({ agentCli: 'kiro', executionReason: 'agent_needs_input' });
+    });
+
+    it('is not found once Kiro exited and the shell prompt is below its screen', () => {
+      const lines = [...screen('idle-fresh.txt'), 'user@host ~/git/worktrees/demo %'];
+      expect(findAgentProfile({ foregroundCommand: 'zsh', lines })).toBeNull();
+      expect(classifyTerminalExecution({ paneCurrentCommand: 'zsh', paneDead: '0', snapshotText: lines.join('\n'), subagentPanes: [], quietSeconds: 0 }))
+        .toMatchObject({ agentCli: null, executionReason: 'shell_prompt' });
+    });
+
+    // A prompt pasted into a shell would run as commands: a `❯` shell prompt under a leftover status row is not Kiro.
+    it('is not found when a shell prompt that looks like Kiro\'s input is below a leftover status row', () => {
+      const lines = ['Default · claude-haiku-5.5 · thinking · medium · ◔ 2%   ~/git/worktrees/demo ·', '(task/demo)', '', '❯'];
+      expect(findAgentProfile({ foregroundCommand: 'zsh', lines })).toBeNull();
+      expect(findAgentProfile({ foregroundCommand: 'zsh', lines: [...lines.slice(0, 3), '› echo hi'] })).toBeNull();
+    });
+
+    it('is not found for any other screen', () => {
+      expect(findAgentProfile({ foregroundCommand: 'zsh', lines: ['› Write tests', 'gpt-6 medium · ~/work'] })).toBeNull();
+    });
+  });
+
   it('has no prompt without its status row', () => {
     expect(kiro.promptVisible(['› ask a question or describe a task ↵'])).toBe(false);
   });
