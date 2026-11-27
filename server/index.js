@@ -99,6 +99,7 @@ import { createConversationStore } from './assistant/conversation-store.js';
 import { createProposalStore } from './assistant/proposal-store.js';
 import { createProposalExecutor } from './assistant/proposal-executor.js';
 import { createSessionTokens } from './assistant/session-tokens.js';
+import { createAssistantSettingsStore } from './assistant/assistant-settings-store.js';
 import { createAssistantSocketHandler, routeUpgrade } from './assistant/ws-upgrade.js';
 import { createRunViewBuilder } from './pipelines/run-view.js';
 import { createProjectRepositories } from './project-repositories.js';
@@ -1363,6 +1364,7 @@ app.use(pipelinesRouter);
 
 const assistantRunView = createRunViewBuilder({ runStore: pipelineRunStore, taskStore, workflowStore: pipelineWorkflowStore, decisionStore: pipelineDecisionStore, noteStore: pipelineNoteStore, progressReader: pipelineProgressReader, resolveHostTools });
 const assistantConversationStore = createConversationStore(db);
+const assistantSettingsStore = createAssistantSettingsStore(db);
 const assistantProposalStore = createProposalStore(db);
 const assistantProposalExecutor = createProposalExecutor({
   proposalStore: assistantProposalStore,
@@ -1384,6 +1386,7 @@ const composeAssistantSituation = name => composeSituation({
 });
 const assistantUrl = `http://127.0.0.1:${process.env.PORT || 43001}`;
 const assistantSocketHandler = createAssistantSocketHandler({
+  settings: () => assistantSettingsStore.settings(),
   findProject: findAssistantProject,
   store: assistantConversationStore,
   proposalStore: assistantProposalStore,
@@ -1393,6 +1396,7 @@ const assistantSocketHandler = createAssistantSocketHandler({
 });
 assistantWss.on('connection', assistantSocketHandler);
 app.use(createAssistantRouter({
+  settingsStore: assistantSettingsStore,
   store: assistantConversationStore,
   proposalStore: assistantProposalStore,
   proposalExecutor: assistantProposalExecutor,

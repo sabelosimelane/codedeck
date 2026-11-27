@@ -59,6 +59,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   const [input, setInput] = useState('');
   const [status, setStatus] = useState('connecting');
   const [auth, setAuth] = useState(null);
+  const [activeConfig, setActiveConfig] = useState(null);
   const wsRef = useRef(null);
   const streamRef = useRef('');
   const onSituationFlagsRef = useRef(onSituationFlags);
@@ -76,7 +77,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
     const controller = new AbortController();
     let ws;
     setMessages([]); setProposals([]); setInFlightProposalId(null); setPermissions([]); setStream(''); streamRef.current = '';
-    setChatError(null); setStatus('connecting'); setAuth(null);
+    setChatError(null); setStatus('connecting'); setAuth(null); setActiveConfig(null);
     (async () => {
       try {
         const conversation = await fetchCurrentConversation(projectName, { signal: controller.signal });
@@ -106,7 +107,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
           let frame;
           try { frame = parseAssistantFrame(event.data); }
           catch (failure) { setChatError(`Invalid assistant socket message: ${failure.message}`); setStatus(previous => previous === 'running' ? 'ready' : previous); return; }
-          if (frame.type === 'ready') { setStatus('ready'); return; }
+          if (frame.type === 'ready') { setActiveConfig({ model: frame.model, effort: frame.effort }); setStatus('ready'); return; }
           if (frame.type === 'auth') { setAuth(frame); return; }
           if (frame.type === 'proposal') { upsertProposal(frame.proposal); return; }
           if (frame.type === 'situation') { onSituationFlagsRef.current?.(frame.flags); return; }
@@ -193,7 +194,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   };
 
   return <section className="assistant-chat" aria-label="Assistant chat">
-      <div className="assistant-chat-heading"><h2>Chat</h2><span>{auth?.state === 'authenticated' ? auth.label ? `Signed in: ${auth.label}` : 'Signed in to Claude Code' : auth?.state === 'unauthenticated' ? 'Not signed in to Claude Code' : 'Only Claude Code is supported'}</span><button type="button" onClick={newConversation}>New conversation</button></div>
+      <div className="assistant-chat-heading"><h2>Chat</h2><span>{auth?.state === 'authenticated' ? auth.label ? `Signed in: ${auth.label}` : 'Signed in to Claude Code' : auth?.state === 'unauthenticated' ? 'Not signed in to Claude Code' : 'Only Claude Code is supported'}{activeConfig && ` · ${activeConfig.model ?? 'unknown model'} · ${activeConfig.effort ?? 'unknown effort'}`}</span><button type="button" onClick={newConversation}>New conversation</button></div>
       <div className="assistant-chat-transcript" aria-live="polite">
         {messages.map(message => message.role === 'tool'
           ? <div className="assistant-chat-tool" key={message.id}>Tool: {message.content}</div>

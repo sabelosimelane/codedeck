@@ -8,6 +8,8 @@ import PipelineSettings from './pipelines/PipelineSettings';
 import AgentSettings from './pipelines/AgentSettings';
 import { useToast } from './ToastContext';
 import { THEME_CHANGE_EVENT, getThemeMode, setThemeMode } from '../theme';
+import { getAssistantSettings, saveAssistantSettings } from '../utils/assistantApi';
+import { AGENT_PRESETS } from '../../../shared/agent-presets.mjs';
 
 // Mirrors the mobile appearance control: explicit pick, applied instantly.
 const APPEARANCE = [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']];
@@ -39,6 +41,8 @@ export default function SettingsPanel({ onClose, onSaved }) {
   const [namingState, setNamingState] = useState({ dirty: false, busy: true, valid: false });
   const [activeTab, setActiveTab] = useState('general');
   const [themeMode, setThemeModeState] = useState(getThemeMode);
+  const [assistantSettings, setAssistantSettings] = useState(null);
+  const [savedAssistantSettings, setSavedAssistantSettings] = useState(null);
 
   // Theme applies instantly to localStorage + <html data-theme>; a cycle from
   // the sidebar footer while settings are open moves the pressed state here.
@@ -55,12 +59,24 @@ export default function SettingsPanel({ onClose, onSaved }) {
   const [hostsDirty, setHostsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
   const [agentsDirty, setAgentsDirty] = useState(false);
-  const anyDirty = dirty || namingState.dirty;
+  const assistantDirty = assistantSettings !== null && savedAssistantSettings !== null && (assistantSettings.model !== savedAssistantSettings.model || assistantSettings.effort !== savedAssistantSettings.effort);
+  const anyDirty = dirty || assistantDirty || namingState.dirty;
   const showFooter = TABS.find(tab => tab.id === activeTab).footer;
   // The footer Save covers a panel that may be on a hidden tab, so its blocking problem is named.
   const namingIncomplete = namingState.dirty && !namingState.busy && !namingState.valid;
   const cannotSave = saving || namingState.busy || (namingState.dirty && !namingState.valid);
   const { showToast } = useToast();
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const value = await getAssistantSettings();
+        if (mounted) { setAssistantSettings(value); setSavedAssistantSettings(value); }
+      } catch (error) { if (mounted) showToast({ type: 'error', message: error.message }); }
+    })();
+    return () => { mounted = false; };
+  }, [showToast]);
 
   useEffect(() => {
     fetch('/api/config')
@@ -143,6 +159,11 @@ export default function SettingsPanel({ onClose, onSaved }) {
         setSaving(false);
         return;
       }
+      if (assistantDirty) {
+        const confirmed = await saveAssistantSettings(assistantSettings);
+        setAssistantSettings(confirmed);
+        setSavedAssistantSettings(confirmed);
+      }
       setSavedPath(defaultPath);
       setSavedEditorCommand(editorCommand);
       setSavedTerminalFinishCooldownSeconds(trimmedCooldown);
@@ -150,8 +171,8 @@ export default function SettingsPanel({ onClose, onSaved }) {
         terminalFinishCooldownSeconds: normalizedCooldown,
       });
       showToast({ type: 'success', message: 'Settings saved' });
-    } catch {
-      showToast({ type: 'error', message: 'Server unreachable' });
+    } catch (error) {
+      showToast({ type: 'error', message: error.message });
     }
     setSaving(false);
   };
@@ -186,6 +207,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
               <Settings size={15} style={{ color: 'var(--accent)' }} />
               <span style={headerTitleStyle}>settings</span>
             </div>
+
             <IconButton onClick={requestClose}  title="Close settings" aria-label="Close settings">
               <X size={14} />
             </IconButton>
@@ -237,6 +259,24 @@ export default function SettingsPanel({ onClose, onSaved }) {
                   ))}
                 </div>
               </div>
+            </div>
+
+            <div style={sectionStyle}>
+              <div style={sectionLabelStyle}><span style={sectionDotStyle} />Project Assistant</div>
+              <div style={rowStyle}>
+                <div style={rowHeaderStyle}><span style={keyStyle}>model</span><span style={descStyle}>Claude Code model for new assistant sessions</span></div>
+                <select className="ui-input" aria-label="Assistant model" value={assistantSettings?.model ?? 'default'} disabled={!assistantSettings} onChange={event => setAssistantSettings(current => ({ ...current, model: event.target.value }))}>
+                  <option value="default">Claude Code default</option><option value="opus">Opus</option><option value="fable">Fable</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
+                </select>
+              </div>
+              <div style={rowStyle}>
+                <div style={rowHeaderStyle}><span style={keyStyle}>effort</span><span style={descStyle}>Reasoning effort for new assistant sessions</span></div>
+                <select className="ui-input" aria-label="Assistant effort" value={assistantSettings?.effort ?? ''} disabled={!assistantSettings} onChange={event => setAssistantSettings(current => ({ ...current, effort: event.target.value || null }))}>
+                  <option value="">Claude Code default</option>
+                  {AGENT_PRESETS.find(preset => preset.id === 'claude').efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
+                </select>
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>Applies the next time the assistant panel connects.</p>
             </div>
 
             {/* Section: Paths */}
@@ -352,6 +392,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
                     setDefaultPath(savedPath);
                     setEditorCommand(savedEditorCommand);
                     setTerminalFinishCooldownSeconds(savedTerminalFinishCooldownSeconds);
+                    setAssistantSettings(savedAssistantSettings);
                   }}
                 disabled={!anyDirty || namingState.busy || saving}
                 title="Revert"

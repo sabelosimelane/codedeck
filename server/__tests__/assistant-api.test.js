@@ -7,9 +7,13 @@ import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { createAssistantRouter } from '../routes/assistant.js';
 import { composeSituation } from '../assistant/situation.js';
+import Database from 'better-sqlite3';
+import { createAssistantSettingsStore } from '../assistant/assistant-settings-store.js';
 
 const roots = [];
+const settingsDbs = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
+afterEach(() => settingsDbs.splice(0).forEach(db => db.close()));
 
 const situation = { project: 'Demo', generatedAt: '2026-11-25T20:00:00.000Z', repositories: [], tasks: [], todos: [], specifications: [], skipped: [], flags: [], truncated: { dirty: false, todos: false, specifications: false }, markdown: '# Demo\nNothing needs your attention.' };
 function setup(compose = vi.fn(async name => ({ ...situation, project: name }))) {
@@ -26,6 +30,31 @@ function expectProblem(response, status) {
   expect(response.body).toHaveProperty('error');
   expect(response.body).toHaveProperty('message');
 }
+
+describe('assistant settings singleton', () => {
+  function app() {
+    const db = new Database(':memory:'); settingsDbs.push(db);
+    const settingsStore = createAssistantSettingsStore(db);
+    const app = express(); app.use(createAssistantRouter({ compose: async () => situation, settingsStore }));
+    return app;
+  }
+  it('gets defaults and saves a valid choice idempotently', async () => {
+    const server = app();
+    expect((await request(server).get('/api/assistant/settings')).body).toEqual({ model: 'default', effort: null });
+    for (let i = 0; i < 2; i++) expect((await request(server).put('/api/assistant/settings').send({ model: 'opus', effort: 'high' })).body).toEqual({ model: 'opus', effort: 'high' });
+    expect((await request(server).get('/api/assistant/settings')).body).toEqual({ model: 'opus', effort: 'high' });
+  });
+  it('returns field errors and a trace for invalid or malformed input', async () => {
+    const server = app();
+    for (const body of [{ model: 'wrong', effort: 'nope' }, { model: null, effort: null }, {}, []]) {
+      const response = await request(server).put('/api/assistant/settings').send(body);
+      expectProblem(response, 400);
+      expect(response.body.errors.length).toBeGreaterThan(0);
+    }
+    const malformed = await request(server).put('/api/assistant/settings').set('Content-Type', 'application/json').send('{');
+    expectProblem(malformed, 400);
+  });
+});
 
 describe('GET project situation', () => {
   it('returns the bounded document with a trace header', async () => {

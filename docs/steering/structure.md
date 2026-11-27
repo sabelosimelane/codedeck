@@ -311,6 +311,8 @@ project's path when asked); another repository's checkout is stored on the row.
 
 ## Project Assistant
 
+`server/assistant/assistant-settings-store.js` owns the SQLite model and effort choice; the settings route edits it and the ACP bridge reads it on each connection.
+
 The panel reads and acts only through the modules below; the assistant never gets a shell or a
 Git command of its own.
 

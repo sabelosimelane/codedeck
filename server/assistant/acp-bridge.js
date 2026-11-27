@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildAssistantBrief } from './brief.js';
+import { validateAssistantSettings } from './assistant-settings-store.js';
 
 const require = createRequire(import.meta.url);
 const acpSchema = await import(new URL('../schema/zod.gen.js', import.meta.resolve('@agentclientprotocol/sdk')).href);
@@ -51,9 +52,10 @@ export function describeProposalDecision(proposal) {
   return 'completed';
 }
 
-export function handleAssistantConnection(ws, { project, cwd, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, mcpServerPath = DEFAULT_MCP_SERVER_PATH, command, args, spawnFn = spawn } = {}) {
+export function handleAssistantConnection(ws, { project, cwd, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings, mcpServerPath = DEFAULT_MCP_SERVER_PATH, command, args, spawnFn = spawn } = {}) {
   if (typeof project !== 'string' || !project || typeof cwd !== 'string' || !path.isAbsolute(cwd) || conversation?.project !== project || conversation?.state !== 'current' || !store) throw new TypeError('Invalid assistant connection');
   if (compose !== undefined && typeof compose !== 'function') throw new TypeError('Invalid assistant compose function');
+  if (typeof settings !== 'function') throw new TypeError('Invalid assistant settings function');
   // An error frame says whether a turn is still running, so the panel keeps a streaming answer
   // through errors raised in the middle of a turn and re-enables Send only after one that ended it.
   const send = frame => { if (ws.readyState === 1) ws.send(JSON.stringify(frame.type === 'error' ? { ...frame, turnRunning: activeTurn } : frame)); };
@@ -193,6 +195,7 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
   (async () => {
     let failurePrefix = 'The assistant could not start Claude Code';
     try {
+      const selected = validateAssistantSettings(settings());
       await request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
       if (closed) return;
       let systemPrompt;
@@ -227,9 +230,31 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
       if (!plain(session.modes) || !Array.isArray(session.modes.availableModes) || !session.modes.availableModes.some(mode => mode?.id === 'default')) throw new Error('The adapter did not offer default mode');
       const modeResult = await request('session/set_mode', { sessionId, modeId: 'default' });
       if (!acpSchema.zSetSessionModeResponse.safeParse(modeResult).success) throw new Error('Invalid set_mode response');
+      let configOptions = session.configOptions;
+      if (configOptions !== undefined && !Array.isArray(configOptions)) throw new Error('Invalid ACP configOptions');
+      const choices = option => option.options.flatMap(item => Array.isArray(item.options) ? item.options : [item]);
+      const active = id => {
+        if (configOptions === undefined) return null;
+        const option = configOptions.find(item => item?.id === id);
+        if (!option) return null;
+        if (option.type !== 'select' || typeof option.currentValue !== 'string' || !Array.isArray(option.options) || !acpSchema.zSessionConfigOption.safeParse(option).success || !option.options.every(item => item?.options === undefined || (typeof item.group === 'string' && typeof item.name === 'string' && Array.isArray(item.options))) || !choices(option).every(item => typeof item?.value === 'string' && typeof item.name === 'string')) throw new Error(`Invalid ACP ${id} config option`);
+        return option;
+      };
+      for (const [id, value] of [['model', selected.model === 'default' ? null : selected.model], ['effort', selected.effort]]) {
+        if (value === null) continue;
+        failurePrefix = `The assistant could not use ${id} "${value}"`;
+        const option = active(id);
+        const offered = option ? choices(option).map(item => item.value) : [];
+        if (!option || !offered.includes(value)) throw new Error(`Claude Code offers ${offered.length ? offered.join(', ') : 'no options'}`);
+        const result = await request('session/set_config_option', { sessionId, configId: id, value });
+        if (!plain(result) || !Array.isArray(result.configOptions) || !acpSchema.zSetSessionConfigOptionResponse.safeParse(result).success) throw new Error('Invalid set_config_option response');
+        configOptions = result.configOptions;
+        if (active(id)?.currentValue !== value) throw new Error(`Claude Code did not confirm ${id} "${value}"`);
+      }
       modeReady = true;
+      failurePrefix = 'The assistant could not start Claude Code';
       const restarted = store.hasMessages(conversation.id);
-      send({ type: 'ready', conversationId: conversation.id, restarted });
+      send({ type: 'ready', conversationId: conversation.id, restarted, model: active('model')?.currentValue ?? null, effort: active('effort')?.currentValue ?? null });
       if (restarted) {
         const notice = store.append(conversation.id, { role: 'notice', content: briefed ? RESTARTED_BRIEF_NOTICE : NOTICE });
         send({ type: 'message', message: notice });

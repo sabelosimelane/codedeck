@@ -1,3 +1,6 @@
+import { AGENT_PRESETS } from '../../../shared/agent-presets.mjs';
+
+const CLAUDE_EFFORTS = AGENT_PRESETS.find(preset => preset.id === 'claude').efforts;
 const valid = (condition, field) => { if (!condition) throw new Error(`Invalid situation field ${field}`); };
 const object = (value, field) => { valid(value !== null && typeof value === 'object' && !Array.isArray(value), field); return value; };
 const list = (value, field) => { valid(Array.isArray(value), field); return value; };
@@ -9,6 +12,19 @@ const SKIPPED_REASONS = ['too_large', 'no_title', 'not_a_file', 'missing'];
 const number = (value, field) => valid(Number.isSafeInteger(value) && value >= 0, field);
 const nullableNumber = (value, field) => { if (value !== null) number(value, field); };
 const boolean = (value, field) => valid(typeof value === 'boolean', field);
+export function parseAssistantSettings(value) {
+  object(value, 'settings');
+  valid(['default', 'opus', 'fable', 'sonnet', 'haiku'].includes(value.model), 'model');
+  valid(value.effort === null || CLAUDE_EFFORTS.includes(value.effort), 'effort');
+  return { model: value.model, effort: value.effort };
+}
+export async function getAssistantSettings({ signal } = {}) {
+  return parseAssistantSettings(await assistantRequest('/api/assistant/settings', { signal }, 'assistant settings'));
+}
+export async function saveAssistantSettings(value) {
+  const settings = parseAssistantSettings(value);
+  return parseAssistantSettings(await assistantRequest('/api/assistant/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) }, 'assistant settings'));
+}
 const strings = (value, field) => list(value, field).forEach((entry, index) => pathText(entry, `${field}[${index}]`));
 
 export function parseSituation(value) {
@@ -189,7 +205,7 @@ export function parseAssistantFrame(raw) {
   const integer = (value, field) => valid(Number.isSafeInteger(value) && value > 0, field);
   const requestId = (value, field) => valid((Number.isSafeInteger(value) && value >= 0) || (typeof value === 'string' && value.length > 0), field);
   switch (frame.type) {
-    case 'ready': valid(uuid(frame.conversationId), 'conversationId'); boolean(frame.restarted, 'restarted'); break;
+    case 'ready': valid(uuid(frame.conversationId), 'conversationId'); boolean(frame.restarted, 'restarted'); valid(frame.model === null || (typeof frame.model === 'string' && frame.model.length > 0), 'model'); valid(frame.effort === null || (typeof frame.effort === 'string' && frame.effort.length > 0), 'effort'); break;
     case 'notice': text(frame.message, 'message'); integer(frame.messageId, 'messageId'); break;
     case 'message': parseMessage(frame.message); break;
     case 'update': {

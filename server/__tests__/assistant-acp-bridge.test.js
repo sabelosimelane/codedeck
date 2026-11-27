@@ -20,9 +20,46 @@ function waitFor(ws, type) { const existing = ws.sent.find(frame => frame.type =
 function setup(options = {}) {
   const db = new Database(':memory:'); dbs.push(db); const store = createConversationStore(db);
   const ws = new Socket(); sockets.push(ws); const conversation = store.current('Demo');
-  return { db, store, ws, conversation, connect: () => handleAssistantConnection(ws, { project: 'Demo', cwd: process.cwd(), conversation, store, command: process.execPath, args: [fixture], ...options }) };
+  return { db, store, ws, conversation, connect: () => handleAssistantConnection(ws, { project: 'Demo', cwd: process.cwd(), conversation, store, settings: () => ({ model: 'default', effort: null }), command: process.execPath, args: [fixture], ...options }) };
 }
 describe('ACP bridge with fake stdio agent', () => {
+  it('does not set config for defaults and reports the active defaults', async () => {
+    const { ws, connect } = setup({ settings: () => ({ model: 'default', effort: null }) }); connect();
+    expect(await waitFor(ws, 'ready')).toMatchObject({ model: 'default', effort: 'default' });
+    ws.receive({ type: 'prompt', text: 'inspect-config' });
+    await waitFor(ws, 'turn_end');
+    expect(ws.sent.find(frame => frame.type === 'update' && frame.update.content?.type === 'text').update.content.text).toContain('"configSets":[]');
+  });
+  it('sets model before effort and reports confirmed active values', async () => {
+    const { ws, connect } = setup({ settings: () => ({ model: 'opus', effort: 'high' }) }); connect();
+    expect(await waitFor(ws, 'ready')).toMatchObject({ model: 'opus', effort: 'high' });
+    ws.receive({ type: 'prompt', text: 'inspect-config' }); await waitFor(ws, 'turn_end');
+    expect(ws.sent.find(frame => frame.type === 'update' && frame.update.content?.type === 'text').update.content.text).toContain('"configSets":[["model","opus"],["effort","high"]]');
+  });
+  it('accepts grouped options and rechecks effort after changing model', async () => {
+    const grouped = setup({ args: [fixture, 'grouped-options'], settings: () => ({ model: 'opus', effort: 'high' }) }); grouped.connect();
+    expect(await waitFor(grouped.ws, 'ready')).toMatchObject({ model: 'opus', effort: 'high' });
+    const unavailable = setup({ args: [fixture, 'effort-missing-after-model'], settings: () => ({ model: 'opus', effort: 'high' }) }); unavailable.connect();
+    expect(await waitFor(unavailable.ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('effort "high"') });
+    expect(unavailable.ws.readyState).toBe(3);
+  });
+  it('refuses prompts until the selected config is confirmed', async () => {
+    const { ws, connect } = setup({ args: [fixture, 'slow-config'], settings: () => ({ model: 'opus', effort: null }) }); connect();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    ws.receive({ type: 'prompt', text: 'empty' });
+    expect(await waitFor(ws, 'error')).toMatchObject({ message: expect.stringContaining('not ready') });
+    await waitFor(ws, 'ready');
+  });
+  it.each([['missing-model', 'opus'], ['missing-opus', 'opus']])('fails closed when model is unavailable: %s', async (scenario, model) => {
+    const { ws, connect } = setup({ args: [fixture, scenario], settings: () => ({ model, effort: null }) }); connect();
+    expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining(`model "${model}"`) });
+    expect(ws.readyState).toBe(3);
+  });
+  it('fails closed for malformed config reply', async () => {
+    const { ws, connect } = setup({ args: [fixture, 'bad-config-reply'], settings: () => ({ model: 'opus', effort: null }) }); connect();
+    expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('model') });
+    expect(ws.readyState).toBe(3);
+  });
   it('switches an auto session to default before ready and before prompts', async () => {
     const { ws, connect } = setup(); connect();
     await waitFor(ws, 'ready');
@@ -287,6 +324,7 @@ describe('ACP bridge with fake stdio agent', () => {
       conversation,
       store,
       proposalStore,
+      settings: () => ({ model: 'default', effort: null }),
       command: process.execPath,
       args: [fixture],
     });
