@@ -110,6 +110,13 @@ describe('Kiro CLI live profile', () => {
         .toMatchObject({ agentCli: null, executionReason: 'shell_prompt' });
     });
 
+    // A prompt pasted into a shell would run as commands: a `❯` shell prompt under a leftover status row is not Kiro.
+    it('is not found when a shell prompt that looks like Kiro\'s input is below a leftover status row', () => {
+      const lines = ['Default · claude-haiku-5.5 · thinking · medium · ◔ 2%   ~/git/worktrees/demo ·', '(task/demo)', '', '❯'];
+      expect(findAgentProfile({ foregroundCommand: 'zsh', lines })).toBeNull();
+      expect(findAgentProfile({ foregroundCommand: 'zsh', lines: [...lines.slice(0, 3), '› echo hi'] })).toBeNull();
+    });
+
     it('is not found for any other screen', () => {
       expect(findAgentProfile({ foregroundCommand: 'zsh', lines: ['› Write tests', 'gpt-6 medium · ~/work'] })).toBeNull();
     });

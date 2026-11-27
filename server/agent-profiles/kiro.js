@@ -48,7 +48,9 @@ function inputRow(text) {
 export function liveAtBottom(lines) {
   const text = screenLines(lines);
   const row = inputRow(text);
-  if (row && text.slice(row.index + 1).every(line => !line || CHROME.some(pattern => pattern.test(line)))) return true;
+  // Kiro draws its hint line under the input row; a shell prompt that looks like the row has none.
+  const below = text.slice(row ? row.index + 1 : 0).filter(Boolean);
+  if (row && below.length > 0 && below.every(line => CHROME.some(pattern => pattern.test(line)))) return true;
   return /^Allow this action\? \[y\/n\/t\]:/u.test(text.filter(Boolean).at(-1) ?? '');
 }
 
