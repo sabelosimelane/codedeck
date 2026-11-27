@@ -65,6 +65,16 @@ export const AGENT_PRESETS = Object.freeze([
     modelExample: 'openrouter/deepseek/deepseek-v4.1-flash',
     defaultResetCommand: '/new',
   }),
+  Object.freeze({
+    id: 'kiro',
+    label: 'Kiro CLI',
+    executable: 'kiro-cli chat',
+    // Kiro sets thinking in its own interface; its command line takes no effort.
+    efforts: Object.freeze([]),
+    effortArgs: null,
+    skipPermissionsFlag: '--trust-all-tools',
+    modelExample: 'claude-opus-5.5',
+  }),
 ]);
 
 function requireType(field, value, type) {
