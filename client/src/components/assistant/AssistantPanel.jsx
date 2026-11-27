@@ -14,6 +14,7 @@ export default function AssistantPanel({ projectName, onClose }) {
   const [refresh, setRefresh] = useState(0);
   const [situation, setSituation] = useState(null);
   const [error, setError] = useState(null);
+  const [hidden, setHidden] = useState(false);
   // Another project's flags are cleared at once; the same project's stay on screen while a refresh loads.
   useEffect(() => { setSituation(null); setError(null); }, [projectName]);
   useEffect(() => {
@@ -28,18 +29,23 @@ export default function AssistantPanel({ projectName, onClose }) {
     return () => clearInterval(interval);
   }, []);
   const unusable = situation?.repositories?.filter(repo => repo.usable === false) ?? [];
+  const count = unusable.length + (situation?.flags.length ?? 0);
   return <aside className="assistant-panel" aria-label="Project assistant">
     <div className="assistant-panel-heading">
-      <h2>Where things stand</h2>
+      <h2 id="assistant-situation-heading">Where things stand</h2>
       <div className="assistant-panel-actions">
+        <button type="button" aria-expanded={!hidden} onClick={() => setHidden(value => !value)}>{hidden ? 'Show' : 'Hide'}{count > 0 ? ` (${count})` : ''}</button>
         <button type="button" onClick={() => setRefresh(value => value + 1)}>Refresh</button>
         <button type="button" aria-label="Close assistant" onClick={onClose}>×</button>
       </div>
     </div>
-    {error && <p role="alert" className="assistant-panel-error">{error}</p>}
-    {!error && unusable.length > 0 && <ul className="assistant-panel-flags">{unusable.map(repo => <li key={repo.path}><strong>{repo.name}</strong>: {repo.reason.message}</li>)}</ul>}
-    {!error && situation?.flags.length === 0 && unusable.length === 0 && <p>Nothing needs your attention</p>}
-    {!error && situation?.flags.length > 0 && <ul className="assistant-panel-flags">{situation.flags.map((flag, index) => <li key={`${flag.code}-${index}`}><FlagMessage flag={flag} /></li>)}</ul>}
+    {/* Its own scroll region, capped in height, so a long list never squeezes the chat. */}
+    {!hidden && <section className="assistant-panel-situation" aria-labelledby="assistant-situation-heading">
+      {error && <p role="alert" className="assistant-panel-error">{error}</p>}
+      {!error && unusable.length > 0 && <ul className="assistant-panel-flags">{unusable.map(repo => <li key={repo.path}><strong>{repo.name}</strong>: {repo.reason.message}</li>)}</ul>}
+      {!error && situation?.flags.length === 0 && unusable.length === 0 && <p>Nothing needs your attention</p>}
+      {!error && situation?.flags.length > 0 && <ul className="assistant-panel-flags">{situation.flags.map((flag, index) => <li key={`${flag.code}-${index}`}><FlagMessage flag={flag} /></li>)}</ul>}
+    </section>}
     <AssistantChat
       projectName={projectName}
       onDecision={() => setRefresh(value => value + 1)}
