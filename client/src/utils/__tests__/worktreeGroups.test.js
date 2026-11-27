@@ -22,18 +22,18 @@ describe('describeWorktreeGroup', () => {
 
 describe('buildWorktreeGroups', () => {
   it('places a legacy run step with its open run, while a recorded path wins', () => {
-    const active = { ...run('r', '/repo/feature', 'feature', '2026-01-02'), steps: [{ name: 'Build', status: 'running', sessionId: 'Demo-1', note: null }] };
+    const active = { ...run('r', '/repo/feature', 'feature', '2026-01-02'), steps: [{ name: 'Build', status: 'running', sessionId: 'Demo-1', priorSessionIds: [], note: null }] };
     const args = { project, sessions: [session('Demo-1', null, null)], runs: [active] };
     expect(resolveSessionWorktrees(args).get('Demo-1')).toBe('/repo/feature');
     expect(buildWorktreeGroups(args)[1].sessionIds).toEqual(['Demo-1']);
     expect(resolveSessionWorktrees({ ...args, sessions: [session('Demo-1', '/repo/recorded', null)] }).get('Demo-1')).toBe('/repo/recorded');
   });
   it('uses main for a run in the project checkout and for a session without a run', () => {
-    const mainRun = { ...run('r', project.path, 'main', '2026-01-02'), steps: [{ name: 'Build', status: 'running', sessionId: 'Demo-1', note: null }] };
+    const mainRun = { ...run('r', project.path, 'main', '2026-01-02'), steps: [{ name: 'Build', status: 'running', sessionId: 'Demo-1', priorSessionIds: [], note: null }] };
     expect([...resolveSessionWorktrees({ project, sessions: [session('Demo-1', null, null), session('Demo-2', null, null)], runs: [mainRun] })]).toEqual([['Demo-1', 'main'], ['Demo-2', 'main']]);
   });
   it('uses the newest open run and ignores a run for another project', () => {
-    const step = { name: 'Build', status: 'running', sessionId: 'Demo-1', note: null };
+    const step = { name: 'Build', status: 'running', sessionId: 'Demo-1', priorSessionIds: [], note: null };
     const old = { ...run('old', '/repo/old', 'old', '2026-01-01'), steps: [step] };
     const fresh = { ...run('new', '/repo/new', 'new', '2026-01-03'), steps: [step] };
     const foreign = { ...run('foreign', '/repo/foreign', 'foreign', '2026-01-04'), project: 'Other', steps: [step] };
@@ -43,6 +43,12 @@ describe('buildWorktreeGroups', () => {
     expect(() => resolveSessionWorktrees({ project, sessions: null, runs: [] })).toThrow('sessions');
     expect(() => resolveSessionWorktrees({ project, sessions: [session('Demo-1', undefined, null)], runs: [] })).toThrow('worktreePath');
     expect(() => resolveSessionWorktrees({ project, sessions: [], runs: [{ ...run('r', '/repo/new', 'new', '2026-01-01'), steps: [{ name: 'Build', status: 'running', sessionId: undefined, note: null }] }] })).toThrow('sessionId');
+  });
+  it.each([[undefined], [null], [['']]])('rejects invalid prior session IDs %j', priorSessionIds => {
+    const active = { ...run('r', '/repo/feature', 'feature', '2026-01-02'), steps: [
+      { name: 'Build', status: 'running', sessionId: null, priorSessionIds, note: null },
+    ] };
+    expect(() => resolveSessionWorktrees({ project, sessions: [], runs: [active] })).toThrow('step.priorSessionIds');
   });
   it('does not read storage for a project with only the main group', () => {
     const read = vi.fn();
@@ -163,7 +169,7 @@ describe('a project and a task with several repositories', () => {
   });
 
   it('shows a run on its task whichever of the task\'s worktrees it works in', () => {
-    const active = { ...run('r', `${FOLDER}/backend`, 'task/replies-7a000000', '2026-01-02'), steps: [{ name: 'Build', status: 'running', sessionId: 'Demo-3', note: null }] };
+    const active = { ...run('r', `${FOLDER}/backend`, 'task/replies-7a000000', '2026-01-02'), steps: [{ name: 'Build', status: 'running', sessionId: 'Demo-3', priorSessionIds: [], note: null }] };
     const groups = buildWorktreeGroups({ project: group, sessions: [session('Demo-3', null, null)], runs: [active], tasks: [task] });
     expect(groups.map(entry => entry.key)).toEqual(['main', KEY]);
     expect(groups[1]).toMatchObject({ run: { id: 'r' }, sessionIds: ['Demo-3'] });

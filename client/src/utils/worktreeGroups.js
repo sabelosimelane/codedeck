@@ -209,9 +209,14 @@ export function resolveSessionWorktrees({ project, sessions, runs, tasks = [] })
       nonempty(step.name, 'step.name');
       if (step.sessionId !== null) nonempty(step.sessionId, 'step.sessionId');
       if (step.note !== null && (typeof step.note !== 'object' || Array.isArray(step.note))) throw new Error('worktree groups: step.note must be an object or null');
-      if (run.project !== project.name || ['complete', 'stopped', 'error'].includes(run.status) || !step.sessionId) continue;
-      const previous = fallbackRuns.get(step.sessionId);
-      if (!previous || run.createdAt > previous.createdAt || (run.createdAt === previous.createdAt && run.id > previous.id)) fallbackRuns.set(step.sessionId, run);
+      if (!Array.isArray(step.priorSessionIds)) throw new Error(`worktree groups: step.priorSessionIds must be an array for run ${run.id}`);
+      for (const sessionId of step.priorSessionIds) nonempty(sessionId, `step.priorSessionIds entry for run ${run.id}`);
+      if (run.project !== project.name || ['complete', 'stopped', 'error'].includes(run.status)) continue;
+      for (const sessionId of [step.sessionId, ...step.priorSessionIds]) {
+        if (sessionId === null) continue;
+        const previous = fallbackRuns.get(sessionId);
+        if (!previous || run.createdAt > previous.createdAt || (run.createdAt === previous.createdAt && run.id > previous.id)) fallbackRuns.set(sessionId, run);
+      }
     }
   }
   for (const session of sessions) {
