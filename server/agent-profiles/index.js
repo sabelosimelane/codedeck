@@ -12,7 +12,9 @@ const profiles = [claude, muse, kiro, cursor, agy, codex, opencode];
 const SHELLS = new Set(['bash', 'csh', 'dash', 'fish', 'ksh', 'sh', 'tcsh', 'zsh']);
 
 export function findAgentProfile({ foregroundCommand, lines }) {
-  if (SHELLS.has(foregroundCommand)) return null;
+  // Kiro's shell integration runs the shell inside a terminal of its own, so tmux names the shell
+  // even while Kiro runs; Kiro is then known only by its live input at the bottom of the screen.
+  if (SHELLS.has(foregroundCommand)) return kiro.liveAtBottom(lines) ? kiro : null;
   // The foreground command names the CLI reliably; screen text is only a fallback, because one CLI's
   // transcript can contain another's markers (OpenCode echoes prompts as `›` lines, as Codex draws its input).
   return profiles.find(profile => profile.matches({ foregroundCommand, lines: [] }))
