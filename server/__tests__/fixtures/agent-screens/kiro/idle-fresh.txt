@@ -9,8 +9,8 @@
 ────────────────────────────────────────────────────────────────────────────────────────────
  Trust All Tools active, confirmations are off · /quit to exit
 ────────────────────────────────────────────────────────────────────────────────────────────
-Default · claude-haiku-5.5 · thinking · medium · ◔ 2%       ~/git/worktrees/mcp-pengine-let-s-resolve-al-the-critical-cv-f5fe0ad4 ·
-(task/let-s-resolve-al-the-critical-cv-f5fe0ad4)
+Default · claude-haiku-5.5 · thinking · medium · ◔ 2%       ~/git/worktrees/demo ·
+(task/demo)
 
 › ask a question or describe a task ↵
                                                           /sessions to resume · /copy to clipboard
