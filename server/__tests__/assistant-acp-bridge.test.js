@@ -63,6 +63,19 @@ describe('ACP bridge with a provider whose mode is a config option (OpenCode)', 
     expect(await inspect(ws)).toContain('"configSets":[["mode","plan"],["mode","plan"]]');
   });
 });
+describe('ACP bridge keeps the held mode however it is changed', () => {
+  it('fails closed when setting the model moves the agent out of its held mode', async () => {
+    const { ws, connect } = setup({ provider: 'opencode', model: 'sonnet', args: [fixture, 'opencode-model-resets-mode'] }); connect();
+    expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('left its plan mode') });
+    expect(ws.sent.some(frame => frame.type === 'ready')).toBe(false);
+  });
+  it('restores the held mode when a set_mode agent reports a mode change as a config option', async () => {
+    const { ws, connect } = setup(); connect();
+    await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'mode-flip-config-option' }); await waitFor(ws, 'turn_end');
+    expect(ws.sent).toContainEqual(expect.objectContaining({ type: 'error', message: 'Claude Code changed mode; restoring default.' }));
+  });
+});
 describe('ACP bridge without a usable agent', () => {
   it('refuses to start when no agent is chosen', async () => {
     const { ws, connect } = setup({ settings: () => ({ agentId: '', effort: null }) }); connect();
