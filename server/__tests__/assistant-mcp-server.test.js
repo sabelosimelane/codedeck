@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import express from 'express';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { CODEDECK_ASSISTANT_TOOLS } from '../assistant/codedeck-tools.js';
 import { createConversationStore } from '../assistant/conversation-store.js';
 import { createProposalStore } from '../assistant/proposal-store.js';
 import { createSessionTokens } from '../assistant/session-tokens.js';
@@ -110,6 +111,9 @@ describe('assistant stdio MCP server', () => {
       'read_run_notes',
       'read_todo',
     ]);
+
+    // The bridge allows exactly these without asking: a new tool must be added there on purpose.
+    expect(listed.tools.map(t => t.name).sort()).toEqual([...CODEDECK_ASSISTANT_TOOLS].sort());
 
     const sit = await client.callTool({ name: 'get_situation', arguments: {} });
     expect(sit.isError).toBeFalsy();

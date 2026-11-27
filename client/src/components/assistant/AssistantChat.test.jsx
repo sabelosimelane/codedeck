@@ -289,3 +289,66 @@ describe('AssistantChat proposal cards', () => {
     confirmSpy.mockRestore();
   });
 });
+
+describe('AssistantChat tool calls', () => {
+  const stored = (id, role, content) => ({ id, conversationId: conversation.id, role, content, toolName: role === 'tool' ? content : null, proposalId: null, createdAt: conversation.createdAt });
+  it('folds each run of tool calls into one collapsed line between the replies', async () => {
+    mock.fetchMessages.mockResolvedValue({ data: [
+      stored(1, 'owner', 'Help me finish batch 1'),
+      stored(2, 'tool', 'mcp__codedeck__read_todo'),
+      stored(3, 'tool', 'cd /Users/me/trade-proxy && git status --short && git branch -a --list'),
+      stored(4, 'tool', 'mcp__codedeck__list_runs'),
+      stored(5, 'agent', 'Batch 1 is half built.'),
+      stored(6, 'tool', 'mcp__codedeck__get_situation'),
+    ], page: { currentPage: 0, size: 100, totalElements: 6, totalPages: 1, hasNextPage: false } });
+    render(<AssistantChat projectName="Demo" />);
+    expect(await screen.findByText('Batch 1 is half built.')).toBeTruthy();
+    expect(screen.queryByText(/^Tool:/)).toBeNull();
+    const groups = document.querySelectorAll('details.assistant-chat-tools');
+    expect(groups).toHaveLength(2);
+    expect(groups[0].open).toBe(false);
+    expect(groups[0].querySelector('summary').textContent).toBe('Used 3 tools: read todo, cd /Users/me/trade-proxy && git sta…, list runs');
+    expect([...groups[0].querySelectorAll('li')].map(item => item.textContent)).toEqual(['mcp__codedeck__read_todo', 'cd /Users/me/trade-proxy && git status --short && git branch -a --list', 'mcp__codedeck__list_runs']);
+    expect(groups[1].querySelector('summary').textContent).toBe('Used 1 tool: get situation');
+    // The replies stay in order around the folded lines.
+    const transcript = document.querySelector('.assistant-chat-transcript');
+    expect([...transcript.children].map(node => node.tagName === 'DETAILS' ? 'tools' : node.textContent.trim())).toEqual(['Help me finish batch 1', 'tools', 'Batch 1 is half built.', 'tools']);
+  });
+});
+
+describe('AssistantChat scrolling', () => {
+  // jsdom has no layout: give the transcript a fixed viewport and a content height that grows.
+  function sized(transcript, { height = 200 } = {}) {
+    let content = 1000;
+    Object.defineProperty(transcript, 'clientHeight', { configurable: true, get: () => height });
+    Object.defineProperty(transcript, 'scrollHeight', { configurable: true, get: () => content });
+    return { grow: amount => { content += amount; } };
+  }
+  const agentChunk = text => ({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } });
+  async function ready() {
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    await screen.findByText(/Claude Opus · opus · high/);
+    return document.querySelector('.assistant-chat-transcript');
+  }
+  it('follows new output while the owner is at the bottom', async () => {
+    const transcript = await ready(); const { grow } = sized(transcript);
+    transcript.scrollTop = 800; fireEvent.scroll(transcript);
+    grow(300); sockets[0].receive(agentChunk('More text'));
+    await waitFor(() => expect(transcript.scrollTop).toBe(transcript.scrollHeight));
+  });
+  it('leaves the owner where they are after they scroll up to read', async () => {
+    const transcript = await ready(); const { grow } = sized(transcript);
+    transcript.scrollTop = 100; fireEvent.scroll(transcript);
+    grow(300); sockets[0].receive(agentChunk('More text'));
+    await screen.findByText('More text');
+    expect(transcript.scrollTop).toBe(100);
+  });
+  it('always brings a new permission request into view', async () => {
+    const transcript = await ready(); const { grow } = sized(transcript);
+    transcript.scrollTop = 100; fireEvent.scroll(transcript);
+    grow(300); sockets[0].receive({ type: 'permission_request', requestId: 90, toolCall: { toolCallId: 'c1', title: 'Edit file' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }] });
+    await waitFor(() => expect(transcript.scrollTop).toBe(transcript.scrollHeight));
+  });
+});

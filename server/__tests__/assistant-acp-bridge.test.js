@@ -185,6 +185,22 @@ describe('ACP bridge with fake stdio agent', () => {
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(ws.sent.some(frame => frame.update?.content?.text === '{"outcome":"selected","optionId":"reject"}')).toBe(true);
   });
+  it('allows a CodeDeck tool of its own once without asking the owner', async () => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'codedeck-permission' });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(ws.sent.some(frame => frame.type === 'permission_request')).toBe(false);
+    expect(ws.sent.some(frame => frame.update?.content?.text === '{"outcome":"selected","optionId":"once"}')).toBe(true);
+  });
+  it.each([
+    ['a tool CodeDeck does not offer', 'lookalike-permission'],
+    ['a CodeDeck name only in the title the model controls', 'title-only-permission'],
+    ['a server named codedeck from project configuration', 'project-server-permission'],
+  ])('still asks the owner about %s', async (_case, text) => {
+    const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text });
+    expect(await waitFor(ws, 'permission_request')).toMatchObject({ requestId: 90 });
+  });
   it('announces a restart when the transcript exists', async () => {
     const { store, ws, conversation, connect } = setup(); store.append(conversation.id, { role: 'owner', content: 'old' }); connect();
     expect(await waitFor(ws, 'ready')).toMatchObject({ restarted: true });

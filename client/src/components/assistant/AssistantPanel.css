@@ -16,7 +16,10 @@
 .assistant-chat-message.owner { background: var(--bg-hover); }
 .assistant-chat-message.agent { border: 1px solid var(--border); }
 .assistant-chat-message p { margin: 0; }
-.assistant-chat-tool, .assistant-chat-permission { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.assistant-chat-tools { color: var(--text-muted); font-size: 12px; }
+.assistant-chat-tools summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.assistant-chat-tools ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 2px; overflow-wrap: anywhere; }
+.assistant-chat-permission { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
 .assistant-chat-permission { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .assistant-chat-compose { display: flex; gap: 6px; }
 .assistant-chat-compose textarea { flex: 1; min-width: 0; background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
