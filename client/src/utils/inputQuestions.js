@@ -71,3 +71,27 @@ export function composeAnswer(questions, answers, note) {
     || (answer.choice === 'option' && answer.letter === questions[index].recommendedLetter))) return ACCEPT_RECOMMENDATIONS_ANSWER;
   return extra === '' ? lines.join('\n') : `${lines.join('\n')}\n\nAlso: ${extra}`;
 }
+
+export const QUESTIONS_OPEN = '[[QUESTIONS]]';
+export const QUESTIONS_CLOSE = '[[/QUESTIONS]]';
+
+/**
+ * An assistant reply that ends with questions for the owner: the text before the
+ * `[[QUESTIONS]]` marker, and the numbered list inside it (the NEEDS_INPUT list format).
+ * `questions` is null when the reply has no closed list at its end; `list` is the raw list
+ * so a list `parseQuestions` cannot read is still shown as written. A marker that has not
+ * closed yet (a reply still streaming) is cut from the text; a list with more text after it
+ * is not at the end, so the reply is shown whole.
+ */
+export function splitAssistantQuestions(content) {
+  if (typeof content !== 'string') throw new TypeError('content must be text');
+  const open = content.lastIndexOf(QUESTIONS_OPEN);
+  if (open === -1) return { text: content, list: null, questions: null };
+  const text = content.slice(0, open).trimEnd();
+  const rest = content.slice(open + QUESTIONS_OPEN.length);
+  const close = rest.indexOf(QUESTIONS_CLOSE);
+  if (close === -1) return { text, list: null, questions: null };
+  if (rest.slice(close + QUESTIONS_CLOSE.length).trim() !== '') return { text: content, list: null, questions: null };
+  const list = rest.slice(0, close).trim();
+  return { text, list: list || null, questions: list ? parseQuestions(list) : null };
+}

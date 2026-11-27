@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { composeAnswer, parseQuestions, recommendationLead } from '../inputQuestions.js';
+import { composeAnswer, parseQuestions, recommendationLead, splitAssistantQuestions } from '../inputQuestions.js';
 import { ACCEPT_RECOMMENDATIONS_ANSWER } from '../../../../shared/pipeline-definitions.mjs';
 
 const LIST = `1. Should we really store first name and last name separately, or just speak the first word
@@ -88,5 +88,26 @@ describe('composing the owner’s answer', () => {
   it('refuses answers that do not line up with the questions', () => {
     expect(() => composeAnswer(questions, [], '')).toThrow('one answer per question');
     expect(() => composeAnswer(questions.slice(0, 1), [{ choice: 'maybe', text: '' }], '')).toThrow('choice');
+  });
+});
+
+describe('splitAssistantQuestions', () => {
+  it('leaves a reply without questions as it is', () => {
+    expect(splitAssistantQuestions('All done.')).toEqual({ text: 'All done.', list: null, questions: null });
+  });
+  it('reads a closed list at the end of a reply', () => {
+    const split = splitAssistantQuestions('Before.\n[[QUESTIONS]]\n1. Stop the run?\nRecommended: Yes\n[[/QUESTIONS]]\n');
+    expect(split.text).toBe('Before.');
+    expect(split.questions).toEqual([{ number: 1, question: 'Stop the run?', recommended: 'Yes', options: [], recommendedLetter: null }]);
+  });
+  it('keeps a list it cannot read as written', () => {
+    expect(splitAssistantQuestions('[[QUESTIONS]]\nShould I stop?\n[[/QUESTIONS]]')).toEqual({ text: '', list: 'Should I stop?', questions: null });
+  });
+  it('shows a reply whose list is followed by more text in full, not as questions', () => {
+    const content = 'A\n[[QUESTIONS]]\n1. Q?\n[[/QUESTIONS]]\nmore';
+    expect(splitAssistantQuestions(content)).toEqual({ text: content, list: null, questions: null });
+  });
+  it('rejects content that is not text', () => {
+    expect(() => splitAssistantQuestions(null)).toThrow('content must be text');
   });
 });
