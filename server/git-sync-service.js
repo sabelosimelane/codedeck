@@ -677,7 +677,8 @@ export async function syncProjectLocation({
       host: location.host,
       message: unreachable
         ? unreachable.message
-        : `Could not sync ${blocked.map(b => b.repository).join(', ')} on ${location.host}.`,
+        // Each blocked repository with its own reason, so the owner can act without reading logs.
+        : `Could not sync ${blocked.map(b => b.repository).join(', ')} on ${location.host}: ${blocked.map(b => `${b.message.replace(/\.$/, '')} (${b.repoPath})`).join('; ')}.`,
       results,
     };
   }

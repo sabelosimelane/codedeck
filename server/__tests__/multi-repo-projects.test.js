@@ -261,6 +261,29 @@ describe('Phase 3: git-sync-service syncs all repositories of a project location
   });
 });
 
+describe('git-sync-service says why a sync was blocked', () => {
+  it('names each blocked repository with its reason and path, not only that it failed', async () => {
+    const fakeExec = vi.fn((_cmd, args, _opts, cb) => {
+      const repoPath = args[1];
+      const gitCmd = args.slice(2).join(' ');
+      if (gitCmd === 'rev-parse --is-inside-work-tree') return cb(null, 'true\n', '');
+      if (gitCmd === 'status --porcelain') return cb(null, repoPath.endsWith('frontend') ? '?? src/\n' : '', '');
+      if (gitCmd === 'rev-parse --abbrev-ref HEAD') return cb(null, 'main\n', '');
+      if (gitCmd === 'rev-parse HEAD') return cb(null, 'a'.repeat(40) + '\n', '');
+      if (gitCmd.startsWith('rev-parse --abbrev-ref --symbolic-full-name')) return cb(null, 'origin/main\n', '');
+      if (gitCmd === 'pull --ff-only') return cb(null, 'Already up to date.\n', '');
+      return cb(null, '', '');
+    });
+    const project = normalizeProject({
+      name: 'acme', path: '/local/acme/backend',
+      locations: [{ host: 'local', path: '/local/acme/backend', repositories: [{ name: 'frontend', path: '/local/acme/frontend' }] }],
+    });
+    const outcome = await syncProjectLocation({ project, host: 'local', execFile: fakeExec });
+    expect(outcome).toMatchObject({ ok: false, status: 409, code: 'sync_blocked' });
+    expect(outcome.message).toBe('Could not sync frontend on local: Working tree has uncommitted changes (/local/acme/frontend).');
+  });
+});
+
 describe('Phase 3: projects API multi-repo routes', () => {
   function buildApp({ initialProjects = [], hosts = [], detectOrigin, cloneRepo } = {}) {
     let projects = [...initialProjects];
