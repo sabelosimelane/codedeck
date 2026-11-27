@@ -89,3 +89,24 @@ describe('AssistantPanel unusable repositories', () => {
     expect(screen.queryByText('Nothing needs your attention')).toBeNull();
   });
 });
+
+describe('AssistantPanel room for the chat', () => {
+  it('keeps the situation in its own scroll region, separate from the chat', async () => {
+    mock.fetchSituation.mockResolvedValue(situation([{ code: 'a', message: 'Todo docs/todos/a.md has not started.', where: {} }]));
+    render(<AssistantPanel projectName="Demo" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/has not started/)).toBeTruthy());
+    const region = screen.getByRole('region', { name: 'Where things stand' });
+    expect(region.contains(screen.getByRole('list'))).toBe(true);
+    expect(region.contains(screen.getByRole('region', { name: 'Assistant chat' }))).toBe(false);
+  });
+  it('hides and shows the situation so the chat can take the whole panel', async () => {
+    mock.fetchSituation.mockResolvedValue(situation([{ code: 'a', message: 'Todo docs/todos/a.md has not started.', where: {} }, { code: 'b', message: 'Repository x has 1 uncommitted files.', where: {} }]));
+    render(<AssistantPanel projectName="Demo" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/has not started/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Hide (2)' }));
+    expect(screen.queryByText(/has not started/)).toBeNull();
+    expect(screen.getByRole('region', { name: 'Assistant chat' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show (2)' }));
+    expect(screen.getByText(/has not started/)).toBeTruthy();
+  });
+});
