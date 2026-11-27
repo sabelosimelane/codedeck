@@ -79,6 +79,12 @@ lines.on('line', line => {
     }
     if (text === 'unsupported') { send({ id: 95, method: 'fs/read_text_file', params: {} }); return; }
     if (text === 'exit') { process.stderr.write('fake exit'); process.exit(7); }
+    // A CodeDeck tool of its own, and a name that only looks like one.
+    if (text === 'codedeck-permission' || text === 'lookalike-permission') {
+      const title = text === 'codedeck-permission' ? 'mcp__codedeck__read_todo' : 'mcp__codedeck__delete_everything';
+      send({ id: permissionId, method: 'session/request_permission', params: { sessionId: 'fake-session', toolCall: { toolCallId: 'c1', title }, options: [{ optionId: 'always', name: 'Always', kind: 'allow_always' }, { optionId: 'once', name: 'Once', kind: 'allow_once' }, { optionId: 'reject', name: 'Reject', kind: 'reject_once' }] } });
+      return;
+    }
     if (text === 'permission') {
       send({ id: permissionId, method: 'session/request_permission', params: { sessionId: 'fake-session', toolCall: { toolCallId: 'c1', title: 'Edit file' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }, { optionId: 'reject', name: 'Reject', kind: 'reject_once' }] } });
       return;

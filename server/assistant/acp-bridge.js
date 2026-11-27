@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { buildAssistantBrief } from './brief.js';
 import { validateAssistantSettings } from './assistant-settings-store.js';
 import { assistantProfileFor } from './acp-agents.js';
+import { isCodedeckAssistantTool } from './codedeck-tools.js';
 
 const require = createRequire(import.meta.url);
 const acpSchema = await import(new URL('../schema/zod.gen.js', import.meta.resolve('@agentclientprotocol/sdk')).href);
@@ -138,6 +139,9 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
       if (frame.method !== 'session/request_permission') { write({ id: frame.id, error: { code: -32601, message: `Unsupported method ${frame.method}` } }); return; }
       const params = frame.params;
       if (!plain(params) || params.sessionId !== sessionId || !validToolCall(params.toolCall, true) || !Array.isArray(params.options) || !params.options.every(option => plain(option) && typeof option.optionId === 'string' && typeof option.name === 'string' && ['allow_once', 'allow_always', 'reject_once', 'reject_always'].includes(option.kind) && (option._meta === undefined || plain(option._meta)) && acpSchema.zPermissionOption.safeParse(option).success)) throw new Error('Invalid ACP permission request.');
+      // CodeDeck's own tools are allowed for this call only; anything else is the owner's to answer.
+      const once = isCodedeckAssistantTool(params.toolCall) ? params.options.find(option => option.kind === 'allow_once') : undefined;
+      if (once) { write({ id: frame.id, result: { outcome: { outcome: 'selected', optionId: once.optionId } } }); return; }
       permissions.set(frame.id, new Set(params.options.map(option => option.optionId)));
       send({ type: 'permission_request', requestId: frame.id, toolCall: params.toolCall, options: params.options });
       return;

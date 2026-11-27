@@ -48,6 +48,28 @@ function describeDoneResult(proposal) {
   return 'Completed.';
 }
 
+const CODEDECK_TOOL = /^mcp__codedeck__([a-z_]+)$/;
+const LABEL_LENGTH = 35;
+
+/** A short name for a tool call: CodeDeck's own tools in words, anything else cut to fit one line. */
+function toolLabel(title) {
+  const own = CODEDECK_TOOL.exec(title);
+  if (own) return own[1].replaceAll('_', ' ');
+  return title.length > LABEL_LENGTH + 1 ? `${title.slice(0, LABEL_LENGTH)}…` : title;
+}
+
+/** Consecutive tool calls become one entry, so the replies around them stay readable. */
+function foldToolCalls(messages) {
+  const folded = [];
+  for (const message of messages) {
+    const last = folded.at(-1);
+    if (message.role !== 'tool') folded.push(message);
+    else if (last?.role === 'tools') last.calls.push(message);
+    else folded.push({ id: `tools-${message.id}`, role: 'tools', calls: [message] });
+  }
+  return folded;
+}
+
 export default function AssistantChat({ projectName, onDecision, onSituationFlags }) {
   const [chatError, setChatError] = useState(null);
   const [conversationVersion, setConversationVersion] = useState(0);
@@ -198,8 +220,11 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   return <section className="assistant-chat" aria-label="Assistant chat">
       <div className="assistant-chat-heading"><h2>Chat</h2><span>{[auth?.state === 'authenticated' ? auth.label ? `Signed in: ${auth.label}` : 'Signed in' : auth?.state === 'unauthenticated' ? 'Not signed in' : null, activeConfig && `${activeConfig.agentName} · ${activeConfig.model ?? 'CLI default model'} · ${activeConfig.effort ?? 'CLI default effort'}`].filter(Boolean).join(' · ')}</span><button type="button" onClick={newConversation}>New conversation</button></div>
       <div className="assistant-chat-transcript" aria-live="polite">
-        {messages.map(message => message.role === 'tool'
-          ? <div className="assistant-chat-tool" key={message.id}>Tool: {message.content}</div>
+        {foldToolCalls(messages).map(message => message.role === 'tools'
+          ? <details className="assistant-chat-tools" key={message.id}>
+              <summary>{`Used ${message.calls.length} ${message.calls.length === 1 ? 'tool' : 'tools'}: ${message.calls.map(call => toolLabel(call.content)).join(', ')}`}</summary>
+              <ul>{message.calls.map(call => <li key={call.id}>{call.content}</li>)}</ul>
+            </details>
           : message.role === 'notice'
             ? <div className="assistant-chat-notice" key={message.id}>{message.content}</div>
             : <div className={`assistant-chat-message ${message.role}`} key={message.id} dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />)}
