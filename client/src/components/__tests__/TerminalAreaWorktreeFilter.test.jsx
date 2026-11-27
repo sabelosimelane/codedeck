@@ -61,7 +61,7 @@ describe('TerminalArea worktree view', () => {
   });
   it('shows a legacy run step tab in its run group and keeps that group on step activation', async () => {
     const legacy = { ...sessions[0], sessionId: 'Demo-3' };
-    const run = { id: 'run-1', project: 'Demo', status: 'needs_input', workflowName: 'Build', worktree: { path: '/tmp/demo-feature', branch: 'feature' }, createdAt: '2026-01-03', progress: null, steps: [{ name: 'Build', status: 'needs_input', sessionId: 'Demo-3', note: null }] };
+    const run = { id: 'run-1', project: 'Demo', status: 'needs_input', workflowName: 'Build', worktree: { path: '/tmp/demo-feature', branch: 'feature' }, createdAt: '2026-01-03', progress: null, steps: [{ name: 'Build', status: 'needs_input', sessionId: 'Demo-3', priorSessionIds: [], note: null }] };
     const all = [sessions[0], legacy];
     global.fetch = vi.fn(async url => ({ ok: true, json: async () => url === '/api/health' ? { terminalCreationAllowed: true } : all }));
     const worktreeBySession = resolveSessionWorktrees({ project, sessions: all, runs: [run] });

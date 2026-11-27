@@ -33,6 +33,7 @@ vi.mock('lucide-react', () => {
     Sun: Icon,
     Moon: Icon,
     Monitor: Icon,
+    Server: Icon,
   };
 });
 vi.mock('../DirectoryBrowser', () => ({ default: () => null }));

@@ -25,7 +25,7 @@ export function usePipelineRunCounts(showToast) {
             id: run.id, project: run.project, status: run.status, stopReason: run.stopReason, workflowName: run.workflowName,
             worktree: { path: run.worktree.path, branch: run.worktree.branch },
             progress: run.progress, createdAt: run.createdAt,
-            steps: run.steps.map(step => ({ status: step.status, name: step.name, sessionId: step.sessionId, note: step.note })),
+            steps: run.steps.map(step => ({ status: step.status, name: step.name, sessionId: step.sessionId, priorSessionIds: step.priorSessionIds, note: step.note })),
           });
           runsByProject.set(run.project, groupRuns);
           // A finished run stays with its task but is no longer work in progress, so it is not counted.
