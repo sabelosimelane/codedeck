@@ -12,6 +12,7 @@ describe('agent presets', () => {
       ['agy', 'Antigravity'],
       ['muse', 'Muse Code'],
       ['opencode', 'OpenCode'],
+      ['kiro', 'Kiro CLI'],
     ]);
   });
 
@@ -24,6 +25,7 @@ describe('agent presets', () => {
       agy: ['low', 'medium', 'high', 'xhigh', 'max'],
       muse: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
       opencode: [],
+      kiro: [],
     });
   });
 });
@@ -45,6 +47,8 @@ describe('buildLaunchCommand', () => {
     ['cursor', { model: 'gpt-5.6-sol-high', skipPermissions: true }, 'command agent --model gpt-5.6-sol-high --force --trust'],
     ['opencode', {}, 'command opencode mini'],
     ['opencode', { model: 'openrouter/deepseek/deepseek-v4.1-flash' }, 'command opencode mini --model openrouter/deepseek/deepseek-v4.1-flash'],
+    ['kiro', {}, 'command kiro-cli chat'],
+    ['kiro', { model: 'claude-opus-5.5', skipPermissions: true }, 'command kiro-cli chat --model claude-opus-5.5 --trust-all-tools'],
   ])('%s %j builds %s', (provider, fields, command) => {
     expect(build(provider, fields)).toEqual({ command, errors: [] });
   });
@@ -89,6 +93,13 @@ describe('buildLaunchCommand', () => {
     });
   });
 
+  it('rejects an effort for Kiro CLI, which takes none on its command line', () => {
+    expect(build('kiro', { effort: 'high' })).toEqual({
+      command: null,
+      errors: [{ field: 'effort', message: 'Choose an effort Kiro CLI accepts' }],
+    });
+  });
+
   it('rejects an unknown provider', () => {
     expect(build('gemini')).toEqual({ command: null, errors: [{ field: 'provider', message: 'Choose a provider' }] });
   });
@@ -116,6 +127,7 @@ describe('parseLaunchCommand', () => {
     ['muse', { model: 'muse-spark-1.3-contributor', effort: 'high', skipPermissions: true }],
     ['opencode', {}],
     ['opencode', { model: 'openrouter/deepseek/deepseek-v4.1-flash' }],
+    ['kiro', { model: 'claude-opus-5.5', skipPermissions: true }],
   ])('reads back what %s %j built', (provider, fields) => {
     const selection = { provider, model: '', effort: '', skipPermissions: false, ...fields };
     expect(parseLaunchCommand(buildLaunchCommand(selection).command)).toEqual(selection);
