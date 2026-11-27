@@ -79,10 +79,15 @@ lines.on('line', line => {
     }
     if (text === 'unsupported') { send({ id: 95, method: 'fs/read_text_file', params: {} }); return; }
     if (text === 'exit') { process.stderr.write('fake exit'); process.exit(7); }
-    // A CodeDeck tool of its own, and a name that only looks like one.
-    if (text === 'codedeck-permission' || text === 'lookalike-permission') {
-      const title = text === 'codedeck-permission' ? 'mcp__codedeck__read_todo' : 'mcp__codedeck__delete_everything';
-      send({ id: permissionId, method: 'session/request_permission', params: { sessionId: 'fake-session', toolCall: { toolCallId: 'c1', title }, options: [{ optionId: 'always', name: 'Always', kind: 'allow_always' }, { optionId: 'once', name: 'Once', kind: 'allow_once' }, { optionId: 'reject', name: 'Reject', kind: 'reject_once' }] } });
+    // Permission requests that name a CodeDeck tool: by the adapter's own metadata, or only in text the model controls.
+    const codedeckRequests = {
+      'codedeck-permission': { title: 'Read todo', _meta: { claudeCode: { toolName: 'mcp__codedeck__read_todo', mcpServer: { name: 'codedeck', source: 'dynamic' } } } },
+      'lookalike-permission': { title: 'Delete', _meta: { claudeCode: { toolName: 'mcp__codedeck__delete_everything', mcpServer: { name: 'codedeck', source: 'dynamic' } } } },
+      'title-only-permission': { title: 'mcp__codedeck__read_todo' },
+      'project-server-permission': { title: 'Read todo', _meta: { claudeCode: { toolName: 'mcp__codedeck__read_todo', mcpServer: { name: 'codedeck', source: 'project' } } } },
+    };
+    if (codedeckRequests[text]) {
+      send({ id: permissionId, method: 'session/request_permission', params: { sessionId: 'fake-session', toolCall: { toolCallId: 'c1', ...codedeckRequests[text] }, options: [{ optionId: 'always', name: 'Always', kind: 'allow_always' }, { optionId: 'once', name: 'Once', kind: 'allow_once' }, { optionId: 'reject', name: 'Reject', kind: 'reject_once' }] } });
       return;
     }
     if (text === 'permission') {

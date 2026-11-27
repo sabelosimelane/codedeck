@@ -192,10 +192,14 @@ describe('ACP bridge with fake stdio agent', () => {
     expect(ws.sent.some(frame => frame.type === 'permission_request')).toBe(false);
     expect(ws.sent.some(frame => frame.update?.content?.text === '{"outcome":"selected","optionId":"once"}')).toBe(true);
   });
-  it('still asks the owner about a tool that only looks like a CodeDeck tool', async () => {
+  it.each([
+    ['a tool CodeDeck does not offer', 'lookalike-permission'],
+    ['a CodeDeck name only in the title the model controls', 'title-only-permission'],
+    ['a server named codedeck from project configuration', 'project-server-permission'],
+  ])('still asks the owner about %s', async (_case, text) => {
     const { ws, connect } = setup(); connect(); await waitFor(ws, 'ready');
-    ws.receive({ type: 'prompt', text: 'lookalike-permission' });
-    expect(await waitFor(ws, 'permission_request')).toMatchObject({ toolCall: { title: 'mcp__codedeck__delete_everything' } });
+    ws.receive({ type: 'prompt', text });
+    expect(await waitFor(ws, 'permission_request')).toMatchObject({ requestId: 90 });
   });
   it('announces a restart when the transcript exists', async () => {
     const { store, ws, conversation, connect } = setup(); store.append(conversation.id, { role: 'owner', content: 'old' }); connect();
