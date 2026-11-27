@@ -649,3 +649,16 @@ describe('PipelineRunsBar — loops and decisions agents made', () => {
     expect(screen.queryByRole('list', { name: 'Decisions agents made in Feature' })).toBeNull();
   });
 });
+
+describe('PipelineRunsBar ended-at-limit state', () => {
+  it('badges a complete run with an accepted limit as Ended at limit', () => {
+    const view = render(<PipelineRunsBar runs={[runView({ status: 'complete',
+      actions: { stop: false, resume: false, continue: false, cleanup: true },
+      steps: [
+        { index: 0, name: 'Develop', status: 'complete', sessionId: 'Demo-1', iteration: 1, roundsCompleted: 0, repeat: { mode: 'once' } },
+        { index: 1, name: 'Test', status: 'limit_accepted', sessionId: 'Demo-2', iteration: 1, roundsCompleted: 8, repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 } },
+      ] })]} onLoadNotes={vi.fn(async () => ({ notes: [] }))} />);
+    expect(view.getByLabelText('Run status: Ended at limit')).toBeTruthy();
+    expect(view.queryByLabelText('Run status: Complete')).toBeNull();
+  });
+});

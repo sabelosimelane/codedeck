@@ -451,8 +451,13 @@ export function resumeRun(runId, options) {
   return postAction(runId, 'resume', options);
 }
 
-export function continueRun(runId, options) {
-  return postAction(runId, 'continue', options);
+export function continueRun(runId, grant, { signal } = {}) {
+  if (grant === undefined) return postAction(runId, 'continue', { signal });
+  if (!grant || typeof grant !== 'object' || !Number.isInteger(grant.stepIndex) || !Number.isInteger(grant.roundsCompleted)
+    || !Number.isInteger(grant.extraRounds)) {
+    throw new PipelineApiError('grant must name the paused step, its completed rounds and the grants already taken');
+  }
+  return request(`/runs/${encodeURIComponent(runId)}/continue`, { method: 'POST', body: { stepIndex: grant.stepIndex, roundsCompleted: grant.roundsCompleted, extraRounds: grant.extraRounds }, signal });
 }
 
 export function approveRun(runId, options) {

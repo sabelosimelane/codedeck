@@ -617,6 +617,58 @@ describe('workflow progress file persistence', () => {
     expect(reopened.nodes[1].prompt).toBe(custom);
   });
 
+  const focusedVerification = 'Run focused checks during repair; run the final suite once per changed repository on the final revision. ';
+  const verificationSteps = [
+    ['bug-fix', 'Test'],
+    ['quick-change', 'Review & Test'],
+    ['troubleshoot', 'Verify'],
+  ];
+
+  it.each(verificationSteps)('upgrades the last stock %s / %s prompt in a local copy', (templateId, stepName) => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const current = WORKFLOW_TEMPLATES.find(template => template.id === templateId).nodes.find(item => item.name === stepName).prompt;
+    expect(current).toContain(focusedVerification);
+    const previous = current.replace(focusedVerification, '');
+    const edited = `${previous} Also run my smoke check.`;
+    const created = workflows.create({
+      name: 'Saved workflow',
+      agentsDecide: false,
+      nodes: [
+        { ...node(agent.id), name: stepName, prompt: previous },
+        { ...node(agent.id), name: 'Edited', prompt: edited },
+      ],
+    });
+
+    const reopened = createWorkflowStore(db).get(created.id);
+    expect(reopened.nodes.map(item => item.prompt)).toEqual([current, edited]);
+  });
+
+  it.each(verificationSteps)('takes %s / %s through the versioned update for an unchanged linked copy', (templateId, stepName) => {
+    const { db, workflows } = setup();
+    const { id, version, ...current } = WORKFLOW_TEMPLATES.find(template => template.id === templateId);
+    const original = {
+      ...current,
+      nodes: current.nodes.map(item => ({ ...item, prompt: item.prompt.replace(focusedVerification, '') })),
+    };
+    const created = workflows.create(original, { source: { kind: 'builtin', id, version: 1, base: original, updatedAt: null } });
+    const reopened = createWorkflowStore(db);
+
+    expect(reopened.applyBuiltinUpdates({ log: () => {} })).toEqual({ updated: [current.name] });
+    const updated = reopened.get(created.id);
+    expect(updated.source.version).toBe(2);
+    expect(updated.nodes.find(item => item.name === stepName).prompt).toContain(focusedVerification);
+  });
+
+  it('rejects a corrupt source kind before classifying a saved workflow for prompt upgrades', () => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const created = workflows.create({ name: 'Saved workflow', agentsDecide: false, nodes: [node(agent.id)] });
+    db.prepare('UPDATE pipeline_workflows SET source_kind = ? WHERE id = ?').run('unknown', created.id);
+
+    expect(() => createWorkflowStore(db)).toThrow(`pipeline_workflows row ${created.id} field source_kind`);
+  });
+
   it('folds unmodified stock Specify + Plan in Feature from requirements and persists disabled nodes', () => {
     const { db, agents, workflows } = setup();
     const agent = agents.create(validAgent);

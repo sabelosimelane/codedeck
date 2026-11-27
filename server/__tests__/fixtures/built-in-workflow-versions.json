@@ -1,11 +1,11 @@
 {
   "bug-fix": {
-    "version": 1,
-    "hash": "0c2407cd017f830b8006bec69836a0687509842a86b08cc174292b7ff09238b9"
+    "version": 2,
+    "hash": "0425b6a9f83fdb4889381c92e003660660f4ddd2d5212c5238c2d1918f08a174"
   },
   "quick-change": {
-    "version": 1,
-    "hash": "b4f8b15309d3a86b0f8a9f5c97e990c45a4381bafc0c18e6cc718182ff5253f1"
+    "version": 2,
+    "hash": "7532af6b2d6bf65ec1f689701dcff6c0b278684123e0154e1335f6768f1d5588"
   },
   "feature-build": {
     "version": 1,
@@ -20,8 +20,8 @@
     "hash": "3b685f09be9f940dc272ea97420239db02ab50fc21117ad071f8356aa7ac9776"
   },
   "troubleshoot": {
-    "version": 1,
-    "hash": "a9b7a8c974c80197c19a48148efc71ce22d4ea201ec95a87fda402b95b874eae"
+    "version": 2,
+    "hash": "405cb64bf4c6ebe64b59d4d0d2e32531df6ca2b54546c3dde48c833319351fbf"
   },
   "review-only": {
     "version": 1,

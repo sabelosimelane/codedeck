@@ -148,7 +148,7 @@ Each workflow node stores and returns `readOnly` and `approval` booleans. Reques
 
 A read-only node receives the instruction to write only inside its run notes folder: its note, and a plan when its instructions ask for one. A run without a notes folder is told to change nothing in the worktree. This is guidance, not filesystem enforcement.
 
-When an approval node completes its single pass or reports COMPLETE in `until_complete`, the engine records its note, then sets both run and step to `awaiting_approval`. The step index and worktree remain in place. At the pass limit without COMPLETE, `until_complete` still becomes `limit_paused`; Continue advances as before and serves as owner approval. A gated node inside a loop pauses on each round. Let agents decide does not approve a gate.
+When an approval node completes its single pass or reports COMPLETE in `until_complete`, the engine records its note, then sets both run and step to `awaiting_approval`. The step index and worktree remain in place. At the pass limit without COMPLETE, `until_complete` still becomes `limit_paused`; Continue grants one more pass on the same step. Actual step success still requests owner approval. A gated node inside a loop pauses on each round. Let agents decide does not approve a gate.
 
 The runs bar shows the latest note and its full content for the waiting step. **Approve** records an `approved` review and advances or completes and cleans up. **Send back** requires a 1–4000 character comment, records `sent_back`, resets the step's agent, and starts a new attempt in its terminal (replacing a closed terminal). The step guidance directs the agent to `NN-<slug>.feedback.md` immediately after the notes sentence. At each start, CodeDeck deterministically rewrites that file inside the ignored notes folder from all send-back reviews for that step, in time order. It writes no file or sentence when there are none.
 
@@ -322,7 +322,7 @@ and one RFC 9457 error handler for every route under the base path.
 | GET | `/runs/:id` | Get a run | 200 |
 | POST | `/runs/:id/stop` | Stop a run | 200 |
 | POST | `/runs/:id/resume` | Resume an unfinished run | 200 |
-| POST | `/runs/:id/continue` | Leave a pass-limit pause | 200 |
+| POST | `/runs/:id/continue` | Grant one more round or pass at a limit pause; optional body `{stepIndex, roundsCompleted, extraRounds?}` | 200 |
 | POST | `/runs/:id/cleanup` | Remove (or retry removing) the run's worktree | 200 |
 
 ### 6.1 Collections
@@ -618,8 +618,15 @@ pipeline runs start the loop engine.
 | `once` | 1 | step `complete`, advance | step `complete`, advance |
 | `until_complete`, max N | N | step `complete`, advance | step `limit_reached`, run `limit_paused` |
 
-From `limit_paused`, **Continue** advances to the next step (or completes the run when it was the
-last step); **Stop** stops the run. The paused step is recorded as `limit_reached` either way.
+From `limit_paused`, **Continue** grants the pause on screen exactly one more round (or pass)
+and the run goes back to work; it never advances past the capped step and never completes the
+run. **Stop** stops the run with the pause preserved. A grant names its pause (`stepIndex`,
+`roundsCompleted` and the grants already taken, `extraRounds`); a missing grant means the current
+pause, and a grant for any other pause is refused with 409. Each grant raises the step's
+`extraRounds` by one. A loop counts the capped round as done and resumes at its target; an
+`until_complete` step keeps its pass count and runs one pass more. Either way the cap pauses again
+after exactly one extra round or pass instead of completing unfinished work. A pass limit is never
+raised past 100.
 
 ### 8.7 Signals that end or pause a step
 
@@ -829,16 +836,17 @@ A node with `repeat.mode = "loop_back"` closes a loop: the nodes from the one it
 run in order, round after round. A run's snapshot stores the target as `repeat.toStepIndex`, the index
 among the run's steps (Setup, when present, is step 0 and is never a target). Each step progress
 object gains `roundsCompleted` (integer ≥ 0; non-zero only on a step that loops back, and always less
-than its `max`). Runs stored before this field existed are given `roundsCompleted: 0` when the run
-store is constructed.
+than its `max` plus its `extraRounds`) and `extraRounds` (integer 0–100; how many extra rounds past
+`max` the owner granted, one per pause; 0 except on a capped repeat). Runs stored before these fields
+existed are given `roundsCompleted: 0` and `extraRounds: 0` when the run store is constructed.
 
 The closing step gets one pass per round (`maxIterations = 1`):
 
 | Closing step's signal | Effect |
 |---|---|
 | COMPLETE | step `complete`; the run advances past the loop (or completes) |
-| CONTINUE, and `roundsCompleted + 1 < max` | `roundsCompleted + 1`; every step of the loop becomes `pending` with `iteration` 0 and keeps its `sessionId`; the run continues at the loop's first step |
-| CONTINUE, and `roundsCompleted + 1 = max` | step `limit_reached`, run `limit_paused`; **Continue** advances past the loop |
+| CONTINUE, and `roundsCompleted + 1 < max + extraRounds` | `roundsCompleted + 1`; every step of the loop becomes `pending` with `iteration` 0 and keeps its `sessionId`; the run continues at the loop's first step |
+| CONTINUE, and `roundsCompleted + 1 = max + extraRounds` | step `limit_reached`, run `limit_paused`; **Continue** grants one more round at the loop's first step (the step's `extraRounds` grows by one) |
 
 At a CONTINUE that allows another round, the engine compares total ticked tasks across all
 `## Phase N` sections of the run's progress source with the previous measured round. Two
@@ -846,6 +854,21 @@ consecutive rounds without an increase raise `loop_back` and then stop with
 `stop_reason = no_progress`, before the next round's first step starts. A missing or unreadable
 source disables the guard and clears its baseline. Resume clears the baseline and gives two
 more rounds. The guard does not apply to `until_complete` passes or the last allowed round.
+
+A closing `Test` or `Review & Test` with a required plan finishes on COMPLETE after every
+task is ticked. The current attempt's written note must contain `VERDICT <attempt> PASS`,
+report any failed probes with current-attempt `REPAIR` lines, and record a passing full suite
+for each changed repository as `SUITE <repository> | <full-suite command> | exit 0 | <worktree HEAD>`.
+CodeDeck checks the HEAD and a fingerprint of the uncommitted source against what Test
+started with. The configured checklist can change during Test. Existing Gradle worker
+receipts are recorded in the audit and a failed receipt for a current check blocks completion.
+A failed or missing check is shown on the run, which can be resumed at Test. A Test step
+without a required plan keeps its ordinary completion rules.
+
+A `complete` run with a `limit_accepted` step reads **Ended at limit**, never the green
+completion: only `complete` steps count as successful steps done, while the audit and notes
+stay preserved. Stored historical records are left intact. The green `Workflow complete`
+banner is reserved for a verified run with no accepted step.
 
 The steps inside the loop keep their own repeat (`once` advances on either signal, as before). The
 closing step's agent is the only one that decides whether the loop runs again, so its prompt carries

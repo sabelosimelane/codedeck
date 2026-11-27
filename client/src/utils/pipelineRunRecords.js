@@ -130,7 +130,12 @@ export function parseRunAutonomy(run, index = 0) {
     guard(object(step.repeat), `steps[${i}].repeat`);
     const loops = step.repeat.mode === 'loop_back';
     if (loops) guard(integer(step.repeat.max) && step.repeat.max >= 1 && step.repeat.max <= 100, `steps[${i}].repeat.max`);
-    guard(integer(step.roundsCompleted) && (loops ? step.roundsCompleted < step.repeat.max : step.roundsCompleted === 0), `steps[${i}].roundsCompleted`);
+    // Owner-granted rounds past the configured maximum. A backend older than this client
+    // does not send it; both parsers read the same tolerance.
+    guard(step.extraRounds === undefined || (integer(step.extraRounds) && step.extraRounds >= 0 && step.extraRounds <= 100), `steps[${i}].extraRounds`);
+    // A step that runs once can never carry a grant, matching the store's rule.
+    if (step.repeat.mode === 'once') guard((step.extraRounds ?? 0) === 0, `steps[${i}].extraRounds`);
+    guard(integer(step.roundsCompleted) && (loops ? step.roundsCompleted < step.repeat.max + (step.extraRounds ?? 0) : step.roundsCompleted === 0), `steps[${i}].roundsCompleted`);
     guard(step.notePath === null || (typeof step.notePath === 'string' && step.notePath === `${run.notesDir}/${noteFileName(i, step.name)}` && step.kind === 'node'), `steps[${i}].notePath`);
     guard(run.notesDir !== null && step.kind === 'node' ? step.notePath !== null : step.notePath === null, `steps[${i}].notePath`);
     parseNoteMeta(step.note, guard, `steps[${i}].note`);
@@ -195,7 +200,10 @@ export function parseRun(run, index = 0) {
     // A loop names the earlier step it returns to; no other repeat has a target.
     guard(loops ? integer(step.repeat.toStepIndex) && step.repeat.toStepIndex < i : step.repeat.toStepIndex === undefined, field('repeat.toStepIndex'));
     guard(step.repeat.mode === 'once' ? step.repeat.max === undefined : integer(step.repeat.max) && step.repeat.max >= 1 && step.repeat.max <= 100, field('repeat.max'));
-    guard(integer(step.roundsCompleted) && (loops ? step.roundsCompleted < step.repeat.max : step.roundsCompleted === 0), field('roundsCompleted'));
+    guard(step.extraRounds === undefined || (integer(step.extraRounds) && step.extraRounds >= 0 && step.extraRounds <= 100), field('extraRounds'));
+    // A step that runs once can never carry a grant, matching the store's rule.
+    if (step.repeat.mode === 'once') guard((step.extraRounds ?? 0) === 0, field('extraRounds'));
+    guard(integer(step.roundsCompleted) && (loops ? step.roundsCompleted < step.repeat.max + (step.extraRounds ?? 0) : step.roundsCompleted === 0), field('roundsCompleted'));
     guard(STEP_STATUSES.includes(step.status), field('status'));
     guard(nullable(step.sessionId, session), field('sessionId'));
     guard(Array.isArray(step.priorSessionIds) && step.priorSessionIds.every(session), field('priorSessionIds'));
@@ -234,6 +242,24 @@ export function parseRun(run, index = 0) {
   guard(stamp(run.createdAt), 'createdAt');
   guard(stamp(run.updatedAt), 'updatedAt');
   guard(nullable(run.finishedAt, stamp) && (!['complete', 'stopped', 'error'].includes(run.status) || run.finishedAt !== null), 'finishedAt');
+  // The pause a grant would extend. A backend older than this client does not send it.
+  if (run.limitPause !== undefined && run.limitPause !== null) {
+    const pause = run.limitPause;
+    const field = name => `limitPause.${name}`;
+    guard(object(pause), 'limitPause');
+    guard(integer(pause.stepIndex) && pause.stepIndex < run.steps.length, field('stepIndex'));
+    guard(text(pause.stepName) && pause.stepName.length <= 64, field('stepName'));
+    // Only a capped repeat can pause at its limit; a step that runs once never pauses.
+    guard(['loop_back', 'until_complete'].includes(pause.repeatMode), field('repeatMode'));
+    // A loop names the earlier step it returns to; no other repeat has a target.
+    guard(pause.repeatMode === 'loop_back'
+      ? integer(pause.toStepIndex) && pause.toStepIndex < pause.stepIndex
+      : pause.toStepIndex === undefined, field('toStepIndex'));
+    guard(integer(pause.maxRounds) && pause.maxRounds >= 1 && pause.maxRounds <= 100, field('maxRounds'));
+    guard(integer(pause.extraRounds) && pause.extraRounds >= 0 && pause.extraRounds <= 100, field('extraRounds'));
+    guard(integer(pause.roundsCompleted) && pause.roundsCompleted >= 0, field('roundsCompleted'));
+    guard(integer(pause.attempt) && pause.attempt >= 0, field('attempt'));
+  }
   return run;
 }
 

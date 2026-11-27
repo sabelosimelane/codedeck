@@ -11,6 +11,29 @@ const RUN_STATUS = Object.freeze({
 });
 const CURRENT_STEP_STATUSES = new Set(['launching', 'running', 'needs_input', 'awaiting_approval', 'limit_reached', 'interrupted']);
 
+/**
+ * The capped pause a run waits on, for the recovery panel: which step hit its configured
+ * maximum, how many extra rounds the owner already granted, and what the grant button says.
+ * Returns null unless the run is paused at a capped repeat.
+ */
+export function describeLimitPause(run) {
+  if (!run || typeof run !== 'object' || Array.isArray(run) || run.status !== 'limit_paused') return null;
+  if (!Array.isArray(run.steps) || !Number.isInteger(run.currentStepIndex)) return null;
+  const step = run.steps.find(item => item?.index === run.currentStepIndex) ?? run.steps[run.currentStepIndex];
+  if (!step || step.status !== 'limit_reached') return null;
+  if (!step.repeat || (step.repeat.mode !== 'loop_back' && step.repeat.mode !== 'until_complete')) return null;
+  if (!Number.isInteger(step.repeat.max) || step.repeat.max < 1) return null;
+  return {
+    stepIndex: run.currentStepIndex,
+    stepName: step.name,
+    repeatMode: step.repeat.mode,
+    maxRounds: step.repeat.max,
+    extraRounds: step.extraRounds ?? run.limitPause?.extraRounds ?? 0,
+    roundsCompleted: step.roundsCompleted ?? 0,
+    actionLabel: step.repeat.mode === 'loop_back' ? 'Run one more round' : 'Run one more pass',
+  };
+}
+
 export function describeRunStatus(run) {
   if (!run || typeof run !== 'object' || Array.isArray(run)) throw new Error('run status: run must be an object');
   if (typeof run.status !== 'string' || !Object.hasOwn(RUN_STATUS, run.status)) throw new Error(`run status: status ${String(run.status)} is unknown`);
@@ -21,11 +44,31 @@ export function describeRunStatus(run) {
   // A run that finished in a task or in Main leaves its work there: the next thing to do is land
   // the task, so closing the run is offered but not highlighted.
   const landed = run.status === 'complete' && run.worktree?.state === 'external';
+  const primaryAction = !landed && action && run.actions?.[action] === true ? action : null;
+  if (describeRunCompletion({ status: run.status, steps: Array.isArray(run.steps) ? run.steps : [] }).endedAtLimit) {
+    // A run closed by accepting the limit is not verified: it reads Ended at limit in
+    // neutral words, never the green completion. Its audit and notes stay where they are.
+    return { label: 'Ended at limit', tone: 'neutral', primaryAction, needsOwner: false };
+  }
   return {
     label, tone,
-    primaryAction: !landed && action && run.actions?.[action] === true ? action : null,
+    primaryAction,
     // The run cannot go on by itself: it waits for an answer, an approval, a decision or a Resume.
     needsOwner: tone === 'waiting' || tone === 'danger',
+  };
+}
+
+// A finished run counts only verified steps as successful: a step accepted at its limit
+// is preserved in the audit and the rail, but excluded from the done count. The green
+// completion banner stays available for a run with no accepted step.
+export function describeRunCompletion(run) {
+  if (!run || typeof run !== 'object' || Array.isArray(run)) throw new Error('run completion: run must be an object');
+  if (!Array.isArray(run.steps)) throw new Error('run completion: steps must be an array');
+  const successfulSteps = run.steps.filter(step => step?.status === 'complete').length;
+  return {
+    endedAtLimit: run.status === 'complete' && run.steps.some(step => step?.status === 'limit_accepted'),
+    successfulSteps,
+    totalSteps: run.steps.length,
   };
 }
 
@@ -68,11 +111,15 @@ export function describeStepProgress(step) {
   const { mode, max } = step.repeat;
   if (mode === 'until_complete') {
     if (over) return { label, detail: count(step.iteration, 'pass') };
-    return { label, detail: step.iteration >= 1 ? `pass ${step.iteration} of ${max}` : `up to ${count(max, 'pass')}` };
+    // A granted pass extends the limit: the rail counts the pass against the raised total.
+    const allowed = max + (step.extraRounds ?? 0);
+    return { label, detail: step.iteration >= 1 ? `pass ${step.iteration} of ${allowed}` : `up to ${count(allowed, 'pass')}` };
   }
   if (mode === 'loop_back') {
     const rounds = step.roundsCompleted + 1;
-    return { label, detail: over ? count(rounds, 'round') : `round ${rounds} of ${max}` };
+    // A granted round extends the cap: the rail counts the round against the raised total.
+    const effective = max + (step.extraRounds ?? 0);
+    return { label, detail: over ? count(rounds, 'round') : `round ${rounds} of ${effective}` };
   }
   return { label, detail: null };
 }

@@ -350,28 +350,12 @@ describe('applyEvent — multi-step, stop, resume, continue, terminal (Spec §5,
     expect(next.finishedAt).toBe(AT);
   });
 
-  it('continue from limit_paused advances to the next step when more remain', () => {
+  it('continue from limit_paused never advances past or completes the run', () => {
     let state = twoStepRunning();
     state = applyEvent(state, { type: 'limit_reached', at: AT });
     expect(state.status).toBe('limit_paused');
-    const next = applyEvent(state, { type: 'continue', at: AT });
-    expect(next.status).toBe('running');
-    expect(next.currentStepIndex).toBe(1);
-    // The owner accepted the limit: the step is over, and says how it ended.
-    expect(next.steps[0].status).toBe('limit_accepted');
-    expect(next.steps[1].status).toBe('pending');
-    expect(next.finishedAt).toBeNull();
-  });
-
-  it('continue from limit_paused on the last step completes the run', () => {
-    let state = applyEvent(run({ worktreeState: 'present' }), { type: 'start', at: AT });
-    state = applyEvent(state, { type: 'step_running' });
-    state = applyEvent(state, { type: 'limit_reached', at: AT });
-    const next = applyEvent(state, { type: 'continue', at: AT });
-    expect(next.status).toBe('complete');
-    expect(next.currentStepIndex).toBe(0);
-    expect(next.steps[0].status).toBe('limit_accepted');
-    expect(next.finishedAt).toBe(AT);
+    // The capped step runs once: its repeat cannot grant another round.
+    expect(() => applyEvent(state, { type: 'continue', at: AT })).toThrow(/only a capped repeat/);
   });
 
   it('continue is refused outside limit_paused', () => {
@@ -681,7 +665,14 @@ describe('applyEvent — the time a step has worked', () => {
   it('adds the time up to a limit, a failure and a stop, once', () => {
     const limited = applyEvent(one(), { type: 'limit_reached', at: at(30) });
     expect(limited.steps[0].elapsedMs).toBe(30000);
-    expect(applyEvent(limited, { type: 'continue', at: at(999) }).steps[0]).toMatchObject({ status: 'limit_accepted', elapsedMs: 30000 });
+    // Only a capped repeat can grant another round: without one the grant is refused.
+    expect(() => applyEvent(limited, { type: 'continue', at: at(999) })).toThrow(/only a capped repeat/);
+    const granted = applyEvent(
+      run({ status: 'running', worktreeState: 'present',
+        definition: { steps: [{ name: 'Develop', repeat: { mode: 'until_complete', max: 2 }, agent: { id: 'a', name: 'c', launchCommand: 'c', resetCommand: 'r' } }] },
+        steps: [working()] }),
+      { type: 'limit_reached', at: at(30) });
+    expect(applyEvent(granted, { type: 'continue', at: at(999) }).steps[0]).toMatchObject({ status: 'launching', extraRounds: 1, elapsedMs: 30000 });
     expect(applyEvent(limited, { type: 'stop', at: at(999) }).steps[0].elapsedMs).toBe(30000);
     expect(applyEvent(limited, { type: 'error', error: 'x', at: at(999) }).steps[0]).toMatchObject({ status: 'failed', elapsedMs: 30000 });
     expect(applyEvent(one(), { type: 'error', error: 'x', at: at(20) }).steps[0]).toMatchObject({ status: 'failed', elapsedMs: 20000 });
@@ -778,5 +769,108 @@ describe('queued agent dispatch boundaries', () => {
     const next = applyEvent(pending, { type: 'input_received', at: AT });
     expect(next.definition.steps[0]).toEqual(pending.definition.steps[0]);
     expect(next.steps[0].sessionId).toBe('Demo-1');
+  });
+});
+
+describe('applyEvent continue — one more bounded round (limit recovery)', () => {
+  const agent = { id: 'agent-1', name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+  const loopDef = (max = 8) => ({
+    steps: [
+      { name: 'Develop', repeat: { mode: 'once' }, agent },
+      { name: 'Review', repeat: { mode: 'once' }, agent },
+      { name: 'Test', repeat: { mode: 'loop_back', toStepIndex: 0, max }, agent },
+    ],
+  });
+  const untilDef = (max = 2) => ({
+    steps: [{ name: 'Develop', repeat: { mode: 'until_complete', max } }],
+  });
+  function pausedLoop(overrides = {}) {
+    return run({
+      status: 'limit_paused',
+      currentStepIndex: 2,
+      definition: loopDef(),
+      steps: [
+        step({ status: 'pending', attempt: 1 }),
+        step({ status: 'pending', attempt: 1 }),
+        step({ status: 'limit_reached', attempt: 1, iteration: 1, roundsCompleted: 7, sessionId: 'Demo-3', startedAt: AT, finishedAt: AT, elapsedMs: 10 }),
+      ],
+      ...overrides,
+    });
+  }
+
+  it('a capped final loop sends Develop the next round instead of completing', () => {
+    const next = applyEvent(pausedLoop(), { type: 'continue', at: AT });
+    expect(next.status).toBe('running');
+    expect(next.currentStepIndex).toBe(0);
+    // The capped round counts as done, so the cap pauses again after exactly one more round.
+    expect(next.steps[2]).toMatchObject({ status: 'pending', roundsCompleted: 8, extraRounds: 1 });
+    expect(next.steps.map(s => s.status)).not.toContain('limit_accepted');
+    expect(next.finishedAt).toBeNull();
+  });
+
+  it('a capped intermediate loop keeps later steps pending instead of advancing', () => {
+    const def = {
+      steps: [
+        { name: 'Develop', repeat: { mode: 'once' } },
+        { name: 'Test', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 } },
+        { name: 'Commit', repeat: { mode: 'once' } },
+      ],
+    };
+    for (const stepDef of def.steps) stepDef.agent = agent;
+    const state = run({
+      status: 'limit_paused',
+      currentStepIndex: 1,
+      definition: def,
+      steps: [
+        step({ status: 'pending', attempt: 1 }),
+        step({ status: 'limit_reached', attempt: 1, iteration: 1, roundsCompleted: 7, startedAt: AT, finishedAt: AT, elapsedMs: 5 }),
+        step({ status: 'pending' }),
+      ],
+    });
+    const next = applyEvent(state, { type: 'continue', at: AT });
+    expect(next.status).toBe('running');
+    expect(next.currentStepIndex).toBe(0);
+    expect(next.steps[1]).toMatchObject({ status: 'pending', roundsCompleted: 8, extraRounds: 1 });
+    expect(next.steps[2].status).toBe('pending');
+  });
+
+  it('a capped until_complete step relaunches the same step for one more pass', () => {
+    const state = run({
+      status: 'limit_paused',
+      currentStepIndex: 0,
+      definition: untilDef(),
+      steps: [step({ status: 'limit_reached', attempt: 2, iteration: 2, startedAt: AT, finishedAt: AT, elapsedMs: 5 })],
+    });
+    const next = applyEvent(state, { type: 'continue', at: AT });
+    expect(next.status).toBe('running');
+    expect(next.currentStepIndex).toBe(0);
+    // The pass count carries on, so the raised limit allows exactly one more pass.
+    expect(next.steps[0]).toMatchObject({ status: 'launching', attempt: 3, iteration: 2, extraRounds: 1 });
+    expect(next.finishedAt).toBeNull();
+  });
+
+  it('refuses a grant bound to a different pause than the one on screen', () => {
+    expect(() => applyEvent(pausedLoop(), { type: 'continue', at: AT, grant: { stepIndex: 2, roundsCompleted: 6 } }))
+      .toThrow(/pause/i);
+    expect(() => applyEvent(pausedLoop(), { type: 'continue', at: AT, grant: { stepIndex: 1, roundsCompleted: 7 } }))
+      .toThrow(/pause/i);
+    // Same step and rounds, but an earlier pause: its grants taken differ.
+    expect(() => applyEvent(pausedLoop(), { type: 'continue', at: AT, grant: { stepIndex: 2, roundsCompleted: 7, extraRounds: 1 } }))
+      .toThrow(/pause/i);
+    expect(applyEvent(pausedLoop(), { type: 'continue', at: AT, grant: { stepIndex: 2, roundsCompleted: 7, extraRounds: 0 } }).status).toBe('running');
+  });
+
+  it('keeps the queued replacement turn and still grants only one round', () => {
+    const replacement = { id: 'agent-2', name: 'relay', launchCommand: 'relay' };
+    const testStep = { name: 'Test', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, agent: { id: 'agent-1', name: 'codex', launchCommand: 'codex', resetCommand: '/clear' }, nextAgent: replacement };
+    const state = pausedLoop({
+      definition: { steps: [...loopDef().steps.slice(0, 2), testStep] },
+    });
+    const next = applyEvent(state, { type: 'continue', at: AT });
+    expect(next.status).toBe('running');
+    expect(next.currentStepIndex).toBe(2);
+    expect(next.definition.steps[2]).toEqual({ name: 'Test', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, agent: replacement });
+    // The replacement's turn is the granted round: a further request pauses again.
+    expect(next.steps[2]).toMatchObject({ status: 'launching', extraRounds: 1, roundsCompleted: 8 });
   });
 });

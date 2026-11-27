@@ -5,7 +5,7 @@ import ChangeRunTeam from '../pipelines/ChangeRunTeam';
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, CheckCircle2, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'lucide-react';
 import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
-import { describeAuditIntervals, describeRunDuration, describeRunStatus, describeStepDuration, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
+import { describeAuditIntervals, describeLimitPause, describeRunCompletion, describeRunDuration, describeRunStatus, describeStepDuration, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
 import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
 import ApprovalReview from './ApprovalReview.jsx';
 import QuestionsPanel from './QuestionsPanel.jsx';
@@ -206,6 +206,32 @@ export default function TaskView({
     if (followSessionId) activateRef.current(followSessionId);
   }, [run.id, currentIndex, followSessionId]);
   const status = describeRunStatus(run);
+  // A run closed by accepting the limit keeps its audit and notes, but reads Ended at
+  // limit with only verified steps counted — never the green completion banner.
+  const completion = run.status === 'complete' ? describeRunCompletion(run) : null;
+  // The capped pause the next Continue grants one more round for, if the run is capped.
+  const pause = describeLimitPause(run);
+  const capped = pause && run.steps.find(step => step.index === pause.stepIndex);
+  const capUnit = pause?.repeatMode === 'until_complete' ? 'pass' : 'round';
+  const usedRounds = pause ? pause.maxRounds + pause.extraRounds : 0;
+  const capUnitWords = usedRounds === 1 ? capUnit : (capUnit === 'pass' ? 'passes' : `${capUnit}s`);
+  const capWords = pause ? `${pause.stepName} paused at its limit: ${usedRounds} ${capUnitWords} used of ${pause.maxRounds} allowed${pause.extraRounds > 0 ? ` + ${pause.extraRounds} granted` : ''}.` : null;
+  // One limit-recovery action at a time: while the grant or stop is in flight both
+  // buttons stay disabled, so a rapid second click cannot fire a duplicate request.
+  // The handlers toast their own failures; anything they throw still surfaces after the reset.
+  const [limitBusy, setLimitBusy] = useState(false);
+  const limitBusyRef = useRef(false);
+  const runLimitAction = async action => {
+    if (limitBusyRef.current) return;
+    limitBusyRef.current = true;
+    setLimitBusy(true);
+    try {
+      await action();
+    } finally {
+      limitBusyRef.current = false;
+      setLimitBusy(false);
+    }
+  };
   // The run's time and any working step's time are counted on this device once a second.
   const [now, setNow] = useState(() => Date.now());
   const duration = describeRunDuration(run, now);
@@ -228,7 +254,7 @@ export default function TaskView({
 
   return (
     <div data-testid="task-view" className="task-view pipeline-run-bar">
-      <header className="task-view-header" data-run-status={run.status}>
+      <header className="task-view-header" data-run-status={completion?.endedAtLimit ? 'ended_at_limit' : run.status}>
         <div className="pipeline-run-heading">
           <strong className="pipeline-run-name" title={tooltip}>{heading}</strong>
           {run.team !== undefined && <RunTeam team={run.team} />}
@@ -241,8 +267,8 @@ export default function TaskView({
             aria-label={`${duration.live ? 'Run time so far' : 'Run time'}: ${duration.words}`}>{duration.live ? duration.words : `took ${duration.words}`}</span>
           {run.agentsDecide && <span title="Agents in this run go with their own recommendations instead of pausing for you" className="pipeline-run-agents-decide">agents decide{run.decisionCount > 0 ? ` · ${run.decisionCount} so far` : ''}</span>}
           <div className="pipeline-run-actions">
-            {run.actions?.stop && !['interrupted', 'stopped', 'error', 'complete'].includes(run.status) && <button type="button" onClick={() => onStop(run.id)}>Stop</button>}
-            {run.actions?.continue && <button type="button" onClick={() => onContinue(run.id)} className={status.primaryAction === 'continue' ? 'pipeline-run-primary' : undefined}>Continue</button>}
+            {run.actions?.stop && !['interrupted', 'stopped', 'error', 'complete'].includes(run.status) && !(pause && run.actions?.continue) && <button type="button" onClick={() => onStop(run.id)}>Stop</button>}
+            {run.actions?.continue && !pause && <button type="button" onClick={() => onContinue(run.id)} className={status.primaryAction === 'continue' ? 'pipeline-run-primary' : undefined}>Continue</button>}
             {/* Always in view until the run is complete, so it can be found; the backend only takes it from a run that is not working. */}
             {run.status !== 'complete' && <ChangeRunTeam run={run} disabledReason={run.actions?.resume ? null : 'Stop the run to change its team. Steps already done keep their agents.'} />}
             {run.actions?.resume && <button type="button" onClick={() => { if (window.confirm(resumeConfirmation(run, current))) onResume(run.id); }} className={status.primaryAction === 'resume' ? 'pipeline-run-primary' : undefined}>Resume</button>}
@@ -256,6 +282,16 @@ export default function TaskView({
           </div>
         </div>
         {progress && <div title={run.progress.file} className="pipeline-run-progress"><span className={progress.tone === 'plain' ? 'pipeline-run-progress-phase' : `pipeline-run-${progress.tone}`}>{progress.text}</span>{progress.detail && <span className="pipeline-run-muted">{` · ${progress.detail}`}</span>}</div>}
+        {pause && run.actions?.continue && (
+          <div className="pipeline-run-limit" role="status" aria-label="Paused at its limit">
+            <span className="pipeline-run-limit-words">{capWords}</span>
+            {capped?.note?.summary && <span className="pipeline-run-limit-finding" title="Latest finding on the capped step">{`Latest finding: ${capped.note.summary}`}</span>}
+            <span className="pipeline-run-limit-actions">
+              <button type="button" disabled={limitBusy} onClick={() => runLimitAction(() => onContinue(run.id, { stepIndex: pause.stepIndex, roundsCompleted: pause.roundsCompleted, extraRounds: pause.extraRounds }))} className={status.primaryAction === 'continue' ? 'pipeline-run-primary' : undefined}>{pause.actionLabel}</button>
+              <button type="button" disabled={limitBusy} onClick={() => runLimitAction(() => onStop(run.id))}>Stop with work remaining</button>
+            </span>
+          </div>
+        )}
         {run.status === 'needs_input' && run.inputRequest === null && (
           <div className="pipeline-run-warning">
             {`${current.name} is paused on a terminal dialog (not a workflow question). Answer or dismiss the prompt directly in its terminal below.`}
@@ -268,19 +304,30 @@ export default function TaskView({
               : `This loop ran ${NO_PROGRESS_ROUNDS} rounds without finishing. Check what the steps reported, then Resume to try again.`}
           </div>
         )}
-        {run.status === 'complete' && (
+        {run.status === 'complete' && !completion.endedAtLimit && (
           <div className="task-complete-banner" role="status" aria-label="Workflow complete">
             <span className="task-complete-badge" aria-hidden="true"><CheckCircle2 size={18} strokeWidth={2.2} /></span>
             <div className="task-complete-copy">
               <div className="task-complete-heading">
                 <strong className="task-complete-title">Workflow complete</strong>
-                <span className="task-complete-meta">{`${run.steps.filter(s => s.status === 'complete' || s.status === 'limit_accepted').length}/${run.steps.length} steps done · ${duration.words}`}</span>
+                <span className="task-complete-meta">{`${completion.successfulSteps}/${completion.totalSteps} steps done · ${duration.words}`}</span>
               </div>
               <div className="task-complete-text">{run.worktree?.state === 'external'
                 ? (inTask
                   ? 'This run has finished. Its work is in the task: commit, merge or open a pull request from the bar above. Close run takes the run off the screen and closes the terminals it used.'
                   : 'This run has finished. Close run takes it off the screen and closes the terminals it used.')
                 : 'All steps finished. Review the work or clean up the worktree when ready.'}</div>
+            </div>
+          </div>
+        )}
+        {run.status === 'complete' && completion.endedAtLimit && (
+          <div className="task-complete-banner task-complete-ended" role="status" aria-label="Ended at limit">
+            <div className="task-complete-copy">
+              <div className="task-complete-heading">
+                <strong className="task-complete-title">Ended at limit</strong>
+                <span className="task-complete-meta">{`${completion.successfulSteps}/${completion.totalSteps} steps done · ${duration.words}`}</span>
+              </div>
+              <div className="task-complete-text">This run stopped at its limit and was closed with work remaining. Only verified steps count as done. Its audit and notes are preserved below.</div>
             </div>
           </div>
         )}

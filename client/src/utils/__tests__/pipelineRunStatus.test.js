@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeRunStatus, describeStepState, describeStepProgress, describeStepDuration, describeRunDuration } from '../pipelineRunStatus';
+import { describeRunStatus, describeRunCompletion, describeStepState, describeStepProgress, describeStepDuration, describeRunDuration, describeLimitPause } from '../pipelineRunStatus';
 
 describe('describeRunStatus', () => {
   it('shows a no-progress stop as waiting for the owner', () => {
@@ -69,10 +69,12 @@ describe('describeStepProgress', () => {
     [{ status: 'complete', repeat: passes, iteration: 1, roundsCompleted: 0 }, 'Done', '1 pass'],
     [{ status: 'complete', repeat: passes, iteration: 3, roundsCompleted: 0 }, 'Done', '3 passes'],
     [{ status: 'limit_reached', repeat: passes, iteration: 5, roundsCompleted: 0 }, 'Paused at its limit', 'pass 5 of 5'],
+    [{ status: 'running', repeat: passes, iteration: 6, roundsCompleted: 0, extraRounds: 1 }, 'Running', 'pass 6 of 6'],
     [{ status: 'limit_accepted', repeat: passes, iteration: 5, roundsCompleted: 0 }, 'Stopped at its limit; you continued', '5 passes'],
     [{ status: 'running', repeat: loop, iteration: 1, roundsCompleted: 3 }, 'Running', 'round 4 of 12'],
     [{ status: 'complete', repeat: loop, iteration: 1, roundsCompleted: 0 }, 'Done', '1 round'],
     [{ status: 'limit_reached', repeat: loop, iteration: 1, roundsCompleted: 11 }, 'Paused at its limit', 'round 12 of 12'],
+    [{ status: 'limit_reached', repeat: loop, iteration: 1, roundsCompleted: 11, extraRounds: 1 }, 'Paused at its limit', 'round 12 of 13'],
     [{ status: 'limit_accepted', repeat: loop, iteration: 1, roundsCompleted: 11 }, 'Stopped at its limit; you continued', '12 rounds'],
   ])('%j reads %s (%s)', (step, label, detail) => {
     expect(describeStepProgress(step)).toEqual({ label, detail });
@@ -189,4 +191,58 @@ it('totals recorded intervals per attempt, with owner, handoff and unobserved ti
     {attempt:1,words:'Launch 1s · Work observed 2s · Owner wait 1s · Handoff 2s · Unclassified 4s'},
     {attempt:2,words:'No closed interval yet'},
   ]);
+});
+
+describe('describeLimitPause', () => {
+  it('names the capped step, its cap, any grant, and the round or pass wording', () => {
+    const paused = (step, extra = {}) => ({
+      id: 'run-1', status: 'limit_paused', currentStepIndex: 1,
+      steps: [
+        { index: 0, name: 'Develop', repeat: { mode: 'once' }, status: 'pending', roundsCompleted: 0, extraRounds: 0 },
+        { index: 1, name: 'Test', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, status: 'limit_reached', roundsCompleted: 7, extraRounds: 0, ...step },
+      ],
+      ...extra,
+    });
+    expect(describeLimitPause(paused())).toMatchObject({
+      stepIndex: 1, stepName: 'Test', repeatMode: 'loop_back', maxRounds: 8, extraRounds: 0, roundsCompleted: 7,
+      actionLabel: 'Run one more round',
+    });
+    expect(describeLimitPause(paused({ extraRounds: 1 })).extraRounds).toBe(1);
+    const pass = paused({ repeat: { mode: 'until_complete', max: 3 }, roundsCompleted: 0, iteration: 3 });
+    expect(describeLimitPause(pass)).toMatchObject({ repeatMode: 'until_complete', actionLabel: 'Run one more pass' });
+    expect(describeLimitPause({ ...paused(), status: 'running' })).toBeNull();
+  });
+});
+
+describe('describeRunCompletion', () => {
+  const steps = [
+    { status: 'complete' },
+    { status: 'complete' },
+    { status: 'limit_accepted' },
+  ];
+  it('marks a complete run with an accepted limit as ended at its limit', () => {
+    expect(describeRunCompletion({ status: 'complete', steps })).toEqual({ endedAtLimit: true, successfulSteps: 2, totalSteps: 3 });
+  });
+  it('keeps a verified run as complete with every step counted', () => {
+    expect(describeRunCompletion({ status: 'complete', steps: [{ status: 'complete' }, { status: 'complete' }] }))
+      .toEqual({ endedAtLimit: false, successfulSteps: 2, totalSteps: 2 });
+  });
+  it('rejects malformed runs', () => {
+    expect(() => describeRunCompletion(null)).toThrow(/run/);
+    expect(() => describeRunCompletion({ status: 'complete' })).toThrow(/steps/);
+  });
+});
+
+describe('describeRunStatus for an accepted limit', () => {
+  const accepted = {
+    status: 'complete',
+    actions: { cleanup: true },
+    steps: [{ status: 'complete' }, { status: 'limit_accepted' }],
+  };
+  it('shows Ended at limit without the green completion tone', () => {
+    expect(describeRunStatus(accepted)).toEqual({ label: 'Ended at limit', tone: 'neutral', primaryAction: 'cleanup', needsOwner: false });
+  });
+  it('keeps a verified run green', () => {
+    expect(describeRunStatus({ status: 'complete', actions: { cleanup: true }, steps: [{ status: 'complete' }] }).label).toBe('Complete');
+  });
 });

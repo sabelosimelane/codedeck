@@ -630,6 +630,34 @@ export function validateRunApproveBody(body) {
   return errors;
 }
 
+/**
+ * Body of POST /runs/:id/continue: the pause the owner saw. Left out, a client from
+ * before pause-bound grants still grants one round for the current pause. Given, both
+ * fields must name the paused step and its completed rounds exactly.
+ */
+export function validateRunContinueBody(body) {
+  const errors = [];
+  if (body === undefined) return errors;
+  if (!rejectUnknown(errors, body, ['stepIndex', 'roundsCompleted', 'extraRounds'])) return errors;
+  const { stepIndex, roundsCompleted, extraRounds } = body;
+  if (stepIndex !== undefined && (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex > 32)) {
+    add(errors, 'stepIndex', 'Use the index of the paused step, 0–32');
+  }
+  if (roundsCompleted !== undefined && (!Number.isInteger(roundsCompleted) || roundsCompleted < 0)) {
+    add(errors, 'roundsCompleted', 'Use the completed rounds of the paused step, 0 or more');
+  }
+  if (stepIndex === undefined !== (roundsCompleted === undefined)) {
+    add(errors, stepIndex === undefined ? 'stepIndex' : 'roundsCompleted', 'Send both pause fields together, or neither');
+  }
+  // Grants already taken tell two pauses of the same step and rounds apart (an until_complete step).
+  if (extraRounds !== undefined && (!Number.isInteger(extraRounds) || extraRounds < 0 || extraRounds > 100)) {
+    add(errors, 'extraRounds', 'Use the grants already taken at the paused step, 0–100');
+  } else if (extraRounds !== undefined && stepIndex === undefined) {
+    add(errors, 'extraRounds', 'Send the grants taken with the paused step and its completed rounds');
+  }
+  return errors;
+}
+
 export function validateRunSendBackBody(body) {
   const errors = [];
   if (!rejectUnknown(errors, body, ['comment'])) return errors;

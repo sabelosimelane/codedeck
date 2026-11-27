@@ -38,7 +38,12 @@ const ownEnvironment = 'Set up what a check needs yourself (the app run from the
 const acceptance = `Record the agreed acceptance checks in your note. For each, say how an agent will verify it itself on this machine: the command, or the app run from the worktree with test data, a test sign-in, an emulator or simulator. Mark a check owner-only only when it needs what no agent here can have (${ownerOnly}); give the reason and what an agent will verify of it instead, and list these under the heading Owner checks, each with what the owner should do and expect. The owner carries them out after the run; no step waits for them.`;
 const planOwnerChecks = `Say in each such task how an agent will verify it itself on this machine. A check that needs what no agent here can have (${ownerOnly}) is owner-only and is not a task: list it under ## Owner checks at the end of plan.md as a plain bullet without a box, with the reason, what the owner should do and expect, and what an agent verifies of it instead. The owner carries these out after the run; no step waits for them.`;
 const testOwnerChecks = ownEnvironment + ' The Owner checks in plan.md do not wait: verify what an agent can of each and repeat them in your note with what the owner should do and expect. If an unticked task turns out to need what no agent here can have, or an artifact from a later step, use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether it becomes an owner check; when the owner says so, move it to Owner checks in plan.md. Do not repeat passing tests on an unchanged diff.';
-const verification = 'Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. ' + ownEnvironment + ' For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. An owner-only check does not wait: verify what an agent can of it, and list it under Owner checks in your note with exactly what the owner should do and expect (for example, "Backend verified. Owner check: phone prompt."). If a check that is not marked owner-only turns out to need what no agent here can have, use NEEDS_INPUT once, say what you tried, and ask whether it becomes an owner check. Only the owner may drop a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence, was marked owner-only when the checks were agreed or by the owner since, or has an explicit owner-approved scope change.';
+const verificationIntro = 'Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. ' + ownEnvironment + ' For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. ';
+const verificationOwnerChecks = 'An owner-only check does not wait: verify what an agent can of it, and list it under Owner checks in your note with exactly what the owner should do and expect (for example, "Backend verified. Owner check: phone prompt."). If a check that is not marked owner-only turns out to need what no agent here can have, use NEEDS_INPUT once, say what you tried, and ask whether it becomes an owner check. Only the owner may drop a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence, was marked owner-only when the checks were agreed or by the owner since, or has an explicit owner-approved scope change.';
+const previousVerification = verificationIntro + verificationOwnerChecks;
+const verification = verificationIntro
+  + 'Run focused checks during repair; run the final suite once per changed repository on the final revision. '
+  + verificationOwnerChecks;
 const commitReleaseNotes = 'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically.';
 const commitOutcome = 'In your final note carry forward the verified outcome, evidence for each agreed check, any owner-approved deferrals and, under the heading Owner checks, every check the owner still has to carry out with what to do and expect, followed by each repository, branch and HEAD.';
 
@@ -48,23 +53,33 @@ const commitOutcome = 'In your final note carry forward the verified outcome, ev
 const BUG_FIX_SPECIFY = 'Read the Analyse note. In your run note specify the fix for {input}: the behaviour to change, what must stay the same, likely files, and tests that will prove it. Change no code. ' + acceptance + ' Write plan.md in the run notes folder named by its README. Size the plan to the fix: a fix one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each agreed check that is not owner-only as a task in the phase that builds what it checks, and say in the task how an agent will verify it. Use ## Phase N: <title> sections with - [ ] tasks. The phases together must cover every agreed check. In your run note summarise the plan and say why it has as many phases as it has. If the agreed checks do not fit in 4 such phases, or the fix redesigns how a system works rather than correcting what goes wrong, do not stretch the phases: start your run note with a line beginning "Scope warning:" that says why, recommend narrowing the fix to the reported fault with the rest listed as follow-up work, or running the rest as a feature workflow, and plan only the narrowed fix. The owner reads this note before approving it.';
 const BUG_FIX_DEVELOP = 'Build the first phase in plan.md with unticked tasks, following the Specify note for {input}. Build all of that phase, not a slice of it. Write failing tests first, make them pass, tick each task when done, leave changes uncommitted for Review and Commit (do not run git commit), and record what changed and what remains.';
 const BUG_FIX_REVIEW = 'Review the changes for the phase or fix just built (both uncommitted changes and any commits since the base commit) against plan.md and the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified work. Fix every defect you find, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record your findings and fixes.';
-const BUG_FIX_TEST = 'Test the phase just built against the agreed checks from the Specify note. Untick any task in plan.md that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase and report CONTINUE. When none is left, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Do not repeat passing tests on an unchanged diff. ' + verification;
+const BUG_FIX_TEST_INTRO = 'Test the phase just built against the agreed checks from the Specify note. Untick any task in plan.md that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase and report CONTINUE. When none is left, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Do not repeat passing tests on an unchanged diff. ';
+const UNPHASED_BUG_FIX_TEST_INTRO = 'Run tests covering the change and the agreed checks from the Specify note. ';
+const QUICK_CHANGE_TEST_INTRO = 'Review the changes on this branch against the Scope note, fix any defect you find, and run tests covering the change and the agreed checks from the Scope note. On a repeat pass, read your previous note and focus on what changed since that pass. ';
+const TROUBLESHOOT_VERIFY_INTRO = 'Read the agreed checks in the Clarify note. Repeat the original symptom check from the Investigate note, run the Prove test and tests around the change. ';
+
+// Exact version 1 verification prompts also appear in saved local copies and run snapshots.
+export const PREVIOUS_VERIFICATION_PROMPTS = Object.freeze({
+  'bug-fix': BUG_FIX_TEST_INTRO + previousVerification,
+  'quick-change': QUICK_CHANGE_TEST_INTRO + previousVerification,
+  troubleshoot: TROUBLESHOOT_VERIFY_INTRO + previousVerification,
+  unphasedBugFix: UNPHASED_BUG_FIX_TEST_INTRO + previousVerification,
+});
 
 /**
- * The Bug fix Specify, Develop, Review and Test prompts as they were before the fix was planned in
- * phases. A saved Bug fix still holding all four unchanged is brought to the phased prompts together,
- * and a run started before then still treats its Test step as the verification step.
+ * The Bug fix prompts for the layout before phased fixes, with current verification guidance.
+ * A saved Bug fix still holding all four prompts upgrades to the phased layout as a unit.
  */
 export const PREVIOUS_BUG_FIX_PROMPTS = Object.freeze({
   Specify: 'Read the Analyse note. In your run note specify the fix for {input}: the behaviour to change, what must stay the same, likely files, and tests that will prove it. Change no code. ' + acceptance,
   Develop: 'Implement the Specify note for {input}. Write a failing test first, then make it pass. Keep the change as small as the specification allows. Leave changes uncommitted for Review and Commit; do not run git commit. Record what changed and what remains.',
   Review: 'Review the changes on this branch (both uncommitted changes and any commits since the base commit) against the Specify note. On a repeat pass, read your previous Review and Test notes and review only what changed since that pass instead of re-auditing already-verified work. Fix every defect you find, do not run broad test suites that the Test step will run next (run a targeted test only when needed to verify a defect you fixed yourself), and record your findings and fixes.',
-  Test: 'Run tests covering the change and the agreed checks from the Specify note. ' + verification,
+  Test: UNPHASED_BUG_FIX_TEST_INTRO + verification,
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
   Object.freeze({
-    version: 1,
+    version: 2,
     id: 'bug-fix', name: 'Bug fix', kind: 'bugfix', description: 'Investigate, agree on a fix, build, review, test and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       clarify(),
@@ -72,17 +87,17 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
       node('Specify', 'Planner', BUG_FIX_SPECIFY, once(), true, true),
       node('Develop', 'Developer', BUG_FIX_DEVELOP),
       node('Review', 'Reviewer', BUG_FIX_REVIEW),
-      node('Test', 'Tester', BUG_FIX_TEST, loop(8), false, false, true),
+      node('Test', 'Tester', BUG_FIX_TEST_INTRO + verification, loop(8), false, false, true),
       node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message describing the fix for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
   Object.freeze({
-    version: 1,
+    version: 2,
     id: 'quick-change', name: 'Quick change', kind: 'build', description: 'Scope a small change, implement it, review and test in one pass, and commit.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       node('Scope', 'Analyst', 'Read {input} and the code it touches. Change nothing. Check whether any referenced or read-only repository must change, what behaviour must change, what must stay the same, likely files, and tests that will prove it. First look for each of these yourself in the code and documents. For anything you could not find and cannot safely assume, or if a repository is missing from this task\'s worktrees, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the scope and likely files. ' + acceptance, once(), true, false, true),
       node('Develop', 'Developer', 'Implement the Scope note for {input}. Write a failing test first, then make it pass. Keep the change as small as the scope allows. Leave changes uncommitted for Review & Test and Commit; do not run git commit. Record what changed and what remains.'),
-      node('Review & Test', 'Tester', 'Review the changes on this branch against the Scope note, fix any defect you find, and run tests covering the change and the agreed checks from the Scope note. On a repeat pass, read your previous note and focus on what changed since that pass. ' + verification, loop(3), false, false, true),
+      node('Review & Test', 'Tester', QUICK_CHANGE_TEST_INTRO + verification, loop(3), false, false, true),
       node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message describing the change for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),
@@ -121,14 +136,14 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
     ]),
   }),
   Object.freeze({
-    version: 1,
+    version: 2,
     id: 'troubleshoot', name: 'Troubleshoot', kind: 'troubleshoot', description: 'Gather evidence, agree on a cause, prove it with a failing test, fix and verify.', agentsDecide: false, progressFile: null,
     nodes: Object.freeze([
       node('Clarify', 'Investigator', CLARIFY_PROMPT + ' ' + acceptance, once(), true, false, true),
       node('Investigate', 'Investigator', 'Investigate {input}. Change no code. Record observations from logs or error output, data or state, and the relevant code path. Cite commands and output or files and lines. Identify the original symptom check for Verify to repeat. State the likely cause, evidence for it, evidence against it, alternatives ruled out and why, what you could not check, and one test that would disprove the cause. If evidence is insufficient, use NEEDS_INPUT with the specific question.', once(), true, true),
       node('Prove', 'Tester', 'Write the test named in the approved Investigate note so that it fails for the stated cause of {input}, and run it. Change no production code. If the test passes, the hypothesis is wrong: record what you saw and report NEEDS_INPUT. Otherwise record the test and its failing output.'),
       node('Fix', 'Developer', 'Make the failing test from the Prove note pass with the smallest change that removes the cause. Do not weaken or delete the test. Record what changed and why it removes the cause.'),
-      node('Verify', 'Tester', 'Read the agreed checks in the Clarify note. Repeat the original symptom check from the Investigate note, run the Prove test and tests around the change. ' + verification, loop(3, 'Fix'), false, false, true),
+      node('Verify', 'Tester', TROUBLESHOOT_VERIFY_INTRO + verification, loop(3, 'Fix'), false, false, true),
       node('Commit', 'Committer', commitReleaseNotes + ' Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. ' + commitOutcome),
     ]),
   }),

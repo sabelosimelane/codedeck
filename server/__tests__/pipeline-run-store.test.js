@@ -866,3 +866,69 @@ it('commits an audit event atomically with the transition and rejects an invalid
   expect(page.data.map(row=>row.kind)).toEqual(['created','start']);
   expect(page.data[1]).toMatchObject({host:'local',worktreePath:run.worktreePath,agentName:'codex',sessionId:null});
 });
+
+describe('pipeline run store — owner-granted extra rounds', () => {
+  function loopingRun() {
+    const def = definition({
+      steps: [
+        {
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
+          name: 'Develop', prompt: 'do it', repeat: { mode: 'once' },
+          agent: { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' },
+        },
+        {
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
+          name: 'Test', prompt: 'check it', repeat: { mode: 'loop_back', toStepIndex: 0, max: 2 },
+          agent: { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' },
+        },
+      ],
+    });
+    return validRun({ definition: def });
+  }
+
+  it('stores no grant by default and keeps a granted round inside the raised cap', () => {
+    const { store } = setup();
+    const created = store.create(loopingRun());
+    expect(created.steps.map(s => s.extraRounds)).toEqual([0, 0]);
+    const granted = store.update(created.id, { steps: created.steps.map((s, index) => (index === 1 ? { ...s, extraRounds: 1 } : s)) });
+    expect(granted.steps.map(s => s.extraRounds)).toEqual([0, 1]);
+  });
+
+  it('lets a granted round finish at the configured maximum but not past the grant', () => {
+    const { store } = setup();
+    const run = loopingRun();
+    run.steps[1] = { ...step(), extraRounds: 1, roundsCompleted: 2 };
+    expect(store.create(run).steps[1]).toMatchObject({ extraRounds: 1, roundsCompleted: 2 });
+    const past = loopingRun();
+    past.steps[1] = { ...step(), extraRounds: 1, roundsCompleted: 3 };
+    expect(() => store.create(past)).toThrow('steps[1].roundsCompleted');
+  });
+
+  it.each([undefined, null, -1, 1.5, '1'])('rejects a step whose extraRounds is %s', (extraRounds) => {
+    const { store } = setup();
+    const run = loopingRun();
+    run.steps[1] = { ...step(), extraRounds };
+    expect(() => store.create(run)).toThrow('steps[1].extraRounds');
+  });
+
+  it('rejects a grant on a step that runs once, and allows one on an until_complete step', () => {
+    const { store } = setup();
+    const once = loopingRun();
+    once.steps[0] = { ...step(), extraRounds: 1 };
+    expect(() => store.create(once)).toThrow('steps[0].extraRounds');
+    const until = loopingRun();
+    until.definition.steps[1] = { ...until.definition.steps[1], repeat: { mode: 'until_complete', max: 2 } };
+    until.steps[1] = { ...step(), extraRounds: 1 };
+    expect(store.create(until).steps[1].extraRounds).toBe(1);
+  });
+
+  it('upgrades runs stored before grants existed to zero granted rounds', () => {
+    const { db, store } = setup();
+    const created = store.create(loopingRun());
+    const strip = ({ extraRounds: _dropped, ...rest }) => rest;
+    db.prepare('UPDATE pipeline_runs SET steps = ? WHERE id = ?').run(JSON.stringify(created.steps.map(strip)), created.id);
+    expect(JSON.parse(db.prepare('SELECT steps FROM pipeline_runs WHERE id = ?').get(created.id).steps)[1]).not.toHaveProperty('extraRounds');
+    expect(createRunStore(db).get(created.id).steps.map(s => s.extraRounds)).toEqual([0, 0]);
+    expect(JSON.parse(db.prepare('SELECT steps FROM pipeline_runs WHERE id = ?').get(created.id).steps)[1].extraRounds).toBe(0);
+  });
+});

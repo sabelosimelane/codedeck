@@ -62,6 +62,17 @@ describe('a task on the phone', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back to sessions' }));
     expect(onBack).toHaveBeenCalledTimes(1);
   });
+  it('shows a historical accepted limit with the verified count and preserves the step note', async () => {
+    const record = completeRun();
+    record.steps[1] = { ...record.steps[1], status: 'limit_accepted', note: NOTE };
+    const { onLoadNotes } = show(record);
+    expect(screen.getByText('Ended at limit', { selector: '.m-state' })).toBeTruthy();
+    expect(screen.getByText('2/3 steps done')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Read full note' }));
+    await waitFor(() => expect(screen.getByText(/The greeting reads the first name/)).toBeTruthy());
+    expect(onLoadNotes).toHaveBeenCalledWith(RUN_ID, 0, 1);
+  });
+
   it('shows the phase the run is in', () => {
     show(run({ progress: { file: 'docs/todos/fix.md', status: 'in_progress', phaseCount: 3, phase: { number: 2, title: 'Greeting', tasksTotal: 5, tasksDone: 2 } } }));
     expect(screen.getByText('Phase 2 of 3: Greeting · 2 of 5 tasks done')).toBeTruthy();
@@ -122,10 +133,10 @@ describe('a run that cannot go on by itself', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(onAction).toHaveBeenCalledWith('resume', RUN_ID));
   });
-  it('offers to continue past a limit', () => {
+  it('offers one more pass at a capped limit', () => {
     const { onAction } = show(run({ status: 'limit_paused', actions: { ...run().actions, continue: true }, steps: [run().steps[0], { ...run().steps[1], status: 'limit_reached', repeat: { mode: 'until_complete', max: 3 }, iteration: 3 }, run().steps[2]] }));
-    fireEvent.click(screen.getByRole('button', { name: 'Continue past the limit' }));
-    expect(onAction).toHaveBeenCalledWith('continue', RUN_ID);
+    fireEvent.click(screen.getByRole('button', { name: 'Run one more pass' }));
+    expect(onAction).toHaveBeenCalledWith('continue', RUN_ID, { stepIndex: 1, roundsCompleted: 0, extraRounds: 0 });
     expect(steps()[1].querySelector('.m-step-meta').textContent).toBe('Paused at its limit · pass 3 of 3 · Fable Medium');
   });
   it('disables the action while another is being sent', () => {
@@ -155,5 +166,86 @@ describe('what the task screen requires', () => {
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(() => render(<TaskScreen row={null} busy={false} onBack={vi.fn()} onOpenSession={vi.fn()} onAnswer={vi.fn()} onApprove={vi.fn()} onSendBack={vi.fn()} onLoadNotes={vi.fn()} onAction={vi.fn()} />)).toThrow('task screen: row is required');
     quiet.mockRestore();
+  });
+});
+
+describe('limit recovery on the phone', () => {
+  const capped = run({ status: 'limit_paused', currentStepIndex: 1,
+    progress: { file: 'docs/todos/fix.md', status: 'in_progress', phaseCount: 6, phase: { number: 8, title: 'Relay', tasksTotal: 4, tasksDone: 2 } },
+    actions: { ...run().actions, stop: true, continue: true },
+    steps: [
+      run().steps[0],
+      { ...run().steps[1], status: 'limit_reached', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, roundsCompleted: 7, extraRounds: 0,
+        note: { status: 'written', summary: 'The queue stalled on a batch of one', attempt: 8, pass: 1, createdAt: '2026-11-10T17:50:00.000Z' } },
+      run().steps[2],
+    ] });
+  it('runs one more round or stops with the findings visible', () => {
+    const { onAction } = show(capped);
+    expect(screen.getByRole('button', { name: 'Run one more round' })).toBeTruthy();
+    expect(screen.getByText(/8 rounds/)).toBeTruthy();
+    expect(screen.getByText(/2 of 4 tasks done/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Run one more round' }));
+    expect(onAction).toHaveBeenCalledWith('continue', RUN_ID, { stepIndex: 1, roundsCompleted: 7, extraRounds: 0 });
+    fireEvent.click(screen.getByRole('button', { name: 'Stop with work remaining' }));
+    expect(onAction).toHaveBeenCalledWith('stop', RUN_ID);
+  });
+  it('names the pass for an until_complete pause', () => {
+    show(run({ status: 'limit_paused', actions: { ...run().actions, continue: true },
+      steps: [run().steps[0], { ...run().steps[1], status: 'limit_reached', repeat: { mode: 'until_complete', max: 3 }, iteration: 3, extraRounds: 0 }, run().steps[2]] }));
+    expect(screen.getByRole('button', { name: 'Run one more pass' })).toBeTruthy();
+  });
+  it('counts a granted round in the used rounds on the second pause', () => {
+    show(run({ status: 'limit_paused', currentStepIndex: 1,
+      actions: { ...run().actions, stop: true, continue: true },
+      steps: [run().steps[0],
+        { ...run().steps[1], status: 'limit_reached', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, roundsCompleted: 8, extraRounds: 1,
+          note: { status: 'written', summary: 'The queue still stalls', attempt: 9, pass: 1, createdAt: '2026-11-10T17:50:00.000Z' } },
+        run().steps[2]] }));
+    expect(screen.getByText('Fix paused at its limit: 9 rounds used of 8 allowed + 1 granted.')).toBeTruthy();
+  });
+  it('opens the full capped note from the pause', async () => {
+    const { onLoadNotes } = show(capped);
+    fireEvent.click(screen.getByRole('button', { name: 'Read full note' }));
+    await waitFor(() => expect(onLoadNotes).toHaveBeenCalledWith(RUN_ID, 0, 1));
+    await waitFor(() => expect(screen.getByText(/The greeting reads the first name/)).toBeTruthy());
+  });
+  it('says the capped note could not be loaded when the load fails, not that there is none', async () => {
+    // The app's loader toasts the failure and resolves null.
+    show(capped, { onLoadNotes: vi.fn(async () => null) });
+    fireEvent.click(screen.getByRole('button', { name: 'Read full note' }));
+    await waitFor(() => expect(screen.getByText('The step note could not be loaded.')).toBeTruthy());
+    expect(screen.queryByText('This step left no note.')).toBeNull();
+  });
+  it('says passes for an until_complete pause with multiple passes', () => {
+    show(run({ status: 'limit_paused', actions: { ...run().actions, continue: true },
+      steps: [run().steps[0],
+        { ...run().steps[1], status: 'limit_reached', repeat: { mode: 'until_complete', max: 3 }, iteration: 4, extraRounds: 1 },
+        run().steps[2]] }));
+    expect(screen.getByText('Fix paused at its limit: 4 passes used of 3 allowed + 1 granted.')).toBeTruthy();
+  });
+  it('does not keep showing the previous pause full note after a direct pause-to-pause refresh', async () => {
+    const round8 = { ...NOTE, attempt: 8, summary: 'Round 8 still stalls', content: '# Round 8 Test note REPAIR 8 PH1', createdAt: '2026-11-10T17:50:00.000Z' };
+    const round9 = { ...NOTE, attempt: 9, summary: 'Round 9 probe still fails', content: '# Round 9 Test note REPAIR 9 PH1', createdAt: '2026-11-10T17:55:00.000Z' };
+    const pause1 = run({ status: 'limit_paused', currentStepIndex: 1,
+      actions: { ...run().actions, stop: true, continue: true },
+      steps: [run().steps[0],
+        { ...run().steps[1], status: 'limit_reached', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, roundsCompleted: 7, extraRounds: 0, note: round8 },
+        run().steps[2]] });
+    const pause2 = run({ status: 'limit_paused', currentStepIndex: 1,
+      actions: { ...run().actions, stop: true, continue: true },
+      steps: [run().steps[0],
+        { ...run().steps[1], status: 'limit_reached', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, roundsCompleted: 8, extraRounds: 1, note: round9 },
+        run().steps[2]] });
+    let latest = [round8];
+    const handlers = {
+      onBack: vi.fn(), onOpenSession: vi.fn(), onAnswer: vi.fn(), onApprove: vi.fn(), onSendBack: vi.fn(),
+      onLoadNotes: vi.fn(async () => ({ notes: latest, hasNextPage: false, total: 1 })), onAction: vi.fn(),
+    };
+    const { rerender } = render(<TaskScreen row={rowOf(pause1)} busy={false} {...handlers} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Read full note' }));
+    await waitFor(() => expect(screen.getByText(/# Round 8 Test note REPAIR 8 PH1/)).toBeTruthy());
+    latest = [round9];
+    rerender(<TaskScreen row={rowOf(pause2)} busy={false} {...handlers} />);
+    expect(screen.queryByText(/# Round 8 Test note REPAIR 8 PH1/)).toBeNull();
   });
 });

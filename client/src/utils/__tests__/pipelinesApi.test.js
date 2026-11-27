@@ -362,3 +362,11 @@ describe('pipelinesApi', () => {
     });
   });
 });
+
+it('continueRun sends the pause the owner saw', async () => {
+  const run = { id: 'r1', status: 'running' };
+  global.fetch = vi.fn(async () => jsonResponse(run));
+  await expect(continueRun('r1', { stepIndex: 1, roundsCompleted: 7, extraRounds: 1 })).resolves.toEqual(run);
+  expect(global.fetch).toHaveBeenCalledWith('/api/pipelines/runs/r1/continue',
+    expect.objectContaining({ method: 'POST', body: JSON.stringify({ stepIndex: 1, roundsCompleted: 7, extraRounds: 1 }) }));
+});

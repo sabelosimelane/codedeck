@@ -236,7 +236,11 @@ export function usePipelineRuns({ projectName, showToast }) {
     [runAction],
   );
   const continueRun = useCallback(
-    (runId) => runAction((run) => `${run.workflowName || 'Workflow'} continued`, apiContinueRun, runId),
+    (runId, grant) => runAction((run) => {
+      const granted = Array.isArray(run.steps) ? run.steps.find(step => (step.extraRounds ?? 0) > 0) : undefined;
+      const pass = granted?.repeat?.mode === 'until_complete';
+      return `${run.workflowName || 'Workflow'} started one more ${pass ? 'pass' : 'round'}`;
+    }, (id) => apiContinueRun(id, grant), runId),
     [runAction],
   );
   const answerRun = useCallback(

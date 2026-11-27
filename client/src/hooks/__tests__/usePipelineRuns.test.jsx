@@ -796,3 +796,22 @@ describe('usePipelineRuns — decisions agents made', () => {
     expect(result.current.runs).toEqual([]);
   });
 });
+
+it('sends the pause the owner saw when granting one more round', async () => {
+  const paused = runView({ status: 'limit_paused', actions: { stop: true, resume: false, continue: true, cleanup: false } });
+  const running = runView({ status: 'running' });
+  global.fetch = vi.fn(async (url, options) => {
+    if (options?.method === 'POST' && String(url).includes('/continue')) return okRun(running);
+    if (String(url).includes('/runs?')) return okList([paused]);
+    return okList([]);
+  });
+  const { result } = renderHook(() => usePipelineRuns({ projectName: 'Demo', showToast }));
+  await waitFor(() => expect(result.current.runs).toHaveLength(1));
+  showToast.mockClear();
+  await act(async () => {
+    await result.current.continueRun('r1', { stepIndex: 1, roundsCompleted: 7, extraRounds: 1 });
+  });
+  const [url, options] = global.fetch.mock.calls.find(([called]) => String(called).includes('/continue'));
+  expect(JSON.parse(options.body)).toEqual({ stepIndex: 1, roundsCompleted: 7, extraRounds: 1 });
+  expect(showToast).toHaveBeenCalledWith({ type: 'success', message: expect.stringMatching(/one more round/i) });
+});

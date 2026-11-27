@@ -121,3 +121,18 @@ it('accepts the runs that ask and wait for approval', async () => {
   const request = vi.fn().mockResolvedValue(ok(pageOf([askingRun(), approvalRun({ id: '11111111-1111-4111-8111-111111111111' })])));
   expect((await api(request).listOpenRuns()).map(item => item.status)).toEqual(['needs_input', 'awaiting_approval']);
 });
+
+describe('limit recovery from the phone', () => {
+  it('continuePast sends the pause the owner saw', async () => {
+    const request = vi.fn().mockResolvedValue(ok(run()));
+    await api(request).continuePast(RUN_ID, { stepIndex: 1, roundsCompleted: 7, extraRounds: 1 });
+    const [url, options] = request.mock.calls[0];
+    expect(url).toBe(`https://host.tail.ts.net:8443/api/pipelines/runs/${RUN_ID}/continue`);
+    expect(JSON.parse(options.body)).toEqual({ stepIndex: 1, roundsCompleted: 7, extraRounds: 1 });
+  });
+  it('stop ends the run with what remains', async () => {
+    const request = vi.fn().mockResolvedValue(ok(run()));
+    await api(request).stop(RUN_ID);
+    expect(request.mock.calls[0][0]).toBe(`https://host.tail.ts.net:8443/api/pipelines/runs/${RUN_ID}/stop`);
+  });
+});

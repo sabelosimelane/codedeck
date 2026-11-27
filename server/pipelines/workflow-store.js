@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { validateWorkflowBody, isProgressFileTemplate, isUuid, loopTargetIndex, WORKFLOW_KINDS, DESCRIPTION_MAX } from '../../shared/pipeline-definitions.mjs';
-import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workflow-templates.mjs';
+import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS, PREVIOUS_VERIFICATION_PROMPTS } from '../../shared/workflow-templates.mjs';
 import { canonicalDefinition } from '../../shared/workflow-changes.mjs';
 import { isUuidV4 } from '../../shared/workflow-package.mjs';
 
@@ -324,6 +324,19 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     );
   `);
 
+  const currentVerificationPrompt = (templateId, stepName) => WORKFLOW_TEMPLATES
+    .find(template => template.id === templateId).nodes.find(node => node.name === stepName).prompt;
+  const quickChangeTest = currentVerificationPrompt('quick-change', 'Review & Test');
+  const troubleshootVerify = currentVerificationPrompt('troubleshoot', 'Verify');
+
+  // Linked copies use the versioned update path so its comparison keeps the original base.
+  const LOCAL_VERIFICATION_PROMPT_UPGRADES = new Map([
+    [PREVIOUS_VERIFICATION_PROMPTS['bug-fix'], currentVerificationPrompt('bug-fix', 'Test')],
+    [PREVIOUS_VERIFICATION_PROMPTS['quick-change'], quickChangeTest],
+    [PREVIOUS_VERIFICATION_PROMPTS.troubleshoot, troubleshootVerify],
+    [PREVIOUS_VERIFICATION_PROMPTS.unphasedBugFix, PREVIOUS_BUG_FIX_PROMPTS.Test],
+  ]);
+
   const STOCK_PROMPT_UPGRADES = new Map([
     [
       'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown.',
@@ -388,7 +401,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     ],
     [
       'Run tests covering the change and the agreed checks from the Specify note. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. When implementation exists but proof needs a device, account or other external access, use NEEDS_INPUT. Say what passed, what is pending and exactly what would verify it (for example, "Backend verified. Phone prompt pending."). Only the owner may explicitly defer a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence or an explicit owner-approved scope change.',
-      'Run tests covering the change and the agreed checks from the Specify note. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. An owner-only check does not wait: verify what an agent can of it, and list it under Owner checks in your note with exactly what the owner should do and expect (for example, "Backend verified. Owner check: phone prompt."). If a check that is not marked owner-only turns out to need what no agent here can have, use NEEDS_INPUT once, say what you tried, and ask whether it becomes an owner check. Only the owner may drop a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence, was marked owner-only when the checks were agreed or by the owner since, or has an explicit owner-approved scope change.',
+      PREVIOUS_BUG_FIX_PROMPTS.Test,
     ],
     [
       'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message describing the fix for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD.',
@@ -400,7 +413,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     ],
     [
       'Review the changes on this branch against the Scope note, fix any defect you find, and run tests covering the change and the agreed checks from the Scope note. On a repeat pass, read your previous note and focus on what changed since that pass. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. When implementation exists but proof needs a device, account or other external access, use NEEDS_INPUT. Say what passed, what is pending and exactly what would verify it (for example, "Backend verified. Phone prompt pending."). Only the owner may explicitly defer a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence or an explicit owner-approved scope change.',
-      'Review the changes on this branch against the Scope note, fix any defect you find, and run tests covering the change and the agreed checks from the Scope note. On a repeat pass, read your previous note and focus on what changed since that pass. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. An owner-only check does not wait: verify what an agent can of it, and list it under Owner checks in your note with exactly what the owner should do and expect (for example, "Backend verified. Owner check: phone prompt."). If a check that is not marked owner-only turns out to need what no agent here can have, use NEEDS_INPUT once, say what you tried, and ask whether it becomes an owner check. Only the owner may drop a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence, was marked owner-only when the checks were agreed or by the owner since, or has an explicit owner-approved scope change.',
+      quickChangeTest,
     ],
     [
       'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message describing the change for {input}. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD.',
@@ -436,7 +449,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     ],
     [
       'Read the agreed checks in the Clarify note. Repeat the original symptom check from the Investigate note, run the Prove test and tests around the change. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. When implementation exists but proof needs a device, account or other external access, use NEEDS_INPUT. Say what passed, what is pending and exactly what would verify it (for example, "Backend verified. Phone prompt pending."). Only the owner may explicitly defer a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence or an explicit owner-approved scope change.',
-      'Read the agreed checks in the Clarify note. Repeat the original symptom check from the Investigate note, run the Prove test and tests around the change. Start your note with a one-line outcome that says what changed. List the agreed checks and evidence for each. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. For a failed agreed check, missing in-scope implementation, or a new regression, record the reproduction and work needed and report CONTINUE. For an apparently unrelated failure, run the same command on the recorded base commit under equivalent conditions. Record both revisions, the command and matching failure before treating it as pre-existing. When the cause is uncertain, run the smallest comparison that distinguishes it. If still unresolved, use NEEDS_INPUT with the evidence and a specific question. An owner-only check does not wait: verify what an agent can of it, and list it under Owner checks in your note with exactly what the owner should do and expect (for example, "Backend verified. Owner check: phone prompt."). If a check that is not marked owner-only turns out to need what no agent here can have, use NEEDS_INPUT once, say what you tried, and ask whether it becomes an owner check. Only the owner may drop a check or narrow scope. Record their decision verbatim. Report COMPLETE only when every agreed check has evidence, was marked owner-only when the checks were agreed or by the owner since, or has an explicit owner-approved scope change.',
+      troubleshootVerify,
     ],
     [
       'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD.',
@@ -462,7 +475,8 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
 
   const upgradeNodes = db.transaction(() => {
     const save = db.prepare('UPDATE pipeline_workflows SET nodes = ? WHERE id = ?');
-    for (const row of db.prepare('SELECT id, kind, nodes FROM pipeline_workflows').all()) {
+    for (const row of db.prepare('SELECT id, kind, nodes, source_kind FROM pipeline_workflows').all()) {
+      const isLocal = requireSourceKind(row.id, row.source_kind) === 'local';
       let nodes;
       try { nodes = JSON.parse(row.nodes); } catch { fieldError(row.id, 'nodes', 'must be valid JSON'); }
       if (!Array.isArray(nodes)) fieldError(row.id, 'nodes', 'must be an array');
@@ -472,7 +486,8 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
         const hadAgentId = Object.hasOwn(node, 'agentId');
         const emptyRole = typeof node.role !== 'string' || !node.role.trim();
         const missingProps = !Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || emptyRole || !Object.hasOwn(node, 'askOwner');
-        const nextPrompt = STOCK_PROMPT_UPGRADES.get(node.prompt);
+        const localVerificationPrompt = isLocal ? LOCAL_VERIFICATION_PROMPT_UPGRADES.get(node.prompt) : undefined;
+        const nextPrompt = STOCK_PROMPT_UPGRADES.get(node.prompt) ?? localVerificationPrompt;
         const capUntrackedLoop = ['bugfix', 'troubleshoot'].includes(row.kind)
           && ['Test', 'Verify'].includes(node.name)
           && node.repeat?.mode === 'loop_back'

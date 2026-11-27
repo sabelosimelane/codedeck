@@ -67,6 +67,7 @@ export function createRunsApi(address, request = fetch) {
     approve: runId => act(runId, 'approve'),
     async sendBack(runId, comment) { requireRun(runId); return act(runId, 'send-back', { comment: requireText(comment, 'comment') }); },
     resume: runId => act(runId, 'resume'),
-    continuePast: runId => act(runId, 'continue'),
+    stop: runId => act(runId, 'stop'),
+    continuePast: (runId, grant) => act(runId, 'continue', grant === undefined ? undefined : { stepIndex: grant.stepIndex, roundsCompleted: grant.roundsCompleted, extraRounds: grant.extraRounds }),
   };
 }

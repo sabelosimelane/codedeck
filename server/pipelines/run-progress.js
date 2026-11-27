@@ -2,6 +2,7 @@ import path from 'node:path';
 import defaultFs from 'node:fs/promises';
 import { composePrompt, isProgressFilePath } from '../../shared/pipeline-definitions.mjs';
 import { NOTES_DIR } from './run-notes.js';
+import { repairFindings } from './repair-evidence.js';
 
 const LIMIT = 1_048_576;
 
@@ -154,6 +155,80 @@ export function createCachedProgressReader(reader, { ttlMs, now = Date.now } = {
     worktreeExists: worktreePath => ask(`exists\0${worktreePath}`, () => reader.worktreeExists(worktreePath)),
     read: ({ worktreePath, progressFile }) => ask(`read\0${worktreePath}\0${progressFile}`, () => reader.read({ worktreePath, progressFile })),
   };
+}
+
+const SUITE_HEAD = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+// The last two fields are the recorded exit code and revision. Pipes inside a
+// command are kept verbatim.
+export function parseSuiteLines(noteContent) {
+  if (typeof noteContent !== 'string') throw new TypeError('suite lines: note content must be a string');
+  return noteContent.split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line.startsWith('SUITE '))
+    .map(line => {
+      const fields = line.slice('SUITE '.length).split('|').map(field => field.trim());
+      const repository = fields.shift();
+      if (!repository) throw new Error('Suite line requires a repository');
+      const revision = fields.pop();
+      const exit = /^exit (\d+)$/.exec(fields.pop());
+      if (!SUITE_HEAD.test(revision ?? '')) throw new Error(`Suite line for ${repository} requires a worktree revision`);
+      const exitCode = exit ? Number(exit[1]) : NaN;
+      if (!Number.isSafeInteger(exitCode) || exitCode > 255) throw new Error(`Suite line for ${repository} requires an exit code from 0 to 255`);
+      const command = fields.join(' | ');
+      if (!command) throw new Error(`Suite line for ${repository} requires a command`);
+      return { repository, command, exitCode, revision };
+    });
+}
+
+// Gate the closing Test decision of a Feature Build from Spec: only a fresh successful
+// final verification with the required scope and suite evidence finishes the run. Every
+// negative case names the specific missing or failed check so the run stays recoverable.
+export function inspectClosingEvidence({ note, attempt, progress, suites, repos }) {
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw new TypeError('closing evidence: attempt must be a positive integer');
+  if (!Array.isArray(suites) || !suites.every(item => item && typeof item === 'object')) throw new TypeError('closing evidence: suites must be an array');
+  if (!Array.isArray(repos) || !repos.every(item => item && typeof item === 'object' && typeof item.repository === 'string')) {
+    throw new TypeError('closing evidence: repos must be an array of { repository, head }');
+  }
+  if (progress !== null && (typeof progress !== 'object' || Array.isArray(progress))) throw new TypeError('closing evidence: progress must be null or an object');
+  if (progress !== null) {
+    if (progress.status === 'in_progress') {
+      return { ok: false, missing: `Closing Test decision leaves an open task (${progress.tasksDone}/${progress.tasksTotal} in ${progress.file}); tick every task before closing` };
+    }
+    if (progress.status !== 'all_done' || !Number.isSafeInteger(progress.tasksTotal) || progress.tasksTotal <= 0 || progress.tasksDone !== progress.tasksTotal) {
+      return { ok: false, missing: `Closing Test decision cannot read the required progress file (${progress.status}: ${progress.file}); restore the todo before closing` };
+    }
+  }
+  if (!note || note.status !== 'written' || note.attempt !== attempt) {
+    return { ok: false, missing: `Closing Test decision needs an updated verification note for this attempt (attempt ${attempt}); record the outcome before closing` };
+  }
+  if (!note.content?.trim()) {
+    return { ok: false, missing: 'Closing Test decision needs a verification note that describes the outcome' };
+  }
+  const failed = repairFindings(note.content, attempt).map(line => line.split('|')[0].trim());
+  if (failed.length > 0) {
+    return { ok: false, missing: `Closing Test decision still reports a failed probe (${[...new Set(failed)].join(', ')}); repair it and rerun before closing` };
+  }
+  const verdicts = note.content.split(/\r?\n/).map(line => line.trim()).filter(line => line.startsWith('VERDICT '));
+  if (verdicts.length !== 1 || verdicts[0] !== `VERDICT ${attempt} PASS`) {
+    return { ok: false, missing: `Closing Test decision needs a passing verdict for attempt ${attempt} (VERDICT ${attempt} PASS)` };
+  }
+  for (const repo of repos) {
+    const suite = suites.filter(item => item.repository === repo.repository).at(-1);
+    if (!suite) {
+      return { ok: false, missing: `Closing Test decision is missing a final suite for ${repo.repository}; run the suite on the final revision and record a SUITE line before closing` };
+    }
+    if (suite.exitCode !== 0) {
+      return { ok: false, missing: `Closing Test decision reports a failed suite for ${repo.repository} (${suite.command} exit ${suite.exitCode}); fix it and rerun before closing` };
+    }
+    if (!SUITE_HEAD.test(suite.revision ?? '') || !SUITE_HEAD.test(repo.head ?? '')) {
+      return { ok: false, missing: `Closing Test decision requires a final-suite revision for ${repo.repository}` };
+    }
+    if (suite.revision !== repo.head) {
+      return { ok: false, missing: `Closing Test decision reports a changed revision for ${repo.repository} (suite ran at ${suite.revision}, worktree at ${repo.head}); rerun the suite before closing` };
+    }
+  }
+  return { ok: true };
 }
 
 export async function readRunProgress({ run, workflowProgressFile, progressReader }) {

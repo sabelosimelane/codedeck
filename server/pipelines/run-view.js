@@ -9,6 +9,28 @@ import { canReclaimReleasedTaskRun } from './released-task-run.js';
 // read on a remote host is several SSH round trips.
 const REMOTE_PROGRESS_TTL_MS = 5_000;
 
+/**
+ * The capped pause a run waits on: which step hit its configured maximum, how many extra
+ * rounds the owner already granted it, and the latest finding on that step. The client
+ * binds its grant to this pause, so a duplicate click, a restart, or a stale request
+ * cannot spend a second extension.
+ */
+function describeLimitPause(run) {
+  const stepIndex = run.currentStepIndex;
+  const defStep = run.definition.steps[stepIndex];
+  const progress = run.steps[stepIndex];
+  return {
+    stepIndex,
+    stepName: defStep.name,
+    repeatMode: defStep.repeat.mode,
+    ...(defStep.repeat.mode === 'loop_back' ? { toStepIndex: defStep.repeat.toStepIndex } : {}),
+    maxRounds: defStep.repeat.max,
+    extraRounds: progress.extraRounds ?? 0,
+    roundsCompleted: progress.roundsCompleted,
+    attempt: progress.attempt,
+  };
+}
+
 /** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
 function buildRunView(run, decisionCount, progress, latestNotes, inheritedSessionIds) {
   const currentNote = latestNotes.get(run.currentStepIndex);
@@ -64,6 +86,7 @@ function buildRunView(run, decisionCount, progress, latestNotes, inheritedSessio
         attempt: progress.attempt,
         iteration: progress.iteration,
         roundsCompleted: progress.roundsCompleted,
+        extraRounds: progress.extraRounds ?? 0,
         detail: progress.detail,
         startedAt: progress.startedAt,
         finishedAt: progress.finishedAt,
@@ -83,6 +106,8 @@ function buildRunView(run, decisionCount, progress, latestNotes, inheritedSessio
       truncated: run.inputRequest.truncated,
     },
     actions: computeActions(run),
+    // The pause the owner's next Continue grants one more round for, if the run is capped.
+    limitPause: run.status === 'limit_paused' ? describeLimitPause(run) : null,
     // Terminals of earlier runs in this worktree that it replaced and did not take over.
     inheritedSessionIds,
     createdAt: run.createdAt,

@@ -259,31 +259,78 @@ function applyStop(run, event) {
   return run;
 }
 
+function checkGrant(run, event) {
+  const { grant } = event;
+  if (grant === undefined) return;
+  const step = currentStep(run);
+  // Rounds alone do not tell two pauses of an until_complete step apart; grants taken do.
+  const extraMatches = grant?.extraRounds === undefined || grant.extraRounds === (step.extraRounds ?? 0);
+  if (!Number.isInteger(grant?.stepIndex) || !Number.isInteger(grant?.roundsCompleted) || !extraMatches
+    || grant.stepIndex !== run.currentStepIndex || grant.roundsCompleted !== step.roundsCompleted) {
+    throw new Error('continue event: the grant names a pause that is no longer current');
+  }
+}
+
+/**
+ * The owner grants exactly one more round (or pass) for the pause on screen: the run
+ * goes back to work instead of accepting the limit. A loop resumes at its configured
+ * target, any other repeat relaunches its own step, and a queued replacement keeps its
+ * promised turn on the affected step. The step's grant count grows by one, so the cap
+ * pauses again after the extra round instead of completing unfinished work.
+ */
 function applyContinue(run, event) {
   if (run.status !== 'limit_paused') illegal(run.status, event.type);
   const step = currentStep(run);
   if (step.status !== 'limit_reached') illegal(`step:${step.status}`, event.type);
+  checkGrant(run, event);
+  const extraRounds = (step.extraRounds ?? 0) + 1;
+  const repeat = run.definition?.steps[run.currentStepIndex]?.repeat;
+  // At a pass limit the step has run every pass it was allowed; the granted attempt starts after them.
+  const passesRun = repeat?.mode === 'until_complete' ? repeat.max + (step.extraRounds ?? 0) : 0;
   if (applyQueuedAgent(run, run.currentStepIndex)) {
     const next = currentStep(run);
     run.status = 'running';
     next.status = 'launching';
     next.attempt += 1;
-    next.iteration = 0;
+    // The replacement's turn is the granted round or pass: the capped round counts as
+    // done and the pass count carries on, so a further request pauses again.
+    if (repeat?.mode === 'loop_back') next.roundsCompleted += 1;
+    next.iteration = passesRun;
+    next.extraRounds = extraRounds;
     next.startedAt = event.at;
     next.finishedAt = null;
     return run;
   }
-  // The owner accepted the limit: the step is over, and its status says how it ended.
-  step.status = 'limit_accepted';
-  const last = run.currentStepIndex >= run.steps.length - 1;
-  if (last) {
-    run.status = 'complete';
-    run.finishedAt = event.at ?? run.finishedAt ?? null;
-    run.error = null;
-  } else {
-    run.currentStepIndex += 1;
+  if (repeat?.mode === 'loop_back') {
+    const { toStepIndex } = repeat;
+    if (!Number.isInteger(toStepIndex) || toStepIndex < 0 || toStepIndex >= run.currentStepIndex) {
+      throw new Error('continue event: a loop grants its configured target only');
+    }
+    step.extraRounds = extraRounds;
+    // The capped round ended with work left, like a loop-back: count it, so the raised
+    // cap allows exactly one more round.
+    step.roundsCompleted += 1;
+    for (let index = toStepIndex; index <= run.currentStepIndex; index += 1) {
+      const looped = run.steps[index];
+      looped.status = 'pending';
+      looped.iteration = 0;
+      looped.finishedAt = null;
+    }
+    for (let index = toStepIndex; index <= run.currentStepIndex; index += 1) applyQueuedAgent(run, index);
+    run.currentStepIndex = toStepIndex;
     run.status = 'running';
+    return run;
   }
+  if (repeat?.mode !== 'until_complete') throw new Error('continue event: only a capped repeat can grant another round');
+  step.extraRounds = extraRounds;
+  step.status = 'launching';
+  step.attempt += 1;
+  // The pass count carries on: the workflow starts after the passes already run, so the
+  // raised limit allows exactly one more pass.
+  step.iteration = passesRun;
+  step.startedAt = event.at;
+  step.finishedAt = null;
+  run.status = 'running';
   return run;
 }
 

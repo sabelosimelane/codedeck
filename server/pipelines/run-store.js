@@ -264,7 +264,7 @@ function validateStepProgress(id, index, step, project) {
   const prefix = `steps[${index}]`;
   if (!isPlainObject(step)) fieldError(id, prefix, 'must be an object');
   for (const key of Object.keys(step)) {
-    if (!['status', 'sessionId', 'priorSessionIds', 'attempt', 'iteration', 'roundsCompleted', 'detail', 'startedAt', 'finishedAt', 'elapsedMs', 'quotaBlocked', 'quotaRestartPending'].includes(key)) {
+    if (!['status', 'sessionId', 'priorSessionIds', 'attempt', 'iteration', 'roundsCompleted', 'extraRounds', 'detail', 'startedAt', 'finishedAt', 'elapsedMs', 'quotaBlocked', 'quotaRestartPending'].includes(key)) {
       fieldError(id, `${prefix}.${key}`, 'unknown field');
     }
   }
@@ -286,6 +286,11 @@ function validateStepProgress(id, index, step, project) {
   if (!Number.isInteger(step.roundsCompleted) || step.roundsCompleted < 0) {
     fieldError(id, `${prefix}.roundsCompleted`, 'must be an integer ≥ 0');
   }
+  // How many extra rounds past its configured maximum the owner granted this step, one per pause.
+  const extraRounds = Object.hasOwn(step, 'extraRounds') ? step.extraRounds : 0;
+  if (!Number.isInteger(extraRounds) || extraRounds < 0 || extraRounds > 100) {
+    fieldError(id, `${prefix}.extraRounds`, 'must be an integer 0–100');
+  }
   // The time the step has worked over all its starts, in milliseconds; see addWorkedTime in run-machine.js.
   if (!Number.isInteger(step.elapsedMs) || step.elapsedMs < 0) {
     fieldError(id, `${prefix}.elapsedMs`, 'must be an integer ≥ 0');
@@ -304,6 +309,7 @@ function validateStepProgress(id, index, step, project) {
     attempt: step.attempt,
     iteration: step.iteration,
     roundsCompleted: step.roundsCompleted,
+    extraRounds,
     detail,
     startedAt: requireIso(id, `${prefix}.startedAt`, step.startedAt, { allowNull: true }),
     finishedAt: requireIso(id, `${prefix}.finishedAt`, step.finishedAt, { allowNull: true }),
@@ -358,10 +364,14 @@ function validateRunRecord(id, record) {
   const steps = record.steps.map((step, index) => validateStepProgress(id, index, step, record.project));
   steps.forEach((step, index) => {
     const { repeat } = definition.steps[index];
-    if (repeat.mode !== 'loop_back') {
+    const granted = step.extraRounds ?? 0;
+    if (repeat.mode === 'once') {
       if (step.roundsCompleted !== 0) fieldError(id, `steps[${index}].roundsCompleted`, 'must be 0 for a step that does not loop back');
-    } else if (step.roundsCompleted >= repeat.max) {
-      fieldError(id, `steps[${index}].roundsCompleted`, `must be less than the maximum of ${repeat.max} rounds`);
+      if (granted !== 0) fieldError(id, `steps[${index}].extraRounds`, 'must be 0 for a step that runs once');
+    } else if (repeat.mode === 'until_complete') {
+      if (step.roundsCompleted !== 0) fieldError(id, `steps[${index}].roundsCompleted`, 'must be 0 for a step that does not loop back');
+    } else if (step.roundsCompleted >= repeat.max + granted) {
+      fieldError(id, `steps[${index}].roundsCompleted`, `must be less than the maximum of ${repeat.max + granted} rounds`);
     }
   });
   requireAbsPath(id, 'home_path', record.homePath);
@@ -653,14 +663,15 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
       if (!isPlainObject(definition)) fieldError(row.id, 'definition', 'must be an object');
       if (!Array.isArray(steps)) fieldError(row.id, 'steps', 'must be an array');
       const lacksRounds = step => isPlainObject(step) && !Object.hasOwn(step, 'roundsCompleted');
+      const lacksGrant = step => isPlainObject(step) && !Object.hasOwn(step, 'extraRounds');
       const lacksDecide = !Object.hasOwn(definition, 'agentsDecide');
       const lacksProgress = !Object.hasOwn(definition, 'progressFile');
       const lacksNotes = !Object.hasOwn(definition, 'notesDir');
       const lacksFlags = step => isPlainObject(step) && (!Object.hasOwn(step, 'readOnly') || !Object.hasOwn(step, 'approval') || !Object.hasOwn(step, 'role') || !Object.hasOwn(step, 'askOwner'));
-      if (!lacksDecide && !lacksProgress && !lacksNotes && !steps.some(lacksRounds) && !definition.steps?.some(lacksFlags)) continue;
+      if (!lacksDecide && !lacksProgress && !lacksNotes && !steps.some(lacksRounds) && !steps.some(lacksGrant) && !definition.steps?.some(lacksFlags)) continue;
       save.run(
         JSON.stringify({ ...definition, ...(lacksDecide ? { agentsDecide: false } : {}), ...(lacksProgress ? { progressFile: null } : {}), ...(lacksNotes ? { notesDir: null } : {}), steps: definition.steps?.map(step => isPlainObject(step) ? { ...step, ...(!Object.hasOwn(step, 'readOnly') ? { readOnly: false } : {}), ...(!Object.hasOwn(step, 'approval') ? { approval: false } : {}), ...(!Object.hasOwn(step, 'role') ? { role: '' } : {}), ...(!Object.hasOwn(step, 'askOwner') ? { askOwner: false } : {}) } : step) }),
-        JSON.stringify(steps.map(step => (lacksRounds(step) ? { ...step, roundsCompleted: 0 } : step))),
+        JSON.stringify(steps.map(step => (!isPlainObject(step) ? step : { ...(lacksRounds(step) ? { roundsCompleted: 0 } : {}), ...step, ...(lacksGrant(step) ? { extraRounds: 0 } : {}) }))),
         row.id,
       );
     }
@@ -805,6 +816,7 @@ export function createRunStore(db, { now = () => new Date().toISOString(), inter
     markInterrupted,
     auditPage: audit.page,
     lastAuditDetail: audit.lastDetail,
+    lastAuditDetailOf: audit.lastDetailOf,
     recordAudit(id, kind, detail = null) { audit.append(get(id), {kind,detail}, now()); },
     attribution: attribution.get,
     attributedIds: attribution.ids,
