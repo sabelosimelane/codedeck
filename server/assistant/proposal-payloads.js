@@ -1,7 +1,8 @@
-import { isRepositoryName, isUuid, validateRunStartBody } from '../../shared/pipeline-definitions.mjs';
+import { isRepositoryName, isUuid, validateRunAnswerBody, validateRunStartBody } from '../../shared/pipeline-definitions.mjs';
 import { isTaskTitle, TASK_TITLE_MAX } from '../tasks/task-store.js';
 
-export const PROPOSAL_KINDS = Object.freeze(['commit', 'merge', 'pull_request', 'close', 'new_task', 'start_run']);
+export const RUN_ACTION_KINDS = Object.freeze(['stop_run', 'resume_run', 'continue_run', 'answer_run', 'change_team']);
+export const PROPOSAL_KINDS = Object.freeze(['commit', 'merge', 'pull_request', 'close', 'new_task', 'start_run', ...RUN_ACTION_KINDS]);
 export const PROPOSAL_STATES = Object.freeze(['pending', 'approved', 'declined', 'done', 'failed', 'expired']);
 export const DECIDED_STATES = Object.freeze(['declined', 'done', 'failed', 'expired']);
 
@@ -97,15 +98,63 @@ export function validateProposalPayloadShape(kind, payload, { fieldPrefix = '' }
       }
       break;
     }
+    case 'stop_run':
+    case 'resume_run':
+      unknownFields(errors, payload, ['runId'], fieldPrefix);
+      checkRunId(errors, payload, fieldPrefix);
+      break;
+    case 'answer_run': {
+      unknownFields(errors, payload, ['runId', 'answer'], fieldPrefix);
+      checkRunId(errors, payload, fieldPrefix);
+      for (const item of validateRunAnswerBody({ answer: payload.answer })) errors.push({ field: `${fieldPrefix}${item.field}`, message: item.message });
+      break;
+    }
+    case 'continue_run':
+      unknownFields(errors, payload, ['runId', 'stepIndex', 'roundsCompleted', 'extraRounds'], fieldPrefix);
+      checkRunId(errors, payload, fieldPrefix);
+      // A proposal names the exact pause it grants: approved later, it must not spend another one.
+      if (!Number.isInteger(payload.stepIndex) || payload.stepIndex < 0 || payload.stepIndex > 32) {
+        errors.push({ field: `${fieldPrefix}stepIndex`, message: 'Use the index of the paused step, 0–32' });
+      }
+      if (!Number.isInteger(payload.roundsCompleted) || payload.roundsCompleted < 0) {
+        errors.push({ field: `${fieldPrefix}roundsCompleted`, message: 'Use the completed rounds of the paused step, 0 or more' });
+      }
+      if (payload.extraRounds !== undefined && (!Number.isInteger(payload.extraRounds) || payload.extraRounds < 0 || payload.extraRounds > 100)) {
+        errors.push({ field: `${fieldPrefix}extraRounds`, message: 'Use the grants already taken at the paused step, 0–100' });
+      }
+      break;
+    case 'change_team':
+      unknownFields(errors, payload, ['runId', 'teamId'], fieldPrefix);
+      checkRunId(errors, payload, fieldPrefix);
+      if (!isUuid(payload.teamId)) errors.push({ field: `${fieldPrefix}teamId`, message: 'Use a valid team UUID' });
+      break;
     default:
       break;
   }
   return errors;
 }
 
-export function validateProposalPayload(kind, payload, { project, taskStore, fieldPrefix = '' } = {}) {
+function checkRunId(errors, payload, prefix) {
+  if (!isUuid(payload.runId)) errors.push({ field: `${prefix}runId`, message: 'Use a valid run UUID' });
+}
+
+export function validateProposalPayload(kind, payload, { project, taskStore, runStore, teamStore, fieldPrefix = '' } = {}) {
   const errors = validateProposalPayloadShape(kind, payload, { fieldPrefix });
   if (!isPlain(payload) || !PROPOSAL_KINDS.includes(kind)) return errors;
+
+  if (RUN_ACTION_KINDS.includes(kind)) {
+    if (typeof runStore?.get !== 'function') throw new TypeError('validateProposalPayload: runStore is required for run proposals');
+    if (isUuid(payload.runId)) {
+      const run = runStore.get(payload.runId);
+      if (!run) errors.push({ field: `${fieldPrefix}runId`, message: 'Run not found' });
+      else if (run.project !== project) errors.push({ field: `${fieldPrefix}runId`, message: 'This run belongs to another project' });
+    }
+    if (kind === 'change_team' && isUuid(payload.teamId)) {
+      if (typeof teamStore?.get !== 'function') throw new TypeError('validateProposalPayload: teamStore is required for change_team');
+      if (!teamStore.get(payload.teamId)) errors.push({ field: `${fieldPrefix}teamId`, message: 'Team not found' });
+    }
+    return errors;
+  }
 
   const needsTaskCheck = ['commit', 'merge', 'pull_request', 'close'].includes(kind)
     || (kind === 'start_run' && payload.taskId !== undefined);
@@ -127,7 +176,7 @@ export function validateProposalPayload(kind, payload, { project, taskStore, fie
   return errors;
 }
 
-export function validateProposalCreateBody(body, { project, taskStore } = {}) {
+export function validateProposalCreateBody(body, { project, taskStore, runStore, teamStore } = {}) {
   const errors = [];
   if (!isPlain(body)) {
     return [{ field: 'body', message: 'Use a JSON object' }];
@@ -144,7 +193,7 @@ export function validateProposalCreateBody(body, { project, taskStore } = {}) {
     errors.push({ field: 'reason', message: 'Use 1–2000 characters' });
   }
   if (kindValid) {
-    errors.push(...validateProposalPayload(body.kind, body.payload, { project, taskStore, fieldPrefix: 'payload.' }));
+    errors.push(...validateProposalPayload(body.kind, body.payload, { project, taskStore, runStore, teamStore, fieldPrefix: 'payload.' }));
   } else if (!isPlain(body.payload)) {
     errors.push({ field: 'payload', message: 'Use a JSON object' });
   }

@@ -39,8 +39,13 @@ function extractFailure(error) {
   };
 }
 
-export function createProposalExecutor({ proposalStore, landing, taskService, startRun, logger = console } = {}) {
+export function createProposalExecutor({ proposalStore, landing, taskService, startRun, runActions, logger = console } = {}) {
   if (!proposalStore) throw new TypeError('proposal executor requires proposalStore');
+
+  function runAction(action, ...args) {
+    if (typeof runActions?.[action] !== 'function') throw new Error(`Run action ${action} is unavailable`);
+    return runActions[action](...args);
+  }
 
   async function runService(proposal) {
     const { kind, payload, project, id } = proposal;
@@ -83,6 +88,21 @@ export function createProposalExecutor({ proposalStore, landing, taskService, st
           project,
           requestId: id,
         });
+      case 'stop_run':
+        return runAction('stop', payload.runId);
+      case 'resume_run':
+        return runAction('resume', payload.runId);
+      case 'answer_run':
+        return runAction('answer', payload.runId, payload.answer);
+      case 'continue_run':
+        // The grant names the pause the owner approved; the engine refuses it once the run has moved past it.
+        return runAction('continue', payload.runId, {
+          stepIndex: payload.stepIndex,
+          roundsCompleted: payload.roundsCompleted,
+          ...(payload.extraRounds !== undefined ? { extraRounds: payload.extraRounds } : {}),
+        });
+      case 'change_team':
+        return runAction('changeTeam', payload.runId, payload.teamId);
       default:
         throw new Error(`Unsupported proposal kind ${String(kind)}`);
     }
