@@ -19,6 +19,7 @@ beforeEach(() => { vi.stubGlobal('WebSocket', FakeWebSocket); mock.fetchCurrentC
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); sockets.length = 0; });
 const situation = flags => ({ flags });
 
+const READY = { type: 'ready', restarted: false, agentId: '00000000-0000-4000-8000-0000000000a1', agentName: 'Claude Opus', provider: 'claude', model: 'opus', effort: 'high', mode: 'default' };
 describe('AssistantChat chat', () => {
   it('shows the active Claude account and unauthenticated state, ignoring command updates', async () => {
     render(<AssistantChat projectName="Demo" />);
@@ -29,21 +30,30 @@ describe('AssistantChat chat', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('deep-research')).toBeNull();
     sockets[0].receive({ type: 'auth', state: 'unauthenticated', label: null });
-    expect(await screen.findByText('Not signed in to Claude Code')).toBeTruthy();
+    expect(await screen.findByText('Not signed in')).toBeTruthy();
+  });
+  it('names the chosen agent in the heading and while it works, whatever its provider', async () => {
+    mock.fetchSituation.mockResolvedValue(situation([])); render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ ...READY, conversationId: conversation.id, agentName: 'OpenCode Flash', provider: 'opencode', model: 'deepseek/deepseek-flash', effort: null, mode: 'plan' });
+    expect(await screen.findByText(/OpenCode Flash · deepseek\/deepseek-flash · CLI default effort/)).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message the assistant' }), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('OpenCode Flash is working…')).toBeTruthy();
   });
   it('shows a frame parse failure for an unknown server type', async () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
     sockets[0].receive({ type: 'unexpected' });
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Invalid assistant socket message'));
-    expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(true);
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' }).disabled).toBe(true);
   });
   it('waits for the stored owner frame and unlocks after a nonfatal error', async () => {
     mock.fetchSituation.mockResolvedValue(situation([])); render(<AssistantChat projectName="Demo"  />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
-    expect(await screen.findByText(/opus · high/)).toBeTruthy();
-    fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'hello' } });
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    expect(await screen.findByText(/Claude Opus · opus · high/)).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message the assistant' }), { target: { value: 'hello' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(screen.queryByText('hello')).toBeNull();
     sockets[0].receive({ type: 'message', message: { id: 7, conversationId: conversation.id, role: 'owner', content: 'hello', toolName: null, proposalId: null, createdAt: conversation.createdAt } });
@@ -51,7 +61,7 @@ describe('AssistantChat chat', () => {
     sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial reply' } } });
     expect(await screen.findByText('partial reply')).toBeTruthy();
     sockets[0].receive({ type: 'error', message: 'Prompt failed', turnRunning: false });
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(false));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message the assistant' }).disabled).toBe(false));
     expect(screen.queryByText('partial reply')).toBeNull();
     expect(screen.getByRole('alert').textContent).toContain('Prompt failed');
   });
@@ -67,8 +77,8 @@ describe('AssistantChat chat', () => {
   it('keeps the streamed answer and the running state through an error raised mid-turn', async () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'hello' } });
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message the assistant' }), { target: { value: 'hello' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first half ' } } });
     sockets[0].receive({ type: 'error', message: 'Claude Code switched to plan mode; restoring ask before acting.', turnRunning: true });
@@ -128,23 +138,23 @@ describe('AssistantChat chat', () => {
     mock.fetchSituation.mockResolvedValue(situation([]));
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'Where am I?' } });
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message the assistant' }), { target: { value: 'Where am I?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'You are on **Phase 2** of 6.' } } });
     sockets[0].receive({ type: 'turn_end', messageId: 9 });
     expect(await screen.findByText(/Phase 2/)).toBeTruthy();
-    expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(false);
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' }).disabled).toBe(false);
   });
   it('streams a turn, disables Send, and sends cancel from Stop', async () => {
     mock.fetchSituation.mockResolvedValue(situation([])); render(<AssistantChat projectName="Demo"  />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(false));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'Where am I?' } });
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message the assistant' }).disabled).toBe(false));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message the assistant' }), { target: { value: 'Where am I?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(sockets[0].sent).toContainEqual({ type: 'prompt', text: 'Where am I?' });
-    expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(true);
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' }).disabled).toBe(true);
     sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '**Here**' } } });
     await waitFor(() => expect(screen.getByText('Here')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
@@ -157,8 +167,8 @@ describe('AssistantChat keyboard and terminal states', () => {
   it('sends on Enter and keeps Shift+Enter for a new line', async () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
-    const box = screen.getByRole('textbox', { name: 'Message Claude Code' });
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    const box = screen.getByRole('textbox', { name: 'Message the assistant' });
     await waitFor(() => expect(box.disabled).toBe(false));
     fireEvent.change(box, { target: { value: 'first line' } });
     fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
@@ -171,8 +181,8 @@ describe('AssistantChat keyboard and terminal states', () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
     sockets[0].receive({ type: 'spawn_error', message: 'adapter missing' });
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Claude Code: adapter missing'));
-    expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(true);
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Assistant: adapter missing'));
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' }).disabled).toBe(true);
     sockets[0].close();
     expect(screen.getByRole('alert').textContent).toContain('adapter missing');
   });
@@ -180,10 +190,10 @@ describe('AssistantChat keyboard and terminal states', () => {
   it('shows how the agent exited and keeps the input disabled', async () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
     sockets[0].receive({ type: 'agent_exit', code: null, signal: 'SIGTERM', stderrTail: 'bye' });
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Claude Code exited (signal SIGTERM). bye'));
-    expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(true);
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Claude Opus exited (signal SIGTERM). bye'));
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' }).disabled).toBe(true);
     expect(screen.getByText('Connection closed')).toBeTruthy();
   });
 });

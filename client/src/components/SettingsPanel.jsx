@@ -9,7 +9,10 @@ import AgentSettings from './pipelines/AgentSettings';
 import { useToast } from './ToastContext';
 import { THEME_CHANGE_EVENT, getThemeMode, setThemeMode } from '../theme';
 import { getAssistantSettings, saveAssistantSettings } from '../utils/assistantApi';
-import { AGENT_PRESETS } from '../../../shared/agent-presets.mjs';
+import { listAgents } from '../utils/pipelinesApi';
+import { parseAgent } from '../utils/pipelineRecords';
+import { parseLaunchCommand } from '../../../shared/agent-presets.mjs';
+import { ASSISTANT_ACP_PROFILES, assistantRefusal } from '../../../shared/assistant-acp-profiles.mjs';
 
 // Mirrors the mobile appearance control: explicit pick, applied instantly.
 const APPEARANCE = [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']];
@@ -43,6 +46,7 @@ export default function SettingsPanel({ onClose, onSaved }) {
   const [themeMode, setThemeModeState] = useState(getThemeMode);
   const [assistantSettings, setAssistantSettings] = useState(null);
   const [savedAssistantSettings, setSavedAssistantSettings] = useState(null);
+  const [assistantAgents, setAssistantAgents] = useState([]);
 
   // Theme applies instantly to localStorage + <html data-theme>; a cycle from
   // the sidebar footer while settings are open moves the pressed state here.
@@ -59,20 +63,23 @@ export default function SettingsPanel({ onClose, onSaved }) {
   const [hostsDirty, setHostsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
   const [agentsDirty, setAgentsDirty] = useState(false);
-  const assistantDirty = assistantSettings !== null && savedAssistantSettings !== null && (assistantSettings.model !== savedAssistantSettings.model || assistantSettings.effort !== savedAssistantSettings.effort);
+  const assistantDirty = assistantSettings !== null && savedAssistantSettings !== null && (assistantSettings.agentId !== savedAssistantSettings.agentId || assistantSettings.effort !== savedAssistantSettings.effort);
   const anyDirty = dirty || assistantDirty || namingState.dirty;
   const showFooter = TABS.find(tab => tab.id === activeTab).footer;
   // The footer Save covers a panel that may be on a hidden tab, so its blocking problem is named.
   const namingIncomplete = namingState.dirty && !namingState.busy && !namingState.valid;
   const cannotSave = saving || namingState.busy || (namingState.dirty && !namingState.valid);
   const { showToast } = useToast();
+  const assistantAgent = assistantAgents.find(agent => agent.id === assistantSettings?.agentId);
+  const assistantProvider = assistantAgent ? parseLaunchCommand(assistantAgent.launchCommand)?.provider : undefined;
+  const assistantProfile = ASSISTANT_ACP_PROFILES.find(profile => profile.id === assistantProvider) ?? null;
 
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
-        const value = await getAssistantSettings();
-        if (mounted) { setAssistantSettings(value); setSavedAssistantSettings(value); }
+        const [value, records] = await Promise.all([getAssistantSettings(), listAgents()]);
+        if (mounted) { setAssistantSettings(value); setSavedAssistantSettings(value); setAssistantAgents(records.map(parseAgent)); }
       } catch (error) { if (mounted) showToast({ type: 'error', message: error.message }); }
     })();
     return () => { mounted = false; };
@@ -264,18 +271,24 @@ export default function SettingsPanel({ onClose, onSaved }) {
             <div style={sectionStyle}>
               <div style={sectionLabelStyle}><span style={sectionDotStyle} />Project Assistant</div>
               <div style={rowStyle}>
-                <div style={rowHeaderStyle}><span style={keyStyle}>model</span><span style={descStyle}>Claude Code model for new assistant sessions</span></div>
-                <select className="ui-input" aria-label="Assistant model" value={assistantSettings?.model ?? 'default'} disabled={!assistantSettings} onChange={event => setAssistantSettings(current => ({ ...current, model: event.target.value }))}>
-                  <option value="default">Claude Code default</option><option value="opus">Opus</option><option value="fable">Fable</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
+                <div style={rowHeaderStyle}><span style={keyStyle}>agent</span><span style={descStyle}>Saved agent for new assistant sessions; its model comes from the agent</span></div>
+                <select className="ui-input" aria-label="Assistant agent" value={assistantSettings?.agentId ?? ''} disabled={!assistantSettings} onChange={event => setAssistantSettings({ agentId: event.target.value, effort: null })}>
+                  <option value="">Choose an agent for the assistant</option>
+                  {assistantAgents.map(agent => {
+                    const provider = parseLaunchCommand(agent.launchCommand)?.provider ?? null;
+                    const reason = ASSISTANT_ACP_PROFILES.some(profile => profile.id === provider) ? null : assistantRefusal(provider);
+                    return <option key={agent.id} value={agent.id} disabled={Boolean(reason)}>{agent.name}{reason ? ` — ${reason}` : ''}</option>;
+                  })}
                 </select>
               </div>
               <div style={rowStyle}>
-                <div style={rowHeaderStyle}><span style={keyStyle}>effort</span><span style={descStyle}>Reasoning effort for new assistant sessions</span></div>
-                <select className="ui-input" aria-label="Assistant effort" value={assistantSettings?.effort ?? ''} disabled={!assistantSettings} onChange={event => setAssistantSettings(current => ({ ...current, effort: event.target.value || null }))}>
-                  <option value="">Claude Code default</option>
-                  {AGENT_PRESETS.find(preset => preset.id === 'claude').efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
+                <div style={rowHeaderStyle}><span style={keyStyle}>effort</span><span style={descStyle}>{assistantProfile && !assistantProfile.effortOption ? `${assistantProfile.label} takes no effort over ACP` : 'Reasoning effort for new assistant sessions'}</span></div>
+                <select className="ui-input" aria-label="Assistant effort" value={assistantSettings?.effort ?? ''} disabled={!assistantSettings || !assistantProfile || assistantProfile.efforts.length === 0} onChange={event => setAssistantSettings(current => ({ ...current, effort: event.target.value || null }))}>
+                  <option value="">CLI default</option>
+                  {assistantProfile?.efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
                 </select>
               </div>
+              {assistantProfile && <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>{assistantProfile.label} is held in its {assistantProfile.heldMode.id} mode, so it acts only through proposals you approve.</p>}
               <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>Applies the next time the assistant panel connects.</p>
             </div>
 

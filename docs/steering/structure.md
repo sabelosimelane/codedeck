@@ -311,7 +311,7 @@ project's path when asked); another repository's checkout is stored on the row.
 
 ## Project Assistant
 
-`server/assistant/assistant-settings-store.js` owns the SQLite model and effort choice; the settings route edits it and the ACP bridge reads it on each connection.
+`server/assistant/assistant-settings-store.js` owns the SQLite agent and effort choice; the settings route edits it and the ACP bridge reads it on each connection. `shared/assistant-acp-profiles.mjs` says, per provider, the mode it is held in, its effort option and how it gets the brief; `server/assistant/acp-agents.js` adds the command that starts its ACP server.
 
 The panel reads and acts only through the modules below; the assistant never gets a shell or a
 Git command of its own.
@@ -333,7 +333,7 @@ Git command of its own.
   approvals run the service once). `proposal-payloads.js` validates a payload per kind before it is
   stored; `proposal-executor.js` maps a kind to `task-landing`, `task-service.create` or
   `pipelinesRouter.startRun` and never passes `deleteIgnored: true`.
-- `acp-bridge.js` owns the child process: ACP v1 updates, forced `default` mode, stored messages,
+- `acp-bridge.js` owns the child process: ACP v1 updates, the held mode of the chosen agent's profile (restored when the agent leaves it), stored messages,
   decisions prefixed once to the next prompt, and the `proposal`/`situation` frames.
   `ws-upgrade.js` routes `/ws/assistant` after `privateAccess.authorizeUpgrade`, one agent per
   project socket.

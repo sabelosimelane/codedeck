@@ -3,25 +3,28 @@ import readline from 'node:readline';
 const send = value => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`);
 const lines = readline.createInterface({ input: process.stdin });
 let permissionId = 90;
-let mode = 'auto';
+const scenario = process.argv[2];
+// opencode impersonates an agent without `modes`: its mode is a config option, and only `plan` is safe.
+const safeMode = scenario === 'opencode' ? 'plan' : 'default';
+let mode = scenario === 'opencode' ? 'build' : 'auto';
 let modeSets = 0;
 let sessionNewParams = null;
 let lastPromptId = null;
 let selectedModel = 'default';
 let selectedEffort = 'default';
 let configSets = [];
-const scenario = process.argv[2];
 const configOptions = () => [
   { id: 'model', name: 'Model', type: 'select', currentValue: selectedModel, options: [{ value: 'default', name: 'Default' }, ...(scenario === 'missing-opus' ? [] : [{ value: 'opus', name: 'Opus' }]), { value: 'sonnet', name: 'Sonnet' }, { value: 'haiku', name: 'Haiku' }] },
   { id: 'effort', name: 'Effort', type: 'select', currentValue: selectedEffort, options: scenario === 'grouped-options' ? [{ group: 'reasoning', name: 'Reasoning', options: [{ value: 'default', name: 'Default' }, { value: 'high', name: 'High' }] }] : [{ value: 'default', name: 'Default' }, { value: 'low', name: 'Low' }, ...(scenario === 'effort-missing-after-model' && selectedModel !== 'default' ? [] : [{ value: 'high', name: 'High' }])] },
+  ...(scenario === 'opencode' ? [{ id: 'mode', name: 'Mode', type: 'select', currentValue: mode, options: [{ value: 'build', name: 'Build' }, { value: 'plan', name: 'Plan' }] }] : []),
 ];
 const update = value => send({ method: 'session/update', params: { sessionId: 'fake-session', update: value } });
 lines.on('line', line => {
   const message = JSON.parse(line);
   if (message.method === 'initialize') { if (message.params?.protocolVersion !== 1 || message.params.clientCapabilities?.terminal !== false) throw new Error('Invalid ACP initialize'); send({ id: message.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } }); return; }
-  if (message.method === 'session/new') { if (!Array.isArray(message.params?.mcpServers) || typeof message.params.cwd !== 'string') throw new Error('Invalid ACP session/new'); sessionNewParams = message.params; if (scenario === 'update-with-session') { const frame = value => `${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`; process.stdout.write(frame({ id: message.id, result: { sessionId: 'fake-session', modes: { currentModeId: mode, availableModes: [{ id: 'default', name: 'Manual' }] }, configOptions: configOptions() } }) + frame({ method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'available_commands_update', availableCommands: [] } } })); return; } send({ id: message.id, result: { sessionId: 'fake-session', configOptions: scenario === 'missing-model' ? configOptions().filter(option => option.id !== 'model') : configOptions(), ...(scenario === 'missing-modes' ? {} : { modes: { currentModeId: mode, availableModes: scenario === 'no-default' ? [{ id: 'auto', name: 'Auto' }] : [{ id: 'default', name: 'Manual', description: 'Always ask before making changes' }, { id: 'auto', name: 'Auto' }] } }) } }); return; }
-  if (message.method === 'session/set_config_option') { configSets.push([message.params.configId, message.params.value]); if (scenario === 'bad-config-reply') { send({ id: message.id, result: { configOptions: 'wrong' } }); return; } const apply = () => { if (message.params.configId === 'model') selectedModel = message.params.value; else if (message.params.configId === 'effort') selectedEffort = message.params.value; send({ id: message.id, result: { configOptions: configOptions() } }); }; if (scenario === 'slow-config') setTimeout(apply, 100); else apply(); return; }
-  if (message.method === 'session/set_mode') { if (message.params?.sessionId !== 'fake-session' || message.params.modeId !== 'default') throw new Error('Invalid ACP session/set_mode'); modeSets += 1; if (scenario === 'set-mode-error') send({ id: message.id, error: { code: -32000, message: 'mode refused' } }); else { const done = () => { mode = 'default'; send({ id: message.id, result: {} }); }; if (scenario === 'slow-restore' && modeSets > 1) setTimeout(done, 60); else done(); } return; }
+  if (message.method === 'session/new') { if (!Array.isArray(message.params?.mcpServers) || typeof message.params.cwd !== 'string') throw new Error('Invalid ACP session/new'); sessionNewParams = message.params; if (scenario === 'update-with-session') { const frame = value => `${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`; process.stdout.write(frame({ id: message.id, result: { sessionId: 'fake-session', modes: { currentModeId: mode, availableModes: [{ id: 'default', name: 'Manual' }] }, configOptions: configOptions() } }) + frame({ method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'available_commands_update', availableCommands: [] } } })); return; } send({ id: message.id, result: { sessionId: 'fake-session', configOptions: scenario === 'missing-model' ? configOptions().filter(option => option.id !== 'model') : configOptions(), ...(scenario === 'missing-modes' || scenario === 'opencode' ? {} : { modes: { currentModeId: mode, availableModes: scenario === 'no-default' ? [{ id: 'auto', name: 'Auto' }] : [{ id: 'default', name: 'Manual', description: 'Always ask before making changes' }, { id: 'auto', name: 'Auto' }] } }) } }); return; }
+  if (message.method === 'session/set_config_option') { configSets.push([message.params.configId, message.params.value]); if (scenario === 'bad-config-reply') { send({ id: message.id, result: { configOptions: 'wrong' } }); return; } const apply = () => { if (message.params.configId === 'model') selectedModel = message.params.value; else if (message.params.configId === 'effort') selectedEffort = message.params.value; else if (message.params.configId === 'mode') mode = message.params.value; send({ id: message.id, result: { configOptions: configOptions() } }); }; if (scenario === 'slow-config') setTimeout(apply, 100); else apply(); return; }
+  if (message.method === 'session/set_mode') { if (scenario === 'opencode') throw new Error('opencode has no session/set_mode'); if (message.params?.sessionId !== 'fake-session' || message.params.modeId !== 'default') throw new Error('Invalid ACP session/set_mode'); modeSets += 1; if (scenario === 'set-mode-error') send({ id: message.id, error: { code: -32000, message: 'mode refused' } }); else { const done = () => { mode = 'default'; send({ id: message.id, result: {} }); }; if (scenario === 'slow-restore' && modeSets > 1) setTimeout(done, 60); else done(); } return; }
   if (message.method === 'session/prompt') {
     const text = message.params.prompt[0].text;
     lastPromptId = message.id;
@@ -34,7 +37,7 @@ lines.on('line', line => {
       send({ id: 91, method: 'session/request_permission', params: { sessionId: 'fake-session', toolCall: { toolCallId: 'c1', title: 'Edit file' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'not-a-kind' }] } });
       return;
     }
-    if (mode !== 'default') throw new Error('Prompt in unsafe mode');
+    if (mode !== safeMode) throw new Error('Prompt in unsafe mode');
     if (text === 'inspect-session' || text === 'inspect-config') {
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(text === 'inspect-config' ? { configSets } : sessionNewParams) } });
       send({ id: message.id, result: { stopReason: 'end_turn' } }); return;
@@ -43,6 +46,7 @@ lines.on('line', line => {
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
       send({ id: message.id, result: { stopReason: 'end_turn' } }); return;
     }
+    if (text === 'mode-flip-config') { mode = 'build'; update({ sessionUpdate: 'config_option_update', configOptions: configOptions() }); send({ id: message.id, result: { stopReason: 'end_turn' } }); return; }
     if (text === 'mode-flip') { mode = 'auto'; update({ sessionUpdate: 'current_mode_update', currentModeId: 'auto' }); send({ id: message.id, result: { stopReason: 'end_turn' } }); return; }
     if (text === 'auth-error') { send({ method: 'auth/status_update', params: { state: 'unauthenticated' } }); send({ id: message.id, error: { code: -32000, message: 'Authentication required' } }); return; }
     if (text === 'real-frames') {

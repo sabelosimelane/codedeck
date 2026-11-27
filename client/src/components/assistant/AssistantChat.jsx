@@ -60,6 +60,8 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   const [status, setStatus] = useState('connecting');
   const [auth, setAuth] = useState(null);
   const [activeConfig, setActiveConfig] = useState(null);
+  // The socket handler is set up once, so it reads the agent's name through a ref set on ready.
+  const agentNameRef = useRef('The assistant');
   const wsRef = useRef(null);
   const streamRef = useRef('');
   const onSituationFlagsRef = useRef(onSituationFlags);
@@ -107,7 +109,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
           let frame;
           try { frame = parseAssistantFrame(event.data); }
           catch (failure) { setChatError(`Invalid assistant socket message: ${failure.message}`); setStatus(previous => previous === 'running' ? 'ready' : previous); return; }
-          if (frame.type === 'ready') { setActiveConfig({ model: frame.model, effort: frame.effort }); setStatus('ready'); return; }
+          if (frame.type === 'ready') { agentNameRef.current = frame.agentName; setActiveConfig({ agentName: frame.agentName, provider: frame.provider, model: frame.model, effort: frame.effort, mode: frame.mode }); setStatus('ready'); return; }
           if (frame.type === 'auth') { setAuth(frame); return; }
           if (frame.type === 'proposal') { upsertProposal(frame.proposal); return; }
           if (frame.type === 'situation') { onSituationFlagsRef.current?.(frame.flags); return; }
@@ -137,8 +139,8 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
             setPermissions(previous => previous.filter(item => item.choice !== null));
             streamRef.current = ''; setStream(''); setStatus('ready'); return;
           }
-          if (frame.type === 'spawn_error') { setChatError(`Claude Code: ${frame.message}`); setStatus('error'); return; }
-          if (frame.type === 'agent_exit') { setChatError(`Claude Code exited (${frame.code === null ? `signal ${frame.signal}` : `code ${frame.code}`}). ${frame.stderrTail}`); setStatus('ended'); return; }
+          if (frame.type === 'spawn_error') { setChatError(`Assistant: ${frame.message}`); setStatus('error'); return; }
+          if (frame.type === 'agent_exit') { setChatError(`${agentNameRef.current} exited (${frame.code === null ? `signal ${frame.signal}` : `code ${frame.code}`}). ${frame.stderrTail}`); setStatus('ended'); return; }
           if (frame.type === 'error') {
             setChatError(frame.message);
             // An error raised mid-turn leaves the turn and its streamed answer alone; turn_end finishes them.
@@ -194,7 +196,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   };
 
   return <section className="assistant-chat" aria-label="Assistant chat">
-      <div className="assistant-chat-heading"><h2>Chat</h2><span>{auth?.state === 'authenticated' ? auth.label ? `Signed in: ${auth.label}` : 'Signed in to Claude Code' : auth?.state === 'unauthenticated' ? 'Not signed in to Claude Code' : 'Only Claude Code is supported'}{activeConfig && ` · ${activeConfig.model ?? 'unknown model'} · ${activeConfig.effort ?? 'unknown effort'}`}</span><button type="button" onClick={newConversation}>New conversation</button></div>
+      <div className="assistant-chat-heading"><h2>Chat</h2><span>{[auth?.state === 'authenticated' ? auth.label ? `Signed in: ${auth.label}` : 'Signed in' : auth?.state === 'unauthenticated' ? 'Not signed in' : null, activeConfig && `${activeConfig.agentName} · ${activeConfig.model ?? 'CLI default model'} · ${activeConfig.effort ?? 'CLI default effort'}`].filter(Boolean).join(' · ')}</span><button type="button" onClick={newConversation}>New conversation</button></div>
       <div className="assistant-chat-transcript" aria-live="polite">
         {messages.map(message => message.role === 'tool'
           ? <div className="assistant-chat-tool" key={message.id}>Tool: {message.content}</div>
@@ -229,9 +231,9 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
         })}
       </div>
       {chatError && <p role="alert" className="assistant-panel-error">{chatError}</p>}
-      <p className="assistant-chat-status">{status === 'connecting' ? 'Connecting…' : status === 'running' ? 'Claude Code is working…' : status === 'ready' ? 'Ready' : 'Connection closed'}</p>
+      <p className="assistant-chat-status">{status === 'connecting' ? 'Connecting…' : status === 'running' ? `${activeConfig?.agentName ?? 'The assistant'} is working…` : status === 'ready' ? 'Ready' : 'Connection closed'}</p>
       <div className="assistant-chat-compose">
-        <textarea aria-label="Message Claude Code" value={input} disabled={status !== 'ready'} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }} />
+        <textarea aria-label="Message the assistant" value={input} disabled={status !== 'ready'} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }} />
         {status === 'running' ? <button type="button" onClick={() => wsRef.current?.send(JSON.stringify({ type: 'cancel' }))}>Stop</button> : <button type="button" onClick={send} disabled={status !== 'ready' || !input.trim()}>Send</button>}
       </div>
     </section>;

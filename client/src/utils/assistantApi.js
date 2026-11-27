@@ -1,6 +1,3 @@
-import { AGENT_PRESETS } from '../../../shared/agent-presets.mjs';
-
-const CLAUDE_EFFORTS = AGENT_PRESETS.find(preset => preset.id === 'claude').efforts;
 const valid = (condition, field) => { if (!condition) throw new Error(`Invalid situation field ${field}`); };
 const object = (value, field) => { valid(value !== null && typeof value === 'object' && !Array.isArray(value), field); return value; };
 const list = (value, field) => { valid(Array.isArray(value), field); return value; };
@@ -14,9 +11,12 @@ const nullableNumber = (value, field) => { if (value !== null) number(value, fie
 const boolean = (value, field) => valid(typeof value === 'boolean', field);
 export function parseAssistantSettings(value) {
   object(value, 'settings');
-  valid(['default', 'opus', 'fable', 'sonnet', 'haiku'].includes(value.model), 'model');
-  valid(value.effort === null || CLAUDE_EFFORTS.includes(value.effort), 'effort');
-  return { model: value.model, effort: value.effort };
+  valid(Object.keys(value).every(key => key === 'agentId' || key === 'effort'), 'settings');
+  // An empty agentId means no agent is chosen yet; the backend checks the agent and its efforts.
+  valid(value.agentId === '' || (typeof value.agentId === 'string' && value.agentId.trim().length > 0), 'agentId');
+  nullableText(value.effort, 'effort');
+  valid(value.agentId !== '' || value.effort === null, 'effort');
+  return { agentId: value.agentId, effort: value.effort };
 }
 export async function getAssistantSettings({ signal } = {}) {
   return parseAssistantSettings(await assistantRequest('/api/assistant/settings', { signal }, 'assistant settings'));
@@ -205,7 +205,7 @@ export function parseAssistantFrame(raw) {
   const integer = (value, field) => valid(Number.isSafeInteger(value) && value > 0, field);
   const requestId = (value, field) => valid((Number.isSafeInteger(value) && value >= 0) || (typeof value === 'string' && value.length > 0), field);
   switch (frame.type) {
-    case 'ready': valid(uuid(frame.conversationId), 'conversationId'); boolean(frame.restarted, 'restarted'); valid(frame.model === null || (typeof frame.model === 'string' && frame.model.length > 0), 'model'); valid(frame.effort === null || (typeof frame.effort === 'string' && frame.effort.length > 0), 'effort'); break;
+    case 'ready': valid(uuid(frame.conversationId), 'conversationId'); boolean(frame.restarted, 'restarted'); text(frame.agentId, 'agentId'); text(frame.agentName, 'agentName'); text(frame.provider, 'provider'); nullableText(frame.model, 'model'); nullableText(frame.effort, 'effort'); text(frame.mode, 'mode'); break;
     case 'notice': text(frame.message, 'message'); integer(frame.messageId, 'messageId'); break;
     case 'message': parseMessage(frame.message); break;
     case 'update': {
