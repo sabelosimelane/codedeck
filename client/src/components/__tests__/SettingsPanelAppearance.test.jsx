@@ -53,28 +53,42 @@ afterEach(() => {
   localStorage.clear();
 });
 
+const ASSISTANT_AGENT = { id: '00000000-0000-4000-8000-0000000000a1', name: 'Claude', launchCommand: 'command claude --model opus', resetCommand: '/clear', revision: 1, createdAt: '2026-11-27T10:00:00.000Z', updatedAt: '2026-11-27T10:00:00.000Z' };
 describe('SettingsPanel appearance', () => {
-  it('loads and saves Project Assistant model and effort through the General footer', async () => {
-    const fetch = vi.fn(async (url, options) => ({ ok: true, json: async () => url === '/api/config' && !options ? { defaultPath: '/home/me', editorCommand: 'cursor -r' } : url === '/api/assistant/settings' ? { model: 'default', effort: null } : {} }));
+  it('loads and saves Project Assistant agent and effort through the General footer', async () => {
+    const fetch = vi.fn(async (url, options) => ({ ok: true, json: async () => url === '/api/config' && !options ? { defaultPath: '/home/me', editorCommand: 'cursor -r' } : url === '/api/assistant/settings' ? { agentId: '', effort: null } : url.startsWith('/api/pipelines/agents') ? { data: [ASSISTANT_AGENT], page: { hasNextPage: false } } : {} }));
     vi.stubGlobal('fetch', fetch);
     await renderPanel();
-    expect(screen.getByLabelText('Assistant model').closest('[role="tabpanel"]').getAttribute('aria-labelledby')).toBe('settings-tab-general');
-    fireEvent.change(screen.getByLabelText('Assistant model'), { target: { value: 'opus' } });
+    expect(screen.getByLabelText('Assistant agent').closest('[role="tabpanel"]').getAttribute('aria-labelledby')).toBe('settings-tab-general');
+    fireEvent.change(screen.getByLabelText('Assistant agent'), { target: { value: ASSISTANT_AGENT.id } });
     fireEvent.change(screen.getByLabelText('Assistant effort'), { target: { value: 'high' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/assistant/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ model: 'opus', effort: 'high' }) })));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/assistant/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ agentId: ASSISTANT_AGENT.id, effort: 'high' }) })));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
   });
   it('shows the assistant settings error and keeps the draft when save fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url, options) => ({
       ok: !(url === '/api/assistant/settings' && options?.method === 'PUT'),
-      json: async () => url === '/api/config' && !options ? { defaultPath: '/home/me', editorCommand: 'cursor -r' } : url === '/api/assistant/settings' && options?.method === 'PUT' ? { message: 'Could not apply settings.' } : url === '/api/assistant/settings' ? { model: 'default', effort: null } : {},
+      json: async () => url === '/api/config' && !options ? { defaultPath: '/home/me', editorCommand: 'cursor -r' } : url === '/api/assistant/settings' && options?.method === 'PUT' ? { message: 'Could not apply settings.' } : url === '/api/assistant/settings' ? { agentId: '', effort: null } : url.startsWith('/api/pipelines/agents') ? { data: [ASSISTANT_AGENT], page: { hasNextPage: false } } : {},
     })));
     await renderPanel();
-    fireEvent.change(screen.getByLabelText('Assistant model'), { target: { value: 'opus' } });
+    fireEvent.change(screen.getByLabelText('Assistant agent'), { target: { value: ASSISTANT_AGENT.id } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Could not apply settings.' }));
-    expect(screen.getByLabelText('Assistant model').value).toBe('opus');
+    expect(screen.getByLabelText('Assistant agent').value).toBe(ASSISTANT_AGENT.id);
+  });
+  it('lists an agent without ACP disabled with its reason, and takes no effort for Muse', async () => {
+    const agent = (n, name, launchCommand) => ({ ...ASSISTANT_AGENT, id: `00000000-0000-4000-8000-0000000000b${n}`, name, launchCommand });
+    const cursor = agent(1, 'Cursor', 'command agent --model gpt-5.6-sol-high');
+    const muse = agent(2, 'Muse', 'command muse --model muse-spark-1.3');
+    vi.stubGlobal('fetch', vi.fn(async url => ({ ok: true, json: async () => url === '/api/config' ? { defaultPath: '/home/me', editorCommand: 'cursor -r' } : url === '/api/assistant/settings' ? { agentId: '', effort: null } : url.startsWith('/api/pipelines/agents') ? { data: [cursor, muse], page: { hasNextPage: false } } : {} })));
+    await renderPanel();
+    const option = await screen.findByRole('option', { name: 'Cursor — Cursor has no Agent Client Protocol server' });
+    expect(option.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Assistant agent'), { target: { value: muse.id } });
+    expect(screen.getByLabelText('Assistant effort').disabled).toBe(true);
+    expect(screen.getByText('Muse Code takes no effort over ACP')).toBeTruthy();
+    expect(screen.getByText(/held in its promptUnmatched mode/)).toBeTruthy();
   });
   it('offers System, Dark, and Light with the current mode pressed', async () => {
     await renderPanel();

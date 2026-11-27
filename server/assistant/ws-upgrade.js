@@ -14,7 +14,7 @@ export function routeUpgrade(req, socket, head, { authorizeUpgrade, terminal, as
   server.handleUpgrade(req, socket, head, ws => server.emit('connection', ws, req));
 }
 
-export function createAssistantSocketHandler({ findProject, store, proposalStore, compose, sessionTokens, assistantUrl, settings, bridge = handleAssistantConnection }) {
+export function createAssistantSocketHandler({ findProject, store, proposalStore, compose, sessionTokens, assistantUrl, settings, agentStore, bridge = handleAssistantConnection }) {
   if (typeof findProject !== 'function' || !store || typeof bridge !== 'function') throw new TypeError('Invalid assistant socket dependencies');
   const live = new Map();
   const handler = (ws, req) => {
@@ -40,7 +40,7 @@ export function createAssistantSocketHandler({ findProject, store, proposalStore
     }
     const entry = { ws, bridge: null }; live.set(projectName, entry);
     ws.on('close', () => { if (live.get(projectName) === entry) live.delete(projectName); });
-    try { const conversation = store.current(projectName); entry.conversationId = conversation.id; entry.bridge = bridge(ws, { project: projectName, cwd: project.path, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings }); }
+    try { const conversation = store.current(projectName); entry.conversationId = conversation.id; entry.bridge = bridge(ws, { project: projectName, cwd: project.path, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings, agentStore }); }
     catch (error) { console.error('[assistant] bridge start failed', error); live.delete(projectName); if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'spawn_error', message: error.message })); ws.close(1011, 'Assistant could not start'); }
   };
   handler.pushProposal = (projectName, proposal) => { live.get(projectName)?.bridge?.pushProposal?.(proposal); };

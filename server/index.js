@@ -1364,7 +1364,7 @@ app.use(pipelinesRouter);
 
 const assistantRunView = createRunViewBuilder({ runStore: pipelineRunStore, taskStore, workflowStore: pipelineWorkflowStore, decisionStore: pipelineDecisionStore, noteStore: pipelineNoteStore, progressReader: pipelineProgressReader, resolveHostTools });
 const assistantConversationStore = createConversationStore(db);
-const assistantSettingsStore = createAssistantSettingsStore(db);
+const assistantSettingsStore = createAssistantSettingsStore(db, { agentStore: pipelineAgentStore });
 const assistantProposalStore = createProposalStore(db);
 const assistantProposalExecutor = createProposalExecutor({
   proposalStore: assistantProposalStore,
@@ -1386,7 +1386,7 @@ const composeAssistantSituation = name => composeSituation({
 });
 const assistantUrl = `http://127.0.0.1:${process.env.PORT || 43001}`;
 const assistantSocketHandler = createAssistantSocketHandler({
-  settings: () => assistantSettingsStore.settings(),
+  settings: () => assistantSettingsStore.settings(), agentStore: pipelineAgentStore,
   findProject: findAssistantProject,
   store: assistantConversationStore,
   proposalStore: assistantProposalStore,

@@ -7,7 +7,7 @@ describe('assistant socket frames', () => {
   const id = '00000000-0000-4000-8000-000000000001';
   const message = { id: 1, conversationId: id, role: 'owner', content: 'hello', toolName: null, proposalId: null, createdAt: '2026-11-25T20:00:00.000Z' };
   const frames = [
-    { type: 'ready', conversationId: id, restarted: false, model: 'opus', effort: 'high' },
+    { type: 'ready', conversationId: id, restarted: false, agentId: id, agentName: 'Claude', provider: 'claude', model: 'opus', effort: 'high', mode: 'default' },
     { type: 'notice', message: 'hello', messageId: 2 },
     { type: 'message', message },
     { type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } } },
@@ -36,16 +36,16 @@ describe('assistant socket frames', () => {
 });
 
 describe('assistant settings client', () => {
-  it('checks model and effort separately', () => {
-    expect(parseAssistantSettings({ model: 'default', effort: null })).toEqual({ model: 'default', effort: null });
-    expect(parseAssistantSettings({ model: 'fable', effort: 'max' })).toEqual({ model: 'fable', effort: 'max' });
-    expect(() => parseAssistantSettings({ model: 'bad', effort: null })).toThrow('model');
-    expect(() => parseAssistantSettings({ model: 'opus', effort: 'bad' })).toThrow('effort');
+  it('checks agentId and effort separately', () => {
+    expect(parseAssistantSettings({ agentId: '', effort: null })).toEqual({ agentId: '', effort: null });
+    expect(parseAssistantSettings({ agentId: 'saved', effort: 'max' })).toEqual({ agentId: 'saved', effort: 'max' });
+    expect(() => parseAssistantSettings({ agentId: null, effort: null })).toThrow('agentId');
+    expect(() => parseAssistantSettings({ agentId: 'saved', effort: 2 })).toThrow('effort');
   });
   it('reads and saves validated settings', async () => {
-    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ model: 'opus', effort: 'high' }) })); vi.stubGlobal('fetch', fetch);
-    expect(await getAssistantSettings()).toEqual({ model: 'opus', effort: 'high' });
-    expect(await saveAssistantSettings({ model: 'opus', effort: 'high' })).toEqual({ model: 'opus', effort: 'high' });
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ agentId: 'saved', effort: 'high' }) })); vi.stubGlobal('fetch', fetch);
+    expect(await getAssistantSettings()).toEqual({ agentId: 'saved', effort: 'high' });
+    expect(await saveAssistantSettings({ agentId: 'saved', effort: 'high' })).toEqual({ agentId: 'saved', effort: 'high' });
     expect(fetch).toHaveBeenCalledWith('/api/assistant/settings', expect.objectContaining({ method: 'PUT' }));
   });
 });

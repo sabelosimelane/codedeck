@@ -9,6 +9,7 @@ import { createAssistantRouter } from '../routes/assistant.js';
 import { composeSituation } from '../assistant/situation.js';
 import Database from 'better-sqlite3';
 import { createAssistantSettingsStore } from '../assistant/assistant-settings-store.js';
+import { buildLaunchCommand } from '../../shared/agent-presets.mjs';
 
 const roots = [];
 const settingsDbs = [];
@@ -34,19 +35,19 @@ function expectProblem(response, status) {
 describe('assistant settings singleton', () => {
   function app() {
     const db = new Database(':memory:'); settingsDbs.push(db);
-    const settingsStore = createAssistantSettingsStore(db);
+    const settingsStore = createAssistantSettingsStore(db, { agentStore: { get: id => id === 'claude' ? { id, name: 'Claude', launchCommand: buildLaunchCommand({ provider: 'claude', model: '', effort: '', skipPermissions: false }).command } : null } });
     const app = express(); app.use(createAssistantRouter({ compose: async () => situation, settingsStore }));
     return app;
   }
   it('gets defaults and saves a valid choice idempotently', async () => {
     const server = app();
-    expect((await request(server).get('/api/assistant/settings')).body).toEqual({ model: 'default', effort: null });
-    for (let i = 0; i < 2; i++) expect((await request(server).put('/api/assistant/settings').send({ model: 'opus', effort: 'high' })).body).toEqual({ model: 'opus', effort: 'high' });
-    expect((await request(server).get('/api/assistant/settings')).body).toEqual({ model: 'opus', effort: 'high' });
+    expect((await request(server).get('/api/assistant/settings')).body).toEqual({ agentId: '', effort: null });
+    for (let i = 0; i < 2; i++) expect((await request(server).put('/api/assistant/settings').send({ agentId: 'claude', effort: 'high' })).body).toEqual({ agentId: 'claude', effort: 'high' });
+    expect((await request(server).get('/api/assistant/settings')).body).toEqual({ agentId: 'claude', effort: 'high' });
   });
   it('returns field errors and a trace for invalid or malformed input', async () => {
     const server = app();
-    for (const body of [{ model: 'wrong', effort: 'nope' }, { model: null, effort: null }, {}, []]) {
+    for (const body of [{ agentId: 'wrong', effort: 'nope' }, { agentId: null, effort: null }, {}, []]) {
       const response = await request(server).put('/api/assistant/settings').send(body);
       expectProblem(response, 400);
       expect(response.body.errors.length).toBeGreaterThan(0);

@@ -7,6 +7,7 @@ import { createConversationStore } from '../assistant/conversation-store.js';
 import { createProposalStore } from '../assistant/proposal-store.js';
 import { createSessionTokens } from '../assistant/session-tokens.js';
 import { adapterCommand, describeProposalDecision, handleAssistantConnection } from '../assistant/acp-bridge.js';
+import { buildLaunchCommand } from '../../shared/agent-presets.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/assistant-fake-acp-agent.js', import.meta.url));
 const dbs = []; const sockets = [];
@@ -20,43 +21,93 @@ function waitFor(ws, type) { const existing = ws.sent.find(frame => frame.type =
 function setup(options = {}) {
   const db = new Database(':memory:'); dbs.push(db); const store = createConversationStore(db);
   const ws = new Socket(); sockets.push(ws); const conversation = store.current('Demo');
-  return { db, store, ws, conversation, connect: () => handleAssistantConnection(ws, { project: 'Demo', cwd: process.cwd(), conversation, store, settings: () => ({ model: 'default', effort: null }), command: process.execPath, args: [fixture], ...options }) };
+  const provider = options.provider ?? 'claude';
+  const agents = { get: id => id === provider ? { id, name: `${provider} agent`, launchCommand: buildLaunchCommand({ provider, model: options.model ?? '', effort: '', skipPermissions: false }).command } : null };
+  const { provider: _provider, model: _model, ...connection } = options;
+  return { db, store, ws, conversation, connect: () => handleAssistantConnection(ws, { project: 'Demo', cwd: process.cwd(), conversation, store, settings: () => ({ agentId: provider, effort: null }), agentStore: agents, command: process.execPath, args: [fixture], ...connection }) };
 }
+describe('ACP bridge with a provider whose mode is a config option (OpenCode)', () => {
+  const inspect = async ws => { ws.sent.length = 0; ws.receive({ type: 'prompt', text: 'inspect-config' }); await waitFor(ws, 'turn_end'); return ws.sent.find(frame => frame.type === 'update' && frame.update.content?.type === 'text').update.content.text; };
+  it('holds plan through set_config_option, never set_mode, and reports it on ready', async () => {
+    const { ws, connect } = setup({ provider: 'opencode', args: [fixture, 'opencode'] }); connect();
+    expect(await waitFor(ws, 'ready')).toMatchObject({ provider: 'opencode', mode: 'plan', agentId: 'opencode' });
+    expect(await inspect(ws)).toContain('"configSets":[["mode","plan"]]');
+  });
+  it('sends the brief with the first prompt only, not as a systemPrompt', async () => {
+    const compose = async () => ({ markdown: '# Situation\nPhase 2 has 4 of 6 tasks done.' });
+    const { ws, connect } = setup({ provider: 'opencode', args: [fixture, 'opencode'], compose }); connect();
+    await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'inspect-session' }); await waitFor(ws, 'turn_end');
+    const first = ws.sent.filter(frame => frame.type === 'update' && frame.update.content?.type === 'text').at(-1).update.content.text;
+    expect(first).not.toContain('systemPrompt');
+    ws.sent.length = 0;
+    ws.receive({ type: 'prompt', text: 'echo-prompt again' }); await waitFor(ws, 'turn_end');
+    const second = ws.sent.find(frame => frame.type === 'update' && frame.update.content?.type === 'text').update.content.text;
+    expect(second).toBe('echo-prompt again');
+  });
+  it('puts the brief before the owner text of the first prompt', async () => {
+    const compose = async () => ({ markdown: '# Situation\nPhase 2 has 4 of 6 tasks done.' });
+    const { ws, connect } = setup({ provider: 'opencode', args: [fixture, 'opencode'], compose }); connect();
+    await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'echo-prompt first' }); await waitFor(ws, 'turn_end');
+    const text = ws.sent.find(frame => frame.type === 'update' && frame.update.content?.type === 'text').update.content.text;
+    expect(text).toContain('Phase 2 has 4 of 6 tasks done.');
+    expect(text.endsWith('echo-prompt first')).toBe(true);
+  });
+  it('restores plan when a config_option_update reports another mode', async () => {
+    const { ws, connect } = setup({ provider: 'opencode', args: [fixture, 'opencode'] }); connect();
+    await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'mode-flip-config' }); await waitFor(ws, 'turn_end');
+    expect(ws.sent).toContainEqual(expect.objectContaining({ type: 'error', message: 'OpenCode changed mode; restoring plan.' }));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(await inspect(ws)).toContain('"configSets":[["mode","plan"],["mode","plan"]]');
+  });
+});
+describe('ACP bridge without a usable agent', () => {
+  it('refuses to start when no agent is chosen', async () => {
+    const { ws, connect } = setup({ settings: () => ({ agentId: '', effort: null }) }); connect();
+    expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: 'Choose an agent for the assistant in Settings → General' });
+  });
+  it('names the reason when the chosen agent no longer exists', async () => {
+    const { ws, connect } = setup({ settings: () => ({ agentId: 'gone', effort: null }) }); connect();
+    expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('Saved agent does not exist') });
+  });
+});
 describe('ACP bridge with fake stdio agent', () => {
   it('does not set config for defaults and reports the active defaults', async () => {
-    const { ws, connect } = setup({ settings: () => ({ model: 'default', effort: null }) }); connect();
+    const { ws, connect } = setup(); connect();
     expect(await waitFor(ws, 'ready')).toMatchObject({ model: 'default', effort: 'default' });
     ws.receive({ type: 'prompt', text: 'inspect-config' });
     await waitFor(ws, 'turn_end');
     expect(ws.sent.find(frame => frame.type === 'update' && frame.update.content?.type === 'text').update.content.text).toContain('"configSets":[]');
   });
   it('sets model before effort and reports confirmed active values', async () => {
-    const { ws, connect } = setup({ settings: () => ({ model: 'opus', effort: 'high' }) }); connect();
+    const { ws, connect } = setup({ model: 'opus', settings: () => ({ agentId: 'claude', effort: 'high' }) }); connect();
     expect(await waitFor(ws, 'ready')).toMatchObject({ model: 'opus', effort: 'high' });
     ws.receive({ type: 'prompt', text: 'inspect-config' }); await waitFor(ws, 'turn_end');
     expect(ws.sent.find(frame => frame.type === 'update' && frame.update.content?.type === 'text').update.content.text).toContain('"configSets":[["model","opus"],["effort","high"]]');
   });
   it('accepts grouped options and rechecks effort after changing model', async () => {
-    const grouped = setup({ args: [fixture, 'grouped-options'], settings: () => ({ model: 'opus', effort: 'high' }) }); grouped.connect();
+    const grouped = setup({ model: 'opus', args: [fixture, 'grouped-options'], settings: () => ({ agentId: 'claude', effort: 'high' }) }); grouped.connect();
     expect(await waitFor(grouped.ws, 'ready')).toMatchObject({ model: 'opus', effort: 'high' });
-    const unavailable = setup({ args: [fixture, 'effort-missing-after-model'], settings: () => ({ model: 'opus', effort: 'high' }) }); unavailable.connect();
+    const unavailable = setup({ model: 'opus', args: [fixture, 'effort-missing-after-model'], settings: () => ({ agentId: 'claude', effort: 'high' }) }); unavailable.connect();
     expect(await waitFor(unavailable.ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('effort "high"') });
     expect(unavailable.ws.readyState).toBe(3);
   });
   it('refuses prompts until the selected config is confirmed', async () => {
-    const { ws, connect } = setup({ args: [fixture, 'slow-config'], settings: () => ({ model: 'opus', effort: null }) }); connect();
+    const { ws, connect } = setup({ model: 'opus', args: [fixture, 'slow-config'] }); connect();
     await new Promise(resolve => setTimeout(resolve, 60));
     ws.receive({ type: 'prompt', text: 'empty' });
     expect(await waitFor(ws, 'error')).toMatchObject({ message: expect.stringContaining('not ready') });
     await waitFor(ws, 'ready');
   });
   it.each([['missing-model', 'opus'], ['missing-opus', 'opus']])('fails closed when model is unavailable: %s', async (scenario, model) => {
-    const { ws, connect } = setup({ args: [fixture, scenario], settings: () => ({ model, effort: null }) }); connect();
+    const { ws, connect } = setup({ model, args: [fixture, scenario] }); connect();
     expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining(`model "${model}"`) });
     expect(ws.readyState).toBe(3);
   });
   it('fails closed for malformed config reply', async () => {
-    const { ws, connect } = setup({ args: [fixture, 'bad-config-reply'], settings: () => ({ model: 'opus', effort: null }) }); connect();
+    const { ws, connect } = setup({ model: 'opus', args: [fixture, 'bad-config-reply'] }); connect();
     expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('model') });
     expect(ws.readyState).toBe(3);
   });
@@ -68,7 +119,7 @@ describe('ACP bridge with fake stdio agent', () => {
   });
   it.each(['missing-modes', 'no-default', 'set-mode-error'])('fails closed when safe mode is unavailable: %s', async scenario => {
     const { ws, connect } = setup({ args: [fixture, scenario] }); connect();
-    expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('ask before acting') });
+    expect(await waitFor(ws, 'spawn_error')).toMatchObject({ message: expect.stringContaining('default') });
     expect(ws.sent.some(frame => frame.type === 'ready')).toBe(false);
     expect(ws.readyState).toBe(3);
   });
@@ -79,7 +130,7 @@ describe('ACP bridge with fake stdio agent', () => {
     await waitFor(ws, 'turn_end');
     ws.receive({ type: 'prompt', text: 'empty' });
     expect(ws.sent.filter(frame => frame.type === 'message' && frame.message.role === 'owner')).toHaveLength(1);
-    expect(ws.sent.at(-1)).toMatchObject({ type: 'error', message: expect.stringContaining('ask before acting') });
+    expect(ws.sent.at(-1)).toMatchObject({ type: 'error', message: expect.stringContaining('not ready') });
     await new Promise(resolve => setTimeout(resolve, 80));
     ws.sent.length = 0;
     ws.receive({ type: 'prompt', text: 'empty' });
@@ -99,7 +150,7 @@ describe('ACP bridge with fake stdio agent', () => {
     ws.receive({ type: 'prompt', text: 'auth-error' });
     expect(await waitFor(ws, 'turn_end')).toEqual({ type: 'turn_end', messageId: null });
     expect(ws.sent).toContainEqual({ type: 'auth', state: 'unauthenticated', label: null });
-    expect(ws.sent).toContainEqual({ type: 'error', message: 'Claude Code is not signed in on this machine. Run `claude` in a terminal, sign in, then send again.', turnRunning: false });
+    expect(ws.sent).toContainEqual({ type: 'error', message: 'Claude Code is not signed in on this machine. Sign in, then send again.', turnRunning: false });
   });
   it('handshakes, stores the owner before prompt, and combines chunks into one turn', async () => {
     const { store, ws, conversation, connect } = setup(); connect();
@@ -324,7 +375,8 @@ describe('ACP bridge with fake stdio agent', () => {
       conversation,
       store,
       proposalStore,
-      settings: () => ({ model: 'default', effort: null }),
+      settings: () => ({ agentId: 'claude', effort: null }),
+      agentStore: { get: () => ({ id: 'claude', name: 'Claude Code', launchCommand: 'command claude' }) },
       command: process.execPath,
       args: [fixture],
     });

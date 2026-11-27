@@ -34,7 +34,7 @@ The panel is useful before anything is asked: its header shows the flags.
 
 ### Out of scope
 
-- Agents other than Claude Code. The panel says so. Other CLIs have no ACP adapter wired here.
+- Agents whose provider has no ACP server (Cursor) and agents with a custom command. Settings lists them with the reason. (Version 1.0 supported Claude Code only; since 2026-11-27 any saved Claude Code, Codex, Antigravity, Muse or OpenCode agent can be chosen.)
 - Remote projects. The situation of a remote project is refused with 409.
 - More than one project per conversation.
 - Remembering the agent's own context across a restart of its process. The transcript is kept;

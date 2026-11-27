@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildAssistantBrief } from './brief.js';
 import { validateAssistantSettings } from './assistant-settings-store.js';
+import { assistantProfileFor } from './acp-agents.js';
 
 const require = createRequire(import.meta.url);
 const acpSchema = await import(new URL('../schema/zod.gen.js', import.meta.resolve('@agentclientprotocol/sdk')).href);
@@ -52,21 +53,30 @@ export function describeProposalDecision(proposal) {
   return 'completed';
 }
 
-export function handleAssistantConnection(ws, { project, cwd, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings, mcpServerPath = DEFAULT_MCP_SERVER_PATH, command, args, spawnFn = spawn } = {}) {
+export function handleAssistantConnection(ws, { project, cwd, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings, agentStore, mcpServerPath = DEFAULT_MCP_SERVER_PATH, command, args, spawnFn = spawn } = {}) {
   if (typeof project !== 'string' || !project || typeof cwd !== 'string' || !path.isAbsolute(cwd) || conversation?.project !== project || conversation?.state !== 'current' || !store) throw new TypeError('Invalid assistant connection');
   if (compose !== undefined && typeof compose !== 'function') throw new TypeError('Invalid assistant compose function');
   if (typeof settings !== 'function') throw new TypeError('Invalid assistant settings function');
   // An error frame says whether a turn is still running, so the panel keeps a streaming answer
   // through errors raised in the middle of a turn and re-enables Send only after one that ended it.
+  let activeTurn = false;
   const send = frame => { if (ws.readyState === 1) ws.send(JSON.stringify(frame.type === 'error' ? { ...frame, turnRunning: activeTurn } : frame)); };
-  const adapter = command ? { command, args } : adapterCommand();
+  let selected, agent, profile, selection;
+  try {
+    selected = validateAssistantSettings(settings(), agentStore);
+    if (!selected.agentId) throw new Error('Choose an agent for the assistant in Settings → General');
+    agent = agentStore.get(selected.agentId);
+    profile = assistantProfileFor(agent);
+    selection = profile.selection;
+  } catch (error) { send({ type: 'spawn_error', message: error.message }); ws.close(); return null; }
+  const adapter = command ? { command, args } : profile.command();
   if (typeof adapter.command !== 'string' || !Array.isArray(adapter.args)) throw new TypeError('Invalid ACP command');
   const env = { ...process.env };
   delete env.CLAUDECODE; delete env.CLAUDE_CODE_ENTRYPOINT;
   let child;
   try { child = spawnFn(adapter.command, adapter.args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] }); }
   catch (error) { send({ type: 'spawn_error', message: error.message }); ws.close(); return null; }
-  let closed = false; let stderrTail = ''; let buffer = ''; let nextId = 1; let sessionId = null; let turnText = ''; let activeTurn = false; let modeReady = false; let authState = null;
+  let closed = false; let stderrTail = ''; let buffer = ''; let nextId = 1; let sessionId = null; let turnText = ''; let modeReady = false; let authState = null; let firstPromptBrief = null; let setHeldMode;
   let issuedToken = null;
   const reportedDecisions = new Set((proposalStore?.listDecided?.(conversation.id) ?? []).map(item => item.id));
   const pending = new Map(); const permissions = new Map(); const toolCalls = new Map();
@@ -147,13 +157,10 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         if (update.status !== undefined) tool.status = update.status;
         toolCalls.set(update.toolCallId, tool);
         if (tool.status === 'completed' || tool.status === 'failed') saveTool(tool);
-      } else if (update.sessionUpdate === 'current_mode_update' && update.currentModeId !== 'default') {
+      } else if ((profile.heldMode.via === 'set_mode' && update.sessionUpdate === 'current_mode_update' && update.currentModeId !== profile.heldMode.id) || (profile.heldMode.via === 'config_option' && update.sessionUpdate === 'config_option_update' && update.configOptions?.some(option => option.id === 'mode' && option.currentValue !== profile.heldMode.id))) {
         modeReady = false;
-        send(errorFrame(`Claude Code switched to ${update.currentModeId} mode; restoring ask before acting.`));
-        request('session/set_mode', { sessionId, modeId: 'default' }).then(result => {
-          if (!acpSchema.zSetSessionModeResponse.safeParse(result).success) throw new Error('Invalid set_mode response');
-          modeReady = true;
-        }).catch(error => { if (!closed) { send(errorFrame(`Could not restore ask before acting: ${error.message}`)); shutdown(); } });
+        send(errorFrame(`${profile.label} changed mode; restoring ${profile.heldMode.id}.`));
+        setHeldMode().then(() => { modeReady = true; }).catch(error => { if (!closed) { send(errorFrame(`Could not restore ${profile.heldMode.id}: ${error.message}`)); shutdown(); } });
       }
       send({ type: 'update', update });
       return;
@@ -193,9 +200,8 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
   // Adapter dist/serve.js negotiates v1 for protocolVersion 1. The shapes below
   // match SDK dist/v1/schema/zod.gen.js (initialize, new, prompt, permission).
   (async () => {
-    let failurePrefix = 'The assistant could not start Claude Code';
+    let failurePrefix = `The assistant could not start ${profile.label}`;
     try {
-      const selected = validateAssistantSettings(settings());
       await request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
       if (closed) return;
       let systemPrompt;
@@ -205,7 +211,8 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         const situation = await compose(project);
         if (closed) return;
         const briefText = buildAssistantBrief(situation?.markdown);
-        systemPrompt = { mode: 'append', content: [{ type: 'text', text: briefText }] };
+        if (profile.briefDelivery === 'system_prompt') systemPrompt = { mode: 'append', content: [{ type: 'text', text: briefText }] };
+        else firstPromptBrief = briefText;
         briefed = true;
       }
       const mcpServers = [];
@@ -222,14 +229,12 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         });
       }
       const sessionParams = { cwd, mcpServers, ...(systemPrompt ? { systemPrompt } : {}) };
-      failurePrefix = 'The assistant could not start Claude Code';
+      failurePrefix = `The assistant could not start ${profile.label}`;
       const session = await request('session/new', sessionParams);
       if (typeof session?.sessionId !== 'string' || !session.sessionId) throw new Error('Invalid ACP session id');
       sessionId = session.sessionId;
-      failurePrefix = 'The assistant could not switch Claude Code to ask before acting';
-      if (!plain(session.modes) || !Array.isArray(session.modes.availableModes) || !session.modes.availableModes.some(mode => mode?.id === 'default')) throw new Error('The adapter did not offer default mode');
-      const modeResult = await request('session/set_mode', { sessionId, modeId: 'default' });
-      if (!acpSchema.zSetSessionModeResponse.safeParse(modeResult).success) throw new Error('Invalid set_mode response');
+      failurePrefix = `The assistant could not switch ${profile.label} to ${profile.heldMode.id}`;
+      if (profile.heldMode.via === 'set_mode' && (!plain(session.modes) || !Array.isArray(session.modes.availableModes) || !session.modes.availableModes.some(mode => mode?.id === profile.heldMode.id))) throw new Error(`${profile.label} did not offer ${profile.heldMode.id} mode`);
       let configOptions = session.configOptions;
       if (configOptions !== undefined && !Array.isArray(configOptions)) throw new Error('Invalid ACP configOptions');
       const choices = option => option.options.flatMap(item => Array.isArray(item.options) ? item.options : [item]);
@@ -240,21 +245,30 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         if (option.type !== 'select' || typeof option.currentValue !== 'string' || !Array.isArray(option.options) || !acpSchema.zSessionConfigOption.safeParse(option).success || !option.options.every(item => item?.options === undefined || (typeof item.group === 'string' && typeof item.name === 'string' && Array.isArray(item.options))) || !choices(option).every(item => typeof item?.value === 'string' && typeof item.name === 'string')) throw new Error(`Invalid ACP ${id} config option`);
         return option;
       };
-      for (const [id, value] of [['model', selected.model === 'default' ? null : selected.model], ['effort', selected.effort]]) {
-        if (value === null) continue;
-        failurePrefix = `The assistant could not use ${id} "${value}"`;
+      const setOption = async (id, value) => {
         const option = active(id);
         const offered = option ? choices(option).map(item => item.value) : [];
-        if (!option || !offered.includes(value)) throw new Error(`Claude Code offers ${offered.length ? offered.join(', ') : 'no options'}`);
+        if (!option || !offered.includes(value)) throw new Error(`${profile.label} did not offer ${id} "${value}"; offered: ${offered.length ? offered.join(', ') : 'none'}`);
         const result = await request('session/set_config_option', { sessionId, configId: id, value });
         if (!plain(result) || !Array.isArray(result.configOptions) || !acpSchema.zSetSessionConfigOptionResponse.safeParse(result).success) throw new Error('Invalid set_config_option response');
         configOptions = result.configOptions;
-        if (active(id)?.currentValue !== value) throw new Error(`Claude Code did not confirm ${id} "${value}"`);
+        if (active(id)?.currentValue !== value) throw new Error(`${profile.label} did not confirm ${id} "${value}"`);
+      };
+      setHeldMode = async () => {
+        if (profile.heldMode.via === 'config_option') return setOption('mode', profile.heldMode.id);
+        const result = await request('session/set_mode', { sessionId, modeId: profile.heldMode.id });
+        if (!acpSchema.zSetSessionModeResponse.safeParse(result).success) throw new Error('Invalid set_mode response');
+      };
+      await setHeldMode();
+      for (const [id, value] of [[profile.modelOption, selection.model || null], [profile.effortOption, selected.effort]]) {
+        if (value === null) continue;
+        failurePrefix = `The assistant could not use ${id} "${value}"`;
+        await setOption(id, value);
       }
       modeReady = true;
-      failurePrefix = 'The assistant could not start Claude Code';
+      failurePrefix = `The assistant could not start ${profile.label}`;
       const restarted = store.hasMessages(conversation.id);
-      send({ type: 'ready', conversationId: conversation.id, restarted, model: active('model')?.currentValue ?? null, effort: active('effort')?.currentValue ?? null });
+      send({ type: 'ready', conversationId: conversation.id, restarted, agentId: agent.id, agentName: agent.name, provider: profile.id, model: active(profile.modelOption)?.currentValue ?? null, effort: profile.effortOption ? active(profile.effortOption)?.currentValue ?? null : null, mode: profile.heldMode.id });
       if (restarted) {
         const notice = store.append(conversation.id, { role: 'notice', content: briefed ? RESTARTED_BRIEF_NOTICE : NOTICE });
         send({ type: 'message', message: notice });
@@ -271,12 +285,13 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
     const allowed = { prompt: ['type', 'text'], cancel: ['type'], permission_response: ['type', 'requestId', 'outcome'] };
     if (!allowed[frame.type] || !fields(frame, allowed[frame.type])) { send(errorFrame('Unknown or invalid browser frame fields.')); return; }
     if (frame.type === 'prompt') {
-      if (!sessionId || !modeReady) { send({ type: 'error', message: 'Assistant is not ready to ask before acting.' }); return; }
+      if (!sessionId || !modeReady) { send({ type: 'error', message: `Assistant is not ready in ${profile.heldMode.id} mode.` }); return; }
       if (activeTurn) { send({ type: 'error', message: 'A turn is already running.' }); return; }
       if (typeof frame.text !== 'string' || frame.text.length < 1 || frame.text.length > 20000) { send({ type: 'error', message: 'Prompt text must be 1–20000 characters.' }); return; }
       let saved; try { saved = store.append(conversation.id, { role: 'owner', content: frame.text }); } catch (error) { send({ type: 'error', message: error.message }); return; }
       send({ type: 'message', message: saved });
       let promptText = frame.text;
+      if (firstPromptBrief !== null) { promptText = `${firstPromptBrief}\n\n${promptText}`; firstPromptBrief = null; }
       if (proposalStore && typeof proposalStore.listDecided === 'function') {
         const newlyDecided = proposalStore.listDecided(conversation.id).filter(item => !reportedDecisions.has(item.id));
         if (newlyDecided.length) {
@@ -292,7 +307,7 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         const saved = turnText ? store.append(conversation.id, { role: 'agent', content: turnText }) : null;
         activeTurn = false; turnText = '';
         send({ type: 'turn_end', messageId: saved?.id ?? null });
-      }).catch(error => { if (closed) return; try { flushTools(); } catch (failure) { send(errorFrame(failure.message)); shutdown(); return; } activeTurn = false; turnText = ''; send({ type: 'turn_end', messageId: null }); send({ type: 'error', message: authState === 'unauthenticated' || error.message === 'Authentication required' ? 'Claude Code is not signed in on this machine. Run `claude` in a terminal, sign in, then send again.' : error.message }); });
+      }).catch(error => { if (closed) return; try { flushTools(); } catch (failure) { send(errorFrame(failure.message)); shutdown(); return; } activeTurn = false; turnText = ''; send({ type: 'turn_end', messageId: null }); send({ type: 'error', message: authState === 'unauthenticated' || error.message === 'Authentication required' ? `${profile.label} is not signed in on this machine. Sign in, then send again.` : error.message }); });
     } else if (frame.type === 'cancel') {
       if (!activeTurn) { send(errorFrame('No turn is running.')); return; }
       write({ method: 'session/cancel', params: { sessionId } });
