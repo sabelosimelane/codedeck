@@ -67,6 +67,9 @@ async function startTestServer() {
         : null),
     },
     runView: async run => ({ id: run.id, project: run.project, taskId: run.taskId, status: run.status, createdAt: run.createdAt }),
+    teamStore: { get: id => (id === TEAM_A ? { id: TEAM_A } : null), list: () => [{ id: TEAM_A, name: 'The Fast Dev Team', members: [{ role: 'Developer', agentId: WF_A }] }] },
+    workflowStore: { list: () => [{ id: WF_A, name: 'Feature Build from Spec', kind: 'build', description: 'Builds a todo', agentsDecide: true, nodes: [{ name: 'Develop', role: 'Developer', prompt: 'secret prompt' }] }] },
+    agentStore: { get: id => (id === WF_A ? { id, name: 'Codex Sol' } : null) },
   }));
 
   const server = createServer(app);
@@ -102,12 +105,19 @@ describe('assistant stdio MCP server', () => {
       'get_situation',
       'get_task_landing',
       'list_runs',
+      'list_teams',
+      'list_workflows',
+      'propose_answer_run',
+      'propose_change_team',
       'propose_close',
       'propose_commit',
+      'propose_continue_run',
       'propose_merge',
       'propose_new_task',
       'propose_pull_request',
+      'propose_resume_run',
       'propose_start_run',
+      'propose_stop_run',
       'read_run_notes',
       'read_todo',
     ]);
@@ -232,5 +242,40 @@ describe('assistant stdio MCP server', () => {
     const result = await client.callTool({ name: 'get_situation', arguments: {} });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('not JSON');
+  });
+});
+
+describe('assistant MCP tools for driving runs', () => {
+  const text = result => JSON.parse(result.content[0].text);
+  it('lists teams and workflows with the ids a run proposal needs, and no prompts', async () => {
+    const { baseUrl, session } = await startTestServer();
+    const client = await connectMcp(baseUrl, session.token);
+    const teams = await client.callTool({ name: 'list_teams', arguments: {} });
+    expect(teams.isError).toBeFalsy();
+    expect(text(teams).data).toEqual([{ id: TEAM_A, name: 'The Fast Dev Team', members: [{ role: 'Developer', agentId: WF_A, agentName: 'Codex Sol' }] }]);
+    const workflows = await client.callTool({ name: 'list_workflows', arguments: { kind: 'build' } });
+    expect(text(workflows).data).toEqual([{ id: WF_A, name: 'Feature Build from Spec', kind: 'build', description: 'Builds a todo', agentsDecide: true, steps: [{ name: 'Develop', role: 'Developer' }] }]);
+    expect(workflows.content[0].text).not.toContain('secret prompt');
+  });
+  it('creates a pending proposal through each run tool and reports a refused one', async () => {
+    const { baseUrl, session, proposalStore } = await startTestServer();
+    const client = await connectMcp(baseUrl, session.token);
+    const calls = [
+      ['propose_stop_run', { runId: RUN_A }, 'stop_run'],
+      ['propose_resume_run', { runId: RUN_A }, 'resume_run'],
+      ['propose_answer_run', { runId: RUN_A, answer: '1. (a) Close Batch 1 first' }, 'answer_run'],
+      ['propose_continue_run', { runId: RUN_A, stepIndex: 2, roundsCompleted: 8 }, 'continue_run'],
+      ['propose_change_team', { runId: RUN_A, teamId: TEAM_A }, 'change_team'],
+    ];
+    for (const [name, args, kind] of calls) {
+      const result = await client.callTool({ name, arguments: { ...args, summary: `Do ${kind}`, reason: 'The owner asked for it.' } });
+      expect(result.isError, `${name}: ${result.content[0].text}`).toBeFalsy();
+      const { proposalId, state } = text(result);
+      expect(state).toBe('pending');
+      expect(proposalStore.get(proposalId)).toMatchObject({ kind, state: 'pending', payload: args });
+    }
+    const refused = await client.callTool({ name: 'propose_stop_run', arguments: { runId: '99999999-9999-4999-8999-999999999999', summary: 'Stop', reason: 'r' } });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain('Run not found');
   });
 });

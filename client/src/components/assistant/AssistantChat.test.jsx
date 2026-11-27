@@ -417,3 +417,24 @@ describe('AssistantChat questions', () => {
     expect(screen.queryByText(/QUESTIONS/)).toBeNull();
   });
 });
+
+describe('AssistantChat run proposals', () => {
+  const RUN_ID = '5b2d0310-db90-4459-a7d4-08aab4a38dc5';
+  const TEAM_ID = '1b795322-c4df-4eb3-8475-a6c2d3fa9aeb';
+  const card = (kind, payload) => ({ id: '00000000-0000-4000-8000-000000000009', conversationId: conversation.id, project: 'Demo', kind, payload, summary: `Card for ${kind}`, reason: 'Because.', state: 'pending', result: null, createdAt: conversation.createdAt, decidedAt: null, finishedAt: null });
+  it.each([
+    ['stop_run', { runId: RUN_ID }, 'Stop run 5b2d0310.'],
+    ['resume_run', { runId: RUN_ID }, 'Resume run 5b2d0310.'],
+    ['answer_run', { runId: RUN_ID, answer: '1. (a) Close Batch 1 first' }, 'Answer run 5b2d0310: “1. (a) Close Batch 1 first”'],
+    ['continue_run', { runId: RUN_ID, stepIndex: 3, roundsCompleted: 8 }, 'Give run 5b2d0310 one more round at step 4 (after 8 rounds).'],
+    ['change_team', { runId: RUN_ID, teamId: TEAM_ID }, 'Give run 5b2d0310 team 1b795322.'],
+  ])('describes a %s proposal on its card and says what happened when approved', async (kind, payload, description) => {
+    const pending = card(kind, payload);
+    mock.fetchProposals.mockResolvedValue({ data: [pending], page: { currentPage: 0, size: 100, totalElements: 1, totalPages: 1, hasNextPage: false } });
+    mock.approveProposal.mockResolvedValue({ ...pending, state: 'done', result: { id: RUN_ID, status: 'stopped' }, decidedAt: conversation.createdAt, finishedAt: conversation.createdAt });
+    render(<AssistantChat projectName="Demo" />);
+    expect(await screen.findByText(description)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(mock.showToast).toHaveBeenCalledWith({ type: 'success', message: 'Run 5b2d0310 is now stopped.' }));
+  });
+});

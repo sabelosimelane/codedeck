@@ -64,13 +64,12 @@ export function hydrateProposal(row) {
   };
 }
 
-export function createProposalStore(db) {
-  if (!db || typeof db.prepare !== 'function') throw new TypeError('proposal store requires db');
-  db.exec(`CREATE TABLE IF NOT EXISTS assistant_proposals (
+const KIND_CHECK = PROPOSAL_KINDS.map(kind => `'${kind}'`).join(',');
+const TABLE_SQL = name => `CREATE TABLE ${name} (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id),
     project TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('commit','merge','pull_request','close','new_task','start_run')),
+    kind TEXT NOT NULL CHECK(kind IN (${KIND_CHECK})),
     payload TEXT NOT NULL,
     summary TEXT NOT NULL,
     reason TEXT NOT NULL,
@@ -79,9 +78,36 @@ export function createProposalStore(db) {
     created_at TEXT NOT NULL,
     decided_at TEXT,
     finished_at TEXT
-  );
-  CREATE INDEX IF NOT EXISTS assistant_proposals_conversation_idx ON assistant_proposals(conversation_id, created_at);
-  CREATE INDEX IF NOT EXISTS assistant_proposals_project_idx ON assistant_proposals(project, created_at);`);
+  )`;
+const INDEX_SQL = `CREATE INDEX IF NOT EXISTS assistant_proposals_conversation_idx ON assistant_proposals(conversation_id, created_at);
+  CREATE INDEX IF NOT EXISTS assistant_proposals_project_idx ON assistant_proposals(project, created_at);`;
+
+/**
+ * Creates the table, or rebuilds one whose kind CHECK predates a kind CodeDeck now proposes:
+ * SQLite cannot change a CHECK in place. Rows are copied as they are; nothing references them.
+ */
+function migrateProposalTable(db) {
+  const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assistant_proposals'").get();
+  if (!existing) {
+    db.exec(`${TABLE_SQL('assistant_proposals')};\n  ${INDEX_SQL}`);
+    return;
+  }
+  if (PROPOSAL_KINDS.every(kind => existing.sql.includes(`'${kind}'`))) {
+    db.exec(INDEX_SQL);
+    return;
+  }
+  db.transaction(() => {
+    db.exec(`${TABLE_SQL('assistant_proposals_next')};
+      INSERT INTO assistant_proposals_next SELECT id, conversation_id, project, kind, payload, summary, reason, state, result, created_at, decided_at, finished_at FROM assistant_proposals;
+      DROP TABLE assistant_proposals;
+      ALTER TABLE assistant_proposals_next RENAME TO assistant_proposals;
+      ${INDEX_SQL}`);
+  })();
+}
+
+export function createProposalStore(db) {
+  if (!db || typeof db.prepare !== 'function') throw new TypeError('proposal store requires db');
+  migrateProposalTable(db);
 
   const byId = db.prepare('SELECT * FROM assistant_proposals WHERE id = ?');
   const countPendingStmt = db.prepare("SELECT count(*) AS n FROM assistant_proposals WHERE conversation_id = ? AND state = 'pending'");

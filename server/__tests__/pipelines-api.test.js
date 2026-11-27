@@ -263,12 +263,13 @@ async function setup(overrides = {}) {
   // Closing a run's terminals is the terminal layer's work; here it reports that none was open.
   const closeRunTerminals = overrides.closeRunTerminals ?? vi.fn(async () => ({ closed: [], notClosed: [] }));
 
+  let currentRouter = null;
   const openApp = async () => {
     const app = express();
     if (overrides.onRequest) app.use(express.json(), overrides.onRequest);
     const roleStore = createRoleStore(db);
     for (const role of BUILT_IN_ROLES) roleStore.ensureRole(role.name, role.description);
-    app.use(createPipelinesRouter({
+    currentRouter = createPipelinesRouter({
       db,
       agentStore,
       roleStore,
@@ -293,7 +294,8 @@ async function setup(overrides = {}) {
       resolveHomeRepoPath: overrides.repo ? undefined : resolveHomeRepoPath,
       scheduleStart,
       ...overrides.routerDeps,
-    }));
+    });
+    app.use(currentRouter);
     const server = await loopbackTestServer(app);
     if (fixtureTeamId) fixtureTeams.set(server, fixtureTeamId);
     return server;
@@ -302,6 +304,7 @@ async function setup(overrides = {}) {
   const server = await openApp();
   return {
     app: server,
+    router: () => currentRouter,
     openApp,
     db,
     agentStore,
@@ -1554,6 +1557,52 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
     }
     return { id, agent, workflow, view: () => request(ctx.app).get(`${base}/runs/${id}`) };
   }
+
+  describe('run actions for assistant proposals', () => {
+    it('stops a run and returns its view, and refuses one that is already complete', async () => {
+      const ctx = await setup();
+      const { id } = await seedRun(ctx);
+      const view = await ctx.router().runActions.stop(id);
+      expect(view).toMatchObject({ id, status: 'stopped', stopReason: 'user', actions: { resume: true } });
+      ctx.runStore.update(id, { status: 'complete', stopReason: null, finishedAt: new Date().toISOString() });
+      await expect(ctx.router().runActions.stop(id)).rejects.toMatchObject({ status: 409 });
+    });
+    it('resumes, continues with the named pause, and answers through the engine', async () => {
+      const ctx = await setup();
+      const { id } = await seedRun(ctx, { status: 'limit_paused', worktreeState: 'present', currentStepIndex: 1, steps: [
+        { status: 'complete', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 1, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        { status: 'limit_reached', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 2, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+      ] });
+      const continued = await ctx.router().runActions.continue(id, { stepIndex: 1, roundsCompleted: 0 });
+      expect(continued).toMatchObject({ id, status: 'running' });
+      expect(ctx.engine.continue).toHaveBeenCalledWith(id, { stepIndex: 1, roundsCompleted: 0 });
+      ctx.engine.answer = vi.fn(async () => ctx.runStore.get(id));
+      await ctx.router().runActions.answer(id, '1. (a) Close Batch 1 first');
+      expect(ctx.engine.answer).toHaveBeenCalledWith(id, '1. (a) Close Batch 1 first');
+    });
+    it('refuses a bad answer or grant with field errors before the engine sees it', async () => {
+      const ctx = await setup();
+      const { id } = await seedRun(ctx);
+      ctx.engine.answer = vi.fn();
+      await expect(ctx.router().runActions.answer(id, '')).rejects.toMatchObject({ status: 400, errors: [expect.objectContaining({ field: 'answer' })] });
+      await expect(ctx.router().runActions.continue(id, { stepIndex: 40, roundsCompleted: 0 })).rejects.toMatchObject({ status: 400, errors: [expect.objectContaining({ field: 'stepIndex' })] });
+      expect(ctx.engine.answer).not.toHaveBeenCalled();
+    });
+    it('changes the team of a stopped run, refusing a team that does not exist', async () => {
+      const ctx = await setup();
+      const { id, agent } = await seedRun(ctx);
+      ctx.runStore.update(id, { status: 'stopped', stopReason: 'user', finishedAt: new Date().toISOString() });
+      const team = createTeamStore(ctx.db).create({ name: 'Second team', members: BUILT_IN_ROLES.map(role => ({ role: role.name, agentId: agent.id })) });
+      const changed = await ctx.router().runActions.changeTeam(id, team.id);
+      expect(changed.team).toEqual({ name: 'Second team', changed: true });
+      await expect(ctx.router().runActions.changeTeam(id, randomUUID())).rejects.toMatchObject({ status: 400, errors: [expect.objectContaining({ field: 'teamId' })] });
+    });
+    it('answers 404 for a run that does not exist', async () => {
+      const ctx = await setup();
+      for (const action of ['stop', 'resume']) await expect(ctx.router().runActions[action](randomUUID())).rejects.toMatchObject({ status: 404 });
+      await expect(ctx.router().runActions.changeTeam(randomUUID(), randomUUID())).rejects.toMatchObject({ status: 404 });
+    });
+  });
 
   it('exposes ordered attempt evidence and refuses invalid audit filters', async () => {
     const ctx = await setup();

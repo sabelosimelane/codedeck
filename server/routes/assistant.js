@@ -6,7 +6,7 @@ import { isLocalProject } from '../assistant/project.js';
 import { readScopedDoc } from '../assistant/session-reads.js';
 import { PROPOSAL_STATES, validateProposalCreateBody } from '../assistant/proposal-payloads.js';
 import { validProposalId } from '../assistant/proposal-store.js';
-import { isUuid } from '../../shared/pipeline-definitions.mjs';
+import { isUuid, WORKFLOW_KINDS } from '../../shared/pipeline-definitions.mjs';
 
 export const ASSISTANT_PATH = /^(?:\/api\/projects\/[^/]+\/situation|\/api\/assistant\/(?:conversations|sessions|proposals|settings))(?:\/|$)/;
 
@@ -26,6 +26,9 @@ export function createAssistantRouter({
   onProposal,
   onSituationFlags,
   settingsStore,
+  teamStore,
+  workflowStore,
+  agentStore,
 } = {}) {
   if (typeof compose !== 'function') throw new TypeError('assistant router requires compose');
   const router = express.Router();
@@ -188,6 +191,49 @@ export function createAssistantRouter({
     } catch (error) { next(error); }
   });
 
+  // The team and workflow library is shared by every project: the assistant reads it to name
+  // the ids a run proposal needs. Prompts stay out; the steps and their roles are enough.
+  router.get('/api/assistant/sessions/:token/teams', (req, res, next) => {
+    try {
+      requireSession(req);
+      if (typeof teamStore?.list !== 'function' || typeof agentStore?.get !== 'function') throw new Error('Team library is unavailable');
+      const query = parseCollectionQuery(req.query, { sortFields: ['name'], defaultSort: 'name,asc' }, bad);
+      const teams = teamStore.list().map(team => ({
+        id: team.id,
+        name: team.name,
+        // A member whose agent was deleted is shown with agentName null: the team needs fixing before it runs.
+        members: team.members.map(member => ({ role: member.role, agentId: member.agentId, agentName: agentStore.get(member.agentId)?.name ?? null })),
+      }));
+      res.json(paginate(teams, query));
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/assistant/sessions/:token/workflows', (req, res, next) => {
+    try {
+      requireSession(req);
+      if (typeof workflowStore?.list !== 'function') throw new Error('Workflow library is unavailable');
+      const query = parseCollectionQuery(req.query, {
+        sortFields: ['name'],
+        defaultSort: 'name,asc',
+        filters: [{ name: 'kind', parse: value => {
+          if (!WORKFLOW_KINDS.includes(value)) throw bad('kind', `Use one of ${WORKFLOW_KINDS.join(', ')}`);
+          return value;
+        } }],
+      }, bad);
+      const workflows = workflowStore.list()
+        .filter(workflow => query.filters.kind === undefined || workflow.kind === query.filters.kind)
+        .map(workflow => ({
+          id: workflow.id,
+          name: workflow.name,
+          kind: workflow.kind,
+          description: workflow.description,
+          agentsDecide: workflow.agentsDecide,
+          steps: workflow.nodes.map(node => ({ name: node.name, role: node.role ?? null })),
+        }));
+      res.json(paginate(workflows, query));
+    } catch (error) { next(error); }
+  });
+
   const requireEmptyDecisionBody = req => {
     checkFields(req.query, []);
     if (req.body === undefined) return;
@@ -215,7 +261,7 @@ export function createAssistantRouter({
       const session = requireSession(req);
       checkFields(req.query, []);
       if (!proposalStore) throw new Error('Proposal store is unavailable');
-      const errors = validateProposalCreateBody(req.body, { project: session.project, taskStore });
+      const errors = validateProposalCreateBody(req.body, { project: session.project, taskStore, runStore, teamStore });
       if (errors.length) throw Object.assign(new Error('One or more fields failed validation.'), { status: 400, errors });
       const created = proposalStore.create({
         conversationId: session.conversationId,

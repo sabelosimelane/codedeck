@@ -1379,6 +1379,7 @@ const assistantProposalExecutor = createProposalExecutor({
   landing: taskLanding,
   taskService,
   startRun: pipelinesRouter.startRun,
+  runActions: pipelinesRouter.runActions,
 });
 const assistantSessionTokens = createSessionTokens();
 const findAssistantProject = name => loadProjects().find(project => project.name === name) ?? null;
@@ -1419,6 +1420,9 @@ app.use(createAssistantRouter({
   runView: assistantRunView,
   onProposal: assistantSocketHandler.pushProposal,
   onSituationFlags: assistantSocketHandler.pushSituation,
+  teamStore: pipelineTeamStore,
+  workflowStore: pipelineWorkflowStore,
+  agentStore: pipelineAgentStore,
 }));
 
 const agentHistory = createAgentHistory({ home: os.homedir(), fs: fsSync, Database: db.constructor });

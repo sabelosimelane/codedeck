@@ -4,8 +4,9 @@
  * without a permission prompt. The MCP server test keeps this list equal to what it registers.
  */
 export const CODEDECK_ASSISTANT_TOOLS = Object.freeze([
-  'get_situation', 'get_task_landing', 'list_runs', 'read_run_notes', 'read_todo',
+  'get_situation', 'get_task_landing', 'list_runs', 'list_teams', 'list_workflows', 'read_run_notes', 'read_todo',
   'propose_close', 'propose_commit', 'propose_merge', 'propose_new_task', 'propose_pull_request', 'propose_start_run',
+  'propose_stop_run', 'propose_resume_run', 'propose_answer_run', 'propose_continue_run', 'propose_change_team',
 ]);
 
 const TOOL_NAMES = new Set(CODEDECK_ASSISTANT_TOOLS.map(name => `mcp__codedeck__${name}`));

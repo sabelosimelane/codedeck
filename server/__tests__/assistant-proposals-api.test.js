@@ -10,6 +10,9 @@ import { createAssistantRouter } from '../routes/assistant.js';
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_TASK_ID = '22222222-2222-4222-8222-222222222222';
 const WORKTREE_ID = '44444444-4444-4444-8444-444444444444';
+const RUN_ID = '88888888-8888-4888-8888-888888888888';
+const OTHER_RUN_ID = '99999999-9999-4999-8999-999999999999';
+const TEAM_ID = '77777777-7777-4777-8777-777777777777';
 
 const dbs = [];
 const servers = [];
@@ -43,7 +46,9 @@ async function setup({ landingImpl, taskServiceImpl, startRunImpl } = {}) {
     create: vi.fn(async ({ title }) => ({ id: TASK_ID, title })),
   };
   const startRun = startRunImpl ?? vi.fn(async body => ({ id: 'run-1', requestId: body.requestId }));
-  const proposalExecutor = createProposalExecutor({ proposalStore, landing, taskService, startRun, logger: { info: () => {}, warn: () => {}, error: () => {} } });
+  const runActions = { stop: vi.fn(async runId => ({ id: runId, status: 'stopped' })), resume: vi.fn(), answer: vi.fn(), continue: vi.fn(), changeTeam: vi.fn() };
+  const proposalExecutor = createProposalExecutor({ proposalStore, landing, taskService, startRun, runActions, logger: { info: () => {}, warn: () => {}, error: () => {} } });
+  const runs = new Map([[RUN_ID, { id: RUN_ID, project: 'Demo' }], [OTHER_RUN_ID, { id: OTHER_RUN_ID, project: 'Other' }]]);
 
   const pushedProposals = [];
   const pushedSituations = [];
@@ -64,6 +69,8 @@ async function setup({ landingImpl, taskServiceImpl, startRunImpl } = {}) {
     sessionTokens,
     taskStore,
     landing,
+    runStore: { get: id => runs.get(id) ?? null, list: () => [...runs.values()] },
+    teamStore: { get: id => (id === TEAM_ID ? { id: TEAM_ID } : null), list: () => [] },
     onProposal: (project, proposal) => pushedProposals.push({ project, proposal }),
     onSituationFlags: (project, flags) => pushedSituations.push({ project, flags }),
   }));
@@ -76,7 +83,7 @@ async function setup({ landingImpl, taskServiceImpl, startRunImpl } = {}) {
   const conversation = store.current('Demo');
   const token = sessionTokens.issue({ project: 'Demo', conversationId: conversation.id }).token;
 
-  return { db, store, proposalStore, sessionTokens, landing, taskService, startRun, compose, pushedProposals, pushedSituations, baseUrl, conversation, token };
+  return { db, store, proposalStore, sessionTokens, landing, taskService, startRun, runActions, compose, pushedProposals, pushedSituations, baseUrl, conversation, token };
 }
 
 describe('assistant proposals API (six dimensions)', () => {
@@ -278,5 +285,33 @@ describe('assistant proposals API (six dimensions)', () => {
     ]);
     expect([r1.status, r2.status].sort()).toEqual([200, 409]);
     expect(mergeSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('assistant run proposals API', () => {
+  const post = (h, body) => fetch(`${h.baseUrl}/api/assistant/sessions/${h.token}/proposals`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  it('creates a stop proposal for a run of this project and stops the run when approved', async () => {
+    const h = await setup();
+    const created = await post(h, { kind: 'stop_run', payload: { runId: RUN_ID }, summary: 'Stop run 5b2d0310', reason: 'It cannot progress until Batch 1 is complete.' });
+    expect(created.status).toBe(201);
+    const proposal = await created.json();
+    expect(proposal).toMatchObject({ kind: 'stop_run', state: 'pending', payload: { runId: RUN_ID } });
+    const approved = await fetch(`${h.baseUrl}/api/assistant/proposals/${proposal.id}/approve`, { method: 'POST' });
+    expect(approved.status).toBe(200);
+    expect((await approved.json()).state).toBe('done');
+    expect(h.runActions.stop).toHaveBeenCalledWith(RUN_ID);
+  });
+  it('refuses run proposals for another project\'s run, a missing team, or a malformed payload with every field error', async () => {
+    const h = await setup();
+    const other = await post(h, { kind: 'stop_run', payload: { runId: OTHER_RUN_ID }, summary: 'Stop', reason: 'r' });
+    expect(other.status).toBe(400);
+    expect((await other.json()).errors).toEqual([{ field: 'payload.runId', message: 'This run belongs to another project' }]);
+    const team = await post(h, { kind: 'change_team', payload: { runId: RUN_ID, teamId: OTHER_RUN_ID }, summary: 'Change team', reason: 'r' });
+    expect((await team.json()).errors).toEqual([{ field: 'payload.teamId', message: 'Team not found' }]);
+    const malformed = await post(h, { kind: 'continue_run', payload: { runId: 'nope', stepIndex: '1' }, summary: 'Continue', reason: 'r' });
+    const problem = await malformed.json();
+    expect(malformed.status).toBe(400);
+    expect(problem.errors.map(error => error.field)).toEqual(['payload.runId', 'payload.stepIndex', 'payload.roundsCompleted']);
+    expect(problem.traceId).toBe(malformed.headers.get('x-trace-id'));
   });
 });

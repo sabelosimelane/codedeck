@@ -2011,11 +2011,12 @@ export function createPipelinesRouter(deps) {
     await runOwnerAction(req, res, 'stop');
   }));
 
-  router.put(`${BASE}/runs/:id/team`, route(async (req, res) => {
-    const run = loadRun(req.params.id);
-    const errors = validateTeamChange(req.body);
+  /** Reassigns a run's team or one step's agent; returns the updated run. */
+  function changeRunTeam(runId, body) {
+    const run = loadRun(runId);
+    const errors = validateTeamChange(body);
     if (errors.length) throw fieldErrors(errors);
-    const { expectedUpdatedAt, teamId, stepOverrides = {} } = req.body;
+    const { expectedUpdatedAt, teamId, stepOverrides = {} } = body;
     const conflict = () => new PipelineError('The run changed. Review its current assignments before trying again.', 409);
     if (run.updatedAt !== expectedUpdatedAt) throw conflict();
     if (!computeActions(run).resume) {
@@ -2033,7 +2034,7 @@ export function createPipelinesRouter(deps) {
       if (!agent) throw fieldError('stepOverrides', 'Choose an existing agent for the step');
       const replacement = attributedAgent(agentAtOverrideEffort(agent, override), 'override', null);
       const { nextAgent, ...step } = run.definition.steps[index];
-      if (agent.id === (nextAgent ?? step.agent).id && replacement.launchCommand === (nextAgent ?? step.agent).launchCommand) return res.json(await asRunView(run));
+      if (agent.id === (nextAgent ?? step.agent).id && replacement.launchCommand === (nextAgent ?? step.agent).launchCommand) return run;
 
       const progress = [...run.steps];
       let assignment = step;
@@ -2050,7 +2051,7 @@ export function createPipelinesRouter(deps) {
       const updated = runStore.update(run.id, { definition: { ...run.definition, team: label, steps }, steps: progress },
         { expectedUpdatedAt, mixed: agent.id !== step.agent.id || replacement.launchCommand !== step.agent.launchCommand, team: null });
       if (!updated) throw conflict();
-      return res.json(await asRunView(updated));
+      return updated;
     }
     const team = teamId === undefined ? null : teamStore.get(teamId);
     if (teamId !== undefined && !team) throw fieldError('teamId', 'Choose an existing team');
@@ -2088,7 +2089,11 @@ export function createPipelinesRouter(deps) {
     const updated = runStore.update(run.id, { definition: { ...run.definition, team: label, steps }, steps: progress },
       { expectedUpdatedAt, mixed: true, team: selected ? team : null });
     if (!updated) throw conflict();
-    res.json(await asRunView(updated));
+    return updated;
+  }
+
+  router.put(`${BASE}/runs/:id/team`, route(async (req, res) => {
+    res.json(await asRunView(changeRunTeam(req.params.id, req.body)));
   }));
 
   router.post(`${BASE}/runs/:id/resume`, route(async (req, res) => {
@@ -2302,6 +2307,27 @@ export function createPipelinesRouter(deps) {
       ...(fieldErrorsList ? { errors: fieldErrorsList } : {}),
       ...(error instanceof PipelineError && error.extra ? error.extra : {}),
     });
+  });
+
+  // What an approved assistant proposal does to a run: the same checks and engine calls as the
+  // owner's buttons, returning the run's view. Errors keep their status (400, 404, 409).
+  const ownerAction = async (runId, action, ...args) => asRunView(await performOwnerAction({ params: { id: runId } }, action, ...args));
+  router.runActions = Object.freeze({
+    stop: runId => ownerAction(runId, 'stop'),
+    resume: runId => ownerAction(runId, 'resume'),
+    answer: async (runId, answer) => {
+      loadRun(runId);
+      const errors = validateRunAnswerBody({ answer });
+      if (errors.length > 0) throw fieldErrors(errors);
+      return ownerAction(runId, 'answer', answer);
+    },
+    continue: async (runId, grant) => {
+      loadRun(runId);
+      const errors = validateRunContinueBody(grant);
+      if (errors.length > 0) throw fieldErrors(errors);
+      return ownerAction(runId, 'continue', grant);
+    },
+    changeTeam: async (runId, teamId) => asRunView(changeRunTeam(runId, { expectedUpdatedAt: loadRun(runId).updatedAt, teamId })),
   });
 
   router.startRun = async (body) => {

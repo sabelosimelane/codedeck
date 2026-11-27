@@ -32,10 +32,27 @@ function describePayload(proposal) {
       return `Create task “${payload.title}”${Array.isArray(payload.repositories) && payload.repositories.length ? ` in ${payload.repositories.join(', ')}` : ''}.`;
     case 'start_run':
       return `Start workflow ${payload.workflowId}${payload.taskId ? ` on task ${payload.taskId}` : payload.newTask?.title ? ` in new task “${payload.newTask.title}”` : ''}.`;
+    case 'stop_run':
+      return `Stop run ${shortId(payload.runId)}.`;
+    case 'resume_run':
+      return `Resume run ${shortId(payload.runId)}.`;
+    case 'answer_run':
+      return `Answer run ${shortId(payload.runId)}: “${payload.answer}”`;
+    case 'continue_run':
+      return `Give run ${shortId(payload.runId)} one more round at step ${payload.stepIndex + 1} (after ${payload.roundsCompleted} rounds).`;
+    case 'change_team':
+      return `Give run ${shortId(payload.runId)} team ${shortId(payload.teamId)}.`;
     default:
       return proposal.kind;
   }
 }
+
+/** The first block of a UUID, as runs are named elsewhere in CodeDeck. */
+function shortId(id) {
+  return String(id).split('-')[0];
+}
+
+const RUN_PROPOSAL_KINDS = new Set(['stop_run', 'resume_run', 'answer_run', 'continue_run', 'change_team']);
 
 function describeDoneResult(proposal) {
   const result = proposal.result ?? {};
@@ -47,6 +64,7 @@ function describeDoneResult(proposal) {
   if (proposal.kind === 'close') return result.taskFinished ? 'Task closed.' : 'Worktree closed.';
   if (proposal.kind === 'new_task') return result.title ? `Created task “${result.title}”.` : 'Task created.';
   if (proposal.kind === 'start_run') return result.id ? `Started run ${result.id}.` : 'Workflow run started.';
+  if (RUN_PROPOSAL_KINDS.has(proposal.kind)) return result.id && result.status ? `Run ${shortId(result.id)} is now ${result.status.replaceAll('_', ' ')}.` : 'Done.';
   return 'Completed.';
 }
 

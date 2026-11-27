@@ -16,6 +16,18 @@ const RUN_A1 = '44444444-4444-4444-8444-444444444444';
 const RUN_A2 = '55555555-5555-4555-8555-555555555555';
 const RUN_OTHER = '66666666-6666-4666-8666-666666666666';
 
+const AGENT_DEV = '77777777-7777-4777-8777-777777777777';
+const AGENT_GONE = '88888888-8888-4888-8888-888888888888';
+const AGENTS = new Map([[AGENT_DEV, { id: AGENT_DEV, name: 'Codex Sol' }]]);
+const TEAMS = [
+  { id: 'b0000000-0000-4000-8000-000000000002', name: 'The Fast Dev Team', members: [{ role: 'Developer', agentId: AGENT_DEV, effort: 'high' }, { role: 'Tester', agentId: AGENT_GONE }], createdAt: 'x', updatedAt: 'x' },
+  { id: 'b0000000-0000-4000-8000-000000000001', name: 'Med Tier', members: [{ role: 'Developer', agentId: AGENT_DEV }], createdAt: 'x', updatedAt: 'x' },
+];
+const WORKFLOWS = [
+  { id: 'c0000000-0000-4000-8000-000000000001', name: 'Feature Build from Spec', kind: 'build', description: 'Builds a todo phase by phase', agentsDecide: true, progressFile: '', revision: 3, nodes: [{ name: 'Develop', role: 'Developer', prompt: 'long prompt' }, { name: 'Test', role: 'Tester', prompt: 'p' }] },
+  { id: 'c0000000-0000-4000-8000-000000000002', name: 'Bug Fix', kind: 'bugfix', description: '', agentsDecide: false, progressFile: '', revision: 1, nodes: [{ name: 'Fix', role: null, prompt: 'p' }] },
+];
+
 const cleanups = [];
 afterEach(async () => {
   for (const fn of cleanups.splice(0).reverse()) await fn();
@@ -98,6 +110,9 @@ async function setup() {
         : null),
     },
     runView: async run => ({ id: run.id, project: run.project, taskId: run.taskId, status: run.status, createdAt: run.createdAt }),
+    teamStore: { list: () => TEAMS },
+    workflowStore: { list: () => WORKFLOWS },
+    agentStore: { get: id => AGENTS.get(id) ?? null },
   }));
 
   return { app, session, sessionTokens };
@@ -235,5 +250,54 @@ describe('assistant session token read routes', () => {
     ]);
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
+  });
+});
+
+describe('assistant session token library reads', () => {
+  it('lists teams by name with each role, its agent, and a deleted agent named as missing', async () => {
+    const { app, session } = await setup();
+    const response = await request(app).get(`/api/assistant/sessions/${session.token}/teams`);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: [
+        { id: 'b0000000-0000-4000-8000-000000000001', name: 'Med Tier', members: [{ role: 'Developer', agentId: AGENT_DEV, agentName: 'Codex Sol' }] },
+        { id: 'b0000000-0000-4000-8000-000000000002', name: 'The Fast Dev Team', members: [{ role: 'Developer', agentId: AGENT_DEV, agentName: 'Codex Sol' }, { role: 'Tester', agentId: AGENT_GONE, agentName: null }] },
+      ],
+      page: { currentPage: 0, size: 20, totalElements: 2, totalPages: 1, hasNextPage: false },
+    });
+    const sorted = await request(app).get(`/api/assistant/sessions/${session.token}/teams?sort=name,desc&size=1`);
+    expect(sorted.body.data.map(team => team.name)).toEqual(['The Fast Dev Team']);
+    expect(sorted.body.page).toEqual({ currentPage: 0, size: 1, totalElements: 2, totalPages: 2, hasNextPage: true });
+  });
+  it('lists workflows with their steps and roles, without prompts, and filters by kind', async () => {
+    const { app, session } = await setup();
+    const response = await request(app).get(`/api/assistant/sessions/${session.token}/workflows?kind=build`);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: [{ id: 'c0000000-0000-4000-8000-000000000001', name: 'Feature Build from Spec', kind: 'build', description: 'Builds a todo phase by phase', agentsDecide: true, steps: [{ name: 'Develop', role: 'Developer' }, { name: 'Test', role: 'Tester' }] }],
+      page: { currentPage: 0, size: 20, totalElements: 1, totalPages: 1, hasNextPage: false },
+    });
+    const all = await request(app).get(`/api/assistant/sessions/${session.token}/workflows`);
+    expect(all.body.data.map(workflow => workflow.name)).toEqual(['Bug Fix', 'Feature Build from Spec']);
+    expect(all.body.data[0].steps).toEqual([{ name: 'Fix', role: null }]);
+  });
+  it.each(['teams', 'workflows'])('refuses bad %s list queries with 400 field errors and bad tokens with 401', async collection => {
+    const { app, session } = await setup();
+    for (const query of ['size=0', 'size=101', 'page=-1', 'sort=prompt,asc', 'role=Developer', "sort=name;DROP TABLE x,asc"]) {
+      const response = await request(app).get(`/api/assistant/sessions/${session.token}/${collection}?${query}`);
+      expectProblem(response, 400);
+      expect(response.body.errors).toHaveLength(1);
+    }
+    const largest = await request(app).get(`/api/assistant/sessions/${session.token}/${collection}?size=100`);
+    expect(largest.body.page.size).toBe(100);
+    expectProblem(await request(app).get(`/api/assistant/sessions/${'a'.repeat(64)}/${collection}`), 401);
+  });
+  it('refuses a workflow kind it does not know', async () => {
+    const { app, session } = await setup();
+    for (const kind of ['', 'nope', '<script>']) {
+      const response = await request(app).get(`/api/assistant/sessions/${session.token}/workflows?kind=${encodeURIComponent(kind)}`);
+      expectProblem(response, 400);
+      expect(response.body.errors).toEqual([{ field: 'kind', message: expect.any(String) }]);
+    }
   });
 });

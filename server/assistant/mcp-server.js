@@ -166,6 +166,44 @@ export function createAssistantMcpServer({ baseUrl, token }) {
   );
 
   server.registerTool(
+    'list_teams',
+    {
+      description: 'List the teams that can staff a workflow run: id, name, and each role with its agent. Use the id in propose_start_run or propose_change_team.',
+      inputSchema: {
+        page: z.number().int().min(0).optional().describe('Page from 0'),
+      },
+    },
+    async ({ page }) => {
+      try {
+        return okResult(await fetchJson(`${sessionBase}/teams?size=100${page !== undefined ? `&page=${page}` : ''}`));
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_workflows',
+    {
+      description: 'List the workflows a run can follow: id, name, kind, description, and its steps with their roles. Use the id in propose_start_run.',
+      inputSchema: {
+        kind: z.enum(['build', 'bugfix', 'troubleshoot', 'review', 'other']).optional().describe('Only workflows of this kind'),
+        page: z.number().int().min(0).optional().describe('Page from 0'),
+      },
+    },
+    async ({ kind, page }) => {
+      try {
+        const params = new URLSearchParams({ size: '100' });
+        if (kind !== undefined) params.set('kind', kind);
+        if (page !== undefined) params.set('page', String(page));
+        return okResult(await fetchJson(`${sessionBase}/workflows?${params}`));
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
     'list_runs',
     {
       description: 'List workflow runs for this project, optionally filtered to one task.',
@@ -192,6 +230,36 @@ export function createAssistantMcpServer({ baseUrl, token }) {
   };
 
   const PROPOSE_STOP_HINT = 'Returns {proposalId, state: "pending"} immediately without waiting. Stop after proposing and explain what you proposed to the owner.';
+
+  const RUN_ID = z.string().min(1).describe('Run UUID, from list_runs');
+  const CARD = {
+    summary: z.string().min(1).describe('One-line summary for the proposal card (1-300 characters)'),
+    reason: z.string().min(1).describe('Why you are proposing this (1-2000 characters)'),
+  };
+  const runProposal = (name, kind, description, fields) => server.registerTool(
+    name,
+    { description: `${description} ${PROPOSE_STOP_HINT}`, inputSchema: { runId: RUN_ID, ...fields, ...CARD } },
+    async ({ summary, reason, ...payload }) => {
+      try {
+        return await createProposal(kind, payload, { summary, reason });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+  runProposal('propose_stop_run', 'stop_run', 'Propose stopping a workflow run of this project (when it is blocked or should not continue). A stopped run can be resumed later.', {});
+  runProposal('propose_resume_run', 'resume_run', 'Propose resuming a stopped or interrupted workflow run of this project (its actions.resume in list_runs is true).', {});
+  runProposal('propose_answer_run', 'answer_run', 'Propose an answer to a workflow run that needs input (status needs_input; its questions are in inputRequest from list_runs). The owner approves the exact text before it is typed to the agent. "Proceed with your recommendations." accepts every recommendation the agent gave.', {
+    answer: z.string().min(1).describe('The answer, 1-4000 characters; for listed questions one numbered line each, e.g. "1. (a) …"'),
+  });
+  runProposal('propose_continue_run', 'continue_run', 'Propose granting one more round to a run paused at its round limit (status limit_paused). Copy stepIndex, roundsCompleted and extraRounds from its limitPause in list_runs: the grant only applies to that exact pause.', {
+    stepIndex: z.number().int().describe('limitPause.stepIndex'),
+    roundsCompleted: z.number().int().describe('limitPause.roundsCompleted'),
+    extraRounds: z.number().int().optional().describe('limitPause.extraRounds'),
+  });
+  runProposal('propose_change_team', 'change_team', 'Propose giving a stopped or interrupted run another team for its remaining steps (team UUID from list_teams). Then propose resuming it.', {
+    teamId: z.string().min(1).describe('Team UUID, from list_teams'),
+  });
 
   server.registerTool(
     'propose_commit',
@@ -282,7 +350,7 @@ export function createAssistantMcpServer({ baseUrl, token }) {
   server.registerTool(
     'propose_new_task',
     {
-      description: `Propose creating a new task in this project. ${PROPOSE_STOP_HINT}`,
+      description: `Propose creating a new task in this project; it cannot choose a base branch. To start a run in a new task cut from a particular branch, use propose_start_run with newTask.baseBranch instead. ${PROPOSE_STOP_HINT}`,
       inputSchema: {
         title: z.string().min(1).describe('Task title (1-80 characters on one line)'),
         repositories: z.array(z.string().min(1)).optional().describe('Optional list of repository names'),
@@ -303,7 +371,7 @@ export function createAssistantMcpServer({ baseUrl, token }) {
   server.registerTool(
     'propose_start_run',
     {
-      description: `Propose starting a workflow run in this project. ${PROPOSE_STOP_HINT}`,
+      description: `Propose starting a workflow run in this project. Take workflowId from list_workflows and teamId from list_teams. To run in a new task cut from a particular branch, pass newTask.baseBranch. ${PROPOSE_STOP_HINT}`,
       inputSchema: {
         workflowId: z.string().min(1).describe('Workflow UUID'),
         input: z.string().describe('Run input text or todo path'),

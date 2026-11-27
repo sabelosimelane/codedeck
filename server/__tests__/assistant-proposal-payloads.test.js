@@ -23,7 +23,7 @@ const taskStore = { get: id => tasks.get(id) ?? null };
 
 describe('proposal payload validation', () => {
   it('accepts valid payloads for every kind', () => {
-    expect(PROPOSAL_KINDS).toEqual(['commit', 'merge', 'pull_request', 'close', 'new_task', 'start_run']);
+    expect(PROPOSAL_KINDS).toEqual(['commit', 'merge', 'pull_request', 'close', 'new_task', 'start_run', 'stop_run', 'resume_run', 'continue_run', 'answer_run', 'change_team']);
     expect(validateProposalPayload('commit', { taskId: TASK_ID, worktreeId: WORKTREE_ID, message: 'wip: checkpoint' }, { project: 'Demo', taskStore })).toEqual([]);
     expect(validateProposalPayload('commit', { taskId: TASK_ID, message: 'a'.repeat(200) }, { project: 'Demo', taskStore })).toEqual([]);
     expect(validateProposalPayload('merge', { taskId: TASK_ID }, { project: 'Demo', taskStore })).toEqual([]);
@@ -94,5 +94,48 @@ describe('proposal payload validation', () => {
       'payload.worktreeId',
       'payload.message',
     ]));
+  });
+});
+
+describe('run proposal validation', () => {
+  const RUN_ID = '88888888-8888-4888-8888-888888888888';
+  const OTHER_RUN_ID = '99999999-9999-4999-8999-999999999999';
+  const MISSING_RUN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const runs = new Map([[RUN_ID, { id: RUN_ID, project: 'Demo' }], [OTHER_RUN_ID, { id: OTHER_RUN_ID, project: 'Other' }]]);
+  const context = { project: 'Demo', taskStore, runStore: { get: id => runs.get(id) ?? null }, teamStore: { get: id => (id === TEAM_ID ? { id } : null) } };
+
+  it('accepts each run action naming a run of this project', () => {
+    expect(validateProposalPayload('stop_run', { runId: RUN_ID }, context)).toEqual([]);
+    expect(validateProposalPayload('resume_run', { runId: RUN_ID }, context)).toEqual([]);
+    expect(validateProposalPayload('answer_run', { runId: RUN_ID, answer: '1. Yes\n2. (b) Set it aside' }, context)).toEqual([]);
+    expect(validateProposalPayload('continue_run', { runId: RUN_ID, stepIndex: 3, roundsCompleted: 8 }, context)).toEqual([]);
+    expect(validateProposalPayload('continue_run', { runId: RUN_ID, stepIndex: 3, roundsCompleted: 8, extraRounds: 1 }, context)).toEqual([]);
+    expect(validateProposalPayload('change_team', { runId: RUN_ID, teamId: TEAM_ID }, context)).toEqual([]);
+  });
+  it('refuses a malformed run id, unknown fields, and missing fields on every run action', () => {
+    for (const kind of ['stop_run', 'resume_run', 'answer_run', 'continue_run', 'change_team']) {
+      expect(validateProposalPayloadShape(kind, { runId: 'run-1' })).toContainEqual({ field: 'runId', message: 'Use a valid run UUID' });
+      expect(validateProposalPayloadShape(kind, { runId: RUN_ID, force: true })).toContainEqual({ field: 'force', message: 'Unknown field' });
+      expect(validateProposalPayloadShape(kind, {})).toContainEqual({ field: 'runId', message: 'Use a valid run UUID' });
+    }
+  });
+  it('checks each action\'s own fields and reports them together', () => {
+    expect(validateProposalPayloadShape('answer_run', { runId: RUN_ID, answer: '' }).map(e => e.field)).toEqual(['answer']);
+    expect(validateProposalPayloadShape('answer_run', { runId: RUN_ID, answer: 'x'.repeat(4001) }).map(e => e.field)).toEqual(['answer']);
+    expect(validateProposalPayloadShape('answer_run', { runId: RUN_ID, answer: 'stop\u001b[0m' }).map(e => e.field)).toEqual(['answer']);
+    expect(validateProposalPayloadShape('answer_run', { runId: RUN_ID, answer: 'x'.repeat(4000) })).toEqual([]);
+    // A continue names the exact pause it grants, so an approval made later cannot spend a different one.
+    expect(validateProposalPayloadShape('continue_run', { runId: RUN_ID }).map(e => e.field)).toEqual(['stepIndex', 'roundsCompleted']);
+    expect(validateProposalPayloadShape('continue_run', { runId: RUN_ID, stepIndex: 33, roundsCompleted: -1 }).map(e => e.field)).toEqual(['stepIndex', 'roundsCompleted']);
+    expect(validateProposalPayloadShape('change_team', { runId: RUN_ID, teamId: null }).map(e => e.field)).toEqual(['teamId']);
+    expect(validateProposalPayloadShape('change_team', { runId: 'x', teamId: 'y' }).map(e => e.field)).toEqual(['runId', 'teamId']);
+  });
+  it('refuses a run of another project, a run that does not exist, and a team that does not exist', () => {
+    expect(validateProposalPayload('stop_run', { runId: OTHER_RUN_ID }, context)).toEqual([{ field: 'runId', message: 'This run belongs to another project' }]);
+    expect(validateProposalPayload('stop_run', { runId: MISSING_RUN_ID }, context)).toEqual([{ field: 'runId', message: 'Run not found' }]);
+    expect(validateProposalPayload('change_team', { runId: RUN_ID, teamId: WORKFLOW_ID }, context)).toEqual([{ field: 'teamId', message: 'Team not found' }]);
+  });
+  it('fails loudly when a run proposal is checked without the run store', () => {
+    expect(() => validateProposalPayload('stop_run', { runId: RUN_ID }, { project: 'Demo', taskStore })).toThrow('runStore');
   });
 });

@@ -169,3 +169,28 @@ describe('proposal store after a restart', () => {
     expect(restarted.listDecided(conversation.id).map(item => item.id)).toEqual([created.id]);
   });
 });
+
+describe('proposal store migration', () => {
+  it('rebuilds a table from before run proposals, keeping its proposals, so run proposals can be stored', () => {
+    const db = new Database(':memory:'); dbs.push(db);
+    const conversations = createConversationStore(db);
+    const conversation = conversations.current('Demo');
+    db.exec(`CREATE TABLE assistant_proposals (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id), project TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('commit','merge','pull_request','close','new_task','start_run')),
+      payload TEXT NOT NULL, summary TEXT NOT NULL, reason TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('pending','approved','declined','done','failed','expired')),
+      result TEXT, created_at TEXT NOT NULL, decided_at TEXT, finished_at TEXT)`);
+    db.prepare(`INSERT INTO assistant_proposals VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', ?, 'Demo', 'merge', ?, 'Merge it', 'Done', 'declined', NULL, '2026-11-27T10:00:00.000Z', '2026-11-27T10:01:00.000Z', NULL)`)
+      .run(conversation.id, JSON.stringify({ taskId: TASK_ID }));
+    const proposals = createProposalStore(db);
+    expect(proposals.get('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).toMatchObject({ kind: 'merge', state: 'declined', summary: 'Merge it' });
+    const created = proposals.create({ conversationId: conversation.id, project: 'Demo', kind: 'stop_run', payload: { runId: '88888888-8888-4888-8888-888888888888' }, summary: 'Stop the run', reason: 'It is blocked.' });
+    expect(proposals.get(created.id)).toMatchObject({ kind: 'stop_run', state: 'pending' });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'assistant_proposals' AND name LIKE 'assistant_proposals_%' ORDER BY name").all().map(row => row.name))
+      .toEqual(['assistant_proposals_conversation_idx', 'assistant_proposals_project_idx']);
+    // Opening it again changes nothing.
+    createProposalStore(db);
+    expect(proposals.get(created.id)).toMatchObject({ kind: 'stop_run' });
+  });
+});

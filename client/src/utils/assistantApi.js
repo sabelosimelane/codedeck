@@ -140,7 +140,7 @@ export function parseMessagesPage(value) {
   boolean(value.page.hasNextPage, 'page.hasNextPage');
   return value;
 }
-const PROPOSAL_KINDS = ['commit', 'merge', 'pull_request', 'close', 'new_task', 'start_run'];
+const PROPOSAL_KINDS = ['commit', 'merge', 'pull_request', 'close', 'new_task', 'start_run', 'stop_run', 'resume_run', 'continue_run', 'answer_run', 'change_team'];
 const PROPOSAL_STATES = ['pending', 'approved', 'declined', 'done', 'failed', 'expired'];
 
 function parseFlags(flags, prefix = 'flags') {

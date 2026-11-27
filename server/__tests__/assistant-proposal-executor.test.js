@@ -284,3 +284,44 @@ describe('proposal executor (integration with real git repositories)', () => {
     expect(outcome.problem.message).toBe('One or more fields failed validation. teamId: Team not found');
   });
 });
+
+describe('run proposals', () => {
+  const RUN_ID = '88888888-8888-4888-8888-888888888888';
+  const TEAM_ID = '77777777-7777-4777-8777-777777777777';
+  const cases = [
+    ['stop_run', { runId: RUN_ID }, 'stop', [RUN_ID]],
+    ['resume_run', { runId: RUN_ID }, 'resume', [RUN_ID]],
+    ['answer_run', { runId: RUN_ID, answer: '1. (a) Close Batch 1 first' }, 'answer', [RUN_ID, '1. (a) Close Batch 1 first']],
+    ['continue_run', { runId: RUN_ID, stepIndex: 3, roundsCompleted: 8 }, 'continue', [RUN_ID, { stepIndex: 3, roundsCompleted: 8 }]],
+    ['continue_run', { runId: RUN_ID, stepIndex: 3, roundsCompleted: 8, extraRounds: 1 }, 'continue', [RUN_ID, { stepIndex: 3, roundsCompleted: 8, extraRounds: 1 }]],
+    ['change_team', { runId: RUN_ID, teamId: TEAM_ID }, 'changeTeam', [RUN_ID, TEAM_ID]],
+  ];
+  it.each(cases)('carries out %s through the run action %s', async (kind, payload, action, args) => {
+    const h = await createGitHarness();
+    const runActions = { stop: vi.fn(), resume: vi.fn(), answer: vi.fn(), continue: vi.fn(), changeTeam: vi.fn() };
+    runActions[action].mockResolvedValue({ id: RUN_ID, status: 'stopped' });
+    const proposal = h.proposals.create({ conversationId: h.conversation.id, project: 'Demo', kind, payload, summary: 'Act on the run', reason: 'The owner asked.' });
+    const executor = createProposalExecutor({ proposalStore: h.proposals, runActions, logger: h.logger });
+    const outcome = await executor.approve(proposal.id);
+    expect(outcome.status).toBe(200);
+    expect(outcome.proposal).toMatchObject({ state: 'done', result: { id: RUN_ID, status: 'stopped' } });
+    expect(runActions[action]).toHaveBeenCalledExactlyOnceWith(...args);
+    for (const other of Object.keys(runActions).filter(name => name !== action)) expect(runActions[other]).not.toHaveBeenCalled();
+  });
+  it('fails the proposal with the run engine\'s refusal when the run has moved on', async () => {
+    const h = await createGitHarness();
+    const proposal = h.proposals.create({ conversationId: h.conversation.id, project: 'Demo', kind: 'stop_run', payload: { runId: RUN_ID }, summary: 'Stop it', reason: 'Blocked.' });
+    const refusal = Object.assign(new Error('Run is already complete'), { status: 409 });
+    const executor = createProposalExecutor({ proposalStore: h.proposals, runActions: { stop: async () => { throw refusal; } }, logger: h.logger });
+    const outcome = await executor.approve(proposal.id);
+    expect(outcome.status).toBe(409);
+    expect(outcome.proposal).toMatchObject({ state: 'failed', result: { status: 409, message: 'Run is already complete' } });
+  });
+  it('fails the proposal loudly when run actions are not wired', async () => {
+    const h = await createGitHarness();
+    const proposal = h.proposals.create({ conversationId: h.conversation.id, project: 'Demo', kind: 'resume_run', payload: { runId: RUN_ID }, summary: 'Resume it', reason: 'Unblocked.' });
+    const outcome = await createProposalExecutor({ proposalStore: h.proposals, logger: h.logger }).approve(proposal.id);
+    expect(outcome.status).toBe(500);
+    expect(outcome.proposal.result.message).toBe('Run action resume is unavailable');
+  });
+});
