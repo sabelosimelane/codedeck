@@ -11,6 +11,8 @@ import {
   parseAssistantFrame,
   startConversation,
 } from '../../utils/assistantApi.js';
+import { splitAssistantQuestions } from '../../utils/inputQuestions.js';
+import QuestionsForm from '../tasks/QuestionsForm.jsx';
 import './AssistantPanel.css';
 
 export function renderMarkdown(text) { return DOMPurify.sanitize(marked.parse(text)); }
@@ -64,6 +66,22 @@ function toolLabel(title) {
 function callLabel(call) {
   const name = call.toolName ?? call.content;
   return `${toolLabel(name)}${call.content.startsWith(`${name} — failed`) ? ' (failed)' : ''}`;
+}
+
+/**
+ * An assistant reply. Questions it ends with are answer cards while they are the newest
+ * thing said; once the owner has moved on they stay readable as plain text.
+ */
+function AgentReply({ message, answerable, canSend, onSend }) {
+  const { text, list, questions } = splitAssistantQuestions(message.content);
+  const interactive = answerable && questions !== null;
+  return <div className="assistant-chat-reply">
+    {text && <div className="assistant-chat-message agent" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />}
+    {list !== null && !interactive && <div className="assistant-chat-message agent assistant-chat-questions-text">{list}</div>}
+    {interactive && <div role="group" aria-label="The assistant needs your input" className="task-questions assistant-chat-questions">
+      <QuestionsForm key={message.id} questions={questions} draftKey={`assistant:${message.id}`} canSend={canSend} onSend={onSend} />
+    </div>}
+  </div>;
 }
 
 /** Consecutive tool calls become one entry, so the replies around them stay readable. */
@@ -187,13 +205,14 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
     return () => { controller.abort(); ws?.close(); if (wsRef.current === ws) wsRef.current = null; };
   }, [projectName, conversationVersion]);
 
-  const send = () => {
-    if (status !== 'ready' || wsRef.current?.readyState !== 1) return;
-    const text = input.trim();
-    if (!text || text.length > 20000) return;
+  /** Sends one owner message; false when the assistant is not ready to take it. */
+  const sendPrompt = text => {
+    if (status !== 'ready' || wsRef.current?.readyState !== 1 || !text || text.length > 20000) return false;
     wsRef.current.send(JSON.stringify({ type: 'prompt', text }));
-    setInput(''); setChatError(null); setStatus('running');
+    setChatError(null); setStatus('running');
+    return true;
   };
+  const send = () => { if (sendPrompt(input.trim())) setInput(''); };
   const respond = (requestId, option) => {
     if (wsRef.current?.readyState !== 1) { showToast({ type: 'error', message: 'Assistant connection closed.' }); return; }
     wsRef.current.send(JSON.stringify({ type: 'permission_response', requestId, outcome: { outcome: 'selected', optionId: option.optionId } }));
@@ -229,6 +248,9 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
     catch (failure) { showToast({ type: 'error', message: failure.message }); }
   };
 
+  // Only the newest reply's questions can still be answered: anything the owner said after moves past them.
+  const lastSpoken = messages.filter(message => message.role === 'agent' || message.role === 'owner').at(-1);
+  const answerableId = lastSpoken?.role === 'agent' && !stream ? lastSpoken.id : null;
   const pendingPermissions = permissions.filter(item => !item.choice).length;
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -254,8 +276,10 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
             </details>
           : message.role === 'notice'
             ? <div className="assistant-chat-notice" key={message.id}>{message.content}</div>
-            : <div className={`assistant-chat-message ${message.role}`} key={message.id} dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />)}
-        {stream && <div className="assistant-chat-message agent" dangerouslySetInnerHTML={{ __html: renderMarkdown(stream) }} />}
+            : message.role === 'agent'
+              ? <AgentReply key={message.id} message={message} answerable={message.id === answerableId} canSend={status === 'ready'} onSend={sendPrompt} />
+              : <div className={`assistant-chat-message ${message.role}`} key={message.id} dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />)}
+        {stream && <div className="assistant-chat-message agent" dangerouslySetInnerHTML={{ __html: renderMarkdown(splitAssistantQuestions(stream).text) }} />}
         {permissions.map(item => <div className="assistant-chat-permission" key={item.requestId}>Permission: {item.toolCall.title}{item.choice ? <span>Answered: {item.choice}</span> : item.options.map(option => <button type="button" key={option.optionId} onClick={() => respond(item.requestId, option)}>{option.name}</button>)}</div>)}
         {proposals.map(proposal => {
           const busy = inFlightProposalId === proposal.id;

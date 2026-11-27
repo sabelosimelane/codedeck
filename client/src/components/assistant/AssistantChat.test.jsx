@@ -365,3 +365,55 @@ describe('AssistantChat scrolling', () => {
     await waitFor(() => expect(transcript.scrollTop).toBe(transcript.scrollHeight));
   });
 });
+
+describe('AssistantChat questions', () => {
+  const stored = (id, role, content) => ({ id, conversationId: conversation.id, role, content, toolName: null, proposalId: null, createdAt: conversation.createdAt });
+  const asking = [
+    'Two answers from you.',
+    '',
+    '[[QUESTIONS]]',
+    '1. Can I stop run 5b2d0310?',
+    'Recommended: Yes, it cannot make progress.',
+    '2. What should happen to the Phase 8 code?',
+    'a) Keep it on the branch',
+    'b) Set it aside',
+    'Recommended: (a) It is the smaller change.',
+    '[[/QUESTIONS]]',
+  ].join('\n');
+  const transcript = messages => mock.fetchMessages.mockResolvedValue({ data: messages, page: { currentPage: 0, size: 100, totalElements: messages.length, totalPages: 1, hasNextPage: false } });
+  async function readyWith(messages) {
+    transcript(messages);
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    await screen.findByText(/Claude Opus · opus · high/);
+  }
+  it('shows the newest reply\'s questions as answerable cards and sends the recommendations', async () => {
+    await readyWith([stored(1, 'owner', 'what do you need?'), stored(2, 'agent', asking)]);
+    expect(await screen.findByText('Two answers from you.')).toBeTruthy();
+    expect(screen.queryByText(/\[\[QUESTIONS\]\]/)).toBeNull();
+    expect(screen.getByRole('group', { name: 'Question 1' }).textContent).toContain('Can I stop run 5b2d0310?');
+    expect(screen.getByRole('radio', { name: /Keep it on the branch/ }).checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
+    await waitFor(() => expect(sockets[0].sent).toContainEqual({ type: 'prompt', text: 'Proceed with your recommendations.' }));
+  });
+  it('sends a changed choice as a numbered answer', async () => {
+    await readyWith([stored(2, 'agent', asking)]);
+    fireEvent.click(await screen.findByRole('radio', { name: /Set it aside/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
+    await waitFor(() => expect(sockets[0].sent).toContainEqual({ type: 'prompt', text: '1. As you recommend: Yes, it cannot make progress.\n2. (b) Set it aside' }));
+  });
+  it('shows questions the owner already moved past as text, without answer controls', async () => {
+    await readyWith([stored(2, 'agent', asking), stored(3, 'owner', 'Stop it and keep the code.')]);
+    expect(await screen.findByText(/Can I stop run 5b2d0310\?/)).toBeTruthy();
+    expect(screen.queryByRole('group', { name: 'Question 1' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Send answers' })).toBeNull();
+    expect(screen.queryByText(/\[\[QUESTIONS\]\]/)).toBeNull();
+  });
+  it('hides the question marker while the reply is still streaming', async () => {
+    await readyWith([]);
+    sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Thinking it over.\n\n[[QUESTIONS]]\n1. Can I' } } });
+    expect(await screen.findByText('Thinking it over.')).toBeTruthy();
+    expect(screen.queryByText(/QUESTIONS/)).toBeNull();
+  });
+});

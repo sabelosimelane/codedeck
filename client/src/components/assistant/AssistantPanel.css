@@ -11,7 +11,13 @@
 .assistant-chat-heading h2 { margin: 0; font-size: 15px; }
 .assistant-chat-heading span, .assistant-chat-status, .assistant-chat-notice { color: var(--text-muted); font-size: 11px; }
 .assistant-chat-heading button, .assistant-chat-compose button, .assistant-chat-permission button { background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; cursor: pointer; }
-.assistant-chat-transcript { flex: 1; min-height: 0; overflow: auto; display: grid; align-content: start; gap: 8px; }
+.assistant-chat-transcript { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 8px; }
+.assistant-chat-reply { display: grid; gap: 8px; min-width: 0; }
+.assistant-chat-message ol, .assistant-chat-message ul { margin: 4px 0; padding-left: 20px; }
+.assistant-chat-message code { overflow-wrap: anywhere; white-space: pre-wrap; }
+.assistant-chat-questions-text { white-space: pre-wrap; color: var(--text-secondary); }
+.assistant-chat-questions .task-question { padding: 10px; gap: 8px; }
+.assistant-chat-questions .task-question-text { font-size: 13px; }
 .assistant-chat-message { padding: 8px; border-radius: 6px; overflow-wrap: anywhere; }
 .assistant-chat-message.owner { background: var(--bg-hover); }
 .assistant-chat-message.agent { border: 1px solid var(--border); }
