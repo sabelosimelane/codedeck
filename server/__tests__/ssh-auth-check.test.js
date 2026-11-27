@@ -18,6 +18,18 @@ describe('pendingSshAuthCheck', () => {
     expect(pendingSshAuthCheck([BANNER, '# Authentication checked with Tailscale SSH.\r\n', 'tmux output'])).toBeNull();
   });
 
+  it('ignores a link that is not a Tailscale login link', () => {
+    const spoofed = '# Tailscale SSH requires an additional check.\r\n# To authenticate, visit: https://evil.example/a/abc\r\n';
+    expect(pendingSshAuthCheck([spoofed])).toBeNull();
+    const lookalike = '# Tailscale SSH requires an additional check.\r\n# To authenticate, visit: https://login.tailscale.com.evil.example/a/abc\r\n';
+    expect(pendingSshAuthCheck([lookalike])).toBeNull();
+  });
+
+  it('ignores a banner quoted inside another line', () => {
+    const quoted = 'echo "# Tailscale SSH requires an additional check." "# To authenticate, visit: https://login.tailscale.com/a/abc"\r\n';
+    expect(pendingSshAuthCheck([quoted])).toBeNull();
+  });
+
   it('returns null for an attachment that never showed a check', () => {
     expect(pendingSshAuthCheck(['❯ ', 'Muse Code 1.4.25'])).toBeNull();
     expect(pendingSshAuthCheck([])).toBeNull();
