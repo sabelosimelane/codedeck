@@ -7,12 +7,20 @@ let mode = 'auto';
 let modeSets = 0;
 let sessionNewParams = null;
 let lastPromptId = null;
+let selectedModel = 'default';
+let selectedEffort = 'default';
+let configSets = [];
 const scenario = process.argv[2];
+const configOptions = () => [
+  { id: 'model', name: 'Model', type: 'select', currentValue: selectedModel, options: [{ value: 'default', name: 'Default' }, ...(scenario === 'missing-opus' ? [] : [{ value: 'opus', name: 'Opus' }]), { value: 'sonnet', name: 'Sonnet' }, { value: 'haiku', name: 'Haiku' }] },
+  { id: 'effort', name: 'Effort', type: 'select', currentValue: selectedEffort, options: scenario === 'grouped-options' ? [{ group: 'reasoning', name: 'Reasoning', options: [{ value: 'default', name: 'Default' }, { value: 'high', name: 'High' }] }] : [{ value: 'default', name: 'Default' }, { value: 'low', name: 'Low' }, ...(scenario === 'effort-missing-after-model' && selectedModel !== 'default' ? [] : [{ value: 'high', name: 'High' }])] },
+];
 const update = value => send({ method: 'session/update', params: { sessionId: 'fake-session', update: value } });
 lines.on('line', line => {
   const message = JSON.parse(line);
   if (message.method === 'initialize') { if (message.params?.protocolVersion !== 1 || message.params.clientCapabilities?.terminal !== false) throw new Error('Invalid ACP initialize'); send({ id: message.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } }); return; }
-  if (message.method === 'session/new') { if (!Array.isArray(message.params?.mcpServers) || typeof message.params.cwd !== 'string') throw new Error('Invalid ACP session/new'); sessionNewParams = message.params; if (scenario === 'update-with-session') { const frame = value => `${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`; process.stdout.write(frame({ id: message.id, result: { sessionId: 'fake-session', modes: { currentModeId: mode, availableModes: [{ id: 'default', name: 'Manual' }] } } }) + frame({ method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'available_commands_update', availableCommands: [] } } })); return; } send({ id: message.id, result: { sessionId: 'fake-session', ...(scenario === 'missing-modes' ? {} : { modes: { currentModeId: mode, availableModes: scenario === 'no-default' ? [{ id: 'auto', name: 'Auto' }] : [{ id: 'default', name: 'Manual', description: 'Always ask before making changes' }, { id: 'auto', name: 'Auto' }] } }) } }); return; }
+  if (message.method === 'session/new') { if (!Array.isArray(message.params?.mcpServers) || typeof message.params.cwd !== 'string') throw new Error('Invalid ACP session/new'); sessionNewParams = message.params; if (scenario === 'update-with-session') { const frame = value => `${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`; process.stdout.write(frame({ id: message.id, result: { sessionId: 'fake-session', modes: { currentModeId: mode, availableModes: [{ id: 'default', name: 'Manual' }] }, configOptions: configOptions() } }) + frame({ method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'available_commands_update', availableCommands: [] } } })); return; } send({ id: message.id, result: { sessionId: 'fake-session', configOptions: scenario === 'missing-model' ? configOptions().filter(option => option.id !== 'model') : configOptions(), ...(scenario === 'missing-modes' ? {} : { modes: { currentModeId: mode, availableModes: scenario === 'no-default' ? [{ id: 'auto', name: 'Auto' }] : [{ id: 'default', name: 'Manual', description: 'Always ask before making changes' }, { id: 'auto', name: 'Auto' }] } }) } }); return; }
+  if (message.method === 'session/set_config_option') { configSets.push([message.params.configId, message.params.value]); if (scenario === 'bad-config-reply') { send({ id: message.id, result: { configOptions: 'wrong' } }); return; } const apply = () => { if (message.params.configId === 'model') selectedModel = message.params.value; else if (message.params.configId === 'effort') selectedEffort = message.params.value; send({ id: message.id, result: { configOptions: configOptions() } }); }; if (scenario === 'slow-config') setTimeout(apply, 100); else apply(); return; }
   if (message.method === 'session/set_mode') { if (message.params?.sessionId !== 'fake-session' || message.params.modeId !== 'default') throw new Error('Invalid ACP session/set_mode'); modeSets += 1; if (scenario === 'set-mode-error') send({ id: message.id, error: { code: -32000, message: 'mode refused' } }); else { const done = () => { mode = 'default'; send({ id: message.id, result: {} }); }; if (scenario === 'slow-restore' && modeSets > 1) setTimeout(done, 60); else done(); } return; }
   if (message.method === 'session/prompt') {
     const text = message.params.prompt[0].text;
@@ -27,8 +35,8 @@ lines.on('line', line => {
       return;
     }
     if (mode !== 'default') throw new Error('Prompt in unsafe mode');
-    if (text === 'inspect-session') {
-      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(sessionNewParams) } });
+    if (text === 'inspect-session' || text === 'inspect-config') {
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(text === 'inspect-config' ? { configSets } : sessionNewParams) } });
       send({ id: message.id, result: { stopReason: 'end_turn' } }); return;
     }
     if (text.includes('echo-prompt')) {

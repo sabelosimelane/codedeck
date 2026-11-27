@@ -8,7 +8,7 @@ import { PROPOSAL_STATES, validateProposalCreateBody } from '../assistant/propos
 import { validProposalId } from '../assistant/proposal-store.js';
 import { isUuid } from '../../shared/pipeline-definitions.mjs';
 
-export const ASSISTANT_PATH = /^(?:\/api\/projects\/[^/]+\/situation|\/api\/assistant\/(?:conversations|sessions|proposals))(?:\/|$)/;
+export const ASSISTANT_PATH = /^(?:\/api\/projects\/[^/]+\/situation|\/api\/assistant\/(?:conversations|sessions|proposals|settings))(?:\/|$)/;
 
 export function createAssistantRouter({
   compose,
@@ -25,6 +25,7 @@ export function createAssistantRouter({
   runView,
   onProposal,
   onSituationFlags,
+  settingsStore,
 } = {}) {
   if (typeof compose !== 'function') throw new TypeError('assistant router requires compose');
   const router = express.Router();
@@ -50,6 +51,20 @@ export function createAssistantRouter({
   router.use('/api/assistant/conversations', express.json({ limit: '4kb' }));
   router.use('/api/assistant/proposals', express.json({ limit: '4kb' }));
   router.use('/api/assistant/sessions', express.json({ limit: '16kb' }));
+  router.use('/api/assistant/settings', express.json({ limit: '4kb' }));
+  router.get('/api/assistant/settings', (req, res, next) => {
+    try { checkFields(req.query, []); res.json(settingsStore.settings()); } catch (error) { next(error); }
+  });
+  router.put('/api/assistant/settings', (req, res, next) => {
+    try {
+      checkFields(req.query, []);
+      if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) throw bad('body', 'Use a JSON object');
+      res.json(settingsStore.saveSettings(req.body));
+    } catch (error) {
+      if (error?.errors) return next(Object.assign(error, { status: 400 }));
+      next(error);
+    }
+  });
   router.get('/api/assistant/conversations/current', (req, res, next) => {
     try { checkFields(req.query, ['project']); checkProject(req.query.project); res.json(store.current(req.query.project)); }
     catch (error) { next(error); }

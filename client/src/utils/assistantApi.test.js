@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchSituation, parseSituation, fetchCurrentConversation, fetchMessages, startConversation, parseConversation, parseMessagesPage, parseAssistantFrame, fetchProposals, approveProposal, declineProposal, parseProposal } from './assistantApi.js';
+import { fetchSituation, parseSituation, fetchCurrentConversation, fetchMessages, startConversation, parseConversation, parseMessagesPage, parseAssistantFrame, fetchProposals, approveProposal, declineProposal, parseProposal, parseAssistantSettings, getAssistantSettings, saveAssistantSettings } from './assistantApi.js';
 
 const good = { project: 'Demo', generatedAt: '2026-11-25T20:00:00Z', repositories: [], tasks: [], todos: [], specifications: [], skipped: [], flags: [{ code: 'merge_blocked', message: 'Task is blocked.', where: { taskId: 't' }, blockers: [{ code: 'main_dirty', message: 'Main is dirty.' }] }], truncated: { dirty: false, todos: false, specifications: false }, markdown: '# Demo' };
 afterEach(() => vi.unstubAllGlobals());
@@ -7,7 +7,7 @@ describe('assistant socket frames', () => {
   const id = '00000000-0000-4000-8000-000000000001';
   const message = { id: 1, conversationId: id, role: 'owner', content: 'hello', toolName: null, proposalId: null, createdAt: '2026-11-25T20:00:00.000Z' };
   const frames = [
-    { type: 'ready', conversationId: id, restarted: false },
+    { type: 'ready', conversationId: id, restarted: false, model: 'opus', effort: 'high' },
     { type: 'notice', message: 'hello', messageId: 2 },
     { type: 'message', message },
     { type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } } },
@@ -32,6 +32,21 @@ describe('assistant socket frames', () => {
     expect(() => parseAssistantFrame(JSON.stringify({ type: 'permission_request', requestId: 1, toolCall: { toolCallId: 't' }, options: [] }))).toThrow('title');
     expect(() => parseAssistantFrame(JSON.stringify({ type: 'auth', state: 'unknown', label: null }))).toThrow('state');
     expect(() => parseAssistantFrame(JSON.stringify({ type: 'auth', state: 'authenticated', label: 7 }))).toThrow('label');
+  });
+});
+
+describe('assistant settings client', () => {
+  it('checks model and effort separately', () => {
+    expect(parseAssistantSettings({ model: 'default', effort: null })).toEqual({ model: 'default', effort: null });
+    expect(parseAssistantSettings({ model: 'fable', effort: 'max' })).toEqual({ model: 'fable', effort: 'max' });
+    expect(() => parseAssistantSettings({ model: 'bad', effort: null })).toThrow('model');
+    expect(() => parseAssistantSettings({ model: 'opus', effort: 'bad' })).toThrow('effort');
+  });
+  it('reads and saves validated settings', async () => {
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ model: 'opus', effort: 'high' }) })); vi.stubGlobal('fetch', fetch);
+    expect(await getAssistantSettings()).toEqual({ model: 'opus', effort: 'high' });
+    expect(await saveAssistantSettings({ model: 'opus', effort: 'high' })).toEqual({ model: 'opus', effort: 'high' });
+    expect(fetch).toHaveBeenCalledWith('/api/assistant/settings', expect.objectContaining({ method: 'PUT' }));
   });
 });
 

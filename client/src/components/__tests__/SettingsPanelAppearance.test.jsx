@@ -54,6 +54,28 @@ afterEach(() => {
 });
 
 describe('SettingsPanel appearance', () => {
+  it('loads and saves Project Assistant model and effort through the General footer', async () => {
+    const fetch = vi.fn(async (url, options) => ({ ok: true, json: async () => url === '/api/config' && !options ? { defaultPath: '/home/me', editorCommand: 'cursor -r' } : url === '/api/assistant/settings' ? { model: 'default', effort: null } : {} }));
+    vi.stubGlobal('fetch', fetch);
+    await renderPanel();
+    expect(screen.getByLabelText('Assistant model').closest('[role="tabpanel"]').getAttribute('aria-labelledby')).toBe('settings-tab-general');
+    fireEvent.change(screen.getByLabelText('Assistant model'), { target: { value: 'opus' } });
+    fireEvent.change(screen.getByLabelText('Assistant effort'), { target: { value: 'high' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/assistant/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ model: 'opus', effort: 'high' }) })));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+  });
+  it('shows the assistant settings error and keeps the draft when save fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, options) => ({
+      ok: !(url === '/api/assistant/settings' && options?.method === 'PUT'),
+      json: async () => url === '/api/config' && !options ? { defaultPath: '/home/me', editorCommand: 'cursor -r' } : url === '/api/assistant/settings' && options?.method === 'PUT' ? { message: 'Could not apply settings.' } : url === '/api/assistant/settings' ? { model: 'default', effort: null } : {},
+    })));
+    await renderPanel();
+    fireEvent.change(screen.getByLabelText('Assistant model'), { target: { value: 'opus' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Could not apply settings.' }));
+    expect(screen.getByLabelText('Assistant model').value).toBe('opus');
+  });
   it('offers System, Dark, and Light with the current mode pressed', async () => {
     await renderPanel();
     const group = screen.getByRole('group', { name: 'Appearance' });

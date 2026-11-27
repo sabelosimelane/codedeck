@@ -41,7 +41,8 @@ describe('AssistantChat chat', () => {
   it('waits for the stored owner frame and unlocks after a nonfatal error', async () => {
     mock.fetchSituation.mockResolvedValue(situation([])); render(<AssistantChat projectName="Demo"  />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false });
+    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
+    expect(await screen.findByText(/opus · high/)).toBeTruthy();
     fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'hello' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(screen.queryByText('hello')).toBeNull();
@@ -66,7 +67,7 @@ describe('AssistantChat chat', () => {
   it('keeps the streamed answer and the running state through an error raised mid-turn', async () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false });
+    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
     fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'hello' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first half ' } } });
@@ -127,7 +128,7 @@ describe('AssistantChat chat', () => {
     mock.fetchSituation.mockResolvedValue(situation([]));
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false });
+    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
     fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'Where am I?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'You are on **Phase 2** of 6.' } } });
@@ -138,7 +139,7 @@ describe('AssistantChat chat', () => {
   it('streams a turn, disables Send, and sends cancel from Stop', async () => {
     mock.fetchSituation.mockResolvedValue(situation([])); render(<AssistantChat projectName="Demo"  />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false });
+    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(false));
     fireEvent.change(screen.getByRole('textbox', { name: 'Message Claude Code' }), { target: { value: 'Where am I?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
@@ -156,7 +157,7 @@ describe('AssistantChat keyboard and terminal states', () => {
   it('sends on Enter and keeps Shift+Enter for a new line', async () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false });
+    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
     const box = screen.getByRole('textbox', { name: 'Message Claude Code' });
     await waitFor(() => expect(box.disabled).toBe(false));
     fireEvent.change(box, { target: { value: 'first line' } });
@@ -179,7 +180,7 @@ describe('AssistantChat keyboard and terminal states', () => {
   it('shows how the agent exited and keeps the input disabled', async () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));
-    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false });
+    sockets[0].receive({ type: 'ready', conversationId: conversation.id, restarted: false, model: 'opus', effort: 'high' });
     sockets[0].receive({ type: 'agent_exit', code: null, signal: 'SIGTERM', stderrTail: 'bye' });
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Claude Code exited (signal SIGTERM). bye'));
     expect(screen.getByRole('textbox', { name: 'Message Claude Code' }).disabled).toBe(true);
