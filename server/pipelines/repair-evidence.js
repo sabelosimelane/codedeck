@@ -13,6 +13,7 @@ function checkField(id, field, raw, max) {
   return value;
 }
 
+// No total limit: each field is bounded here and the whole note by the note store (256 KiB).
 export function repairFindings(note, attempt) {
   if (typeof note !== 'string') throw new Error('Repair evidence requires a Test note');
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('Repair evidence requires a positive attempt');
@@ -31,7 +32,6 @@ export function repairFindings(note, attempt) {
     if (!/[^|\s]/.test(reason)) throw new Error(`Repair finding ${id} requires a failure or outstanding task`);
     return `${id} | ${location} | ${reason}`;
   });
-  if (findings.join('\n').length > 6000) throw new Error('Repair findings exceed 6000 characters');
   return [...new Set(findings)].sort();
 }
 

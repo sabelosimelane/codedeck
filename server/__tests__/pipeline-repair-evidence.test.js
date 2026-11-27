@@ -59,3 +59,8 @@ it('keeps a pipe inside the reason verbatim and measures the reason as written',
 it('rejects a reason made only of pipes', () => {
   expect(()=>repairFindings('REPAIR 4 P2-1 | a.kt | |',4)).toThrow(/P2-1 requires a failure/);
 });
+it('accepts many findings whose total exceeds 6000 characters, as a Test note listing 34 outstanding tasks did', () => {
+  const lines=Array.from({length:34},(_,i)=>`REPAIR 3 T${i} | docs/todos/2026-11-26-trade-hub-b2-delivery.md | ${'outstanding task '.repeat(11)}${i}`);
+  expect(lines.join('\n').length).toBeGreaterThan(6000);
+  expect(repairFindings(lines.join('\n'),3)).toHaveLength(34);
+});
