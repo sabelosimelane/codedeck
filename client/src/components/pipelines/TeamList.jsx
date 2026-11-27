@@ -21,6 +21,20 @@ function teamCoverageSummary(team, workflows) {
   return `Covers ${covered.length}/${workflows.length} workflows · Needs roles for: ${uncovered.join('; ')}`;
 }
 
+function uniqueTeamName(name, teams) {
+  if (typeof name !== 'string' || !name.trim()) throw new TypeError('name must be a non-empty string');
+  if (!Array.isArray(teams)) throw new TypeError('teams must be an array');
+  const taken = new Set(teams.map(team => team.name.trim().toLowerCase()));
+  const base = name.slice(0, 64);
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let number = 2; number <= teams.length + 2; number++) {
+    const suffix = ` ${number}`;
+    const candidate = `${name.slice(0, 64 - suffix.length)}${suffix}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  throw new Error('Could not choose a unique team name');
+}
+
 export default function TeamList({ definitions: { teams, agents, workflows, roles = [] }, onChanged, onDirtyChange }) {
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -33,6 +47,16 @@ export default function TeamList({ definitions: { teams, agents, workflows, role
     setError('');
     setDraft(team);
     onDirtyChange(team !== null);
+  }
+
+  function duplicate(team) {
+    setError('');
+    setDraft({
+      id: null,
+      name: uniqueTeamName(`Copy of ${team.name}`, teams),
+      members: team.members.map(member => ({ ...member })),
+    });
+    onDirtyChange(true);
   }
 
   function changeMember(index, patch) {
@@ -151,6 +175,7 @@ export default function TeamList({ definitions: { teams, agents, workflows, role
             {coverage && <span className="pipeline-item-meta">{coverage}</span>}
           </div>
           <div className="pipeline-item-actions">
+            <Button aria-label={`Duplicate ${team.name}`} disabled={busy} onClick={() => duplicate(team)}>Duplicate</Button>
             <Button aria-label={`Edit ${team.name}`} disabled={busy} onClick={() => edit(team)}>Edit</Button>
             <Button aria-label={`Delete ${team.name}`} disabled={busy} onClick={() => remove(team)}>Delete</Button>
           </div>

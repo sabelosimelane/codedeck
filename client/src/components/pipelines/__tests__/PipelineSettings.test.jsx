@@ -1481,6 +1481,27 @@ it('creates, edits and deletes a team from workflow settings', async () => {
   await waitFor(() => expect(backend.state.teams).toEqual([]));
 });
 
+it('duplicates a team as a new team with its members and a unique name', async () => {
+  const T1 = '55555555-5555-4555-8555-555555555555';
+  const T2 = '66666666-6666-4666-8666-666666666666';
+  const daily = () => ({ id: T1, name: 'Daily', members: [{ role: 'Developer', agentId: A1 }], revision: 1, ...STAMPS });
+  const copy = () => ({ id: T2, name: 'Copy of Daily', members: [{ role: 'Developer', agentId: A1 }], revision: 1, ...STAMPS });
+  await renderSettings({ agents: [codex(), cursor()], teams: [daily(), copy()] }, { tab: 'Teams' });
+  click('Duplicate Daily');
+  expect(screen.getByLabelText('Team name').value).toBe('Copy of Daily 2');
+  expect(screen.getByLabelText('Member 1 role').value).toBe('Developer');
+  expect(screen.getByLabelText('Member 1 agent').value).toBe(A1);
+  expect(lastDirty()).toBe(true);
+  click('Save team');
+  await waitFor(() => expect(backend.mutations()).toHaveLength(1));
+  expect(backend.mutations()[0]).toMatchObject({
+    method: 'POST',
+    path: '/teams',
+    body: { name: 'Copy of Daily 2', members: [{ role: 'Developer', agentId: A1, fallbackAgentId: null }] },
+  });
+  expect(await screen.findByRole('button', { name: 'Edit Copy of Daily 2' })).toBeTruthy();
+});
+
 it('sets, displays, reopens, and clears a team role fallback in workflow settings', async () => {
   await renderSettings({ agents: [codex(), cursor()] }, { tab: 'Teams' });
   click('Add team');
