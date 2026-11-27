@@ -66,9 +66,9 @@ function resolveTheme(mode) {
   return mode === 'system' ? systemTheme() : mode;
 }
 
-function applyResolvedTheme() {
+function applyResolvedTheme(force = false) {
   const resolved = resolveTheme(currentMode);
-  if (document.documentElement.dataset.theme !== resolved) {
+  if (force || document.documentElement.dataset.theme !== resolved) {
     document.documentElement.dataset.theme = resolved;
     window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: resolved }));
   }
@@ -85,13 +85,17 @@ export function getResolvedTheme() {
 }
 
 export function setThemeMode(mode) {
-  currentMode = THEME_MODES.includes(mode) ? mode : 'system';
+  const next = THEME_MODES.includes(mode) ? mode : 'system';
+  const modeChanged = next !== currentMode;
+  currentMode = next;
   try {
     localStorage.setItem(STORAGE_KEY, currentMode);
   } catch {
     // Non-critical preference persistence.
   }
-  applyResolvedTheme();
+  // Mode pickers track the mode, not just the resolved theme: a system→dark
+  // pick on a dark OS changes nothing resolved but must still broadcast.
+  applyResolvedTheme(modeChanged);
 }
 
 /** Cycle dark → light → system → dark. Returns the new mode. */

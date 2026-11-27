@@ -38,7 +38,7 @@ vi.mock('lucide-react', () => {
 vi.mock('../DirectoryBrowser', () => ({ default: () => null }));
 vi.mock('../SettingsPanel', () => ({ default: () => null }));
 vi.mock('../BrandMark', () => ({ default: () => null }));
-vi.mock('../../theme', () => ({ getThemeMode: () => 'dark', cycleThemeMode: vi.fn(), THEME_MODES: ['dark', 'light', 'system'] }));
+vi.mock('../../theme', () => ({ getThemeMode: () => 'dark', cycleThemeMode: vi.fn(), THEME_CHANGE_EVENT: 'codedeck-theme-change', THEME_MODES: ['dark', 'light', 'system'] }));
 vi.mock('../ToastContext', () => ({ useToast: () => ({ showToast: mocks.showToast }) }));
 vi.mock('../../utils/browserNotifications', () => ({
   createNotificationAudioContext: () => null,

@@ -7,6 +7,10 @@ import SessionNamingSettings from './SessionNamingSettings';
 import PipelineSettings from './pipelines/PipelineSettings';
 import AgentSettings from './pipelines/AgentSettings';
 import { useToast } from './ToastContext';
+import { THEME_CHANGE_EVENT, getThemeMode, setThemeMode } from '../theme';
+
+// Mirrors the mobile appearance control: explicit pick, applied instantly.
+const APPEARANCE = [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']];
 
 const DEFAULT_NOTIFICATION_COOLDOWN_SECONDS = 30;
 
@@ -34,6 +38,20 @@ export default function SettingsPanel({ onClose, onSaved }) {
   const namingRef = useRef(null);
   const [namingState, setNamingState] = useState({ dirty: false, busy: true, valid: false });
   const [activeTab, setActiveTab] = useState('general');
+  const [themeMode, setThemeModeState] = useState(getThemeMode);
+
+  // Theme applies instantly to localStorage + <html data-theme>; a cycle from
+  // the sidebar footer while settings are open moves the pressed state here.
+  useEffect(() => {
+    const sync = () => setThemeModeState(getThemeMode());
+    window.addEventListener(THEME_CHANGE_EVENT, sync);
+    return () => window.removeEventListener(THEME_CHANGE_EVENT, sync);
+  }, []);
+
+  const chooseTheme = mode => {
+    setThemeMode(mode);
+    setThemeModeState(getThemeMode());
+  };
   const [hostsDirty, setHostsDirty] = useState(false);
   const [workflowsDirty, setWorkflowsDirty] = useState(false);
   const [agentsDirty, setAgentsDirty] = useState(false);
@@ -192,6 +210,35 @@ export default function SettingsPanel({ onClose, onSaved }) {
           </div>
 
           <div {...panelProps('general')}>
+            {/* Section: Appearance */}
+            <div style={sectionStyle}>
+              <div style={sectionLabelStyle}>
+                <span style={sectionDotStyle} />
+                appearance
+              </div>
+              <div style={rowStyle}>
+                <div style={rowHeaderStyle}>
+                  <span style={keyStyle}>themeMode</span>
+                  <span style={descStyle}>
+                    System follows your OS setting and updates live
+                  </span>
+                </div>
+                <div role="group" aria-label="Appearance" style={appearanceRowStyle}>
+                  {APPEARANCE.map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={themeMode === mode}
+                      onClick={() => chooseTheme(mode)}
+                      style={themeMode === mode ? appearanceActiveStyle : appearanceStyle}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             {/* Section: Paths */}
             <div style={sectionStyle}>
               <div style={sectionLabelStyle}>
@@ -418,6 +465,28 @@ const activeTabStyle = {
   ...tabStyle,
   color: 'var(--accent)',
   borderBottom: '2px solid var(--accent)',
+};
+
+const appearanceRowStyle = {
+  display: 'flex',
+  gap: 4,
+};
+
+const appearanceStyle = {
+  flex: 1,
+  padding: '8px 12px',
+  fontSize: '12px',
+  fontFamily: 'var(--font-mono)',
+  color: 'var(--text-muted)',
+  background: 'transparent',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+};
+
+const appearanceActiveStyle = {
+  ...appearanceStyle,
+  color: 'var(--accent)',
+  borderColor: 'var(--accent)',
 };
 
 const sectionStyle = {

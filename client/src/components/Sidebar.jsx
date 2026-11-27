@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { FolderOpen, Plus, Trash2, FolderTree, History, Pencil, Settings, FolderSearch, Archive, ArchiveRestore, ChevronRight, ChevronDown, Search, X, Bell, BellOff, PanelLeftClose, PanelLeftOpen, Keyboard, Hourglass, Play, Copy, MoreVertical, Sun, Moon, Monitor, Server } from 'lucide-react';
-import { getThemeMode, cycleThemeMode } from '../theme';
+import { getThemeMode, cycleThemeMode, THEME_CHANGE_EVENT } from '../theme';
 import DirectoryBrowser from './DirectoryBrowser';
 import SettingsPanel from './SettingsPanel';
 import ProjectRepositoriesDialog from './ProjectRepositoriesDialog.jsx';
@@ -171,6 +171,11 @@ export default function Sidebar({ activeProjects, waitingProjects = [], openRunC
   const quietStatusSessionIds = getQuietStatusSessionIds(mutedStatusSessionIds, waitingSessionIds);
   const [showBrowser, setShowBrowser] = useState(false);
   const [themeMode, setThemeModeState] = useState(getThemeMode);
+  useEffect(() => {
+    const syncThemeMode = () => setThemeModeState(getThemeMode());
+    window.addEventListener(THEME_CHANGE_EVENT, syncThemeMode);
+    return () => window.removeEventListener(THEME_CHANGE_EVENT, syncThemeMode);
+  }, []);
   const [defaultPath, setDefaultPath] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameValue, setRenameValue] = useState('');
