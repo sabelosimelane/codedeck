@@ -19,7 +19,8 @@ export function repairFindings(note, attempt) {
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('Repair evidence requires a positive attempt');
   const prefix = `REPAIR ${attempt} `;
   const lines = note.split(/\r?\n/).filter(line => line.startsWith(prefix));
-  if (!lines.length) throw new Error(`Test requested another round without a REPAIR ${attempt} finding for a buildable check. Owner or handset evidence requires NEEDS_INPUT.`);
+  // No lines: this round's phase passed and only later phases remain. The source fingerprint
+  // and the progress guard still stop a loop that makes no progress.
   const findings = lines.map(line => {
     // Only the first two pipes separate fields; a pipe inside the reason is part of it.
     const [rawId, rawLocation = '', ...rest] = line.slice(prefix.length).split('|');

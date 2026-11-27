@@ -3122,7 +3122,18 @@ describe('createRunEngine — a loop of steps', () => {
     expect(script.starts[1].command).toContain('REPAIR 6 ');
     expect(script.starts[1].command).toContain('Keep each REPAIR line on one line: path at most 1024 characters, reason at most 1000.');
     expect(script.starts[1].command).toContain('Write REPAIR lines only for checks of the work this round built; tasks of later phases are not findings.');
-    expect(ctx.runStore.get(run.id)).toMatchObject({currentStepIndex: 1, status: 'error', error: expect.stringContaining('REPAIR 6')});
+    expect(ctx.runStore.get(run.id).error ?? '').not.toContain('REPAIR 6');
+  });
+
+  it('loops back to Develop when Test passes its phase with no REPAIR lines and later phases remain', async () => {
+    let fingerprint = 0;
+    const def = {...looping(8),notesDir:'.codedeck/runs/abcdef12'};
+    const {run,script} = await runLoop(['continue','continue','complete','complete','complete'],{definition:def,overrides:{engineExtras:{
+      prepareNotes:vi.fn(), fingerprintSources:async()=> String(++fingerprint).padStart(64,'0'),
+      readNote:async ({stepIndex})=>({status:'present',content:stepIndex===1 ? '# Phase 5 passed\nThere are no repair findings for this round.':'# Built'}),
+    }}});
+    expect(run.status).toBe('complete');
+    expect(script.starts.length).toBeGreaterThanOrEqual(4);
   });
 
   it('blocks an identical repair before a third developer launch', async () => {
