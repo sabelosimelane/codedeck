@@ -16,6 +16,7 @@ import { createRunStore } from '../pipelines/run-store.js';
 import { createRunEngine } from '../pipelines/run-engine.js';
 import { createTerminalInFolder } from '../pipelines/terminal-folder.js';
 import { createRunProgressReader, readRunProgress, parsePhaseProgress } from '../pipelines/run-progress.js';
+import { sourceFingerprint } from '../pipelines/repair-evidence.js';
 import { createDecisionStore } from '../pipelines/decision-store.js';
 import { createAnswerStore } from '../pipelines/answer-store.js';
 import { createNoteStore } from '../pipelines/note-store.js';
@@ -688,6 +689,8 @@ process.stdin.on('data', chunk => {
   const match = buf.match(/Iteration identifier: ([\\w-]+)\\n/);
   if (!match) return;
   const id = match[1];
+  const notePath = buf.match(/write your note to (\\.codedeck\\/runs\\/[0-9a-f]{8}\\/[^\\s]+\\.md)/)?.[1];
+  const verdict = buf.match(/write (VERDICT \\d+ PASS)/)?.[1];
   buf = '';
   prompts += 1;
   if (mode === 'dialog') {
@@ -702,10 +705,23 @@ process.stdin.on('data', chunk => {
     if (prompts === 1) say('\\nAPI Error: the request was refused\\n› \\n');
     else say('\\nresumed pass ' + prompts + '\\n[[CDW:' + id + ':COMPLETE]]\\n');
   } else if (mode === 'continue') {
+    if (notePath) require('node:fs').writeFileSync(notePath, '# Developed round ' + prompts);
     say('\\ndeveloped round ' + prompts + '\\n[[CDW:' + id + ':CONTINUE]]\\n');
   } else if (mode === 'tick') {
-    require('node:fs').writeFileSync('todo.md', '## Phase 1\\n' + Array.from({ length: 4 }, (_, i) => '- [' + (i < prompts ? 'x' : ' ') + '] task ' + i).join('\\n'));
-    say('\\ntested round ' + prompts + '\\n[[CDW:' + id + ':' + (prompts < 3 ? 'CONTINUE' : 'COMPLETE') + ']]\\n');
+    const { writeFileSync } = require('node:fs');
+    writeFileSync('todo.md', '## Phase 1\\n' + Array.from({ length: 3 }, (_, i) => '- [' + (i < prompts ? 'x' : ' ') + '] task ' + i).join('\\n'));
+    if (!notePath) throw new Error('Test handoff note path is missing');
+    const note = ['# Tested round ' + prompts];
+    const closing = prompts === 3;
+    if (closing) {
+      if (!verdict) throw new Error('Closing verdict instruction is missing');
+      const { execFileSync } = require('node:child_process');
+      execFileSync(process.execPath, ['--test']);
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      note.push(verdict, 'SUITE codedeck | node --test | exit 0 | ' + head);
+    }
+    writeFileSync(notePath, note.join('\\n'));
+    say('\\ntested round ' + prompts + '\\n[[CDW:' + id + ':' + (closing ? 'COMPLETE' : 'CONTINUE') + ']]\\n');
   } else if (prompts === 1) {
     waitingOn = id;
     say([
@@ -738,7 +754,16 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
     initRepo(home);
     const developStub = writeLoopAgent(base, 'continue');
     const testStub = writeLoopAgent(base, testMode);
-    if (progressMode !== null) writeFileSync(path.join(home, 'todo.md'), '## Phase 1\n- [ ] task 0\n- [ ] task 1\n- [ ] task 2\n- [ ] task 3');
+    if (progressMode !== null) writeFileSync(path.join(home, 'todo.md'), '## Phase 1\n- [ ] task 0\n- [ ] task 1\n- [ ] task 2');
+    if (progressMode === 'tick') {
+      writeFileSync(path.join(home, '.git', 'info', 'exclude'), '.codedeck/runs/\n');
+      writeFileSync(path.join(home, 'readme.test.cjs'), [
+        "const test = require('node:test');",
+        "const assert = require('node:assert/strict');",
+        "const { readFileSync } = require('node:fs');",
+        "test('documents the fixture', () => assert.match(readFileSync('README.md', 'utf8'), /pipeline live/));",
+      ].join('\n'));
+    }
 
     const previousTmp = process.env.TMUX_TMPDIR;
     const previousTmux = process.env.TMUX;
@@ -754,6 +779,15 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
     const runId = '0d9e4b1a-6666-4666-8666-666666666666';
     const workflowId = '0d9e4b1a-7777-4777-8777-777777777777';
     const homeRepoPath = await resolveHomeRepoPath({ projectPath: home, execFile });
+    const checkout = {
+      repository: 'codedeck',
+      path: homeRepoPath,
+      repositoryPath: homeRepoPath,
+      branch: git(home, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      baseCommit: git(home, ['rev-parse', 'HEAD']),
+    };
+    const noteStore = createNoteStore(db);
+    const readProgress = run => readRunProgress({ run, workflowProgressFile: null, progressReader: createRunProgressReader() });
     const stubAgent = (id, name, launchCommand) => ({ id, name, launchCommand, resetCommand: '/clear' });
     const pending = () => ({ status: 'pending', sessionId: null, priorSessionIds: [], attempt: 0, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 });
 
@@ -773,7 +807,7 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
         workflowRevision: 1,
         agentsDecide: true,
         progressFile: progressMode === null ? null : 'todo.md',
-        notesDir: null,
+        notesDir: progressMode === 'tick' ? `.codedeck/runs/${runId.slice(0, 8)}` : null,
         steps: [
           { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Develop', prompt: 'build the next phase', repeat: { mode: 'once' }, agent: stubAgent('0d9e4b1a-8888-4888-8888-888888888888', 'develop-stub', developStub) },
           { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Test', prompt: 'test the phase', repeat: { mode: 'loop_back', toStepIndex: 0, max: 5 }, agent: stubAgent('0d9e4b1a-9999-4999-8999-999999999999', 'test-stub', testStub) },
@@ -782,8 +816,8 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
       steps: [pending(), pending()],
       homePath: homeRepoPath,
       worktreePath: homeRepoPath,
-      worktreeBranch: git(home, ['rev-parse', '--abbrev-ref', 'HEAD']),
-      baseCommit: git(home, ['rev-parse', 'HEAD']),
+      worktreeBranch: checkout.branch,
+      baseCommit: checkout.baseCommit,
       worktreeState: 'external',
       worktreeDetail: null,
       inputRequest: null,
@@ -806,12 +840,17 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
       terminalInFolder: createTerminalInFolder(sessionId => runtime.inspectPaneAsync(sessionId)),
       inspectTerminal: sessionId => runtime.inspectPaneAsync(sessionId),
       setTerminalMuted: () => true,
+      readProgress,
       readProgressCount: async run => {
-        const progress = await readRunProgress({ run, workflowProgressFile: null, progressReader: createRunProgressReader() });
+        const progress = await readProgress(run);
         return progress?.phaseCount > 0 ? { tasksDone: progress.tasksDone, tasksTotal: progress.tasksTotal } : null;
       },
+      listRunPlaces: async () => ({ current: checkout.repository, worktrees: [checkout], readOnly: [] }),
+      fingerprintSources: (run, { excludeProgress = false } = {}) => sourceFingerprint(
+        [checkout], execFile, excludeProgress ? { path: run.worktreePath, file: run.definition.progressFile } : null,
+      ),
       decisionStore: decisions, answerStore: createAnswerStore(db),
-      noteStore: createNoteStore(db),
+      noteStore,
       reviewStore: createReviewStore(db),
       readScreen,
       createWorktree: async () => { throw new Error('an existing worktree is never created'); },
@@ -859,16 +898,17 @@ describeLive('pipeline run live — a loop of steps whose agents decide', () => 
       if (['complete', 'stopped'].includes(finished.status)) await done;
 
       if (progressMode === 'no_progress') {
-        expect(finished).toMatchObject({ status: 'stopped', stopReason: 'no_progress', currentStepIndex: 0 });
+        expect(finished).toMatchObject({ status: 'stopped', stopReason: 'no_progress', currentStepIndex: 0, error: null });
         expect(finished.steps[1].roundsCompleted).toBe(3);
         expect(finished.steps[0].status).toBe('stopped');
         expect(sessionSeq).toBe(2);
         return;
       }
       if (progressMode === 'tick') {
-        expect(finished.status).toBe('complete');
+        expect(finished).toMatchObject({ status: 'complete', error: null });
         expect(finished.steps[1].roundsCompleted).toBe(2);
-        expect(parsePhaseProgress(readFileSync(path.join(home, 'todo.md'), 'utf8')).tasksDone).toBe(3);
+        expect(parsePhaseProgress(readFileSync(path.join(home, 'todo.md'), 'utf8'))).toMatchObject({ tasksDone: 3, tasksTotal: 3 });
+        expect(noteStore.lastContent(runId, 1)).toContain(`SUITE codedeck | node --test | exit 0 | ${checkout.baseCommit}`);
         return;
       }
 

@@ -70,12 +70,12 @@ describe('built-in source view', () => {
   it('reports latestVersion and updateAvailable for a linked built-in', async () => {
     const ctx = await setup();
     const created = ctx.workflowStore.create(builtinBody(), {
-      source: { kind: 'builtin', id: 'bug-fix', version: 1, base: builtinTemplateDefinition(template), updatedAt: null },
+      source: { kind: 'builtin', id: 'bug-fix', version: template.version, base: builtinTemplateDefinition(template), updatedAt: null },
     });
     const res = await request(ctx.app).get(`${base}/workflows/${created.id}`);
     expect(res.status).toBe(200);
     expect(res.body.source).toMatchObject({
-      kind: 'builtin', id: 'bug-fix', version: 1, latestVersion: template.version,
+      kind: 'builtin', id: 'bug-fix', version: template.version, latestVersion: template.version,
       updateAvailable: false, updatedToVersionAt: null, shipped: true,
     });
   });

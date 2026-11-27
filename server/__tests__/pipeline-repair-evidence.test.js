@@ -3,7 +3,7 @@ import { execFile,execFileSync } from 'node:child_process';
 import { mkdir,mkdtemp,writeFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { repairFindings, sourceFingerprint } from '../pipelines/repair-evidence.js';
+import { repairFindings, sourceFingerprint, describeRepairDispatch } from '../pipelines/repair-evidence.js';
 
 it('requires attributable, current-attempt repair findings and ignores earlier appended notes', () => {
   const note='REPAIR 1 AC1 | old.kt | missing focus\nREPAIR 2 AC2 | detector.kt | chord fails';
@@ -31,6 +31,16 @@ it('fingerprints tracked and new sources on the selected host without run-note c
     const staged=await source();
     await writeFile(path.join(dir,'file.txt'),'three');
     expect(await source()).not.toBe(staged);
+    const tree = { path: dir, repository: 'demo' };
+    const closingSource = () => sourceFingerprint([tree], execFile, { path: dir, file: 'todo [1].md' });
+    const beforeTodo = await closingSource();
+    await writeFile(path.join(dir, 'todo [1].md'), '- [ ] Pending');
+    expect(await closingSource()).toBe(beforeTodo);
+    git('add', 'todo [1].md');
+    await writeFile(path.join(dir, 'todo [1].md'), '- [x] Pending');
+    expect(await closingSource()).toBe(beforeTodo);
+    await writeFile(path.join(dir, 'file.txt'), 'different source on the same HEAD');
+    expect(await closingSource()).not.toBe(beforeTodo);
   } finally { await rm(dir,{recursive:true}); }
 });
 it('accepts a detailed finding whose absolute path and reason together exceed 500 characters', () => {
@@ -66,4 +76,22 @@ it('accepts many findings whose total exceeds 6000 characters, as a Test note li
   const lines=Array.from({length:34},(_,i)=>`REPAIR 3 T${i} | docs/todos/2026-11-26-demo-delivery.md | ${'outstanding task '.repeat(11)}${i}`);
   expect(lines.join('\n').length).toBeGreaterThan(6000);
   expect(repairFindings(lines.join('\n'),3)).toHaveLength(34);
+});
+it('routes a capped retry to the current repairs with focused checks', () => {
+  const dispatch=describeRepairDispatch({ findings:['B1 | a.js | chord fails at batch size one'], progressPhase:null });
+  expect(dispatch.target).toBe('repair');
+  expect(dispatch.focusedChecks).toEqual(['B1 | a.js | chord fails at batch size one']);
+  expect(dispatch.nextPhase).toBeNull();
+  expect(dispatch.staleRepairLines).toEqual([]);
+  expect(dispatch.promptFragment).toMatch(/B1/);
+});
+it('routes a passed phase onward to the first unfinished phase with no stale repair lines', () => {
+  const phase={ number:2, title:'Review', tasksDone:0, tasksTotal:2 };
+  const dispatch=describeRepairDispatch({ findings:[], progressPhase:phase });
+  expect(dispatch.target).toBe('next_phase');
+  expect(dispatch.nextPhase).toEqual(phase);
+  expect(dispatch.focusedChecks).toEqual([]);
+  expect(dispatch.staleRepairLines).toEqual([]);
+  expect(dispatch.promptFragment).toMatch(/Phase 2/);
+  expect(dispatch.promptFragment).not.toMatch(/REPAIR/);
 });

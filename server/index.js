@@ -1149,6 +1149,12 @@ const pipelineTerminalInFolder = createTerminalInFolder(
     { sessionHost: sessionId => terminalSessionHostStore.get(sessionId)?.host ?? resolveHostRuntime(sessionId)?.host ?? LOCAL_HOST,
       resolveRealpath: (sessionId, target) => resolveHostTools(resolveHostRuntime(sessionId)?.host ?? LOCAL_HOST).realpath(target) },
   );
+async function readPipelineProgress(run) {
+  const tools = resolveHostTools(run.host);
+  const reader = run.host && run.host !== LOCAL_HOST ? createRunProgressReader({ fs: tools.fs }) : pipelineProgressReader;
+  return readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: reader });
+}
+
 const pipelineRunEngine = createRunEngine({
   runStore: pipelineRunStore,
   onNoteWritten: note => {
@@ -1171,10 +1177,9 @@ const pipelineRunEngine = createRunEngine({
       } : null,
     };
   },
+  readProgress: readPipelineProgress,
   readProgressCount: async run => {
-    const tools = resolveHostTools(run.host);
-    const reader = run.host && run.host !== LOCAL_HOST ? createRunProgressReader({ fs: tools.fs }) : pipelineProgressReader;
-    const progress = await readRunProgress({ run, workflowProgressFile: pipelineWorkflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: reader });
+    const progress = await readPipelineProgress(run);
     return progress?.phaseCount > 0 && ['in_progress', 'all_done'].includes(progress.status)
       ? { tasksDone: progress.tasksDone, tasksTotal: progress.tasksTotal } : null;
   },
@@ -1210,7 +1215,10 @@ const pipelineRunEngine = createRunEngine({
   },
   // Where a run may work and read: the worktrees of its task and the project's other repositories, as they are when a step starts.
   listRunPlaces: pipelinePlaces,
-  fingerprintSources: async run => sourceFingerprint((await pipelinePlaces(run)).worktrees, resolveHostTools(run.host).execFile),
+  fingerprintSources: async (run, { excludeProgress = false } = {}) => sourceFingerprint(
+    (await pipelinePlaces(run)).worktrees, resolveHostTools(run.host).execFile,
+    excludeProgress ? { path: run.worktreePath, file: run.definition.progressFile } : null,
+  ),
   prepareNotes: ({ host, ...opts }) => {
     const tools = resolveHostTools(host);
     return preparePipelineNotes({ ...opts, fs: tools.fs, execFile: tools.execFile });

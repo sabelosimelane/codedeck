@@ -172,7 +172,7 @@ async function setup(overrides = {}) {
         )),
       });
     }),
-    continue: vi.fn(async runId => {
+    continue: vi.fn(async (runId, grant) => {
       const run = runStore.get(runId);
       if (!run) throw new Error(`pipeline run ${runId}: not found`);
       if (run.status !== 'limit_paused') {
@@ -180,17 +180,16 @@ async function setup(overrides = {}) {
         err.code = 'ACTION_REFUSED';
         throw err;
       }
-      const last = run.currentStepIndex >= run.steps.length - 1;
-      if (last) {
-        return runStore.update(runId, {
-          status: 'complete',
-          finishedAt: new Date().toISOString(),
-          error: null,
-        });
+      const paused = run.steps[run.currentStepIndex];
+      if (grant !== undefined && (grant.stepIndex !== run.currentStepIndex || grant.roundsCompleted !== paused.roundsCompleted)) {
+        const err = new Error('That pause is no longer current. Review the run before trying again.');
+        err.code = 'ACTION_REFUSED';
+        throw err;
       }
+      // A granted round goes back to work on the paused step; the engine owns the loop routing.
       return runStore.update(runId, {
         status: 'running',
-        currentStepIndex: run.currentStepIndex + 1,
+        steps: run.steps.map((step, index) => (index === run.currentStepIndex ? { ...step, status: 'launching' } : step)),
       });
     }),
     cleanup: vi.fn(async runId => {
@@ -1687,7 +1686,8 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
     });
     const ok = await request(ctx.app).post(`${base}/runs/${id}/continue`);
     expect(ok.status).toBe(200);
-    expect(ok.body.status).toBe('complete');
+    expect(ok.body.status).toBe('running');
+    expect(ctx.engine.continue).toHaveBeenCalledWith(id, undefined);
 
     const refused = await request(ctx.app).post(`${base}/runs/${id}/continue`);
     expect(refused.status).toBe(409);
@@ -1942,7 +1942,69 @@ describe('pipelines API — owner actions (Spec §8.8)', () => {
     expect(resumed.body.steps[0].attempt).toBe(2);
     expect(resumed.body.steps[0].priorSessionIds).toEqual(['Demo-1']);
   });
+
+  describe('Continue with a pause-bound grant', () => {
+    async function pausedRun(ctx, stepIndex = 1, roundsCompleted = 0) {
+      const { id } = await seedRun(ctx, {
+        status: 'limit_paused',
+        worktreeState: 'present',
+        currentStepIndex: stepIndex,
+        steps: [
+          { status: 'pending', sessionId: null, priorSessionIds: [], attempt: 1, iteration: 0, roundsCompleted: 0, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+          { status: 'limit_reached', sessionId: null, priorSessionIds: [], attempt: 2, iteration: 1, roundsCompleted, detail: null, startedAt: null, finishedAt: null, elapsedMs: 0 },
+        ],
+      });
+      return id;
+    }
+
+    it('binds Continue to the pause on screen and forwards the grant to the engine', async () => {
+      const ctx = await setup();
+      const id = await pausedRun(ctx);
+      ctx.engine.continue = vi.fn(async () => ctx.runStore.get(id));
+      const ok = await request(ctx.app).post(`${base}/runs/${id}/continue`).send({ stepIndex: 1, roundsCompleted: 0, extraRounds: 0 });
+      expect(ok.status).toBe(200);
+      expect(ctx.engine.continue).toHaveBeenCalledWith(id, { stepIndex: 1, roundsCompleted: 0, extraRounds: 0 });
+    });
+
+    it('rejects malformed grants with a problem 400 and never calls the engine', async () => {
+      const ctx = await setup();
+      const id = await pausedRun(ctx);
+      ctx.engine.continue = vi.fn(async () => ctx.runStore.get(id));
+      for (const body of [
+        { stepIndex: '1', roundsCompleted: 7 },
+        { stepIndex: 1, roundsCompleted: -1 },
+        { stepIndex: 1.5, roundsCompleted: 7 },
+        { stepIndex: 1, roundsCompleted: 7, extra: true },
+        { stepIndex: 1, roundsCompleted: 7, extraRounds: -1 },
+        { stepIndex: 1, roundsCompleted: 7, extraRounds: 101 },
+        { extraRounds: 0 },
+      ]) {
+        const response = await request(ctx.app).post(`${base}/runs/${id}/continue`).send(body);
+        expect(response.status).toBe(400);
+        expect(response.body.traceId).toBeTruthy();
+      }
+      expect(ctx.engine.continue).not.toHaveBeenCalled();
+    });
+
+    it('maps a stale grant to a problem 409 without launching a second round', async () => {
+      const ctx = await setup();
+      const id = await pausedRun(ctx);
+      ctx.engine.continue = vi.fn(async (runId, grant) => {
+        const run = ctx.runStore.get(runId);
+        const paused = run.steps[run.currentStepIndex];
+        if (!grant || grant.stepIndex !== run.currentStepIndex || grant.roundsCompleted !== paused.roundsCompleted) {
+          throw Object.assign(new Error('That pause is no longer current. Review the run before trying again.'), { code: 'ACTION_REFUSED' });
+        }
+        return run;
+      });
+      const stale = await request(ctx.app).post(`${base}/runs/${id}/continue`).send({ stepIndex: 1, roundsCompleted: 6 });
+      expect(stale.status).toBe(409);
+      expect(stale.body.traceId).toBeTruthy();
+      expect(ctx.runStore.get(id).status).toBe('limit_paused');
+    });
+  });
 });
+
 
 describe('pipelines API — worktrees', () => {
   const HEAD_A = 'a'.repeat(40);

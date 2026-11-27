@@ -36,8 +36,47 @@ export function repairFindings(note, attempt) {
   return [...new Set(findings)].sort();
 }
 
+// Route the next round from the latest Test result: repairs go back to Develop with the
+// current failed checks, and a passed phase moves on to the first unfinished phase with
+// no stale repair lines from earlier attempts.
+export function describeRepairDispatch({ findings, progressPhase }) {
+  if (!Array.isArray(findings) || !findings.every(line => typeof line === 'string' && line.length > 0)) {
+    throw new TypeError('Repair dispatch: findings must be an array of nonempty strings');
+  }
+  if (progressPhase !== null && (typeof progressPhase !== 'object' || Array.isArray(progressPhase)
+    || !Number.isSafeInteger(progressPhase.number) || typeof progressPhase.title !== 'string'
+    || !Number.isSafeInteger(progressPhase.tasksDone) || !Number.isSafeInteger(progressPhase.tasksTotal))) {
+    throw new TypeError('Repair dispatch: progressPhase must be null or a parsed phase');
+  }
+  if (findings.length > 0) {
+    const ids = findings.map(line => line.split('|')[0].trim()).filter(Boolean);
+    return {
+      target: 'repair',
+      focusedChecks: [...findings],
+      nextPhase: null,
+      staleRepairLines: [],
+      promptFragment: `Focused checks this round: ${ids.join(', ')}. Rerun each failing probe plus its affected regressions; `
+        + 'reuse a passing result only while its relevant source, inputs and environment still match. '
+        + 'Record those three comparisons for each carried-forward check and rerun it if any differ or cannot be verified. '
+        + 'Run the final suite once per changed repository when all checks hold.',
+    };
+  }
+  const where = progressPhase
+    ? `Phase ${progressPhase.number}${progressPhase.title ? `: ${progressPhase.title}` : ''} (${progressPhase.tasksDone}/${progressPhase.tasksTotal} tasks done)`
+    : 'the first unfinished phase';
+  return {
+    target: 'next_phase',
+    focusedChecks: [],
+    nextPhase: progressPhase,
+    staleRepairLines: [],
+    promptFragment: `This round passed; build ${where} with no stale repair lines from earlier attempts. `
+      + 'Reuse a passing result only while its relevant source, inputs and environment still match. '
+      + 'Run the final suite once per changed repository when all checks hold.',
+  };
+}
+
 // Git's no-index diff hashes the symlink itself, never its external target.
-export async function sourceFingerprint(trees, execFile) {
+export async function sourceFingerprint(trees, execFile, excluded = null) {
   if (!Array.isArray(trees) || !trees.length) throw new Error('Repair fingerprint requires a worktree');
   const digest = createHash('sha256');
   const add = value => digest.update(JSON.stringify(value)).update('\n');
@@ -47,8 +86,10 @@ export async function sourceFingerprint(trees, execFile) {
     const git = async args => (await runGit(execFile,['-C',tree.path,...args])).stdout;
     add([tree.repository,tree.path,await git(['rev-parse','HEAD'])]);
     const diff = ['--no-ext-diff','--no-textconv','--binary'];
-    add(await git(['diff',...diff,'HEAD','--']));
-    const others = await git(['ls-files','--others','--exclude-standard','-z']);
+    // Test may update the progress checklist without changing the code it is verifying.
+    const omit = excluded?.path === tree.path ? [`:(exclude,literal)${excluded.file}`] : [];
+    add(await git(['diff', ...diff, 'HEAD', '--', ...omit]));
+    const others = await git(['ls-files', '--others', '--exclude-standard', '-z', '--', ...omit]);
     for (const name of others.split('\0').filter(Boolean).sort()) {
       if (path.isAbsolute(name) || name.split('/').includes('..')) throw new Error('Git returned an invalid worktree path');
       add(name);

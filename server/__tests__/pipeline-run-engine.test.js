@@ -3,7 +3,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { findAgentProfileById } from '../agent-profiles/index.js';
-import { classifyTerminalExecution } from '../terminal-execution-classifier.js';
 import { classify as classifyReadiness } from '../pipelines/agent-readiness.js';
 import { findAgentProfile } from '../agent-profiles/index.js';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -384,6 +383,75 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     expect(ctx.runStore.get(run.id).steps[0].status).toBe('complete');
     expect(ctx.reviewStore.list(run.id)).toEqual([]);
   });
+  it.each([
+    ['missing final signal', /requires a COMPLETE signal/],
+    ['open task', /open task.*1\/2/],
+    ['missing todo', /required progress file.*docs\/todo.md/],
+    ['failed probe', /failed probe.*B1/],
+    ['stale verdict', /passing verdict for attempt 1/],
+    ['missing suite', /missing a final suite for backend/],
+    ['failed suite', /failed suite for backend.*exit 1/],
+    ['changed HEAD', /changed revision for backend/],
+    ['changed dirty source', /changed since Test started/],
+    ['missing repository inventory', /recorded worktree/],
+  ])('keeps a closing Test decision recoverable for %s, then completes once', async (scenario, expected) => {
+    const head = 'd'.repeat(40);
+    const suite = (exit = 0, revision = head) => `SUITE backend | npx vitest run --maxWorkers=1 | exit ${exit} | ${revision}`;
+    const goodNote = attempt => `# Verified\nVERDICT ${attempt} PASS\n${suite()}`;
+    const progress = { file: 'docs/todo.md', status: 'all_done', tasksDone: 2, tasksTotal: 2 };
+    let currentProgress = progress;
+    let note = goodNote(1);
+    let fingerprint = 'a'.repeat(64);
+    let reads = 0;
+    let missingPlaces = false;
+    if (scenario === 'open task') currentProgress = { ...progress, status: 'in_progress', tasksDone: 1 };
+    if (scenario === 'missing todo') currentProgress = null;
+    if (scenario === 'failed probe') note += '\nREPAIR 1 B1 | src/batch.js | probe fails';
+    if (scenario === 'stale verdict') note = goodNote(7);
+    if (scenario === 'missing suite') note = '# Verified\nVERDICT 1 PASS';
+    if (scenario === 'failed suite') note = `# Verified\nVERDICT 1 PASS\n${suite(1)}`;
+    if (scenario === 'changed HEAD') note = `# Verified\nVERDICT 1 PASS\n${suite(0, BASE_COMMIT)}`;
+    if (scenario === 'missing repository inventory') missingPlaces = true;
+    const ctx = setupEngine({
+      ...(scenario === 'missing final signal' ? { createWorkflow: ({ notify }) => ({
+        start(request) {
+          const complete = request.requestId.endsWith('-2');
+          queueMicrotask(() => notify({ requestId: request.requestId, status: complete ? 'complete' : 'stopped',
+            active: false, iteration: 1, error: null, limitReached: !complete }));
+        },
+        stop() {},
+        snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+      }) } : {}),
+      engineExtras: {
+        prepareNotes: vi.fn(),
+        readProgress: vi.fn(async () => currentProgress),
+        readNote: vi.fn(async () => {
+          if (scenario === 'changed dirty source' && reads++ === 0) fingerprint = 'b'.repeat(64);
+          return { status: 'present', content: note };
+        }),
+        fingerprintSources: vi.fn(async () => fingerprint),
+        listRunPlaces: vi.fn(async (run, { includeGit } = {}) => ({ current: 'backend',
+          worktrees: missingPlaces && includeGit ? [] : [{ repository: 'backend', path: run.worktreePath, branch: 'b', baseCommit: BASE_COMMIT, repositoryPath: '/tmp/home' }], readOnly: [] })),
+        inspectCommitWorktree: vi.fn(async () => ({ repository: 'backend', branch: 'b', head, dirty: true })),
+      },
+    });
+    const def = definition({ notesDir: '.codedeck/runs/abcdef12', progressFile: 'docs/todo.md',
+      steps: [{ ...definition().steps[0], name: 'Test', prompt: 'do it' }] });
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    const first = ctx.engine.start(run.id);
+    await vi.advanceTimersByTimeAsync(1100); await first;
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', error: expect.stringMatching(expected) });
+
+    currentProgress = progress;
+    missingPlaces = false;
+    note = goodNote(2);
+    await ctx.engine.resume(run.id);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'complete', steps: [expect.objectContaining({ status: 'complete' })] });
+    const audit = ctx.runStore.auditPage(run.id, { page: 0, size: 100, direction: 'asc', stepIndex: null }).data;
+    expect(audit.filter(entry => entry.kind === 'step_complete')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(100);
+  });
   it('Stop during an approval wait stops the run and Resume reruns the step', async () => {
     const ctx = setupEngine();
     const def = definition(); def.steps[0].approval = true;
@@ -430,8 +498,13 @@ describe('createRunEngine (Spec §8.3–§8.4)', () => {
     const limitedDone = limited.engine.start(limitedRun.id);
     await vi.advanceTimersByTimeAsync(1100); await limitedDone;
     expect(limited.runStore.get(limitedRun.id).status).toBe('limit_paused');
-    await limited.engine.continue(limitedRun.id);
-    expect(limited.runStore.get(limitedRun.id).status).toBe('complete');
+    const acknowledged = await limited.engine.continue(limitedRun.id);
+    expect(acknowledged.status).toBe('running');
+    expect(acknowledged.steps[0]).toMatchObject({ status: 'launching', extraRounds: 1 });
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.advanceTimersByTimeAsync(0);
+    // The relaunched pass hits the mock's limit again, so the cap pauses rather than completes.
+    expect(limited.runStore.get(limitedRun.id).status).toBe('limit_paused');
   });
 
   it('sends a gated step back into the same terminal with feedback and a new attempt', async () => {
@@ -1579,7 +1652,7 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     const run = ctx.runStore.create(validRun({ definition: def, status, stopReason: stopped ? 'user' : null,
       worktreeState: 'present', finishedAt: stopped ? new Date().toISOString() : null,
       steps: [step({ status: stepStatus, sessionId: 'Demo-9', attempt: 1, iteration: 1 })] }));
-    await ctx.engine[action](run.id, 'Include the missing evidence.');
+    await ctx.engine[action](run.id, action === 'continue' ? undefined : 'Include the missing evidence.');
     await advanceReadiness();
 
     const finished = ctx.runStore.get(run.id);
@@ -1735,20 +1808,23 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
 
     const acknowledged = await ctx.engine.continue(run.id);
     expect(acknowledged.status).toBe('running');
-    expect(acknowledged.currentStepIndex).toBe(1);
-    await advanceReadiness(1);
+    expect(acknowledged.currentStepIndex).toBe(0);
+    expect(acknowledged.steps[0].extraRounds).toBe(1);
+    await advanceReadiness(2);
     const finished = ctx.runStore.get(run.id);
     expect(finished.status).toBe('complete');
     expect(finished.currentStepIndex).toBe(1);
-    expect(finished.steps[0].status).toBe('limit_accepted');
-    expect(finished.steps[1].status).toBe('complete');
+    expect(finished.steps.map(step => step.status)).toEqual(['complete', 'complete']);
+    expect(finished.steps[0].extraRounds).toBe(1);
   });
 
-  it('Continue on the last limit_paused step completes the run', async () => {
+  it('Continue on the last limit_paused step grants one more pass instead of completing', async () => {
+    const starts = [];
     const ctx = setupEngine({
       readinessQueue: [executionState()],
       createWorkflow: vi.fn(({ notify }) => ({
         start(args) {
+          starts.push(args);
           queueMicrotask(() => {
             notify({
               status: 'stopped',
@@ -1784,11 +1860,46 @@ describe('createRunEngine Phase 3 (Spec §8.3, §8.5–§8.8)', () => {
     await driveReady(ctx.engine.start(run.id));
     expect(ctx.runStore.get(run.id).status).toBe('limit_paused');
 
-    await ctx.engine.continue(run.id);
-    const finished = ctx.runStore.get(run.id);
-    expect(finished.status).toBe('complete');
-    expect(finished.steps[0].status).toBe('limit_accepted');
-    expect(finished.worktreeState).toBe('removed');
+    const acknowledged = await ctx.engine.continue(run.id, { stepIndex: 0, roundsCompleted: 0, extraRounds: 0 });
+    expect(acknowledged.status).toBe('running');
+    expect(acknowledged.steps[0]).toMatchObject({ status: 'launching', extraRounds: 1 });
+    await advanceReadiness(1);
+    const paused = ctx.runStore.get(run.id);
+    expect(paused.status).toBe('limit_paused');
+    expect(paused.steps[0]).toMatchObject({ status: 'limit_reached', extraRounds: 1, roundsCompleted: 0 });
+    // Exactly one more pass: the granted attempt starts after the three passes already run.
+    expect(starts.at(-1)).toMatchObject({ maxIterations: 4, startAfterPass: 3 });
+    // A stale click from the first pause cannot spend the second pause's grant.
+    await expect(ctx.engine.continue(run.id, { stepIndex: 0, roundsCompleted: 0, extraRounds: 0 })).rejects.toThrow(/pause|current/i);
+    expect(ctx.runStore.get(run.id).status).toBe('limit_paused');
+    // A pass limit cannot be raised past the hundred passes a workflow may run.
+    const full = ctx.runStore.get(run.id);
+    ctx.runStore.update(run.id, { steps: [{ ...full.steps[0], extraRounds: 97 }] });
+    await expect(ctx.engine.continue(run.id)).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+    expect(ctx.runStore.get(run.id).status).toBe('limit_paused');
+  });
+
+  it('refuses a loop_back grant once the allowance reaches one hundred extra rounds', async () => {
+    const ctx = setupEngine();
+    const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+    const def = definition({
+      steps: [
+        { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Develop', prompt: 'do it', repeat: { mode: 'once' }, agent },
+        { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Test', prompt: 'do it', repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, agent },
+      ],
+    });
+    const run = ctx.runStore.create(validRun({
+      definition: def,
+      status: 'limit_paused',
+      currentStepIndex: 1,
+      steps: [
+        step({ status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1 }),
+        step({ status: 'limit_reached', sessionId: 'Demo-2', attempt: 8, iteration: 8, roundsCompleted: 8, extraRounds: 100 }),
+      ],
+    }));
+    await expect(ctx.engine.continue(run.id)).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+    await expect(ctx.engine.continue(run.id, { stepIndex: 1, roundsCompleted: 8, extraRounds: 100 })).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+    expect(ctx.runStore.get(run.id).status).toBe('limit_paused');
   });
 
   it('Stop while running sets stop_reason=user', async () => {
@@ -3036,7 +3147,7 @@ describe('createRunEngine — a loop of steps', () => {
     expect(review.guidance).toBe(BOUNDARY);
   });
 
-  it('pauses at the round limit; Continue moves past the loop', async () => {
+  it('pauses at the round limit; Continue grants one more round at the loop target', async () => {
     const { ctx, script, run } = await runLoop(['continue', 'continue', 'continue', 'continue'], { max: 2 });
     expect(run.status).toBe('limit_paused');
     expect(run.currentStepIndex).toBe(1);
@@ -3045,15 +3156,21 @@ describe('createRunEngine — a loop of steps', () => {
     expect(script.starts).toHaveLength(4);
 
     script.createWorkflow.mockClear();
-    const scriptAfter = scriptedWorkflow(['complete']);
+    const scriptAfter = scriptedWorkflow(['complete', 'continue', 'complete', 'continue', 'complete', 'continue']);
     // The engine keeps its own createWorkflow; feed the remaining outcome through the same mock.
     script.createWorkflow.mockImplementation(scriptAfter.createWorkflow);
-    await ctx.engine.continue(run.id);
-    for (let i = 0; i < 2; i += 1) await vi.advanceTimersByTimeAsync(1100);
+    const acknowledged = await ctx.engine.continue(run.id, { stepIndex: 1, roundsCompleted: 1 });
+    expect(acknowledged.status).toBe('running');
+    expect(acknowledged.currentStepIndex).toBe(0);
+    expect(acknowledged.steps[1].extraRounds).toBe(1);
+    for (let i = 0; i < 7; i += 1) await vi.advanceTimersByTimeAsync(1100);
     await vi.advanceTimersByTimeAsync(0);
     const after = ctx.runStore.get(run.id);
-    expect(after.status).toBe('complete');
-    expect(after.steps.map(s => s.status)).toEqual(['complete', 'limit_accepted', 'complete']);
+    // The granted round looped once more (rounds 2), then the cap paused again: no completion.
+    expect(after.status).toBe('limit_paused');
+    expect(after.currentStepIndex).toBe(1);
+    expect(after.steps.map(s => s.status)).toEqual(['complete', 'limit_reached', 'pending']);
+    expect(after.steps[1]).toMatchObject({ roundsCompleted: 2, extraRounds: 1 });
   });
 
   it('never loops when the limit is one round', async () => {
@@ -4401,12 +4518,16 @@ describe('standard final Commit', () => {
 describe('Troubleshoot verification decisions through the runner', () => {
   const question = '1. Backend verified. Phone prompt pending. Can you confirm the missing-tag prompt on a paired phone?';
   const owner = 'Ship the verified backend and explicitly defer the paired-phone check.';
-  async function exercise({ omitProof = false } = {}) {
+  async function exercise({ omitProof = false, historicalPrompt = false } = {}) {
     const { backend } = groupFixture();
     writeFileSync(path.join(backend, 'legacy.cjs'), 'console.error("E42"); process.exitCode = 1;');
     git(backend, ['add', 'legacy.cjs']);
     git(backend, ['commit', '-m', 'Existing unrelated failure']);
     const draft = buildTemplateDraft('troubleshoot');
+    if (historicalPrompt) {
+      const verify = draft.nodes.find(node => node.name === 'Verify');
+      verify.prompt = verify.prompt.replace('Run focused checks during repair; run the final suite once per changed repository on the final revision. ', '');
+    }
     const checkout = { repository: 'backend', path: backend, repositoryPath: backend, branch: 'main', baseCommit: git(backend, ['rev-parse', 'HEAD']) };
     writeFileSync(path.join(backend, 'watch.txt'), 'Backend detects missing tags.');
     git(backend, ['add', 'watch.txt']);
@@ -4438,7 +4559,7 @@ describe('Troubleshoot verification decisions through the runner', () => {
             const name = def.steps[index].name;
             starts.push(name);
             if (name !== 'Verify') { write(index, '# ' + name); signal('complete'); return; }
-            if (omitProof) { signal('complete'); return; }
+            if (omitProof) { write(index, ' '); signal('complete'); return; }
             if (++rounds === 1) {
               write(index, '# New regression: missing implementation\nReproduce with phone-prompt test. Fix the missing branch.');
               signal('stopped', true);
@@ -4463,8 +4584,8 @@ describe('Troubleshoot verification decisions through the runner', () => {
     return { ctx, run, starts };
   }
 
-  it('refuses COMPLETE without a verification note while Verify is still resumable', async () => {
-    const { ctx, run } = await exercise({ omitProof: true });
+  it.each([false, true])('refuses COMPLETE without a verification note while Verify is still resumable (historical prompt: %s)', async historicalPrompt => {
+    const { ctx, run } = await exercise({ omitProof: true, historicalPrompt });
     await vi.waitFor(() => expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'error', currentStepIndex: 4, error: expect.stringMatching(/verification note/i) }));
   });
 
@@ -5192,5 +5313,354 @@ describe('createRunEngine cross-host forwarding', () => {
     await ctx.engine.resume(run.id);
     expect(pathExists).toHaveBeenCalledWith('/home/dev/git/worktrees/demo-abcd1234', 'devbox');
     await ctx.engine.stop(run.id);
+  });
+});
+
+describe('createRunEngine — one more bounded round after the cap (limit recovery)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  // The reported incident: Develop -> Review -> Test, seven loop-backs at cap eight,
+  // and a fresh finding after the granted round. Each Test attempt writes its own
+  // REPAIR lines so the no-progress guard never mistakes the incident for a stall.
+  const noteForTestAttempt = attempt => {
+    if (attempt >= 9) {
+      return '# Test note\nREPAIR 9 PH1 | src/batch.js | batch-size-one probe fails after the granted round\nREPAIR 9 PH2 | test/batch.test.js | add regression for the granted round\n';
+    }
+    if (attempt === 8) {
+      return '# Test note\nREPAIR 8 PH1 | src/batch.js | batch-size-one probe still fails\nREPAIR 8 PH2 | test/batch.test.js | regression for the stalled queue still missing\n';
+    }
+    if (attempt === 7) {
+      return '# Test note\nREPAIR 7 PH1 | src/batch.js | batch-size-one probe fails\nREPAIR 7 PH2 | test/batch.test.js | add regression for a stalled queue\n';
+    }
+    return `# Test note\nREPAIR ${attempt} PH1 | src/older.js | earlier probe ${attempt} fails\nREPAIR ${attempt} PH2 | test/older.test.js | earlier regression ${attempt} missing\n`;
+  };
+
+  async function drive(steps = 1) {
+    for (let i = 0; i < steps; i += 1) {
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  }
+
+  function incidentRun({ passedAt = null } = {}) {
+    const commands = [];
+    const args = [];
+    const outcomes = [];
+    const createWorkflow = withTimeouts(vi.fn(({ notify }) => {
+      const workflow = {
+        start(request) {
+          args.push(request);
+          commands.push(request.command);
+          const outcome = outcomes.shift();
+          if (outcome === undefined) throw new Error('scripted workflow: no outcome left');
+          queueMicrotask(() => notify({
+            status: outcome === 'complete' ? 'complete' : 'stopped',
+            active: false,
+            error: null,
+            requestId: request.requestId,
+            iteration: 1,
+            limitReached: outcome !== 'complete',
+          }));
+        },
+        stop() {},
+        snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+      };
+      return giveTimeouts(workflow);
+    }));
+    let runId = null;
+    let stores = null;
+    const readNote = vi.fn(async ({ stepIndex }) => {
+      if (stepIndex === 2 && runId) {
+        const attempt = Math.max(1, stores.runStore.get(runId).steps[2].attempt);
+        return { status: 'present', content: attempt === passedAt ? '# Phase passed; later work remains' : noteForTestAttempt(attempt) };
+      }
+      return { status: 'present', content: '# Develop note\nDid the work.\n' };
+    });
+    // Task counts rise often enough to keep the no-progress guard quiet; the run still
+    // caps at eight rounds because the probe keeps failing.
+    const counts = [0, 1, 1, 2, 2, 3, 3];
+    const ctx = setupEngine({
+      createWorkflow,
+      readProgressCount: vi.fn(async () => ({ tasksDone: counts.shift() ?? 3, tasksTotal: 4 })),
+      engineExtras: {
+        prepareNotes: vi.fn(async () => {}),
+        readNote,
+        fingerprintSources: vi.fn(async () => 'a'.repeat(64)),
+        readProgress: vi.fn(async () => ({ phase: { number: 9, title: 'Readiness', tasksDone: 0, tasksTotal: 2 } })),
+      },
+    });
+    stores = ctx;
+    const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+    const def = definition({
+      notesDir: '.codedeck/runs/abcdef12',
+      steps: [
+        {
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
+          name: 'Develop', prompt: 'do Develop',
+          repeat: { mode: 'once' },
+          agent,
+        },
+        {
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
+          name: 'Review', prompt: 'do Review',
+          repeat: { mode: 'once' },
+          agent,
+        },
+        {
+          kind: 'node', role: '', askOwner: false, readOnly: false, approval: false,
+          name: 'Test', prompt: 'do Test',
+          repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 },
+          agent,
+        },
+      ],
+    });
+    const run = ctx.runStore.create(validRun({ definition: def }));
+    runId = run.id;
+    return { ctx, run, commands, args, outcomes };
+  }
+
+  it('replays the capped incident: one click dispatches Develop with the current findings and stays active', async () => {
+    const { ctx, run, commands, args, outcomes } = incidentRun();
+    for (let round = 0; round < 7; round += 1) outcomes.push('complete', 'complete', 'continue');
+    outcomes.push('complete', 'complete', 'limit');
+    outcomes.push('complete', 'complete', 'limit');
+    const done = ctx.engine.start(run.id);
+    await drive(60);
+    await done;
+    const paused = ctx.runStore.get(run.id);
+    expect(paused.status).toBe('limit_paused');
+    expect(paused.steps[2]).toMatchObject({ status: 'limit_reached', roundsCompleted: 7 });
+    expect(commands).toHaveLength(24);
+
+    // The round before the cap ran on the previous attempt's finding, not the current one.
+    expect(commands[21]).toContain('PH1 | src/batch.js | batch-size-one probe fails');
+    expect(commands[21]).not.toContain('still fails');
+
+    const acknowledged = await ctx.engine.continue(run.id, { stepIndex: 2, roundsCompleted: 7, extraRounds: 0 });
+    expect(acknowledged.status).toBe('running');
+    expect(acknowledged.currentStepIndex).toBe(0);
+    expect(acknowledged.steps[2].extraRounds).toBe(1);
+    expect(acknowledged.status).not.toBe('complete');
+
+    await drive(20);
+    const second = ctx.runStore.get(run.id);
+    expect(second.status).toBe('limit_paused');
+    // Exactly one more round (Develop, Review, Test), then the cap pauses again: no tenth launch.
+    expect(second.steps[2]).toMatchObject({ status: 'limit_reached', roundsCompleted: 8, extraRounds: 1 });
+    expect(commands).toHaveLength(27);
+    expect(args.at(-1)).toMatchObject({ maxIterations: 1 });
+
+    // The granted round carries the two findings from the capped attempt.
+    const developAfterGrant = commands[24];
+    expect(developAfterGrant).toContain('PH1 | src/batch.js | batch-size-one probe still fails');
+    expect(developAfterGrant).toContain('PH2 | test/batch.test.js | regression for the stalled queue still missing');
+    // The second pause shows the new round-nine finding, archived on the capped attempt.
+    expect(ctx.noteStore.lastContent(run.id, 2)).toContain('REPAIR 9');
+    expect(ctx.runStore.lastAuditDetail(run.id, 2, 'limit_reached')).toContain('batch-size-one probe fails after the granted round');
+
+    await drive(10);
+    expect(commands).toHaveLength(27);
+    expect(ctx.runStore.get(run.id).status).toBe('limit_paused');
+  });
+
+  it('refuses a stale grant from an earlier pause without launching anything', async () => {
+    const { ctx, run, commands, outcomes } = incidentRun();
+    for (let round = 0; round < 7; round += 1) outcomes.push('complete', 'complete', 'continue');
+    outcomes.push('complete', 'complete', 'limit');
+    const done = ctx.engine.start(run.id);
+    await drive(60);
+    await done;
+    expect(ctx.runStore.get(run.id).status).toBe('limit_paused');
+    await expect(ctx.engine.continue(run.id, { stepIndex: 2, roundsCompleted: 6, extraRounds: 0 })).rejects.toThrow(/pause|current/i);
+    await expect(ctx.engine.continue(run.id, { stepIndex: 2, roundsCompleted: 7, extraRounds: 1 })).rejects.toThrow(/pause|current/i);
+    expect(commands).toHaveLength(24);
+    expect(ctx.runStore.get(run.id).status).toBe('limit_paused');
+  });
+
+  it('routes capped repairs through Review and Test, then dispatches a passed cap to the next unfinished phase', async () => {
+    const { ctx, run, commands, outcomes } = incidentRun({ passedAt: 9 });
+    for (let round = 0; round < 7; round += 1) outcomes.push('complete', 'complete', 'continue');
+    outcomes.push('complete', 'complete', 'limit', 'complete', 'complete', 'limit', 'complete', 'complete', 'limit');
+    const done = ctx.engine.start(run.id);
+    await drive(60); await done;
+    await ctx.engine.continue(run.id, { stepIndex: 2, roundsCompleted: 7, extraRounds: 0 });
+    await drive(20);
+    expect(commands.slice(24, 27).map(command => command.split('\n')[0])).toEqual(['do Develop', 'do Review', 'do Test']);
+    expect(commands[24]).toContain('batch-size-one probe still fails');
+    expect(commands[25]).toMatch(/Review only the changes.*batch-size-one probe still fails/s);
+    expect(commands[26]).toMatch(/Rerun each failing probe plus its affected regressions/);
+    expect(commands[26]).toMatch(/relevant source, inputs and environment still match/);
+    expect(commands[26]).toMatch(/final suite once per changed repository/);
+    await ctx.engine.continue(run.id, { stepIndex: 2, roundsCompleted: 8, extraRounds: 1 });
+    await drive(20);
+    expect(commands.slice(27, 30).map(command => command.split('\n')[0])).toEqual(['do Develop', 'do Review', 'do Test']);
+    expect(commands[27]).toContain('Phase 9: Readiness (0/2 tasks done)');
+    expect(commands[27]).not.toContain('batch-size-one');
+  });
+
+  // A seeded pause for the durability probes below: Develop is done, Test capped at two.
+  function pausedSeed(ctx, { extraRounds = 0, roundsCompleted = 1 } = {}) {
+    const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+    const def = definition({
+      notesDir: '.codedeck/runs/abcdef12',
+      steps: [
+        { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Develop', prompt: 'do it', repeat: { mode: 'once' }, agent },
+        { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Test', prompt: 'do it', repeat: { mode: 'loop_back', toStepIndex: 0, max: 2 }, agent },
+      ],
+    });
+    return ctx.runStore.create(validRun({
+      definition: def,
+      status: 'limit_paused',
+      currentStepIndex: 1,
+      steps: [
+        step({ status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1 }),
+        step({ status: 'limit_reached', sessionId: 'Demo-2', attempt: 2, iteration: 2, roundsCompleted, extraRounds }),
+      ],
+    }));
+  }
+
+  it('grants and launches at most once when Continue is double-clicked', async () => {
+    const starts = [];
+    const ctx = setupEngine({
+      createWorkflow: vi.fn(() => {
+        starts.push(1);
+        return { start() {}, stop() {}, snapshot: () => ({ status: 'running' }) };
+      }),
+      engineExtras: {
+        prepareNotes: vi.fn(async () => {}),
+        readNote: vi.fn(async () => ({ status: 'present', content: '# Test note\nREPAIR 8 PH1 | src/batch.js | batch-size-one probe still fails\n' })),
+        fingerprintSources: vi.fn(async () => 'a'.repeat(64)),
+      },
+    });
+    const run = pausedSeed(ctx);
+    const grant = { stepIndex: 1, roundsCompleted: 1, extraRounds: 0 };
+    const [first, second] = await Promise.allSettled([ctx.engine.continue(run.id, grant), ctx.engine.continue(run.id, grant)]);
+    expect([first.status, second.status].sort()).toEqual(['fulfilled', 'rejected']);
+    expect(second.status === 'rejected' && second.reason?.code).toBe('ACTION_REFUSED');
+    await drive(10);
+    // Exactly one grant spent and one dispatch launched, however the clicks overlapped.
+    expect(ctx.runStore.get(run.id).steps[1].extraRounds).toBe(1);
+    expect(starts).toHaveLength(1);
+  });
+
+  it('refuses a stale round-eight grant delivered at the round-nine pause', async () => {
+    const { ctx, run, commands, outcomes } = incidentRun();
+    for (let round = 0; round < 7; round += 1) outcomes.push('complete', 'complete', 'continue');
+    outcomes.push('complete', 'complete', 'limit');
+    outcomes.push('complete', 'complete', 'limit');
+    const done = ctx.engine.start(run.id);
+    await drive(60);
+    await done;
+    await ctx.engine.continue(run.id, { stepIndex: 2, roundsCompleted: 7, extraRounds: 0 });
+    await drive(20);
+    expect(ctx.runStore.get(run.id)).toMatchObject({ status: 'limit_paused' });
+    expect(commands).toHaveLength(27);
+    // The round-eight grant was already spent: delivering it again cannot grant a tenth round.
+    await expect(ctx.engine.continue(run.id, { stepIndex: 2, roundsCompleted: 7, extraRounds: 0 })).rejects.toMatchObject({ code: 'ACTION_REFUSED' });
+    expect(commands).toHaveLength(27);
+    expect(ctx.runStore.get(run.id).steps[2]).toMatchObject({ status: 'limit_reached', roundsCompleted: 8, extraRounds: 1 });
+  });
+
+  it('keeps the cap, the grant, and the audit across a store/engine restart', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'codedeck-restart-'));
+    const databasePath = path.join(dir, 'runs.db');
+    const OLDER = '# Test note\nREPAIR 1 PH1 | src/batch.js | batch-size-one probe fails\nREPAIR 1 PH2 | test/batch.test.js | add regression for a stalled queue\n';
+    const CAPPED = '# Test note\nREPAIR 2 PH1 | src/batch.js | batch-size-one probe still fails\nREPAIR 2 PH2 | test/batch.test.js | regression for the stalled queue still missing\n';
+    const reads = [];
+    const extras = {
+      prepareNotes: vi.fn(async () => {}),
+      readNote: vi.fn(async ({ stepIndex }) => {
+        if (stepIndex === 1) {
+          reads.push(1);
+          return { status: 'present', content: reads.length === 1 ? OLDER : CAPPED };
+        }
+        return { status: 'present', content: '# Develop note\nDid the work.\n' };
+      }),
+      fingerprintSources: vi.fn(async () => 'a'.repeat(64)),
+    };
+    const agent = { id: AGENT_ID, name: 'codex', launchCommand: 'codex', resetCommand: '/clear' };
+    const def = definition({
+      notesDir: '.codedeck/runs/abcdef12',
+      steps: [
+        { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Develop', prompt: 'do it', repeat: { mode: 'once' }, agent },
+        { kind: 'node', role: '', askOwner: false, readOnly: false, approval: false, name: 'Test', prompt: 'do it', repeat: { mode: 'loop_back', toStepIndex: 0, max: 2 }, agent },
+      ],
+    });
+    const first = setupEngine({
+      databasePath,
+      createWorkflow: withTimeouts(vi.fn(({ notify }) => {
+        const outcome = firstOutcomes.shift();
+        const workflow = {
+          start(request) {
+            queueMicrotask(() => notify({
+              status: outcome === 'complete' ? 'complete' : 'stopped',
+              active: false,
+              error: null,
+              requestId: request.requestId,
+              iteration: 1,
+              limitReached: outcome !== 'complete',
+            }));
+          },
+          stop() {},
+          snapshot: () => ({ status: 'stopped', active: false, error: null, requestId: null, iteration: 0, limitReached: false }),
+        };
+        return giveTimeouts(workflow);
+      })),
+      readProgressCount: vi.fn(async () => ({ tasksDone: 0, tasksTotal: 4 })),
+      engineExtras: extras,
+    });
+    const firstOutcomes = ['complete', 'continue', 'complete', 'limit'];
+    const run = first.runStore.create(validRun({ definition: def }));
+    const done = first.engine.start(run.id);
+    await drive(15);
+    await done;
+    expect(first.runStore.get(run.id).status).toBe('limit_paused');
+
+    // The grant is accepted; the restart lands across the grant and its dispatch.
+    const acknowledged = await first.engine.continue(run.id, { stepIndex: 1, roundsCompleted: 1, extraRounds: 0 });
+    expect(acknowledged.steps[1].extraRounds).toBe(1);
+
+    // A fresh store and engine over the same file, then the startup recovery path.
+    const relaunched = [];
+    const second = setupEngine({
+      databasePath,
+      createWorkflow: vi.fn(() => {
+        relaunched.push(1);
+        return { start() {}, stop() {}, snapshot: () => ({ status: 'running' }) };
+      }),
+      engineExtras: extras,
+    });
+    await second.engine.reconcileOnStartup();
+    const kept = second.runStore.get(run.id);
+    // The original maximum, the single spent grant, and the capped attempt survive the reload.
+    expect(kept.definition.steps[1].repeat.max).toBe(2);
+    expect(kept.steps[1].extraRounds).toBe(1);
+    expect(second.runStore.lastAuditDetail(run.id, 1, 'limit_reached')).toContain('PH1 | src/batch.js | batch-size-one probe still fails');
+    expect(second.noteStore.lastContent(run.id, 1)).toContain('REPAIR 2');
+    // The restart itself grants nothing and launches nothing.
+    expect(relaunched).toHaveLength(0);
+  });
+
+  it('stops a limit_paused run without launching and keeps its notes and unfinished progress', async () => {
+    const starts = [];
+    const ctx = setupEngine({
+      createWorkflow: vi.fn(() => {
+        starts.push(1);
+        return { start() {}, stop() {}, snapshot: () => ({ status: 'running' }) };
+      }),
+    });
+    const run = pausedSeed(ctx);
+    ctx.noteStore.add({ runId: run.id, stepIndex: 1, stepName: 'Test', attempt: 2, pass: 1,
+      status: 'written', summary: 'Batch-size-one probe still fails', content: '# Test note\nREPAIR 8 PH1 | src/batch.js | batch-size-one probe still fails\n' });
+    const stopped = await ctx.engine.stop(run.id);
+    expect(stopped.status).toBe('stopped');
+    expect(starts).toHaveLength(0);
+    const kept = ctx.runStore.get(run.id);
+    expect(kept.steps[1]).toMatchObject({ status: 'limit_reached', roundsCompleted: 1, extraRounds: 0 });
+    expect(kept.steps[0].status).toBe('complete');
+    expect(ctx.noteStore.lastContent(run.id, 1)).toContain('batch-size-one probe still fails');
   });
 });

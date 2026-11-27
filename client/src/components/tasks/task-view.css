@@ -2,6 +2,9 @@
 .task-view-header { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .task-view-header[data-run-status="complete"] { background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 7%, var(--bg-surface)), var(--bg-surface)); border-bottom-color: color-mix(in oklab, var(--accent) 30%, var(--border)); }
 .task-complete-banner { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid color-mix(in oklab, var(--accent) 38%, var(--border)); border-left: 3px solid var(--accent); border-radius: 8px; background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 13%, var(--bg-surface)), color-mix(in oklab, var(--accent-2) 6%, var(--bg-surface))); box-shadow: 0 4px 16px color-mix(in oklab, var(--accent) 10%, transparent); }
+.task-complete-ended { border-color: var(--border); background: var(--bg-surface); box-shadow: none; }
+.task-complete-ended .task-complete-title { color: var(--text-primary); }
+.task-complete-ended .task-complete-meta { background: var(--bg-base); border-color: var(--border); }
 .task-complete-badge { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in oklab, var(--accent) 20%, var(--bg-surface)); border: 1px solid color-mix(in oklab, var(--accent) 50%, transparent); color: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 10%, transparent); }
 .task-complete-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .task-complete-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }

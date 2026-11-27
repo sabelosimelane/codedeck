@@ -46,6 +46,13 @@ export function createRunAudit(db) {
       check('kind',kinds.has(kind));
       return db.prepare('SELECT detail FROM pipeline_run_audit WHERE runId=? AND stepIndex=? AND kind=? ORDER BY id DESC LIMIT 1').get(runId,stepIndex,kind)?.detail ?? null;
     },
+    lastDetailOf(runId,stepIndex,ofKinds) {
+      check('runId',isUuid(runId));
+      check('stepIndex',Number.isInteger(stepIndex) && stepIndex >= 0 && stepIndex <= 32);
+      if (!Array.isArray(ofKinds) || ofKinds.length === 0 || !ofKinds.every(kind => kinds.has(kind))) throw new TypeError('Invalid run audit kinds');
+      const placeholders = ofKinds.map(() => '?').join(',');
+      return db.prepare(`SELECT detail FROM pipeline_run_audit WHERE runId=? AND stepIndex=? AND kind IN (${placeholders}) ORDER BY id DESC LIMIT 1`).get(runId,stepIndex,...ofKinds)?.detail ?? null;
+    },
     page(runId, {page,size,direction,stepIndex}) {
       check('runId',isUuid(runId));
       check('page',Number.isSafeInteger(page) && page >= 0 && page <= 100000);

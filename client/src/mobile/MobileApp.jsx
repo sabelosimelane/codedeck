@@ -200,9 +200,11 @@ function Companion(){
  const answerRun=(runId,answer)=>runAction(run=>`Answer sent to ${run.workflowName}`,()=>runsApi.current.answer(runId,answer));
  const approveRun=runId=>runAction(run=>`${run.workflowName} approved`,()=>runsApi.current.approve(runId));
  const sendBackRun=(runId,comment)=>runAction(run=>`${run.workflowName} sent back`,()=>runsApi.current.sendBack(runId,comment));
- const actOnRun=(action,runId)=>action==='resume'
+ const actOnRun=(action,runId,grant)=>action==='resume'
   ?runAction(run=>`${run.workflowName} resumed`,()=>runsApi.current.resume(runId))
-  :runAction(run=>`${run.workflowName} continued`,()=>runsApi.current.continuePast(runId));
+  :action==='stop'
+  ?runAction(run=>`${run.workflowName} stopped`,()=>runsApi.current.stop(runId))
+  :runAction(run=>`${run.workflowName} started one more ${run.steps?.find?.(step=>(step.extraRounds??0)>0)?.repeat?.mode==='until_complete'?'pass':'round'}`,()=>runsApi.current.continuePast(runId,grant));
  async function loadRunNotes(runId,page,stepIndex){
   try{return await runsApi.current.listNotes(runId,page,stepIndex);}
   catch(err){showToast({type:'error',message:err.message});return null;}

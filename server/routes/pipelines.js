@@ -25,6 +25,7 @@ import {
   validateRunStartBody,
   validateRunAnswerBody,
   validateRunApproveBody,
+  validateRunContinueBody,
   validateRunSendBackBody,
   validateRunInputField,
   normalizeRunInput,
@@ -2095,7 +2096,14 @@ export function createPipelinesRouter(deps) {
   }));
 
   router.post(`${BASE}/runs/:id/continue`, route(async (req, res) => {
-    await runOwnerAction(req, res, 'continue');
+    loadRun(req.params.id);
+    const errors = validateRunContinueBody(req.body);
+    if (errors.length > 0) throw fieldErrors(errors);
+    // No grant: a client from before pause-bound grants still means the current pause.
+    const grant = req.body === undefined || Object.keys(req.body).length === 0 ? undefined
+      : { stepIndex: req.body.stepIndex, roundsCompleted: req.body.roundsCompleted,
+        ...(req.body.extraRounds === undefined ? {} : { extraRounds: req.body.extraRounds }) };
+    await runOwnerAction(req, res, 'continue', grant);
   }));
 
   router.post(`${BASE}/runs/:id/answer`, route(async (req, res) => {

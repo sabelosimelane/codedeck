@@ -78,6 +78,8 @@ describe('workflow templates', () => {
     expect(byName.Test.prompt).toMatch(/Untick any task in plan\.md that does not hold/);
     expect(byName.Test.prompt).toMatch(/only the tests for that phase/);
     expect(byName.Test.prompt).toMatch(/full test suite once/);
+    expect(byName.Test.prompt).toMatch(/focused/);
+    expect(byName.Test.prompt).toMatch(/per changed repository/);
     expect(byName.Test.prompt).toMatch(/run the same command on the recorded base commit/);
     expect(byName.Test.repeat).toEqual({ mode: 'loop_back', to: 'Develop', max: 8 });
   });

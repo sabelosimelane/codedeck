@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile, readRunProgress, isProgressFileInWorktree, createCachedProgressReader } from '../pipelines/run-progress.js';
+import { parsePhaseProgress, createRunProgressReader, resolveRunProgressFile, readRunProgress, isProgressFileInWorktree, createCachedProgressReader, parseSuiteLines, inspectClosingEvidence } from '../pipelines/run-progress.js';
 
 describe('isProgressFileInWorktree preconditions', () => {
   it.each([undefined, '', 'relative', 7])('rejects worktreePath %s', async worktreePath => {
@@ -200,5 +200,79 @@ describe('createCachedProgressReader', () => {
     expect(() => createCachedProgressReader({}, { ttlMs: 1, now: () => 0 })).toThrow('reader');
     expect(() => createCachedProgressReader({ read() {}, worktreeExists() {} }, { ttlMs: 0, now: () => 0 })).toThrow('ttlMs');
     expect(() => createCachedProgressReader({ read() {}, worktreeExists() {} }, { ttlMs: 1, now: 'x' })).toThrow('now');
+  });
+});
+
+describe('parseSuiteLines', () => {
+  it('parses one successful suite line per changed repository', () => {
+    expect(parseSuiteLines('SUITE backend | npx vitest run --maxWorkers=1 | exit 0 | ' + 'c'.repeat(40))).toEqual([
+      { repository: 'backend', command: 'npx vitest run --maxWorkers=1', exitCode: 0, revision: 'c'.repeat(40) },
+    ]);
+    expect(() => parseSuiteLines('SUITE client | npm run verify | exit 1')).toThrow(/revision/);
+  });
+  it('preserves a piped suite command and requires an exact exit and revision', () => {
+    const revision = 'd'.repeat(40);
+    expect(parseSuiteLines(`SUITE backend | npm test | tee suite.log | exit 0 | ${revision}`)).toEqual([
+      { repository: 'backend', command: 'npm test | tee suite.log', exitCode: 0, revision },
+    ]);
+    expect(() => parseSuiteLines(`SUITE backend | npm test | exit 0 ignored | ${revision}`)).toThrow(/exit/);
+    expect(() => parseSuiteLines('SUITE backend | npm test | exit 0 | invalid')).toThrow(/revision/);
+  });
+  it('ignores prose and rejects malformed suite lines', () => {
+    expect(parseSuiteLines(`All checks hold.\nSUITE backend | make verify | exit 0 | ${'d'.repeat(40)}\nDone.`)).toHaveLength(1);
+    expect(() => parseSuiteLines('SUITE  | make verify | exit 0')).toThrow(/repository/);
+    expect(() => parseSuiteLines(`SUITE backend |  | exit 0 | ${'d'.repeat(40)}`)).toThrow(/command/);
+    expect(() => parseSuiteLines(`SUITE backend | make verify | passed | ${'d'.repeat(40)}`)).toThrow(/exit/);
+  });
+});
+
+describe('inspectClosingEvidence', () => {
+  const note = (overrides = {}) => ({ status: 'written', attempt: 3, content: '# All checks hold\nVERDICT 3 PASS', ...overrides });
+  const done = { status: 'all_done', tasksDone: 4, tasksTotal: 4, file: '.codedeck/runs/1/plan.md' };
+  const repos = [{ repository: 'backend', head: 'd'.repeat(40) }];
+  const suites = [{ repository: 'backend', command: 'npx vitest run --maxWorkers=1', exitCode: 0, revision: 'd'.repeat(40) }];
+  const close = (overrides = {}) => inspectClosingEvidence({ note: note(), attempt: 3, progress: done, suites, repos, ...overrides });
+
+  it('accepts a verified close with all tasks ticked and a passing suite on the final revision', () => {
+    expect(close()).toEqual({ ok: true });
+  });
+  it('leaves an open task visible instead of closing', () => {
+    const result = close({ progress: { ...done, status: 'in_progress', tasksDone: 2 } });
+    expect(result.ok).toBe(false);
+    expect(result.missing).toMatch(/open task.*2\/4.*plan\.md/);
+  });
+  it('leaves an unavailable todo visible instead of closing', () => {
+    for (const status of ['missing', 'unreadable', 'no_phases']) {
+      const result = close({ progress: { status, tasksDone: null, tasksTotal: null, file: '.codedeck/runs/1/plan.md' } });
+      expect(result.ok, status).toBe(false);
+      expect(result.missing, status).toMatch(/progress file.*plan\.md/);
+    }
+  });
+  it('leaves a stale verdict visible instead of closing', () => {
+    expect(close({ note: note({ attempt: 2 }) }).missing).toMatch(/updated verification note.*attempt 3/);
+    expect(close({ note: note({ content: '   ' }) }).missing).toMatch(/describes the outcome/);
+  });
+  it('leaves a failed probe visible instead of closing', () => {
+    const result = close({ note: note({ content: 'REPAIR 3 B1 | a.js | chord fails\nAll else holds.' }) });
+    expect(result.ok).toBe(false);
+    expect(result.missing).toMatch(/failed probe.*B1/);
+  });
+  it('leaves a missing or failed suite visible instead of closing', () => {
+    expect(close({ suites: [] }).missing).toMatch(/missing.*suite.*backend/);
+    expect(close({ suites: [{ ...suites[0], exitCode: 1 }] }).missing).toMatch(/failed suite.*backend.*exit 1/);
+  });
+  it('requires suites for every changed repository and refuses an unversioned success', () => {
+    const both = [...repos, { repository: 'mobile', head: 'e'.repeat(40) }];
+    expect(close({ repos: both }).missing).toMatch(/missing a final suite for mobile/);
+    expect(close({ suites: [{ ...suites[0], revision: null }] }).missing).toMatch(/final-suite revision for backend/);
+    expect(close({ repos: both, suites: [...suites, { repository: 'mobile', command: './gradlew check', exitCode: 0, revision: 'e'.repeat(40) }] })).toEqual({ ok: true });
+  });
+  it('leaves a changed revision visible instead of closing', () => {
+    const result = close({ suites: [{ ...suites[0], revision: 'e'.repeat(40) }] });
+    expect(result.ok).toBe(false);
+    expect(result.missing).toMatch(/changed revision.*backend/);
+  });
+  it('skips the plan gate for a workflow without a required plan', () => {
+    expect(close({ progress: null }).ok).toBe(true);
   });
 });

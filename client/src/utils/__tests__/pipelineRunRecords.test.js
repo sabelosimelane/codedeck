@@ -372,3 +372,52 @@ it('reads the team a run is labelled with, and accepts a backend that sends none
     expect(() => parseRun({ ...validRun(), team: bad })).toThrow('team');
   }
 });
+
+it('accepts an owner-granted round inside the raised cap in both run parsers', () => {
+  const granted = looping({ mode: 'loop_back', toStepIndex: 0, max: 5 }, 5);
+  granted.steps[1] = { ...granted.steps[1], extraRounds: 1 };
+  expect(parseRun(granted).steps[1]).toMatchObject({ extraRounds: 1, roundsCompleted: 5 });
+  expect(() => parseRunAutonomy(granted)).not.toThrow();
+  const pastGrant = looping({ mode: 'loop_back', toStepIndex: 0, max: 5 }, 6);
+  pastGrant.steps[1] = { ...pastGrant.steps[1], extraRounds: 1 };
+  expect(() => parseRun(pastGrant)).toThrow('steps[1].roundsCompleted');
+  expect(() => parseRunAutonomy(pastGrant)).toThrow('steps[1].roundsCompleted');
+});
+it('reads runs stored before grants without the field, and rejects a malformed grant', () => {
+  const legacy = looping();
+  expect(parseRun(legacy).steps[1].extraRounds).toBeUndefined();
+  const bad = looping();
+  bad.steps[1] = { ...bad.steps[1], extraRounds: -1 };
+  expect(() => parseRun(bad)).toThrow('steps[1].extraRounds');
+  expect(() => parseRunAutonomy(bad)).toThrow('steps[1].extraRounds');
+});
+it('rejects extra rounds on a step that runs once in both run parsers', () => {
+  for (const build of [() => { const row = looping(); row.steps[0] = { ...row.steps[0], extraRounds: 1 }; return row; }]) {
+    expect(() => parseRun(build())).toThrow('steps[0].extraRounds');
+    expect(() => parseRunAutonomy(build())).toThrow('steps[0].extraRounds');
+  }
+});
+
+const pausedWith = pause => {
+  const row = looping();
+  row.steps[1] = { ...row.steps[1], status: 'limit_reached' };
+  return { ...row, status: 'limit_paused', limitPause: pause };
+};
+const goodLoopPause = { stepIndex: 1, stepName: 'Test', repeatMode: 'loop_back', toStepIndex: 0, maxRounds: 5, extraRounds: 0, roundsCompleted: 5, attempt: 5 };
+it('accepts the pause the grant binds to, including its loop-back target', () => {
+  expect(parseRun(pausedWith(goodLoopPause)).limitPause).toEqual(goodLoopPause);
+  const { toStepIndex: _dropped, ...passPause } = { ...goodLoopPause, repeatMode: 'until_complete' };
+  expect(parseRun(pausedWith(passPause)).limitPause).toEqual(passPause);
+});
+it.each([
+  ['limitPause.repeatMode', { ...goodLoopPause, repeatMode: 'once' }],
+  ['limitPause.repeatMode', { ...goodLoopPause, repeatMode: 'forever' }],
+  ['limitPause.toStepIndex', { ...goodLoopPause, toStepIndex: undefined }],
+  ['limitPause.toStepIndex', { ...goodLoopPause, toStepIndex: 1 }],
+  ['limitPause.toStepIndex', { ...goodLoopPause, toStepIndex: -1 }],
+  ['limitPause.toStepIndex', (() => { const { toStepIndex: _dropped, ...pass } = { ...goodLoopPause, repeatMode: 'until_complete' }; return { ...pass, toStepIndex: 0 }; })()],
+  ['limitPause.maxRounds', { ...goodLoopPause, maxRounds: 0 }],
+  ['limitPause.extraRounds', { ...goodLoopPause, extraRounds: 101 }],
+])('rejects a malformed %s', (field, pause) => {
+  expect(() => parseRun(pausedWith(pause))).toThrow(field);
+});

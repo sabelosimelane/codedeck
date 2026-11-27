@@ -344,6 +344,22 @@ describe('TaskView', () => {
     expect(screen.getByText('This run has finished. Close run takes it off the screen and closes the terminals it used.')).toBeTruthy();
   });
 
+  it('shows Ended at limit with the verified count when a step was accepted at its limit', () => {
+    view({ run: run({ status: 'complete', finishedAt: '2026-11-19T10:05:00.000Z', currentStepIndex: 2,
+      actions: { ...run().actions, stop: false, cleanup: true },
+      steps: [
+        step(0, 'Plan', { status: 'complete', sessionId: 'Demo-1', attempt: 1, iteration: 1 }),
+        step(1, 'Develop', { status: 'complete', sessionId: 'Demo-2', attempt: 1, iteration: 1 }),
+        step(2, 'Test', { status: 'limit_accepted', sessionId: 'Demo-2', attempt: 1, iteration: 1, roundsCompleted: 11, repeat: { mode: 'loop_back', toStepIndex: 1, max: 12 } }),
+      ] }) });
+    expect(screen.getByLabelText('Run status: Ended at limit')).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Ended at limit' })).toBeTruthy();
+    expect(screen.getByText(/2\/3 steps done/)).toBeTruthy();
+    expect(screen.queryByRole('status', { name: 'Workflow complete' })).toBeNull();
+    // The header's green completion tint is for verified runs only.
+    expect(document.querySelector('.task-view-header').getAttribute('data-run-status')).toBe('ended_at_limit');
+  });
+
   it('shows progress, a failure message, and opens a terminal from the rail', () => {
     const { h } = view({ run: run({ status: 'error', error: 'Setup left uncommitted files', actions: { ...run().actions, stop: false, resume: true },
       progress: { file: 'plan.md', status: 'in_progress', phaseCount: 6, phase: { number: 4, title: 'Answers', tasksDone: 3, tasksTotal: 7 } },
@@ -430,4 +446,80 @@ it('labels the active attempt and its cumulative elapsed time on the rail', () =
     view({run:run({currentStepIndex:0, steps:[step(0,'Develop',{status:'running',sessionId:'Demo-2',attempt:2,iteration:1,elapsedMs:2400000,startedAt:'2026-11-23T00:04:00Z'})]})});
     expect(screen.getByRole('navigation',{name:'Steps'}).textContent).toContain('Attempt 2 · 1m 0s since last start · 41m 0s total');
   } finally { vi.useRealTimers(); }
+});
+
+describe('TaskView limit recovery', () => {
+  const paused = (overrides = {}) => run({
+    status: 'limit_paused',
+    currentStepIndex: 2,
+    progress: { file: 'plan.md', status: 'in_progress', phaseCount: 2, phase: { number: 2, title: 'Recovery', tasksDone: 2, tasksTotal: 4 } },
+    actions: { ...run().actions, continue: true },
+    steps: [
+      step(0, 'Develop', { status: 'pending', sessionId: 'Demo-2', attempt: 1 }),
+      step(1, 'Review', { status: 'pending', sessionId: 'Demo-3', attempt: 1 }),
+      step(2, 'Test', { status: 'limit_reached', sessionId: 'Demo-4', attempt: 2, iteration: 1, roundsCompleted: 7,
+        repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, extraRounds: 0,
+        note: { status: 'written', summary: 'Batch-size-one probe fails', attempt: 2, pass: 1, createdAt: '2026-11-27T12:35:25.000Z' } }),
+    ],
+    ...overrides,
+  });
+  it('offers one more round and stopping with the findings visible', () => {
+    view({ run: paused() });
+    expect(screen.getByRole('button', { name: 'Run one more round' }).className).toContain('pipeline-run-primary');
+    expect(screen.getByRole('button', { name: 'Stop with work remaining' })).toBeTruthy();
+    expect(screen.getByText(/8 rounds/)).toBeTruthy();
+    expect(screen.getByText(/Phase 2 of 2/)).toBeTruthy();
+    expect(screen.getByText(/Batch-size-one probe fails/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+  });
+  it('names the pass for an until_complete pause', () => {
+    const again = paused({ currentStepIndex: 0,
+      steps: [step(0, 'Setup', { status: 'limit_reached', sessionId: 'Demo-1', attempt: 3, iteration: 3, roundsCompleted: 0,
+        repeat: { mode: 'until_complete', max: 3 }, extraRounds: 0 }), step(1, 'Review'), step(2, 'Test')] });
+    view({ run: again });
+    expect(screen.getByRole('button', { name: 'Run one more pass' })).toBeTruthy();
+  });
+  it('sends the pause the owner saw and stops without a banner on failure', async () => {
+    const { h } = view({ run: paused() });
+    fireEvent.click(screen.getByRole('button', { name: 'Run one more round' }));
+    expect(h.onContinue).toHaveBeenCalledWith('run-1', { stepIndex: 2, roundsCompleted: 7, extraRounds: 0 });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop with work remaining' }).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop with work remaining' }));
+    expect(h.onStop).toHaveBeenCalledWith('run-1');
+  });
+  it('counts a granted round in the used rounds on the second pause', () => {
+    view({ run: paused({
+      steps: [
+        step(0, 'Develop', { status: 'pending', sessionId: 'Demo-2', attempt: 1 }),
+        step(1, 'Review', { status: 'pending', sessionId: 'Demo-3', attempt: 1 }),
+        step(2, 'Test', { status: 'limit_reached', sessionId: 'Demo-4', attempt: 3, iteration: 1, roundsCompleted: 8,
+          repeat: { mode: 'loop_back', toStepIndex: 0, max: 8 }, extraRounds: 1,
+          note: { status: 'written', summary: 'Batch-size-one probe still fails', attempt: 3, pass: 1, createdAt: '2026-11-27T12:40:25.000Z' } }),
+      ],
+    }) });
+    expect(screen.getByText('Test paused at its limit: 9 rounds used of 8 allowed + 1 granted.')).toBeTruthy();
+  });
+  it('disables the limit actions while one is in flight so a double click posts once', async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const h = handlers();
+    h.onContinue.mockReturnValue(gate);
+    h.onStop.mockReturnValue(gate);
+    render(<TaskView title="WhatsApp replies" tooltip="demo" run={paused()} openSessionIds={new Set(['Demo-4'])} {...h}><div /></TaskView>);
+    const runButton = screen.getByRole('button', { name: 'Run one more round' });
+    const stopButton = screen.getByRole('button', { name: 'Stop with work remaining' });
+    fireEvent.click(runButton);
+    expect(runButton.disabled).toBe(true);
+    expect(stopButton.disabled).toBe(true);
+    fireEvent.click(runButton);
+    expect(h.onContinue).toHaveBeenCalledTimes(1);
+    release(null);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run one more round' }).disabled).toBe(false));
+  });
+  it('says passes for an until_complete pause with multiple passes', () => {
+    view({ run: paused({ currentStepIndex: 0,
+      steps: [step(0, 'Setup', { status: 'limit_reached', sessionId: 'Demo-1', attempt: 4, iteration: 4, roundsCompleted: 0,
+        repeat: { mode: 'until_complete', max: 3 }, extraRounds: 1 }), step(1, 'Review'), step(2, 'Test')] }) });
+    expect(screen.getByText('Setup paused at its limit: 4 passes used of 3 allowed + 1 granted.')).toBeTruthy();
+  });
 });

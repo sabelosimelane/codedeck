@@ -2,11 +2,45 @@ import React from 'react';
 import { ChevronLeft, Terminal as TerminalGlyph } from 'lucide-react';
 import QuestionsPanel from '../components/tasks/QuestionsPanel.jsx';
 import ApprovalReview from '../components/tasks/ApprovalReview.jsx';
-import { describeRunStatus, describeStepProgress, describeStepState } from '../utils/pipelineRunStatus';
+import { describeLimitPause, describeRunCompletion, describeRunStatus, describeStepProgress, describeStepState } from '../utils/pipelineRunStatus';
 import '../components/tasks/task-view.css';
 
 // What the highlighted button says for the actions the phone offers.
 const ACTION_LABEL = { resume: 'Resume', continue: 'Continue past the limit' };
+
+/** The latest note for a step that reached its limit. */
+function LimitNote({ runId, stepIndex, onLoadNotes }) {
+  if (typeof runId !== 'string' || !runId) throw new Error('limit note: run id is required');
+  if (!Number.isSafeInteger(stepIndex) || stepIndex < 0) throw new Error('limit note: step index must be nonnegative');
+  if (typeof onLoadNotes !== 'function') throw new Error('limit note: note loader is required');
+  const [open, setOpen] = React.useState(false);
+  const [note, setNote] = React.useState({ state: 'idle', content: null });
+  React.useEffect(() => {
+    if (!open) return undefined;
+    let active = true;
+    setNote({ state: 'loading', content: null });
+    (async () => {
+      try {
+        const page = await onLoadNotes(runId, 0, stepIndex);
+        if (!active) return;
+        const latest = page?.notes?.[0];
+        // The app's loader toasts a failure and resolves null; that is not an empty note.
+        setNote({ state: page === null ? 'error' : 'ready', content: latest?.status === 'written' ? latest.content : null });
+      } catch (error) {
+        console.warn(`Step note could not be loaded: ${error?.message}`);
+        if (active) setNote({ state: 'error', content: null });
+      }
+    })();
+    return () => { active = false; };
+  }, [open, runId, stepIndex, onLoadNotes]);
+  if (!open) {
+    return <button className="m-press" type="button" onClick={() => setOpen(true)}>Read full note</button>;
+  }
+  if (note.state !== 'ready') {
+    return <p className="m-task-phase m-mono">{note.state === 'error' ? 'The step note could not be loaded.' : 'Loading the step note…'}</p>;
+  }
+  return <p className="m-task-phase m-mono">{note.content ?? 'This step left no note.'}</p>;
+}
 
 function progressLine(progress) {
   if (progress === null || progress.status !== 'in_progress') return null;
@@ -28,6 +62,18 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
   const { run } = row;
   const action = describeRunStatus(run).primaryAction;
   const phase = progressLine(run.progress);
+  const completion = run.status === 'complete' ? describeRunCompletion(run) : null;
+  // The capped pause the next Continue grants one more round for, if the run is capped.
+  const pause = describeLimitPause(run);
+  const capped = pause && run.steps.find(step => step.index === pause.stepIndex);
+  const capUnit = pause?.repeatMode === 'until_complete' ? 'pass' : 'round';
+  const usedRounds = pause ? pause.maxRounds + pause.extraRounds : 0;
+  const capUnitWords = usedRounds === 1 ? capUnit : (capUnit === 'pass' ? 'passes' : `${capUnit}s`);
+  const capWords = pause ? `${pause.stepName} paused at its limit: ${usedRounds} ${capUnitWords} used of ${pause.maxRounds} allowed${pause.extraRounds > 0 ? ` + ${pause.extraRounds} granted` : ''}.` : null;
+  // The open full note belongs to one pause and its latest note: a direct pause-to-pause
+  // refresh (background poll / visibilitychange from round 8 to round 9 without rendering
+  // running) must not keep showing the previous pause's full note.
+  const cappedNoteKey = pause ? `${capped?.note?.attempt ?? ''}:${capped?.note?.createdAt ?? ''}` : '';
   const sessionById = new Map(row.sessions.map(session => [session.id, session]));
 
   return (
@@ -49,10 +95,19 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
             ))}
           </ul>
         )}
+        {completion && <p className="m-task-phase m-mono">{completion.successfulSteps}/{completion.totalSteps} steps done</p>}
         {phase && <p className="m-task-phase m-mono">{phase}</p>}
-        {Object.hasOwn(ACTION_LABEL, action ?? '') && (
+        {pause && run.actions?.continue ? (
+          <div className="m-task-limit" role="status" aria-label="Paused at its limit">
+            <p className="m-task-phase m-mono">{capWords}</p>
+            {capped?.note?.summary && <p className="m-task-phase m-mono">Latest finding: {capped.note.summary}</p>}
+            <LimitNote key={`${run.id}:${pause.stepIndex}:${pause.roundsCompleted}:${pause.extraRounds}:${cappedNoteKey}`} runId={run.id} stepIndex={pause.stepIndex} onLoadNotes={onLoadNotes} />
+            <button className="m-primary m-press" disabled={busy} onClick={() => onAction('continue', run.id, { stepIndex: pause.stepIndex, roundsCompleted: pause.roundsCompleted, extraRounds: pause.extraRounds })}>{pause.actionLabel}</button>
+            {run.actions?.stop && <button className="m-press" disabled={busy} onClick={() => onAction('stop', run.id)}>Stop with work remaining</button>}
+          </div>
+        ) : (Object.hasOwn(ACTION_LABEL, action ?? '') && (
           <button className="m-primary m-press" disabled={busy} onClick={() => onAction(action, run.id)}>{ACTION_LABEL[action]}</button>
-        )}
+        ))}
         <ol className="m-steps" aria-label="Steps">
           {run.steps.map(step => {
             const isCurrent = step.index === run.currentStepIndex;
@@ -72,6 +127,9 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
                     )}
                   </div>
                   <span className="m-step-meta">{[label, detail, step.agentName].filter(Boolean).join(' · ')}</span>
+                  {completion?.endedAtLimit && step.status === 'limit_accepted' && step.note && (
+                    <LimitNote key={`${run.id}:${step.index}:${step.note.createdAt}`} runId={run.id} stepIndex={step.index} onLoadNotes={onLoadNotes} />
+                  )}
                   {isCurrent && run.status === 'needs_input' && (
                     <QuestionsPanel key={`${run.id}:${run.inputRequest?.questions ?? ''}`} run={run} onAnswer={onAnswer} />
                   )}

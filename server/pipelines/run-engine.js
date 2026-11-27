@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { shellQuote } from '../command-runner.js';
-import { MAX_REPAIR_PATH, MAX_REPAIR_REASON, repairFindings } from './repair-evidence.js';
+import { MAX_REPAIR_PATH, MAX_REPAIR_REASON, repairFindings, describeRepairDispatch } from './repair-evidence.js';
+import { parseSuiteLines, inspectClosingEvidence } from './run-progress.js';
 import { execFile } from 'node:child_process';
 import { inspectCommitWorktree as inspectGitWorktree } from './run-worktree.js';
-import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS } from '../../shared/workflow-templates.mjs';
+import { WORKFLOW_TEMPLATES, PREVIOUS_BUG_FIX_PROMPTS, PREVIOUS_VERIFICATION_PROMPTS } from '../../shared/workflow-templates.mjs';
 /**
  * Per-run promise-chain executor (Spec §8.3–§8.9).
  * All I/O (worktree, session, attach, workflow, readiness) is injected.
@@ -21,7 +22,13 @@ import { listAttachmentCopiesAtRisk as defaultListAttachmentsAtRisk, verifyAttac
 import { ACCEPT_RECOMMENDATIONS_ANSWER, liveAgentChangeTiming, NO_PROGRESS_ROUNDS, validateRunTimeouts } from '../../shared/pipeline-definitions.mjs';
 
 // A run keeps the definition it started with, so a run begun before Bug fix was phased still verifies.
-const verificationPrompts = new Set([...WORKFLOW_TEMPLATES.filter(t => ['bugfix', 'troubleshoot'].includes(t.kind)).map(t => t.nodes.at(-2).prompt), PREVIOUS_BUG_FIX_PROMPTS.Test]);
+const verificationPrompts = new Set([
+  ...WORKFLOW_TEMPLATES.filter(t => ['bugfix', 'troubleshoot'].includes(t.kind)).map(t => t.nodes.at(-2).prompt),
+  PREVIOUS_BUG_FIX_PROMPTS.Test,
+  PREVIOUS_VERIFICATION_PROMPTS['bug-fix'],
+  PREVIOUS_VERIFICATION_PROMPTS.troubleshoot,
+  PREVIOUS_VERIFICATION_PROMPTS.unphasedBugFix,
+]);
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_ENTER_DELAY_MS = 100;
 const DEFAULT_DIALOG_POLL_MS = 2000;
@@ -75,6 +82,39 @@ function launchProgramNotFound(state, launchCommand) {
   return notFound.some(message => after.includes(message)) ? program : null;
 }
 const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'needs_input', 'limit_paused', 'awaiting_approval']);
+
+/**
+ * A grant names the pause it spends. A missing grant (from a client that predates
+ * pause-bound grants) means the current pause. A grant for any other pause is refused,
+ * so a duplicate click, a restart, or a stale request cannot spend a second extension.
+ */
+function checkGrantMatches(run, grant) {
+  if (grant === undefined) return;
+  const paused = run.steps[run.currentStepIndex];
+  // Rounds alone do not tell two pauses of an until_complete step apart; grants taken do.
+  const extraMatches = grant?.extraRounds === undefined || grant.extraRounds === (paused.extraRounds ?? 0);
+  if (!Number.isInteger(grant?.stepIndex) || !Number.isInteger(grant?.roundsCompleted) || !extraMatches
+    || grant.stepIndex !== run.currentStepIndex || grant.roundsCompleted !== paused.roundsCompleted) {
+    const err = new Error('That pause is no longer current. Review the run before trying again.');
+    err.code = 'ACTION_REFUSED';
+    throw err;
+  }
+}
+/** A grant raises the step's allowance by one round or pass, which may not pass one hundred. */
+function checkGrantRoom(run) {
+  const repeat = run.definition.steps[run.currentStepIndex]?.repeat;
+  const paused = run.steps[run.currentStepIndex];
+  if (repeat?.mode === 'until_complete' && repeat.max + (paused.extraRounds ?? 0) + 1 > 100) {
+    const err = new Error('This step has run the most passes a workflow step may run (100). Stop the run instead.');
+    err.code = 'ACTION_REFUSED';
+    throw err;
+  }
+  if (repeat?.mode === 'loop_back' && (paused.extraRounds ?? 0) + 1 > 100) {
+    const err = new Error('This step has run the most extra rounds a workflow step may run (100). Stop the run instead.');
+    err.code = 'ACTION_REFUSED';
+    throw err;
+  }
+}
 // Execution reasons that say the agent, or a sub-agent it started, is in the middle of a turn.
 const AGENT_AT_WORK = new Set(['agent_working', 'agent_delegated']);
 
@@ -123,6 +163,7 @@ export function createRunEngine({
   readExecutionState,
   readScreen,
   readProgressCount,
+  readProgress = async () => null,
   decisionStore,
   noteStore,
   reviewStore,
@@ -175,6 +216,7 @@ export function createRunEngine({
   if (typeof canReclaimReleasedTaskWorktree !== 'function') throw new TypeError('createRunEngine: canReclaimReleasedTaskWorktree must be a function');
   if (typeof readScreen !== 'function') throw new Error('createRunEngine: readScreen is required');
   if (typeof inspectCommitWorktree !== 'function') throw new TypeError('createRunEngine: inspectCommitWorktree must be a function');
+  if (typeof readProgress !== 'function') throw new TypeError('createRunEngine: readProgress must be a function');
   if (typeof readProgressCount !== 'function') throw new Error('createRunEngine: readProgressCount is required');
   if (typeof decisionStore?.add !== 'function') throw new Error('createRunEngine: decisionStore is required');
   if (typeof noteStore?.add !== 'function' || typeof noteStore?.lastContent !== 'function' || typeof noteStore?.hasPass !== 'function' || typeof noteStore?.latestByStep !== 'function') throw new Error('createRunEngine: noteStore is required');
@@ -974,6 +1016,46 @@ export function createRunEngine({
     return true;
   }
 
+  function requiresClosingEvidence(run) {
+    const index = run.currentStepIndex;
+    return run.definition.progressFile !== null && index === run.steps.length - 1
+      && ['Test', 'Review & Test'].includes(run.definition.steps[index].name);
+  }
+
+  async function closingSourceFingerprint(run) {
+    const fingerprint = await fingerprintSources(run, { excludeProgress: true });
+    if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Invalid closing Test source fingerprint');
+    return fingerprint;
+  }
+
+  async function enforceClosingEvidence(run, command) {
+    const index = run.currentStepIndex;
+    const attempt = run.steps[index].attempt;
+    const progress = await readProgress(run);
+    if (progress === null) throw new Error(`Closing Test decision cannot read the required progress file (${run.definition.progressFile})`);
+    const entry = noteStore.latestByStep(run.id).get(index);
+    const note = entry && { status: entry.status, attempt: entry.attempt, content: noteStore.lastContent(run.id, index) };
+    const result = inspectClosingEvidence({ note, attempt, progress, suites: [], repos: [] });
+    if (!result.ok) throw new Error(result.missing);
+
+    const startingFingerprint = [...command.matchAll(/^Closing Test source fingerprint: ([a-f0-9]{64})$/gm)].at(-1)?.[1];
+    if (!startingFingerprint || await closingSourceFingerprint(run) !== startingFingerprint) {
+      throw new Error('The source changed since Test started or its starting fingerprint is unavailable. Resume Test and rerun the final suite.');
+    }
+    const places = await listRunPlaces(run, { includeGit: true });
+    if (!places?.worktrees?.some(tree => tree.path === run.worktreePath)) throw new Error('Closing Test decision requires the recorded worktree');
+    const repos = [];
+    const remoteHost = run.host && run.host !== 'local' ? run.host : null;
+    for (const tree of places.worktrees) {
+      const inspected = remoteHost ? await inspectCommitWorktree(tree, remoteHost) : await inspectCommitWorktree(tree);
+      if (inspected.dirty || inspected.head !== tree.baseCommit) {
+        repos.push({ repository: inspected.repository, head: inspected.head });
+      }
+    }
+    const verified = inspectClosingEvidence({ note, attempt, progress, suites: parseSuiteLines(note.content), repos });
+    if (!verified.ok) throw new Error(verified.missing);
+  }
+
   async function applyWorkflowSnapshot(runId, snapshot, command) {
     if (!runStore.get(runId)) return { terminal: true };
     // The loop moved on, so the agent is past any dialog it was showing.
@@ -986,6 +1068,7 @@ export function createRunEngine({
     if (snapshot.status === 'complete') {
       await captureHandoff(current, snapshot.iteration, true);
       if (verificationPrompts.has(current.definition.steps[current.currentStepIndex].prompt)) verificationOutcome(current, current.currentStepIndex);
+      if (requiresClosingEvidence(current)) await enforceClosingEvidence(current, command);
       if (current.status === 'needs_input') {
         persistTransition(runId, { type: 'input_received', at: now() });
       }
@@ -1007,10 +1090,23 @@ export function createRunEngine({
         persistTransition(runId, { type: 'input_received', at: now() });
       }
       const repeat = current.definition.steps[current.currentStepIndex]?.repeat;
+      const closer = current.definition.steps[current.currentStepIndex];
+      // The capped attempt's findings, archived with the pause so the granted round
+      // dispatches the current repairs instead of the previous loop's. No progress stop
+      // here: the pause itself preserves everything for the owner's decision.
+      const repairKeyForCap = async () => {
+        if (!(current.definition.notesDir && ['Test','Review & Test'].includes(closer.name) && fingerprintSources
+          && command.includes(repairInstruction(current.steps[current.currentStepIndex].attempt)))) return undefined;
+        const findings = repairFindings(noteStore.lastContent(runId, current.currentStepIndex), current.steps[current.currentStepIndex].attempt);
+        const fingerprint = await fingerprintSources(current);
+        if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Invalid source fingerprint');
+        return [createHash('sha256').update(JSON.stringify([fingerprint,findings])).digest('hex'), ...findings].join('\n').slice(0,2000);
+      };
       if (repeat?.mode === 'once') {
+        if (requiresClosingEvidence(current)) throw new Error('Closing Test requires a COMPLETE signal after successful verification.');
         persistTransition(runId, { type: current.definition.steps[current.currentStepIndex]?.approval ? 'approval_requested' : 'step_complete', at: now() });
       } else if (repeat?.mode === 'loop_back'
-        && current.steps[current.currentStepIndex].roundsCompleted + 1 < repeat.max) {
+        && current.steps[current.currentStepIndex].roundsCompleted + 1 < repeat.max + (current.steps[current.currentStepIndex].extraRounds ?? 0)) {
         let repairKey;
         if (current.definition.notesDir && ['Test','Review & Test'].includes(current.definition.steps[current.currentStepIndex].name) && fingerprintSources
           && command.includes(repairInstruction(current.steps[current.currentStepIndex].attempt))) {
@@ -1067,7 +1163,7 @@ export function createRunEngine({
           handle.roundsWithoutProgress = 0;
         }
       } else {
-        persistTransition(runId, { type: 'limit_reached', at: now() });
+        persistTransition(runId, { type: 'limit_reached', repairKey: await repairKeyForCap(), at: now() });
       }
       return { terminal: true };
     }
@@ -1328,22 +1424,41 @@ export function createRunEngine({
       // became ready decides how a leading /skill is written (Codex: $skill).
       let command = applySkillPrefix(defStep.prompt, ready.state.profile?.skillPrefix);
       if (current.definition.notesDir && fingerprintSources) {
-        const closer = current.definition.steps.findIndex(item => ['Test','Review & Test'].includes(item.name) && item.repeat.mode === 'loop_back' && item.repeat.toStepIndex === stepIndex);
-        if (closer >= 0) {
+        const closer = current.definition.steps.findIndex((item, index) => ['Test', 'Review & Test'].includes(item.name)
+          && item.repeat.mode === 'loop_back' && item.repeat.toStepIndex <= stepIndex && stepIndex <= index);
+        const loopTarget = closer < 0 ? -1 : current.definition.steps[closer].repeat.toStepIndex;
+        if (stepIndex === loopTarget) {
           command += '\nProve each acceptance check with a targeted red then green test before ticking it. Leave the full suite to Test.';
-          if (current.steps[closer].roundsCompleted > 0) {
-            const evidence = runStore.lastAuditDetail(runId, closer, 'loop_back');
-            command += `\nRead the latest Test findings in ${notePath(current.definition, closer)}. Address the outstanding checks and run their targeted regressions.`;
-            // Only Test validates its own note. A pre-upgrade handoff may have
-            // recorded its findings entirely in prose.
-            if (evidence && /^[a-f0-9]{64}\n/.test(evidence)) {
-              command += '\n' + evidence.slice(65);
+        }
+        if (closer >= 0 && (current.steps[closer].roundsCompleted > 0 || (current.steps[closer].extraRounds ?? 0) > 0)) {
+          const evidence = runStore.lastAuditDetailOf(runId, closer, ['loop_back', 'limit_reached']);
+          const latest = noteStore.latestByStep(runId).get(closer);
+          if (evidence && /^[a-f0-9]{64}(?:\n|$)/.test(evidence) && latest) {
+            const findings = repairFindings(noteStore.lastContent(runId, closer), latest.attempt);
+            if (findings.length > 0) {
+              const instruction = stepIndex === loopTarget ? 'Address these checks with targeted regressions.'
+                : stepIndex === closer ? 'Verify these checks.'
+                : 'Review only the changes for these checks.';
+              command += `\nRead the latest Test findings in ${notePath(current.definition, closer)}. ${instruction}\n${findings.join('\n')}`;
+              if (stepIndex === closer) {
+                command += '\n' + describeRepairDispatch({ findings, progressPhase: null }).promptFragment;
+              }
+            } else if (stepIndex === loopTarget) {
+              const progress = await readProgress(current);
+              command += '\n' + describeRepairDispatch({ findings, progressPhase: progress?.phase ?? null }).promptFragment;
             }
+          } else if (stepIndex === loopTarget) {
+            command += `\nRead the latest Test note in ${notePath(current.definition, closer)} and address its outstanding checks.`;
           }
         }
         if (['Test','Review & Test'].includes(defStep.name) && defStep.repeat.mode === 'loop_back') {
-          command += repairInstruction(attempt) + ` Keep each REPAIR line on one line: path at most ${MAX_REPAIR_PATH} characters, reason at most ${MAX_REPAIR_REASON}. Write REPAIR lines only for checks of the work this round built; tasks of later phases are not findings. When this round's work passes and later phases remain, signal CONTINUE with no REPAIR lines. For checks blocked on owner evidence use NEEDS_INPUT. Record each command and its result. Run targeted checks during repair; run the final suite once when all checks hold.`;
+          command += repairInstruction(attempt) + ` Keep each REPAIR line on one line: path at most ${MAX_REPAIR_PATH} characters, reason at most ${MAX_REPAIR_REASON}. Write REPAIR lines only for checks of the work this round built; tasks of later phases are not findings. When this round's work passes and later phases remain, signal CONTINUE with no REPAIR lines. For checks blocked on owner evidence use NEEDS_INPUT. Record each command and its result. Run targeted checks during repair; run the final suite once per changed repository when all checks hold.`;
         }
+      }
+      if (requiresClosingEvidence(current)) {
+        if (typeof fingerprintSources !== 'function') throw new Error('Closing Test requires a source fingerprint reader');
+        command += `\nClosing Test source fingerprint: ${await closingSourceFingerprint(current)}`;
+        command += `\nFor a successful close, write VERDICT ${attempt} PASS and one line per changed repository: SUITE <repository> | <full-suite command> | exit <code> | <worktree HEAD>. For Gradle, use the verification command below so its results are captured. If a check fails or sources change, report CONTINUE with the current findings. Use NEEDS_INPUT for checks blocked on owner evidence.`;
       }
       if (current.definition.notesDir && readGradleReceipts && ['Test','Review & Test'].includes(defStep.name)) {
         const verifier = shellQuote(current.worktreePath + '/' + current.definition.notesDir + '/gradle-proof.mjs');
@@ -1364,7 +1479,10 @@ export function createRunEngine({
         }
         if (feedback.length > 0) ownerContext.push(`The owner's latest review feedback:\n${feedback.at(-1).comment}`);
       }
-      const maxIterations = maxIterationsFor(defStep.repeat);
+      // A granted pass runs past the configured maximum: the workflow gets the same extension.
+      // A loop's extra rounds are counted by the run, and each of its passes stays one.
+      const maxIterations = maxIterationsFor(defStep.repeat)
+        + (defStep.repeat?.mode === 'until_complete' ? (current.steps[stepIndex].extraRounds ?? 0) : 0);
       const requestId = `run-${runId}-${stepIndex}-${attempt}`;
       const guidance = buildStepGuidance(current.definition, stepIndex, {
         worktreePath: current.worktreePath,
@@ -1669,11 +1787,23 @@ export function createRunEngine({
       return Promise.resolve(updated);
     },
 
-    async continue(runId) {
+    /**
+     * Grants the pause on screen exactly one more round (or pass) and resumes the run:
+     * the run always goes back to work, never to complete. A grant names its pause; a
+     * missing grant (from a client that predates pause-bound grants) means the current
+     * pause. A grant for any other pause is refused so a duplicate click, a restart, or
+     * a stale request cannot spend a second extension.
+     */
+    async continue(runId, grant) {
       // Refuse invalid requests before waiting behind an active execution.
-      loadActionRun(runId, 'continue');
+      const waiting = loadActionRun(runId, 'continue');
+      checkGrantMatches(waiting, grant);
+      checkGrantRoom(waiting);
       return enqueue(runId, async () => {
         const run = loadActionRun(runId, 'continue');
+        // The run may have moved while the grant waited: only its own pause can spend it.
+        checkGrantMatches(run, grant);
+        checkGrantRoom(run);
         // Setup may reach its pass limit without COMPLETE; still enforce isolation.
         if (await failIfSetupDirty(run)) {
           return runStore.get(runId);
@@ -1684,11 +1814,8 @@ export function createRunEngine({
         handle.lastTasksDone = null;
         handle.untrackedLoopStarted = false;
         handle.roundsWithoutProgress = 0;
-        persistTransition(runId, { type: 'continue', at: now() });
+        persistTransition(runId, { type: 'continue', grant, at: now() });
         const after = runStore.get(runId);
-        if (after.status === 'complete') {
-          return finishComplete(runId);
-        }
         if (after.status === 'running') {
           // Acknowledge Continue immediately; keep execution on the same chain.
           enqueue(runId, () => runStep(runId)).catch((err) => {
