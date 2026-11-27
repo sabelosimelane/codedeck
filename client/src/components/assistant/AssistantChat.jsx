@@ -60,6 +60,12 @@ function toolLabel(title) {
   return title.length > LABEL_LENGTH + 1 ? `${title.slice(0, LABEL_LENGTH)}…` : title;
 }
 
+/** A stored call's content is `<title> — <status>[ — <command>]`; its tool name is the title alone. */
+function callLabel(call) {
+  const name = call.toolName ?? call.content;
+  return `${toolLabel(name)}${call.content.startsWith(`${name} — failed`) ? ' (failed)' : ''}`;
+}
+
 /** Consecutive tool calls become one entry, so the replies around them stay readable. */
 function foldToolCalls(messages) {
   const folded = [];
@@ -243,7 +249,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
       <div className="assistant-chat-transcript" aria-live="polite" ref={transcriptRef} onScroll={onTranscriptScroll}>
         {foldToolCalls(messages).map(message => message.role === 'tools'
           ? <details className="assistant-chat-tools" key={message.id}>
-              <summary>{`Used ${message.calls.length} ${message.calls.length === 1 ? 'tool' : 'tools'}: ${message.calls.map(call => toolLabel(call.content)).join(', ')}`}</summary>
+              <summary>{`Used ${message.calls.length} ${message.calls.length === 1 ? 'tool' : 'tools'}: ${message.calls.map(callLabel).join(', ')}`}</summary>
               <ul>{message.calls.map(call => <li key={call.id}>{call.content}</li>)}</ul>
             </details>
           : message.role === 'notice'

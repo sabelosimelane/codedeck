@@ -316,6 +316,19 @@ describe('AssistantChat tool calls', () => {
   });
 });
 
+describe('AssistantChat stored tool calls', () => {
+  it('names a stored call by its tool, not by the saved status line, and marks a failure', async () => {
+    const call = (id, toolName, content) => ({ id, conversationId: conversation.id, role: 'tool', content, toolName, proposalId: null, createdAt: conversation.createdAt });
+    mock.fetchMessages.mockResolvedValue({ data: [
+      call(1, 'mcp__codedeck__list_runs', 'mcp__codedeck__list_runs — completed'),
+      call(2, 'git status', 'git status — failed — git status'),
+    ], page: { currentPage: 0, size: 100, totalElements: 2, totalPages: 1, hasNextPage: false } });
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(document.querySelector('details.assistant-chat-tools summary')?.textContent).toBe('Used 2 tools: list runs, git status (failed)'));
+    expect([...document.querySelectorAll('details.assistant-chat-tools li')].map(item => item.textContent)).toEqual(['mcp__codedeck__list_runs — completed', 'git status — failed — git status']);
+  });
+});
+
 describe('AssistantChat scrolling', () => {
   // jsdom has no layout: give the transcript a fixed viewport and a content height that grows.
   function sized(transcript, { height = 200 } = {}) {
