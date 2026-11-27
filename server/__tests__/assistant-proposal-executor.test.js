@@ -291,10 +291,10 @@ describe('run proposals', () => {
   const cases = [
     ['stop_run', { runId: RUN_ID }, 'stop', [RUN_ID]],
     ['resume_run', { runId: RUN_ID }, 'resume', [RUN_ID]],
-    ['answer_run', { runId: RUN_ID, answer: '1. (a) Close Batch 1 first' }, 'answer', [RUN_ID, '1. (a) Close Batch 1 first']],
+    ['answer_run', { runId: RUN_ID, answer: '1. (a) Close Batch 1 first', expectedUpdatedAt: '2026-11-27T16:00:00.000Z' }, 'answer', [RUN_ID, '1. (a) Close Batch 1 first', '2026-11-27T16:00:00.000Z']],
     ['continue_run', { runId: RUN_ID, stepIndex: 3, roundsCompleted: 8 }, 'continue', [RUN_ID, { stepIndex: 3, roundsCompleted: 8 }]],
     ['continue_run', { runId: RUN_ID, stepIndex: 3, roundsCompleted: 8, extraRounds: 1 }, 'continue', [RUN_ID, { stepIndex: 3, roundsCompleted: 8, extraRounds: 1 }]],
-    ['change_team', { runId: RUN_ID, teamId: TEAM_ID }, 'changeTeam', [RUN_ID, TEAM_ID]],
+    ['change_team', { runId: RUN_ID, teamId: TEAM_ID, expectedUpdatedAt: '2026-11-27T16:00:00.000Z' }, 'changeTeam', [RUN_ID, TEAM_ID, '2026-11-27T16:00:00.000Z']],
   ];
   it.each(cases)('carries out %s through the run action %s', async (kind, payload, action, args) => {
     const h = await createGitHarness();

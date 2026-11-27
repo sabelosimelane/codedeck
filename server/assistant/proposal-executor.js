@@ -93,7 +93,7 @@ export function createProposalExecutor({ proposalStore, landing, taskService, st
       case 'resume_run':
         return runAction('resume', payload.runId);
       case 'answer_run':
-        return runAction('answer', payload.runId, payload.answer);
+        return runAction('answer', payload.runId, payload.answer, payload.expectedUpdatedAt);
       case 'continue_run':
         // The grant names the pause the owner approved; the engine refuses it once the run has moved past it.
         return runAction('continue', payload.runId, {
@@ -102,7 +102,7 @@ export function createProposalExecutor({ proposalStore, landing, taskService, st
           ...(payload.extraRounds !== undefined ? { extraRounds: payload.extraRounds } : {}),
         });
       case 'change_team':
-        return runAction('changeTeam', payload.runId, payload.teamId);
+        return runAction('changeTeam', payload.runId, payload.teamId, payload.expectedUpdatedAt);
       default:
         throw new Error(`Unsupported proposal kind ${String(kind)}`);
     }

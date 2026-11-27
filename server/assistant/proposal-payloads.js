@@ -2,6 +2,9 @@ import { isRepositoryName, isUuid, validateRunAnswerBody, validateRunStartBody }
 import { isTaskTitle, TASK_TITLE_MAX } from '../tasks/task-store.js';
 
 export const RUN_ACTION_KINDS = Object.freeze(['stop_run', 'resume_run', 'continue_run', 'answer_run', 'change_team']);
+// Run proposals whose effect depends on what the run looks like: CodeDeck records the run's
+// version when the card is made, and approval is refused once the run has changed since.
+export const RUN_VERSIONED_KINDS = Object.freeze(['answer_run', 'change_team']);
 export const PROPOSAL_KINDS = Object.freeze(['commit', 'merge', 'pull_request', 'close', 'new_task', 'start_run', ...RUN_ACTION_KINDS]);
 export const PROPOSAL_STATES = Object.freeze(['pending', 'approved', 'declined', 'done', 'failed', 'expired']);
 export const DECIDED_STATES = Object.freeze(['declined', 'done', 'failed', 'expired']);
@@ -104,8 +107,9 @@ export function validateProposalPayloadShape(kind, payload, { fieldPrefix = '' }
       checkRunId(errors, payload, fieldPrefix);
       break;
     case 'answer_run': {
-      unknownFields(errors, payload, ['runId', 'answer'], fieldPrefix);
+      unknownFields(errors, payload, ['runId', 'answer', 'expectedUpdatedAt'], fieldPrefix);
       checkRunId(errors, payload, fieldPrefix);
+      checkRunVersion(errors, payload, fieldPrefix);
       for (const item of validateRunAnswerBody({ answer: payload.answer })) errors.push({ field: `${fieldPrefix}${item.field}`, message: item.message });
       break;
     }
@@ -124,14 +128,40 @@ export function validateProposalPayloadShape(kind, payload, { fieldPrefix = '' }
       }
       break;
     case 'change_team':
-      unknownFields(errors, payload, ['runId', 'teamId'], fieldPrefix);
+      unknownFields(errors, payload, ['runId', 'teamId', 'expectedUpdatedAt'], fieldPrefix);
       checkRunId(errors, payload, fieldPrefix);
       if (!isUuid(payload.teamId)) errors.push({ field: `${fieldPrefix}teamId`, message: 'Use a valid team UUID' });
+      checkRunVersion(errors, payload, fieldPrefix);
       break;
     default:
       break;
   }
   return errors;
+}
+
+function checkRunVersion(errors, payload, prefix) {
+  const value = payload.expectedUpdatedAt;
+  if (typeof value !== 'string' || Number.isNaN(Date.parse(value)) || new Date(value).toISOString() !== value) {
+    errors.push({ field: `${prefix}expectedUpdatedAt`, message: 'Use the run version CodeDeck recorded (an ISO timestamp)' });
+  }
+}
+
+/**
+ * The payload as stored: for a versioned run proposal, the run's current `updatedAt` is added.
+ * The assistant may not supply it, so a card always reflects the run when it was made. Returns
+ * field errors instead when the assistant tried to; a run that cannot be found is left for
+ * validation to report.
+ */
+export function stampRunVersion(kind, payload, { runStore }) {
+  if (!RUN_VERSIONED_KINDS.includes(kind) || !isPlain(payload)) return { payload, errors: [] };
+  if (Object.hasOwn(payload, 'expectedUpdatedAt')) {
+    return { payload, errors: [{ field: 'payload.expectedUpdatedAt', message: 'CodeDeck records the run version itself; leave it out' }] };
+  }
+  if (typeof runStore?.get !== 'function') throw new TypeError('stampRunVersion: runStore is required');
+  const run = isUuid(payload.runId) ? runStore.get(payload.runId) : null;
+  if (!run) return { payload, errors: [] };
+  if (typeof run.updatedAt !== 'string' || !run.updatedAt) throw new TypeError(`stampRunVersion: run ${run.id} has no updatedAt`);
+  return { payload: { ...payload, expectedUpdatedAt: run.updatedAt }, errors: [] };
 }
 
 function checkRunId(errors, payload, prefix) {

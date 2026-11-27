@@ -48,7 +48,7 @@ async function setup({ landingImpl, taskServiceImpl, startRunImpl } = {}) {
   const startRun = startRunImpl ?? vi.fn(async body => ({ id: 'run-1', requestId: body.requestId }));
   const runActions = { stop: vi.fn(async runId => ({ id: runId, status: 'stopped' })), resume: vi.fn(), answer: vi.fn(), continue: vi.fn(), changeTeam: vi.fn() };
   const proposalExecutor = createProposalExecutor({ proposalStore, landing, taskService, startRun, runActions, logger: { info: () => {}, warn: () => {}, error: () => {} } });
-  const runs = new Map([[RUN_ID, { id: RUN_ID, project: 'Demo' }], [OTHER_RUN_ID, { id: OTHER_RUN_ID, project: 'Other' }]]);
+  const runs = new Map([[RUN_ID, { id: RUN_ID, project: 'Demo', updatedAt: '2026-11-27T16:00:00.000Z' }], [OTHER_RUN_ID, { id: OTHER_RUN_ID, project: 'Other', updatedAt: '2026-11-27T16:00:00.000Z' }]]);
 
   const pushedProposals = [];
   const pushedSituations = [];
@@ -300,6 +300,15 @@ describe('assistant run proposals API', () => {
     expect(approved.status).toBe(200);
     expect((await approved.json()).state).toBe('done');
     expect(h.runActions.stop).toHaveBeenCalledWith(RUN_ID);
+  });
+  it('records the run version on an answer card itself and refuses one the assistant supplies', async () => {
+    const h = await setup();
+    const created = await post(h, { kind: 'answer_run', payload: { runId: RUN_ID, answer: '1. (a) Close Batch 1 first' }, summary: 'Answer the run', reason: 'The owner chose (a).' });
+    expect(created.status).toBe(201);
+    expect((await created.json()).payload).toEqual({ runId: RUN_ID, answer: '1. (a) Close Batch 1 first', expectedUpdatedAt: '2026-11-27T16:00:00.000Z' });
+    const supplied = await post(h, { kind: 'change_team', payload: { runId: RUN_ID, teamId: TEAM_ID, expectedUpdatedAt: '2030-01-01T00:00:00.000Z' }, summary: 'Change team', reason: 'r' });
+    expect(supplied.status).toBe(400);
+    expect((await supplied.json()).errors).toEqual([{ field: 'payload.expectedUpdatedAt', message: 'CodeDeck records the run version itself; leave it out' }]);
   });
   it('refuses run proposals for another project\'s run, a missing team, or a malformed payload with every field error', async () => {
     const h = await setup();

@@ -4,7 +4,7 @@ import { parseCollectionQuery, paginate } from './collection-query.js';
 import { validConversationId } from '../assistant/conversation-store.js';
 import { isLocalProject } from '../assistant/project.js';
 import { readScopedDoc } from '../assistant/session-reads.js';
-import { PROPOSAL_STATES, validateProposalCreateBody } from '../assistant/proposal-payloads.js';
+import { PROPOSAL_STATES, stampRunVersion, validateProposalCreateBody } from '../assistant/proposal-payloads.js';
 import { validProposalId } from '../assistant/proposal-store.js';
 import { isUuid, WORKFLOW_KINDS } from '../../shared/pipeline-definitions.mjs';
 
@@ -261,13 +261,18 @@ export function createAssistantRouter({
       const session = requireSession(req);
       checkFields(req.query, []);
       if (!proposalStore) throw new Error('Proposal store is unavailable');
-      const errors = validateProposalCreateBody(req.body, { project: session.project, taskStore, runStore, teamStore });
+      const stamped = req.body !== null && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? stampRunVersion(req.body.kind, req.body.payload, { runStore })
+        : { payload: undefined, errors: [] };
+      if (stamped.errors.length) throw Object.assign(new Error('One or more fields failed validation.'), { status: 400, errors: stamped.errors });
+      const body = { ...req.body, payload: stamped.payload };
+      const errors = validateProposalCreateBody(body, { project: session.project, taskStore, runStore, teamStore });
       if (errors.length) throw Object.assign(new Error('One or more fields failed validation.'), { status: 400, errors });
       const created = proposalStore.create({
         conversationId: session.conversationId,
         project: session.project,
-        kind: req.body.kind,
-        payload: req.body.payload,
+        kind: body.kind,
+        payload: body.payload,
         summary: req.body.summary,
         reason: req.body.reason,
       });
