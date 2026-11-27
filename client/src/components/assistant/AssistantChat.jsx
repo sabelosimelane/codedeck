@@ -50,6 +50,8 @@ function describeDoneResult(proposal) {
 
 const CODEDECK_TOOL = /^mcp__codedeck__([a-z_]+)$/;
 const LABEL_LENGTH = 35;
+// How close to the bottom, in pixels, still counts as reading the latest output.
+const FOLLOW_MARGIN = 40;
 
 /** A short name for a tool call: CodeDeck's own tools in words, anything else cut to fit one line. */
 function toolLabel(title) {
@@ -86,6 +88,10 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   const agentNameRef = useRef('The assistant');
   const wsRef = useRef(null);
   const streamRef = useRef('');
+  const transcriptRef = useRef(null);
+  // Whether the owner is reading the latest output; scrolling up to read stops the follow.
+  const followRef = useRef(true);
+  const pendingPermissionsRef = useRef(0);
   const onSituationFlagsRef = useRef(onSituationFlags);
   onSituationFlagsRef.current = onSituationFlags;
   const { showToast } = useToast();
@@ -217,9 +223,24 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
     catch (failure) { showToast({ type: 'error', message: failure.message }); }
   };
 
+  const pendingPermissions = permissions.filter(item => !item.choice).length;
+  useEffect(() => {
+    const transcript = transcriptRef.current;
+    // A new permission request waits on the owner, so it is shown even when they scrolled up.
+    const asked = pendingPermissions > pendingPermissionsRef.current;
+    pendingPermissionsRef.current = pendingPermissions;
+    if (!transcript || !(followRef.current || asked)) return;
+    transcript.scrollTop = transcript.scrollHeight;
+    followRef.current = true;
+  }, [messages, stream, permissions, proposals, pendingPermissions]);
+  const onTranscriptScroll = event => {
+    const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
+    followRef.current = scrollHeight - scrollTop - clientHeight <= FOLLOW_MARGIN;
+  };
+
   return <section className="assistant-chat" aria-label="Assistant chat">
       <div className="assistant-chat-heading"><h2>Chat</h2><span>{[auth?.state === 'authenticated' ? auth.label ? `Signed in: ${auth.label}` : 'Signed in' : auth?.state === 'unauthenticated' ? 'Not signed in' : null, activeConfig && `${activeConfig.agentName} · ${activeConfig.model ?? 'CLI default model'} · ${activeConfig.effort ?? 'CLI default effort'}`].filter(Boolean).join(' · ')}</span><button type="button" onClick={newConversation}>New conversation</button></div>
-      <div className="assistant-chat-transcript" aria-live="polite">
+      <div className="assistant-chat-transcript" aria-live="polite" ref={transcriptRef} onScroll={onTranscriptScroll}>
         {foldToolCalls(messages).map(message => message.role === 'tools'
           ? <details className="assistant-chat-tools" key={message.id}>
               <summary>{`Used ${message.calls.length} ${message.calls.length === 1 ? 'tool' : 'tools'}: ${message.calls.map(call => toolLabel(call.content)).join(', ')}`}</summary>

@@ -315,3 +315,40 @@ describe('AssistantChat tool calls', () => {
     expect([...transcript.children].map(node => node.tagName === 'DETAILS' ? 'tools' : node.textContent.trim())).toEqual(['Help me finish batch 1', 'tools', 'Batch 1 is half built.', 'tools']);
   });
 });
+
+describe('AssistantChat scrolling', () => {
+  // jsdom has no layout: give the transcript a fixed viewport and a content height that grows.
+  function sized(transcript, { height = 200 } = {}) {
+    let content = 1000;
+    Object.defineProperty(transcript, 'clientHeight', { configurable: true, get: () => height });
+    Object.defineProperty(transcript, 'scrollHeight', { configurable: true, get: () => content });
+    return { grow: amount => { content += amount; } };
+  }
+  const agentChunk = text => ({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } });
+  async function ready() {
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    await screen.findByText(/Claude Opus · opus · high/);
+    return document.querySelector('.assistant-chat-transcript');
+  }
+  it('follows new output while the owner is at the bottom', async () => {
+    const transcript = await ready(); const { grow } = sized(transcript);
+    transcript.scrollTop = 800; fireEvent.scroll(transcript);
+    grow(300); sockets[0].receive(agentChunk('More text'));
+    await waitFor(() => expect(transcript.scrollTop).toBe(transcript.scrollHeight));
+  });
+  it('leaves the owner where they are after they scroll up to read', async () => {
+    const transcript = await ready(); const { grow } = sized(transcript);
+    transcript.scrollTop = 100; fireEvent.scroll(transcript);
+    grow(300); sockets[0].receive(agentChunk('More text'));
+    await screen.findByText('More text');
+    expect(transcript.scrollTop).toBe(100);
+  });
+  it('always brings a new permission request into view', async () => {
+    const transcript = await ready(); const { grow } = sized(transcript);
+    transcript.scrollTop = 100; fireEvent.scroll(transcript);
+    grow(300); sockets[0].receive({ type: 'permission_request', requestId: 90, toolCall: { toolCallId: 'c1', title: 'Edit file' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }] });
+    await waitFor(() => expect(transcript.scrollTop).toBe(transcript.scrollHeight));
+  });
+});
