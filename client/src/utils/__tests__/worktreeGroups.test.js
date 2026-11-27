@@ -3,7 +3,7 @@ import { buildWorktreeGroups, describeWorktreeGroup, groupPlaces, parseSessionWo
 
 const project = { name: 'Demo', path: '/repo/demo', repositories: [] };
 const session = (sessionId, worktreePath, startedAt) => ({ sessionId, worktreePath, startedAt });
-const run = (id, path, branch, createdAt) => ({ id, project: 'Demo', status: 'running', workflowName: 'Build', worktree: { path, branch }, createdAt, progress: null, steps: [] });
+const run = (id, path, branch, createdAt) => ({ id, project: 'Demo', status: 'running', workflowName: 'Build', worktree: { path, branch }, createdAt, progress: null, inheritedSessionIds: [], steps: [] });
 
 describe('describeWorktreeGroup', () => {
   const main = { key: 'main', path: '/repo/demo', label: 'Main checkout', branch: null, isMain: true, run: null };
@@ -71,7 +71,7 @@ describe('buildWorktreeGroups', () => {
   });
   it('always includes an empty main checkout', () => {
     expect(buildWorktreeGroups({ project, sessions: [], runs: [] })).toEqual([
-      { key: 'main', path: '/repo/demo', label: 'Main', branch: null, isMain: true, sessionIds: [], run: null, task: null,
+      { key: 'main', path: '/repo/demo', label: 'Main', branch: null, isMain: true, sessionIds: [], run: null, runSessionIds: [], task: null,
         repositories: [{ name: 'demo', path: '/repo/demo', own: true }], paths: ['/repo/demo'], worktrees: null },
     ]);
   });
@@ -255,11 +255,28 @@ describe('a project and a task with several repositories', () => {
   });
 });
 
+describe('sidebar folding across several runs of one task', () => {
+  it('folds the terminals of every run in a task, not only those of its newest run', () => {
+    const earlier = { ...run('r1', '/repo/feature', 'feature', '2026-01-01'), status: 'complete', steps: [
+      { name: 'Develop', status: 'complete', sessionId: 'Demo-14', priorSessionIds: ['Demo-11'], note: null },
+      { name: 'Review', status: 'complete', sessionId: 'Demo-15', priorSessionIds: ['Demo-12'], note: null },
+    ] };
+    const newest = { ...run('r2', '/repo/feature', 'feature', '2026-01-02'), status: 'error', steps: [
+      { name: 'Develop', status: 'complete', sessionId: 'Demo-33', priorSessionIds: [], note: null },
+      { name: 'Review', status: 'complete', sessionId: 'Demo-14', priorSessionIds: [], note: null },
+    ] };
+    const sessions = ['Demo-11', 'Demo-12', 'Demo-14', 'Demo-15', 'Demo-33', 'Demo-40'].map(id => session(id, '/repo/feature', '2026-01-01'));
+    const group = buildWorktreeGroups({ project, sessions, runs: [earlier, newest] })[1];
+    expect(group.run.id).toBe('r2');
+    expect(sidebarSessionsForGroup(group, sessions, () => 'idle').map(entry => entry.sessionId)).toEqual(['Demo-40']);
+  });
+});
+
 describe('sidebarSessionsForGroup', () => {
   const session = id => ({ sessionId: id });
   const sessions = ['Demo-1', 'Demo-2', 'Demo-3', 'Demo-4', 'Demo-9'].map(session);
-  const run = { steps: [{ sessionId: 'Demo-1', priorSessionIds: ['Demo-4'] }, { sessionId: 'Demo-2' }, { sessionId: null }] };
-  const group = (patch = {}) => ({ key: '/tmp/task', sessionIds: ['Demo-1', 'Demo-2', 'Demo-3', 'Demo-4'], run: null, ...patch });
+  const run = { runSessionIds: ['Demo-1', 'Demo-4', 'Demo-2'] };
+  const group = (patch = {}) => ({ key: '/tmp/task', sessionIds: ['Demo-1', 'Demo-2', 'Demo-3', 'Demo-4'], runSessionIds: [], ...patch });
   const ids = list => list.map(entry => entry.sessionId);
   const idle = () => 'idle';
 
@@ -268,18 +285,18 @@ describe('sidebarSessionsForGroup', () => {
   });
 
   it('folds the terminals of the group\'s run away, also one a step used before, and keeps the ones opened by hand', () => {
-    expect(ids(sidebarSessionsForGroup(group({ run }), sessions, idle))).toEqual(['Demo-3']);
-    expect(ids(sidebarSessionsForGroup(group({ run }), sessions, () => 'busy'))).toEqual(['Demo-3']);
+    expect(ids(sidebarSessionsForGroup(group(run), sessions, idle))).toEqual(['Demo-3']);
+    expect(ids(sidebarSessionsForGroup(group(run), sessions, () => 'busy'))).toEqual(['Demo-3']);
   });
 
   it.each(['finished', 'dead'])('keeps a run terminal that is %s, so what needs attention stays in view', (status) => {
     const visual = entry => (entry.sessionId === 'Demo-2' ? status : 'idle');
-    expect(ids(sidebarSessionsForGroup(group({ run }), sessions, visual))).toEqual(['Demo-2', 'Demo-3']);
+    expect(ids(sidebarSessionsForGroup(group(run), sessions, visual))).toEqual(['Demo-2', 'Demo-3']);
   });
 
   it('refuses a group or a run that is not what the grouping produces', () => {
-    expect(() => sidebarSessionsForGroup({ key: 'main', run: null }, sessions, idle)).toThrow('group.sessionIds must be a list');
-    expect(() => sidebarSessionsForGroup(group({ run: { steps: null } }), sessions, idle)).toThrow('group.run.steps must be a list');
+    expect(() => sidebarSessionsForGroup({ key: 'main', runSessionIds: [] }, sessions, idle)).toThrow('group.sessionIds must be a list');
+    expect(() => sidebarSessionsForGroup(group({ runSessionIds: null }), sessions, idle)).toThrow('group.runSessionIds must be a list');
     expect(() => sidebarSessionsForGroup(group(), null, idle)).toThrow('sessions must be a list');
     expect(() => sidebarSessionsForGroup(group(), sessions, null)).toThrow('visualStatusOf must be a function');
   });

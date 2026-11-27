@@ -20,11 +20,15 @@ export function usePipelineRunCounts(showToast) {
         const runsByProject = new Map();
         for (const [index, record] of runs.entries()) {
           const run = parseRun(record, index);
+          // Sent by the backend this client ships with (the phone shares parseRun with older instances, so it is checked here).
+          if (!Array.isArray(record.inheritedSessionIds) || !record.inheritedSessionIds.every(id => typeof id === 'string' && id.trim() !== '')) {
+            throw new Error(`run ${run.id}: inheritedSessionIds must be a list of session ids`);
+          }
           const groupRuns = runsByProject.get(run.project) ?? [];
           groupRuns.push({
             id: run.id, project: run.project, status: run.status, stopReason: run.stopReason, workflowName: run.workflowName,
             worktree: { path: run.worktree.path, branch: run.worktree.branch },
-            progress: run.progress, createdAt: run.createdAt,
+            progress: run.progress, createdAt: run.createdAt, inheritedSessionIds: [...record.inheritedSessionIds],
             steps: run.steps.map(step => ({ status: step.status, name: step.name, sessionId: step.sessionId, priorSessionIds: step.priorSessionIds, note: step.note })),
           });
           runsByProject.set(run.project, groupRuns);

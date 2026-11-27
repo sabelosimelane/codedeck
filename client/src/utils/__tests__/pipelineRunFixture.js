@@ -9,6 +9,6 @@ export function validRun(project = 'Alpha') {
     worktree: { path: '/tmp/worktree', branch: 'workflow/feature', baseCommit: 'a'.repeat(40), state: 'present', detail: null },
     inputRequest: null,
     actions: { stop: true, resume: false, continue: false, cleanup: false, answer: false, approve: false, sendBack: false },
-    createdAt: '2026-11-13T12:00:00.000Z', updatedAt: '2026-11-13T12:00:00.000Z', finishedAt: null,
+    inheritedSessionIds: [], createdAt: '2026-11-13T12:00:00.000Z', updatedAt: '2026-11-13T12:00:00.000Z', finishedAt: null,
   };
 }

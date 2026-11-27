@@ -241,14 +241,14 @@ export function buildWorktreeGroups({ project, sessions, runs, tasks = [] }) {
   const ownTasks = tasks.filter(task => task?.project === project.name).map(task => ({ ...task, worktrees: taskWorktrees(task) }));
   const sessionGroups = resolveSessionWorktrees({ project, sessions, runs, tasks });
   // Main reaches every repository of the project: its own checkout and those of the others.
-  const main = { key: 'main', path: project.path, label: 'Main', branch: null, isMain: true, sessionIds: [], run: null, task: null,
+  const main = { key: 'main', path: project.path, label: 'Main', branch: null, isMain: true, sessionIds: [], run: null, runSessionIds: [], task: null,
     repositories, paths: repositories.map(repository => repository.path), worktrees: null };
   const byKey = new Map([['main', main]]);
   const startByKey = new Map();
   const groupForPath = value => {
     const key = groupKeyForPath(project, repositories, ownTasks, value);
     // A group is known by one path: a task's by the worktree it started in.
-    if (!byKey.has(key)) byKey.set(key, { key, path: key, label: key.slice(key.lastIndexOf('/') + 1), branch: null, isMain: false, sessionIds: [], run: null, task: null, paths: [key], worktrees: null });
+    if (!byKey.has(key)) byKey.set(key, { key, path: key, label: key.slice(key.lastIndexOf('/') + 1), branch: null, isMain: false, sessionIds: [], run: null, runSessionIds: [], task: null, paths: [key], worktrees: null });
     return byKey.get(key);
   };
   for (const session of sessions) {
@@ -281,6 +281,16 @@ export function buildWorktreeGroups({ project, sessions, runs, tasks = [] }) {
       if (step.note !== null && (typeof step.note !== 'object' || Array.isArray(step.note))) throw new Error('worktree groups: step.note must be an object or null');
     }
     const group = groupForPath(run.worktree.path);
+    if (!Array.isArray(run.inheritedSessionIds)) throw new Error(`worktree groups: run.inheritedSessionIds must be an array for run ${run.id}`);
+    for (const sessionId of run.inheritedSessionIds) nonempty(sessionId, `run.inheritedSessionIds entry for run ${run.id}`);
+    // Every run of the group, not only the newest one shown on its line, owns the terminals its steps used,
+    // and those it inherited from the run it replaced in the task.
+    for (const sessionId of run.inheritedSessionIds) if (!group.runSessionIds.includes(sessionId)) group.runSessionIds.push(sessionId);
+    for (const step of run.steps) {
+      for (const sessionId of [step.sessionId, ...(Array.isArray(step.priorSessionIds) ? step.priorSessionIds : [])]) {
+        if (sessionId !== null && !group.runSessionIds.includes(sessionId)) group.runSessionIds.push(sessionId);
+      }
+    }
     if (!group.run || run.createdAt > group.run.createdAt || (run.createdAt === group.run.createdAt && run.id > group.run.id)) {
       group.run = run;
       group.branch = run.worktree.branch;
@@ -317,8 +327,8 @@ export function buildWorktreeGroups({ project, sessions, runs, tasks = [] }) {
 const NEEDS_ATTENTION = ['finished', 'dead'];
 
 /**
- * The terminals of a group that the sidebar lists under it. A run's own terminals, the ones its
- * steps work in or worked in, are folded into the group's line, which already says how the run
+ * The terminals of a group that the sidebar lists under it. The terminals of the group's runs, the
+ * ones their steps work in or worked in, in any run of the group, are folded into the group's line, which already says how the run
  * stands; one of them is listed only while it needs attention. Terminals opened by hand stay.
  * `visualStatusOf` says how a terminal shows now (muted and waiting terminals show as idle).
  */
@@ -327,8 +337,7 @@ export function sidebarSessionsForGroup(group, sessions, visualStatusOf) {
   if (!Array.isArray(sessions)) throw new TypeError('sessions must be a list');
   if (typeof visualStatusOf !== 'function') throw new TypeError('visualStatusOf must be a function');
   const own = sessions.filter(session => group.sessionIds.includes(session.sessionId));
-  if (!group.run) return own;
-  if (!Array.isArray(group.run.steps)) throw new TypeError('group.run.steps must be a list');
-  const ofRun = new Set(group.run.steps.flatMap(step => [step.sessionId, ...(Array.isArray(step.priorSessionIds) ? step.priorSessionIds : [])]));
+  if (!Array.isArray(group.runSessionIds)) throw new TypeError('group.runSessionIds must be a list');
+  const ofRun = new Set(group.runSessionIds);
   return own.filter(session => !ofRun.has(session.sessionId) || NEEDS_ATTENTION.includes(visualStatusOf(session)));
 }

@@ -143,7 +143,7 @@ describe('TerminalArea with several repositories', () => {
   });
 
   it('shows a run on its task whichever of the task\'s repositories it works in', async () => {
-    const run = { id: 'run-1', project: 'Demo', status: 'running', workflowName: 'Build', worktree: { path: `${FOLDER}/backend`, branch: 'task/replies-7a000000' }, createdAt: '2026-01-05T00:00:00.000Z', progress: null, steps: [] };
+    const run = { id: 'run-1', project: 'Demo', status: 'running', workflowName: 'Build', worktree: { path: `${FOLDER}/backend`, branch: 'task/replies-7a000000' }, createdAt: '2026-01-05T00:00:00.000Z', progress: null, inheritedSessionIds: [], steps: [] };
     const view = render(<TerminalArea project={project} sessionStatus={sessions} selectedWorktree={TASK_KEY} pipelineRuns={[run]} {...grouping([run])} />);
     await waitFor(() => expect(view.getByTestId('visible-runs').textContent).toBe('run-1'));
   });

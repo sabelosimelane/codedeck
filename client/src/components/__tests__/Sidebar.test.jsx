@@ -152,9 +152,9 @@ describe('Sidebar', () => {
     const project = { name: 'Demo', path: '/tmp/demo' };
     const onSelect = vi.fn();
     const onSelectWorktree = vi.fn();
-    const group = { key: '/tmp/demo-feature', path: '/tmp/demo-feature', label: 'demo-feature', branch: 'feature', isMain: false, sessionIds: [], run: null };
+    const group = { key: '/tmp/demo-feature', path: '/tmp/demo-feature', label: 'demo-feature', branch: 'feature', isMain: false, sessionIds: [], run: null, runSessionIds: [] };
     const view = renderSidebar({ activeProjects: [project], activeProject: null, onSelect, onSelectWorktree,
-      worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: [], run: null }, group]]]) });
+      worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: [], run: null, runSessionIds: [] }, group]]]) });
     fireEvent.click(view.getByRole('button', { name: 'Select demo-feature worktree' }));
     expect(onSelect).toHaveBeenCalledWith(project);
     expect(onSelectWorktree).toHaveBeenCalledWith(project.name, group.key);
@@ -165,8 +165,8 @@ describe('Sidebar', () => {
     const row = (sessionId, title) => ({ sessionId, cwd: '/tmp/demo-task', alive: true, title, lastOutputAt: now, lastOutputLine: `${title} output` });
     const sessionStatus = [row('Demo-1', 'Setup terminal'), row('Demo-2', 'Develop terminal'), row('Demo-3', 'My own terminal'), { ...row('Demo-5', 'Main terminal'), cwd: project.path }];
     const run = { id: 'r1', status: 'running', workflowName: 'Build', steps: [{ name: 'Setup', status: 'complete', sessionId: 'Demo-1' }, { name: 'Develop', status: 'running', sessionId: 'Demo-2' }], progress: null };
-    const task = { key: '/tmp/demo-task', path: '/tmp/demo-task', label: 'demo-task', branch: 'task/x', isMain: false, sessionIds: ['Demo-1', 'Demo-2', 'Demo-3'], run, task: { id: '7a000000-0000-4000-8000-000000000001', title: 'Tag pings' } };
-    const main = { key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Demo-5'], run: null };
+    const task = { key: '/tmp/demo-task', path: '/tmp/demo-task', label: 'demo-task', branch: 'task/x', isMain: false, sessionIds: ['Demo-1', 'Demo-2', 'Demo-3'], run, runSessionIds: ['Demo-1', 'Demo-2'], task: { id: '7a000000-0000-4000-8000-000000000001', title: 'Tag pings' } };
+    const main = { key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Demo-5'], run: null, runSessionIds: [] };
     const view = renderSidebar({ activeProjects: [project], activeProject: project, sessionStatus, worktreeGroupsByProject: new Map([[project.name, [main, task]]]) });
     expect(view.getByRole('button', { name: 'Select Tag pings worktree' }).textContent).toContain('running');
     expect(view.queryByText('Setup terminal')).toBeNull();
@@ -180,7 +180,7 @@ describe('Sidebar', () => {
     const project = { name: 'Demo', path: '/tmp/demo' };
     const sessionStatus = [{ sessionId: 'Demo-1', cwd: project.path, alive: true, title: 'Existing terminal' }];
     const view = renderSidebar({ activeProjects: [project], activeProject: project, sessionStatus,
-      worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Demo-1'], run: null }]]]) });
+      worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Demo-1'], run: null, runSessionIds: [] }]]]) });
     expect(view.queryByTestId('worktree-group-header')).toBeNull();
     expect(view.getByText('Existing terminal').title).toBe('Demo-1');
   });
@@ -449,7 +449,7 @@ it('reopens a dismissed task from its project without invoking a second selectio
   const onSelectWorktree = vi.fn();
   const view = renderSidebar({ activeProjects: [project], onSelect, onReopenTask, onSelectWorktree,
     isTaskDismissed: candidate => candidate.id === task.id,
-    worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, isMain: true, sessionIds: [] }, { key: '/tmp/reply', task, sessionIds: [] }]]]),
+    worktreeGroupsByProject: new Map([[project.name, [{ key: 'main', path: project.path, isMain: true, sessionIds: [], runSessionIds: [] }, { key: '/tmp/reply', task, sessionIds: [], runSessionIds: [] }]]]),
   });
   fireEvent.click(view.getByRole('button', { name: 'Reopen tab: Reply' }));
   expect(onReopenTask).toHaveBeenCalledExactlyOnceWith(task);

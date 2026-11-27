@@ -160,7 +160,7 @@ describe('App polling', () => {
     const other = navigationTask(2, 'Delta');
     const sessionId = 'Gamma-12';
     const empty = navigationTask(3, 'Gamma', 'Empty task');
-    const run = { id: 'pause-1', project: task.project, status: 'limit_paused', workflowName: 'Fix',
+    const run = { id: 'pause-1', project: task.project, status: 'limit_paused', workflowName: 'Fix', inheritedSessionIds: [],
       worktree: { path: task.worktreePath, branch: task.branch }, progress: null, createdAt: task.createdAt, steps: [] };
     mocks.runsByProject.set(task.project, [run]);
     let tasks = [task, other, empty];

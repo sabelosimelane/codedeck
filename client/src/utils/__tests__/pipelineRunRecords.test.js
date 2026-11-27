@@ -101,7 +101,8 @@ it('validates every progress field and status combination', () => {
   expect(() => parseRun({ ...validRun(), worktree: { ...validRun().worktree, state: 'removed' }, progress: good })).toThrow('progress');
 });
 const paths = [
- ...Object.keys(validRun()),
+ // inheritedSessionIds is checked where the desktop reads open runs (usePipelineRunCounts): the phone shares parseRun with older instances.
+ ...Object.keys(validRun()).filter(k => k !== 'inheritedSessionIds'),
  // elapsedMs may be absent: an older backend does not send it (see the test of it below).
  ...Object.keys(validRun().steps[0]).filter(k => k !== 'elapsedMs').map(k => `steps.0.${k}`),
  'steps.0.repeat.mode', 'steps.0.repeat.max',

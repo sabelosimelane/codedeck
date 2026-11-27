@@ -10,7 +10,7 @@ import { canReclaimReleasedTaskRun } from './released-task-run.js';
 const REMOTE_PROGRESS_TTL_MS = 5_000;
 
 /** `decisionCount` is how many requests the run's agents settled themselves (see /decisions). */
-function buildRunView(run, decisionCount, progress, latestNotes) {
+function buildRunView(run, decisionCount, progress, latestNotes, inheritedSessionIds) {
   const currentNote = latestNotes.get(run.currentStepIndex);
   const approvalNote = currentNote === undefined ? null : (({ status, summary, attempt, pass, createdAt }) => ({ status, summary, attempt, pass, createdAt }))(currentNote);
   return {
@@ -83,10 +83,31 @@ function buildRunView(run, decisionCount, progress, latestNotes) {
       truncated: run.inputRequest.truncated,
     },
     actions: computeActions(run),
+    // Terminals of earlier runs in this worktree that it replaced and did not take over.
+    inheritedSessionIds,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
     finishedAt: run.finishedAt,
   };
+}
+
+const stepSessionIds = run => run.steps.flatMap(step => [step.sessionId, ...step.priorSessionIds]).filter(id => id !== null);
+
+/**
+ * A run started in a task replaces (releases) the run before it there and takes over the terminals
+ * its agents need; the rest stay open in the worktree. They are listed here so that they are known
+ * as run terminals and not as ones the owner opened. A released run inherits none.
+ */
+function inheritedSessionIdsOf(run, allRuns) {
+  if (run.worktreeState === 'released' || !run.worktreePath) return [];
+  const own = new Set(stepSessionIds(run));
+  const inherited = [];
+  for (const earlier of allRuns) {
+    if (earlier.id === run.id || earlier.project !== run.project || earlier.host !== run.host || earlier.worktreePath !== run.worktreePath) continue;
+    if (earlier.worktreeState !== 'released' || earlier.createdAt >= run.createdAt) continue;
+    for (const id of stepSessionIds(earlier)) if (!own.has(id) && !inherited.includes(id)) inherited.push(id);
+  }
+  return inherited;
 }
 
 
@@ -113,6 +134,6 @@ export function createRunViewBuilder({ runStore, taskStore, workflowStore, decis
       ? { ...run, reclaimableTaskWorktree: true } : run;
     const inspected = await readRunProgress({ run: viewRun, workflowProgressFile: workflowStore.get(run.workflowId)?.progressFile ?? null, progressReader: readerFor(run.host) });
     const progress = inspected === null ? null : { file: inspected.file, status: inspected.status, phaseCount: inspected.phaseCount, phase: inspected.phase, tasksDone: inspected.tasksDone, tasksTotal: inspected.tasksTotal };
-    return buildRunView(viewRun, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id));
+    return buildRunView(viewRun, decisionStore.count(run.id), progress, noteStore.latestByStep(run.id), inheritedSessionIdsOf(run, run.worktreeState === 'released' ? [] : runStore.list()));
   };
 }
