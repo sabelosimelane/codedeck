@@ -426,8 +426,8 @@ describe('a task across the repositories of a project', { timeout: 30_000 }, () 
 
   describe('cross-host task terminals', () => {
     const INCARNATION = '8d7f3a7e-8a54-4d5b-9d5e-7f4b6a0c2e11';
-    const REMOTE_HOST = 'media-server';
-    const REMOTE_ROOT = '/home/sabside/git/demo';
+    const REMOTE_HOST = 'remote-host';
+    const REMOTE_ROOT = '/home/dev/git/demo';
 
     function setupCrossHost({ defaultHost = REMOTE_HOST } = {}) {
       const ctx = groupFixture();

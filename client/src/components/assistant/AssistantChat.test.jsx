@@ -296,7 +296,7 @@ describe('AssistantChat tool calls', () => {
     mock.fetchMessages.mockResolvedValue({ data: [
       stored(1, 'owner', 'Help me finish batch 1'),
       stored(2, 'tool', 'mcp__codedeck__read_todo'),
-      stored(3, 'tool', 'cd /Users/me/trade-proxy && git status --short && git branch -a --list'),
+      stored(3, 'tool', 'cd /Users/me/api-gateway && git status --short && git branch -a --list'),
       stored(4, 'tool', 'mcp__codedeck__list_runs'),
       stored(5, 'agent', 'Batch 1 is half built.'),
       stored(6, 'tool', 'mcp__codedeck__get_situation'),
@@ -307,8 +307,8 @@ describe('AssistantChat tool calls', () => {
     const groups = document.querySelectorAll('details.assistant-chat-tools');
     expect(groups).toHaveLength(2);
     expect(groups[0].open).toBe(false);
-    expect(groups[0].querySelector('summary').textContent).toBe('Used 3 tools: read todo, cd /Users/me/trade-proxy && git sta…, list runs');
-    expect([...groups[0].querySelectorAll('li')].map(item => item.textContent)).toEqual(['mcp__codedeck__read_todo', 'cd /Users/me/trade-proxy && git status --short && git branch -a --list', 'mcp__codedeck__list_runs']);
+    expect(groups[0].querySelector('summary').textContent).toBe('Used 3 tools: read todo, cd /Users/me/api-gateway && git sta…, list runs');
+    expect([...groups[0].querySelectorAll('li')].map(item => item.textContent)).toEqual(['mcp__codedeck__read_todo', 'cd /Users/me/api-gateway && git status --short && git branch -a --list', 'mcp__codedeck__list_runs']);
     expect(groups[1].querySelector('summary').textContent).toBe('Used 1 tool: get situation');
     // The replies stay in order around the folded lines.
     const transcript = document.querySelector('.assistant-chat-transcript');
