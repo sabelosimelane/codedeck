@@ -8,6 +8,7 @@ import { useToast } from '../ToastContext';
 import { describeRunStatus, describeStepState } from '../../utils/pipelineRunStatus';
 import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
 import './pipeline-runs.css';
+import { formatPhasePosition } from '../../utils/phaseLabel';
 
 const ACCEPT_RECOMMENDATIONS = ACCEPT_RECOMMENDATIONS_ANSWER;
 
@@ -359,7 +360,7 @@ export default function PipelineRunsBar({
               <div title={run.progress.file} className="pipeline-run-progress">
                 {run.progress.status === 'in_progress' ? (
                   <>
-                    <span className="pipeline-run-progress-phase">{`Phase ${run.progress.phase.number} of ${run.progress.phaseCount}${run.progress.phase.title ? `: ${run.progress.phase.title}` : ''}`}</span>
+                    <span className="pipeline-run-progress-phase">{`${formatPhasePosition(run.progress.phase, run.progress.phaseCount)}${run.progress.phase.title ? `: ${run.progress.phase.title}` : ''}`}</span>
                     <span className="pipeline-run-muted">{` · ${run.progress.phase.tasksDone}/${run.progress.phase.tasksTotal} tasks`}</span>
                   </>
                 ) : (

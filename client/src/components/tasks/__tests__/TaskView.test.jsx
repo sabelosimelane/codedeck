@@ -300,7 +300,7 @@ describe('TaskView', () => {
   it('asks before Resume and closes a finished run without removing the task', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true).mockReturnValueOnce(false).mockReturnValueOnce(true);
     const { h } = view({ run: run({ status: 'stopped', stopReason: 'no_progress',
-      progress: { file: 'plan.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, title: 'One', tasksDone: 0, tasksTotal: 2 } },
+      progress: { file: 'plan.md', status: 'in_progress', phaseCount: 2, phase: { number: 1, position: 1, title: 'One', tasksDone: 0, tasksTotal: 2 } },
       actions: { ...run().actions, stop: false, resume: true, cleanup: true },
       steps: run().steps.map(item => (item.index === 1 ? { ...item, status: 'stopped' } : item)) }) });
     expect(screen.getByText(/No task was ticked in the last/)).toBeTruthy();
@@ -362,7 +362,7 @@ describe('TaskView', () => {
 
   it('shows progress, a failure message, and opens a terminal from the rail', () => {
     const { h } = view({ run: run({ status: 'error', error: 'Setup left uncommitted files', actions: { ...run().actions, stop: false, resume: true },
-      progress: { file: 'plan.md', status: 'in_progress', phaseCount: 6, phase: { number: 4, title: 'Answers', tasksDone: 3, tasksTotal: 7 } },
+      progress: { file: 'plan.md', status: 'in_progress', phaseCount: 6, phase: { number: 4, position: 4, title: 'Answers', tasksDone: 3, tasksTotal: 7 } },
       steps: run().steps.map(item => (item.index === 1 ? { ...item, status: 'failed' } : item)) }) });
     expect(screen.getByText('Phase 4 of 6: Answers')).toBeTruthy();
     expect(screen.getByText(/3\/7 tasks in this phase/)).toBeTruthy();
@@ -452,7 +452,7 @@ describe('TaskView limit recovery', () => {
   const paused = (overrides = {}) => run({
     status: 'limit_paused',
     currentStepIndex: 2,
-    progress: { file: 'plan.md', status: 'in_progress', phaseCount: 2, phase: { number: 2, title: 'Recovery', tasksDone: 2, tasksTotal: 4 } },
+    progress: { file: 'plan.md', status: 'in_progress', phaseCount: 2, phase: { number: 2, position: 2, title: 'Recovery', tasksDone: 2, tasksTotal: 4 } },
     actions: { ...run().actions, continue: true },
     steps: [
       step(0, 'Develop', { status: 'pending', sessionId: 'Demo-2', attempt: 1 }),

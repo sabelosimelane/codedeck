@@ -52,14 +52,19 @@ describe('resolveRunProgressFile', () => {
 });
 
 describe('parsePhaseProgress', () => {
+  // A todo that continues an earlier one numbers its phases on (16-19): the current phase says where it sits too.
+  it('gives the current phase its position among the phases as well as its own number', () => {
+    expect(parsePhaseProgress('## Phase 16: Import\n- [x] a\n## Phase 17: Accounts\n- [ ] b\n## Phase 18\n- [ ] c\n## Phase 19\n- [ ] d\n'))
+      .toEqual({ phaseCount: 4, phase: { number: 17, position: 2, title: 'Accounts', tasksDone: 0, tasksTotal: 1 }, tasksDone: 1, tasksTotal: 4 });
+  });
   it('selects the first phase with unticked tasks and counts all phases', () => {
-    expect(parsePhaseProgress('## Phase 1: Done\n- [x] a\n## Session notes\n- [ ] ignore\n## Phase 2 — Review\n### Room\n- [X] a\n- [ ] b\n## Phase 3\n')).toEqual({ phaseCount: 3, phase: { number: 2, title: 'Review', tasksDone: 1, tasksTotal: 2 }, tasksDone: 2, tasksTotal: 3 });
+    expect(parsePhaseProgress('## Phase 1: Done\n- [x] a\n## Session notes\n- [ ] ignore\n## Phase 2 — Review\n### Room\n- [X] a\n- [ ] b\n## Phase 3\n')).toEqual({ phaseCount: 3, phase: { number: 2, position: 2, title: 'Review', tasksDone: 1, tasksTotal: 2 }, tasksDone: 2, tasksTotal: 3 });
   });
   it('ignores fenced sections and tasks', () => {
-    expect(parsePhaseProgress('```md\n## Phase 1: Fake\n- [ ] fake\n```\n## Phase 2 - Real\n~~~\n- [ ] fake\n~~~\n- [ ] real')).toEqual({ phaseCount: 1, phase: { number: 2, title: 'Real', tasksDone: 0, tasksTotal: 1 }, tasksDone: 0, tasksTotal: 1 });
+    expect(parsePhaseProgress('```md\n## Phase 1: Fake\n- [ ] fake\n```\n## Phase 2 - Real\n~~~\n- [ ] fake\n~~~\n- [ ] real')).toEqual({ phaseCount: 1, phase: { number: 2, position: 1, title: 'Real', tasksDone: 0, tasksTotal: 1 }, tasksDone: 0, tasksTotal: 1 });
   });
   it('toggles a fence on either marker and accepts tabs between heading tokens', () => {
-    expect(parsePhaseProgress('```\n## Phase 1: Hidden\n~~~\n##\tPhase\t2: Visible\n- [ ] task')).toEqual({ phaseCount: 1, phase: { number: 2, title: 'Visible', tasksDone: 0, tasksTotal: 1 }, tasksDone: 0, tasksTotal: 1 });
+    expect(parsePhaseProgress('```\n## Phase 1: Hidden\n~~~\n##\tPhase\t2: Visible\n- [ ] task')).toEqual({ phaseCount: 1, phase: { number: 2, position: 1, title: 'Visible', tasksDone: 0, tasksTotal: 1 }, tasksDone: 0, tasksTotal: 1 });
   });
   it('handles all ticked, no phases, separators and long titles', () => {
     expect(parsePhaseProgress('## Phase 1. Done\n- [x] yes')).toEqual({ phaseCount: 1, phase: null, tasksDone: 1, tasksTotal: 1 });

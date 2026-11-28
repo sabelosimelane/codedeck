@@ -106,7 +106,7 @@ describe('Sidebar waiting tab count', () => {
     const onSelectWorktree = vi.fn();
     const groups = new Map([['Alpha', [
       { key: 'main', path: '/tmp/alpha', label: 'Main checkout', branch: null, isMain: true, sessionIds: ['Alpha-1'], run: null },
-      { key: '/tmp/alpha-feature', path: '/tmp/alpha-feature', label: 'alpha-feature', branch: 'feature', isMain: false, sessionIds: ['Alpha-2'], run: { id: '57f488b5-1234', workflowName: 'Build', status: 'needs_input', progress: { phase: { number: 2 }, phaseCount: 4 }, steps: [] } },
+      { key: '/tmp/alpha-feature', path: '/tmp/alpha-feature', label: 'alpha-feature', branch: 'feature', isMain: false, sessionIds: ['Alpha-2'], run: { id: '57f488b5-1234', workflowName: 'Build', status: 'needs_input', progress: { phase: { number: 2, position: 2 }, phaseCount: 4 }, steps: [] } },
     ]]]);
     const view = renderSidebar({
       worktreeGroupsByProject: groups, selectedWorktreeByProject: { Alpha: 'main' }, onSelectWorktree,

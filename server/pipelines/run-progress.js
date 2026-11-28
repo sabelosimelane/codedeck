@@ -47,8 +47,10 @@ export function parsePhaseBreakdown(markdown) {
 
 export function parsePhaseProgress(markdown) {
   const phases = parsePhaseBreakdown(markdown);
-  const current = phases.find(phase => phase.done < phase.total);
-  return { phaseCount: phases.length, phase: current ? { number: current.number, title: current.title, tasksDone: current.done, tasksTotal: current.total } : null,
+  const index = phases.findIndex(phase => phase.done < phase.total);
+  const current = index === -1 ? null : phases[index];
+  // number is the todo's own heading; position is where that phase sits in this todo (1-based).
+  return { phaseCount: phases.length, phase: current ? { number: current.number, position: index + 1, title: current.title, tasksDone: current.done, tasksTotal: current.total } : null,
     tasksDone: phases.reduce((sum, phase) => sum + phase.done, 0),
     tasksTotal: phases.reduce((sum, phase) => sum + phase.total, 0) };
 }

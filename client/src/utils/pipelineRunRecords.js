@@ -61,6 +61,7 @@ function parseProgress(run, guard) {
   if (progress.status === 'in_progress') {
     const phase = progress.phase;
     guard(integer(phase.number), 'progress.phase.number');
+    guard(integer(phase.position) && phase.position >= 1 && phase.position <= progress.phaseCount, 'progress.phase.position');
     guard(typeof phase.title === 'string' && phase.title.length <= 120, 'progress.phase.title');
     guard(integer(phase.tasksTotal) && phase.tasksTotal >= 1, 'progress.phase.tasksTotal');
     guard(integer(phase.tasksDone) && phase.tasksDone < phase.tasksTotal, 'progress.phase.tasksDone');

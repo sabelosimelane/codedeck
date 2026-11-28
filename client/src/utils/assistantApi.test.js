@@ -88,11 +88,11 @@ describe('assistant API', () => {
     expect(() => parseSituation({ ...good, repositories: [{ name: 'backend', own: true, path: '/tmp', usable: true, missing: 'yes' }] })).toThrow('repositories[0].missing');
   });
   it('checks every run progress field and phase field', () => {
-    const progress = { file: 'docs/todos/x.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, title: 'Work', tasksDone: 1, tasksTotal: 2 }, tasksDone: 1, tasksTotal: 2 };
+    const progress = { file: 'docs/todos/x.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, position: 1, title: 'Work', tasksDone: 1, tasksTotal: 2 }, tasksDone: 1, tasksTotal: 2 };
     const run = { id: 'r', workflow: 'Build', status: 'complete', progressFile: progress.file, progress, steps: [], lastNote: null };
     const value = { ...good, tasks: [{ id: 't', title: 'Build', state: 'active', worktrees: [], runs: [run] }] };
     for (const field of ['phaseCount', 'tasksDone', 'tasksTotal']) expect(() => parseSituation({ ...value, tasks: [{ ...value.tasks[0], runs: [{ ...run, progress: { ...progress, [field]: undefined } }] }] })).toThrow(`progress.${field}`);
-    for (const field of ['number', 'title', 'tasksDone', 'tasksTotal']) expect(() => parseSituation({ ...value, tasks: [{ ...value.tasks[0], runs: [{ ...run, progress: { ...progress, phase: { ...progress.phase, [field]: undefined } } }] }] })).toThrow(`progress.phase.${field}`);
+    for (const field of ['number', 'position', 'title', 'tasksDone', 'tasksTotal']) expect(() => parseSituation({ ...value, tasks: [{ ...value.tasks[0], runs: [{ ...run, progress: { ...progress, phase: { ...progress.phase, [field]: undefined } } }] }] })).toThrow(`progress.phase.${field}`);
   });
 });
 
