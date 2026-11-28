@@ -337,6 +337,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     [PREVIOUS_VERIFICATION_PROMPTS.unphasedBugFix, PREVIOUS_BUG_FIX_PROMPTS.Test],
   ]);
 
+  const fromSpecPrompt = name => WORKFLOW_TEMPLATES.find(template => template.id === 'feature-build-from-spec').nodes.find(item => item.name === name).prompt;
   const STOCK_PROMPT_UPGRADES = new Map([
     [
       'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown.',
@@ -454,6 +455,15 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     [
       'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD.',
       'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check, any owner-approved deferrals and, under the heading Owner checks, every check the owner still has to carry out with what to do and expect, followed by each repository, branch and HEAD.',
+    ],
+    // Feature Build from Spec from before Test repaired a test-only or evidence-only gap itself instead of sending it back for a round.
+    [
+      'Read the todo file docs/{input}, its session notes and the specification it names. Build the first phase in it with unticked tasks, and only that phase. Write failing tests first, make them pass, tick each task when done, add to the todo\'s session notes what the next round needs to know, leave changes uncommitted for Review and Test (do not run git commit), and record what changed.',
+      fromSpecPrompt('Develop'),
+    ],
+    [
+      'Test the phase just built in the todo file docs/{input} against the acceptance checks of the specification it names. Untick any task that does not hold. While a phase in the todo still has unticked tasks, run only the tests for that phase. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. If an unticked task turns out to need what no agent here can have (a physical device, a real account or recipient, production), use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether the owner will check it themselves; when the owner says so, tick it, mark it "owner check" in the todo and list it in your note with what the owner should do and expect. Do not repeat passing tests on an unchanged diff. When no phase has unticked tasks, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in the todo has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.',
+      fromSpecPrompt('Test'),
     ],
   ]);
 

@@ -12,7 +12,9 @@ const TIMEOUTS = { agentReadySeconds: 120, resetSettleSeconds: 15, finalSignalId
 // The built-in prompts as they were before agents owned the test environment, and the older ones that led to them.
 const STOCK_BEFORE_OWNER_CHECKS = JSON.parse(readFileSync(new URL('./fixtures/stock-prompts-before-owner-checks.json', import.meta.url), 'utf8'));
 
-const AGENT_UUID = 'c410a1b2-3456-4789-8abc-def012345678';
+const STOCK_BEFORE_TEST_GAP_REPAIR = JSON.parse(readFileSync(new URL('./fixtures/stock-prompts-before-test-gap-repair.json', import.meta.url), 'utf8'));
+
+const AGENT_UUID ='c410a1b2-3456-4789-8abc-def012345678';
 const FALLBACK_UUID = 'c410a1b2-3456-4789-8abc-def012345679';
 const databases = [];
 
@@ -613,6 +615,26 @@ describe('workflow progress file persistence', () => {
     expect(expected).not.toBe(entry.previous);
     const reopened = createWorkflowStore(db).get(created.id);
     expect(reopened.nodes[0].prompt).toBe(expected);
+    // A prompt the owner changed is theirs.
+    expect(reopened.nodes[1].prompt).toBe(custom);
+  });
+
+  it.each(STOCK_BEFORE_TEST_GAP_REPAIR.previous.map(entry => [`${entry.template} / ${entry.node}`, entry]))('brings an unmodified built-in %s prompt to the one where a test-only gap costs no round', (_label, entry) => {
+    const { db, agents, workflows } = setup();
+    const agent = agents.create(validAgent);
+    const custom = `${entry.previous} And one thing of my own.`;
+    const created = workflows.create({
+      name: 'Saved workflow',
+      agentsDecide: true,
+      nodes: [
+        { ...node(agent.id), name: 'Stock', prompt: entry.previous },
+        { ...node(agent.id), name: 'Edited', prompt: custom },
+      ],
+    });
+    const current = WORKFLOW_TEMPLATES.find(template => template.id === entry.template).nodes.find(item => item.name === entry.node).prompt;
+    expect(current).not.toBe(entry.previous);
+    const reopened = createWorkflowStore(db).get(created.id);
+    expect(reopened.nodes[0].prompt).toBe(current);
     // A prompt the owner changed is theirs.
     expect(reopened.nodes[1].prompt).toBe(custom);
   });

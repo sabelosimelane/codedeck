@@ -329,12 +329,21 @@ describe('workflow templates', () => {
     expect(byName.Develop).toMatch(/do not run git commit/);
     expect(byName.Review).toMatch(/On a repeat pass, read your previous Review and Test notes and review only what changed since that pass/);
     expect(byName.Review).toMatch(/do not run broad test suites that the Test step will run next/);
-    expect(byName.Test).toMatch(/Untick any task that does not hold/);
     expect(byName.Test).toMatch(/only the tests for that phase/);
     expect(byName.Test).toContain('Set up what a check needs yourself');
     expect(byName.Test).toMatch(/use NEEDS_INPUT once/);
     expect(byName.Test).toMatch(/full test suite once/);
     expect(byName.Test).toMatch(/Report COMPLETE only when every task is ticked and the full test suite passes/);
+    // A gap in a test or in recorded evidence must not cost a whole Develop, Review and Test round.
+    expect(byName.Develop).toMatch(/Before ticking a task that names a test, read its wording again and check that the test asserts every condition it names/);
+    expect(byName.Develop).toMatch(/When the Test note lists repairs, make each one hold exactly as it is worded before anything else/);
+    expect(byName.Test).toMatch(/whose only gap is a test that does not assert what the task names, or evidence you can produce that is not recorded/);
+    expect(byName.Test).toMatch(/correct or add the test, or produce and record the evidence, yourself/);
+    expect(byName.Test).toMatch(/leave the task ticked/);
+    expect(byName.Test).toMatch(/change no code other than tests/);
+    expect(byName.Test).toMatch(/never edit a test the project marks as locked/);
+    // A fault in the behaviour itself still goes back to Develop.
+    expect(byName.Test).toMatch(/Untick any task whose behaviour does not hold/);
   });
 
   it('ships no workflow that needs a skill: every built-in step carries its whole prompt', () => {
