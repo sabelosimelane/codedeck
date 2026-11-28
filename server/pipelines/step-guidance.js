@@ -135,7 +135,13 @@ export function buildStepGuidance(definition, stepIndex, options) {
       ? definition.steps[toStepIndex]
       : undefined;
     if (!first) throw new Error(`step guidance: step ${stepIndex} loops back to step ${toStepIndex}, which is not an earlier step`);
-    parts.push(`This step closes a loop: CodeDeck repeats the steps from "${first.name}" to "${step.name}" in order, round after round. Use COMPLETE only when the whole task is finished and no step of the loop has work left; use CONTINUE when another round is needed.`);
+    // Work left for a step after the loop (a commit, say) is no reason for another round:
+    // that step runs only once this one reports COMPLETE.
+    const next = definition.steps[stepIndex + 1];
+    const complete = next
+      ? `Use COMPLETE when no step of the loop has work left, even when work remains for "${next.name}" or a later step: those steps run only after you report COMPLETE.`
+      : 'Use COMPLETE when no step of the loop has work left; the run then ends.';
+    parts.push(`This step closes a loop: CodeDeck repeats the steps from "${first.name}" to "${step.name}" in order, round after round. ${complete} Use CONTINUE only when a step of the loop has work left.`);
   }
   // Setup follows CodeDeck's own rules for what it may copy and change; it keeps asking.
   // A step marked to always ask the owner is not told to decide for them.
