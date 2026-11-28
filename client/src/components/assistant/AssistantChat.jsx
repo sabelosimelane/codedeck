@@ -12,6 +12,7 @@ import {
   startConversation,
 } from '../../utils/assistantApi.js';
 import { splitAssistantQuestions } from '../../utils/inputQuestions.js';
+import { assistantTimeline } from '../../utils/assistantTimeline.js';
 import QuestionsForm from '../tasks/QuestionsForm.jsx';
 import './AssistantPanel.css';
 
@@ -102,14 +103,17 @@ function AgentReply({ message, answerable, canSend, onSend }) {
   </div>;
 }
 
-/** Consecutive tool calls become one entry, so the replies around them stay readable. */
-function foldToolCalls(messages) {
+/**
+ * The transcript in the order things happened, proposal cards among the messages. Consecutive
+ * tool calls become one entry, so the replies around them stay readable.
+ */
+function foldToolCalls(items) {
   const folded = [];
-  for (const message of messages) {
+  for (const item of items) {
     const last = folded.at(-1);
-    if (message.role !== 'tool') folded.push(message);
-    else if (last?.role === 'tools') last.calls.push(message);
-    else folded.push({ id: `tools-${message.id}`, role: 'tools', calls: [message] });
+    if (item.kind !== 'message' || item.value.role !== 'tool') folded.push(item);
+    else if (last?.kind === 'tools') last.calls.push(item.value);
+    else folded.push({ kind: 'tools', id: `tools-${item.value.id}`, calls: [item.value] });
   }
   return folded;
 }
@@ -134,6 +138,12 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   // Whether the owner is reading the latest output; scrolling up to read stops the follow.
   const followRef = useRef(true);
   const pendingPermissionsRef = useRef(0);
+  // The newest server time seen. A message the socket builds without one (a tool call, a reply
+  // at turn end, a notice) happened after everything seen so far, so it is placed at this time.
+  const latestStampRef = useRef(null);
+  const noteStamp = createdAt => {
+    if (latestStampRef.current === null || Date.parse(createdAt) > Date.parse(latestStampRef.current)) latestStampRef.current = createdAt;
+  };
   const onSituationFlagsRef = useRef(onSituationFlags);
   onSituationFlagsRef.current = onSituationFlags;
   const { showToast } = useToast();
@@ -148,7 +158,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   useEffect(() => {
     const controller = new AbortController();
     let ws;
-    setMessages([]); setProposals([]); setInFlightProposalId(null); setPermissions([]); setStream(''); streamRef.current = '';
+    setMessages([]); setProposals([]); setInFlightProposalId(null); setPermissions([]); setStream(''); streamRef.current = ''; latestStampRef.current = null;
     setChatError(null); setStatus('connecting'); setAuth(null); setActiveConfig(null);
     (async () => {
       try {
@@ -170,6 +180,8 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
           proposalPage += 1;
         } while (!controller.signal.aborted);
         if (controller.signal.aborted) return;
+        noteStamp(conversation.createdAt);
+        for (const item of [...transcript, ...loadedProposals]) noteStamp(item.createdAt);
         setMessages(transcript);
         setProposals(loadedProposals);
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -181,10 +193,10 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
           catch (failure) { setChatError(`Invalid assistant socket message: ${failure.message}`); setStatus(previous => previous === 'running' ? 'ready' : previous); return; }
           if (frame.type === 'ready') { agentNameRef.current = frame.agentName; setActiveConfig({ agentName: frame.agentName, provider: frame.provider, model: frame.model, effort: frame.effort, mode: frame.mode }); setStatus('ready'); return; }
           if (frame.type === 'auth') { setAuth(frame); return; }
-          if (frame.type === 'proposal') { upsertProposal(frame.proposal); return; }
+          if (frame.type === 'proposal') { noteStamp(frame.proposal.createdAt); upsertProposal(frame.proposal); return; }
           if (frame.type === 'situation') { onSituationFlagsRef.current?.(frame.flags); return; }
-          if (frame.type === 'notice') { setMessages(previous => [...previous, { id: frame.messageId, role: 'notice', content: frame.message }]); return; }
-          if (frame.type === 'message') { setMessages(previous => previous.some(item => item.id === frame.message.id) ? previous : [...previous, frame.message]); return; }
+          if (frame.type === 'notice') { const createdAt = latestStampRef.current; setMessages(previous => [...previous, { id: frame.messageId, role: 'notice', content: frame.message, createdAt }]); return; }
+          if (frame.type === 'message') { noteStamp(frame.message.createdAt); setMessages(previous => previous.some(item => item.id === frame.message.id) ? previous : [...previous, frame.message]); return; }
           if (frame.type === 'update') {
             const update = frame.update;
             if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text' && typeof update.content.text === 'string') {
@@ -192,10 +204,11 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
               setStream(streamRef.current);
             }
             if (update?.sessionUpdate === 'tool_call' || update?.sessionUpdate === 'tool_call_update') {
+              const createdAt = latestStampRef.current;
               setMessages(previous => {
                 const existing = previous.find(item => item.toolCallId === update.toolCallId);
                 if (existing) return previous.map(item => item.toolCallId === update.toolCallId ? { ...item, content: update.title ?? item.content } : item);
-                if (update.sessionUpdate === 'tool_call') return [...previous, { id: `tool-${update.toolCallId}`, toolCallId: update.toolCallId, role: 'tool', content: update.title, toolName: update.title }];
+                if (update.sessionUpdate === 'tool_call') return [...previous, { id: `tool-${update.toolCallId}`, toolCallId: update.toolCallId, role: 'tool', content: update.title, toolName: update.title, createdAt }];
                 return previous;
               });
             }
@@ -204,7 +217,8 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
           if (frame.type === 'permission_request') { setPermissions(previous => [...previous, { ...frame, choice: null }]); return; }
           if (frame.type === 'turn_end') {
             const content = streamRef.current;
-            if (content && frame.messageId !== null) setMessages(previous => [...previous, { id: frame.messageId, role: 'agent', content }]);
+            const createdAt = latestStampRef.current;
+            if (content && frame.messageId !== null) setMessages(previous => [...previous, { id: frame.messageId, role: 'agent', content, createdAt }]);
             // A permission request the turn ended without is no longer answerable.
             setPermissions(previous => previous.filter(item => item.choice !== null));
             streamRef.current = ''; setStream(''); setStatus('ready'); return;
@@ -284,45 +298,49 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
     followRef.current = scrollHeight - scrollTop - clientHeight <= FOLLOW_MARGIN;
   };
 
+  const renderProposal = proposal => {
+    const busy = inFlightProposalId === proposal.id;
+    return <div className={`assistant-proposal-card state-${proposal.state}`} key={proposal.id}>
+      <div className="assistant-proposal-summary"><strong>{proposal.summary}</strong></div>
+      <p className="assistant-proposal-reason">{proposal.reason}</p>
+      <p className="assistant-proposal-detail">{describePayload(proposal)}</p>
+      {proposal.state === 'pending' && <div className="assistant-proposal-actions">
+        <button type="button" disabled={busy || inFlightProposalId !== null} onClick={() => handleProposalDecision(proposal, 'approve')}>Approve</button>
+        <button type="button" disabled={busy || inFlightProposalId !== null} onClick={() => handleProposalDecision(proposal, 'decline')}>Decline</button>
+        {busy && <span className="assistant-proposal-working" role="status">Working…</span>}
+      </div>}
+      {proposal.state === 'approved' && <p className="assistant-proposal-outcome">Working…</p>}
+      {proposal.state === 'done' && <p className="assistant-proposal-outcome done">Done — {describeDoneResult(proposal)}</p>}
+      {proposal.state === 'declined' && <p className="assistant-proposal-outcome muted">Declined</p>}
+      {proposal.state === 'expired' && <p className="assistant-proposal-outcome muted">Expired</p>}
+      {proposal.state === 'failed' && <div className="assistant-proposal-outcome failed">
+        <p>Failed — {proposal.result?.message ?? 'Proposal failed.'}</p>
+        {Array.isArray(proposal.result?.reasons) && proposal.result.reasons.length > 0 && <ul>
+          {proposal.result.reasons.map((item, idx) => <li key={`${item.code ?? idx}`}>{item.message ?? item.code}</li>)}
+        </ul>}
+        {Array.isArray(proposal.result?.conflicts) && proposal.result.conflicts.length > 0 && <p>Conflicts: {proposal.result.conflicts.join(', ')}</p>}
+      </div>}
+    </div>;
+  };
+
   return <section className="assistant-chat" aria-label="Assistant chat">
       <div className="assistant-chat-heading"><h2>Chat</h2><span>{[auth?.state === 'authenticated' ? auth.label ? `Signed in: ${auth.label}` : 'Signed in' : auth?.state === 'unauthenticated' ? 'Not signed in' : null, activeConfig && `${activeConfig.agentName} · ${activeConfig.model ?? 'CLI default model'} · ${activeConfig.effort ?? 'CLI default effort'}`].filter(Boolean).join(' · ')}</span><button type="button" onClick={newConversation}>New conversation</button></div>
       <div className="assistant-chat-transcript" aria-live="polite" ref={transcriptRef} onScroll={onTranscriptScroll}>
-        {foldToolCalls(messages).map(message => message.role === 'tools'
-          ? <details className="assistant-chat-tools" key={message.id}>
-              <summary>{`Used ${message.calls.length} ${message.calls.length === 1 ? 'tool' : 'tools'}: ${message.calls.map(callLabel).join(', ')}`}</summary>
-              <ul>{message.calls.map(call => <li key={call.id}>{call.content}</li>)}</ul>
-            </details>
-          : message.role === 'notice'
+        {foldToolCalls(assistantTimeline(messages, proposals)).map(item => {
+          if (item.kind === 'tools') return <details className="assistant-chat-tools" key={item.id}>
+              <summary>{`Used ${item.calls.length} ${item.calls.length === 1 ? 'tool' : 'tools'}: ${item.calls.map(callLabel).join(', ')}`}</summary>
+              <ul>{item.calls.map(call => <li key={call.id}>{call.content}</li>)}</ul>
+            </details>;
+          if (item.kind === 'proposal') return renderProposal(item.value);
+          const message = item.value;
+          return message.role === 'notice'
             ? <div className="assistant-chat-notice" key={message.id}>{message.content}</div>
             : message.role === 'agent'
               ? <AgentReply key={message.id} message={message} answerable={message.id === answerableId} canSend={status === 'ready'} onSend={sendPrompt} />
-              : <div className={`assistant-chat-message ${message.role}`} key={message.id} dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />)}
+              : <div className={`assistant-chat-message ${message.role}`} key={message.id} dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />;
+        })}
         {stream && <div className="assistant-chat-message agent" dangerouslySetInnerHTML={{ __html: renderMarkdown(splitAssistantQuestions(stream).text) }} />}
         {permissions.map(item => <div className="assistant-chat-permission" key={item.requestId}>Permission: {item.toolCall.title}{item.choice ? <span>Answered: {item.choice}</span> : item.options.map(option => <button type="button" key={option.optionId} onClick={() => respond(item.requestId, option)}>{option.name}</button>)}</div>)}
-        {proposals.map(proposal => {
-          const busy = inFlightProposalId === proposal.id;
-          return <div className={`assistant-proposal-card state-${proposal.state}`} key={proposal.id}>
-            <div className="assistant-proposal-summary"><strong>{proposal.summary}</strong></div>
-            <p className="assistant-proposal-reason">{proposal.reason}</p>
-            <p className="assistant-proposal-detail">{describePayload(proposal)}</p>
-            {proposal.state === 'pending' && <div className="assistant-proposal-actions">
-              <button type="button" disabled={busy || inFlightProposalId !== null} onClick={() => handleProposalDecision(proposal, 'approve')}>Approve</button>
-              <button type="button" disabled={busy || inFlightProposalId !== null} onClick={() => handleProposalDecision(proposal, 'decline')}>Decline</button>
-              {busy && <span className="assistant-proposal-working" role="status">Working…</span>}
-            </div>}
-            {proposal.state === 'approved' && <p className="assistant-proposal-outcome">Working…</p>}
-            {proposal.state === 'done' && <p className="assistant-proposal-outcome done">Done — {describeDoneResult(proposal)}</p>}
-            {proposal.state === 'declined' && <p className="assistant-proposal-outcome muted">Declined</p>}
-            {proposal.state === 'expired' && <p className="assistant-proposal-outcome muted">Expired</p>}
-            {proposal.state === 'failed' && <div className="assistant-proposal-outcome failed">
-              <p>Failed — {proposal.result?.message ?? 'Proposal failed.'}</p>
-              {Array.isArray(proposal.result?.reasons) && proposal.result.reasons.length > 0 && <ul>
-                {proposal.result.reasons.map((item, idx) => <li key={`${item.code ?? idx}`}>{item.message ?? item.code}</li>)}
-              </ul>}
-              {Array.isArray(proposal.result?.conflicts) && proposal.result.conflicts.length > 0 && <p>Conflicts: {proposal.result.conflicts.join(', ')}</p>}
-            </div>}
-          </div>;
-        })}
       </div>
       {chatError && <p role="alert" className="assistant-panel-error">{chatError}</p>}
       <p className="assistant-chat-status">{status === 'connecting' ? 'Connecting…' : status === 'running' ? `${activeConfig?.agentName ?? 'The assistant'} is working…` : status === 'ready' ? 'Ready' : 'Connection closed'}</p>

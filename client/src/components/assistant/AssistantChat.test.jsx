@@ -214,6 +214,39 @@ describe('AssistantChat proposal cards', () => {
     finishedAt: null,
   };
 
+  const follows = (earlier, later) => Boolean(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+  it('shows a stored reply made after a proposal below that proposal card, not hidden above every card', async () => {
+    const stored = (id, role, content, createdAt) => ({ id, conversationId: conversation.id, role, content, toolName: role === 'tool' ? content : null, proposalId: null, createdAt });
+    mock.fetchMessages.mockResolvedValueOnce({ data: [
+      stored(1, 'owner', 'deploy it', '2026-11-26T09:59:00.000Z'),
+      stored(2, 'agent', 'I proposed the commit.', '2026-11-26T10:00:05.000Z'),
+      stored(3, 'owner', 'are we deployed?', '2026-11-26T10:05:00.000Z'),
+      stored(4, 'agent', 'No, not yet.', '2026-11-26T10:05:30.000Z'),
+    ], page: { currentPage: 0, size: 100, totalElements: 4, totalPages: 1, hasNextPage: false } });
+    mock.fetchProposals.mockResolvedValueOnce({ data: [proposal], page: { currentPage: 0, size: 100, totalElements: 1, totalPages: 1, hasNextPage: false } });
+    render(<AssistantChat projectName="Demo" />);
+    const latest = await screen.findByText('No, not yet.');
+    const card = screen.getByText('Commit 3 files in Demo task');
+    expect(follows(screen.getByText('deploy it'), card)).toBe(true);
+    expect(follows(card, screen.getByText('I proposed the commit.'))).toBe(true);
+    expect(follows(card, latest)).toBe(true);
+  });
+
+  it('shows a live reply that follows a live proposal below its card', async () => {
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    sockets[0].receive({ type: 'update', update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'mcp__codedeck__propose_commit' } });
+    sockets[0].receive({ type: 'proposal', proposal });
+    sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Approve the commit card.' } } });
+    sockets[0].receive({ type: 'turn_end', messageId: 9, stopReason: 'end_turn' });
+    const reply = await screen.findByText('Approve the commit card.');
+    const card = screen.getByText('Commit 3 files in Demo task');
+    expect(follows(screen.getByText(/Used 1 tool: propose commit/), card)).toBe(true);
+    expect(follows(card, reply)).toBe(true);
+  });
+
   it('disables both buttons while approving, renders done outcome, toasts, and refreshes header', async () => {
     let resolveApprove;
     mock.approveProposal.mockImplementationOnce(() => new Promise(resolve => { resolveApprove = resolve; }));
