@@ -12,7 +12,7 @@ import {
   startConversation,
 } from '../../utils/assistantApi.js';
 import { splitAssistantQuestions } from '../../utils/inputQuestions.js';
-import { assistantTimeline } from '../../utils/assistantTimeline.js';
+import { assistantTimeline, stampAfter } from '../../utils/assistantTimeline.js';
 import QuestionsForm from '../tasks/QuestionsForm.jsx';
 import './AssistantPanel.css';
 
@@ -138,12 +138,14 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   // Whether the owner is reading the latest output; scrolling up to read stops the follow.
   const followRef = useRef(true);
   const pendingPermissionsRef = useRef(0);
-  // The newest server time seen. A message the socket builds without one (a tool call, a reply
-  // at turn end, a notice) happened after everything seen so far, so it is placed at this time.
+  // The newest time in the transcript. Something the socket reports without a time of its own (a
+  // tool call, a permission request, a reply at turn end, a notice) happened after everything
+  // seen so far, so it is placed just after it, and the next such thing just after that.
   const latestStampRef = useRef(null);
   const noteStamp = createdAt => {
     if (latestStampRef.current === null || Date.parse(createdAt) > Date.parse(latestStampRef.current)) latestStampRef.current = createdAt;
   };
+  const liveStamp = () => { latestStampRef.current = stampAfter(latestStampRef.current); return latestStampRef.current; };
   const onSituationFlagsRef = useRef(onSituationFlags);
   onSituationFlagsRef.current = onSituationFlags;
   const { showToast } = useToast();
@@ -195,7 +197,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
           if (frame.type === 'auth') { setAuth(frame); return; }
           if (frame.type === 'proposal') { noteStamp(frame.proposal.createdAt); upsertProposal(frame.proposal); return; }
           if (frame.type === 'situation') { onSituationFlagsRef.current?.(frame.flags); return; }
-          if (frame.type === 'notice') { const createdAt = latestStampRef.current; setMessages(previous => [...previous, { id: frame.messageId, role: 'notice', content: frame.message, createdAt }]); return; }
+          if (frame.type === 'notice') { const createdAt = liveStamp(); setMessages(previous => [...previous, { id: frame.messageId, role: 'notice', content: frame.message, createdAt }]); return; }
           if (frame.type === 'message') { noteStamp(frame.message.createdAt); setMessages(previous => previous.some(item => item.id === frame.message.id) ? previous : [...previous, frame.message]); return; }
           if (frame.type === 'update') {
             const update = frame.update;
@@ -204,7 +206,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
               setStream(streamRef.current);
             }
             if (update?.sessionUpdate === 'tool_call' || update?.sessionUpdate === 'tool_call_update') {
-              const createdAt = latestStampRef.current;
+              const createdAt = update.sessionUpdate === 'tool_call' ? liveStamp() : null;
               setMessages(previous => {
                 const existing = previous.find(item => item.toolCallId === update.toolCallId);
                 if (existing) return previous.map(item => item.toolCallId === update.toolCallId ? { ...item, content: update.title ?? item.content } : item);
@@ -214,10 +216,10 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
             }
             return;
           }
-          if (frame.type === 'permission_request') { setPermissions(previous => [...previous, { ...frame, choice: null }]); return; }
+          if (frame.type === 'permission_request') { const createdAt = liveStamp(); setPermissions(previous => [...previous, { ...frame, choice: null, createdAt }]); return; }
           if (frame.type === 'turn_end') {
             const content = streamRef.current;
-            const createdAt = latestStampRef.current;
+            const createdAt = liveStamp();
             if (content && frame.messageId !== null) setMessages(previous => [...previous, { id: frame.messageId, role: 'agent', content, createdAt }]);
             // A permission request the turn ended without is no longer answerable.
             setPermissions(previous => previous.filter(item => item.choice !== null));
@@ -326,12 +328,19 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
   return <section className="assistant-chat" aria-label="Assistant chat">
       <div className="assistant-chat-heading"><h2>Chat</h2><span>{[auth?.state === 'authenticated' ? auth.label ? `Signed in: ${auth.label}` : 'Signed in' : auth?.state === 'unauthenticated' ? 'Not signed in' : null, activeConfig && `${activeConfig.agentName} · ${activeConfig.model ?? 'CLI default model'} · ${activeConfig.effort ?? 'CLI default effort'}`].filter(Boolean).join(' · ')}</span><button type="button" onClick={newConversation}>New conversation</button></div>
       <div className="assistant-chat-transcript" aria-live="polite" ref={transcriptRef} onScroll={onTranscriptScroll}>
-        {foldToolCalls(assistantTimeline(messages, proposals)).map(item => {
+        {foldToolCalls(assistantTimeline(messages, [
+          ...proposals.map(value => ({ kind: 'proposal', value })),
+          ...permissions.map(value => ({ kind: 'permission', value })),
+        ])).map(item => {
           if (item.kind === 'tools') return <details className="assistant-chat-tools" key={item.id}>
               <summary>{`Used ${item.calls.length} ${item.calls.length === 1 ? 'tool' : 'tools'}: ${item.calls.map(callLabel).join(', ')}`}</summary>
               <ul>{item.calls.map(call => <li key={call.id}>{call.content}</li>)}</ul>
             </details>;
           if (item.kind === 'proposal') return renderProposal(item.value);
+          if (item.kind === 'permission') {
+            const permission = item.value;
+            return <div className="assistant-chat-permission" key={`permission-${permission.requestId}`}>Permission: {permission.toolCall.title}{permission.choice ? <span>Answered: {permission.choice}</span> : permission.options.map(option => <button type="button" key={option.optionId} onClick={() => respond(permission.requestId, option)}>{option.name}</button>)}</div>;
+          }
           const message = item.value;
           return message.role === 'notice'
             ? <div className="assistant-chat-notice" key={message.id}>{message.content}</div>
@@ -340,7 +349,6 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
               : <div className={`assistant-chat-message ${message.role}`} key={message.id} dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />;
         })}
         {stream && <div className="assistant-chat-message agent" dangerouslySetInnerHTML={{ __html: renderMarkdown(splitAssistantQuestions(stream).text) }} />}
-        {permissions.map(item => <div className="assistant-chat-permission" key={item.requestId}>Permission: {item.toolCall.title}{item.choice ? <span>Answered: {item.choice}</span> : item.options.map(option => <button type="button" key={option.optionId} onClick={() => respond(item.requestId, option)}>{option.name}</button>)}</div>)}
       </div>
       {chatError && <p role="alert" className="assistant-panel-error">{chatError}</p>}
       <p className="assistant-chat-status">{status === 'connecting' ? 'Connecting…' : status === 'running' ? `${activeConfig?.agentName ?? 'The assistant'} is working…` : status === 'ready' ? 'Ready' : 'Connection closed'}</p>

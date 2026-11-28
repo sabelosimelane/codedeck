@@ -247,6 +247,22 @@ describe('AssistantChat proposal cards', () => {
     expect(follows(card, reply)).toBe(true);
   });
 
+  it('shows a reply written after an answered permission below that permission, not above every permission of the session', async () => {
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ ...READY, conversationId: conversation.id });
+    sockets[0].receive({ type: 'update', update: { sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Terminal' } });
+    sockets[0].receive({ type: 'permission_request', requestId: 90, toolCall: { toolCallId: 'c1', title: 'kubectl get deploy' }, options: [{ optionId: 'allow', name: 'Yes', kind: 'allow_once' }] });
+    fireEvent.click(await screen.findByRole('button', { name: 'Yes' }));
+    sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Production is on the old build.' } } });
+    const streamed = await screen.findByText('Production is on the old build.');
+    const permission = screen.getByText(/kubectl get deploy/);
+    expect(follows(screen.getByText(/Used 1 tool: Terminal/), permission)).toBe(true);
+    expect(follows(permission, streamed)).toBe(true);
+    sockets[0].receive({ type: 'turn_end', messageId: 9, stopReason: 'end_turn' });
+    await waitFor(() => expect(follows(screen.getByText(/kubectl get deploy/), screen.getByText('Production is on the old build.'))).toBe(true));
+  });
+
   it('disables both buttons while approving, renders done outcome, toasts, and refreshes header', async () => {
     let resolveApprove;
     mock.approveProposal.mockImplementationOnce(() => new Promise(resolve => { resolveApprove = resolve; }));
