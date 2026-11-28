@@ -62,10 +62,31 @@ export function read(lines) {
   }
 
   // A draft taller than the input box hides `❯`; the status then sits above the voice-input rule.
-  const region = promptRegion(lines, line => INPUT_PROMPT.test(line));
-  const above = region.prompt ? region.above : promptRegion(lines, line => VOICE_RULE.test(line)).above;
+  const visible = withoutTodoChecklist(lines);
+  const region = promptRegion(visible, line => INPUT_PROMPT.test(line));
+  const above = region.prompt ? region.above : promptRegion(visible, line => VOICE_RULE.test(line)).above;
   const turn = above.some(line => LIVE_STATUS.test(line)) ? 'working' : 'idle';
   return { turn, backgroundShells: 0 };
+}
+
+// Muse draws its todo checklist between the live status line and the input box, one item per line
+// indented two spaces (`  ✓ done`, `  ◆ current`); transcript and status lines start at column 0.
+// A long checklist would push the status out of the lines read above the prompt, so it is set aside.
+const TODO_ITEM = /^ {2}\S /u;
+
+function withoutTodoChecklist(lines) {
+  const rule = lines.findLastIndex(line => VOICE_RULE.test(line.replace(/\r/g, '').trim()));
+  if (rule < 0) return lines;
+  // Blank lines frame the checklist on screen; only a block that holds at least one item is set aside.
+  let start = rule;
+  let items = 0;
+  while (start > 0) {
+    const line = lines[start - 1].replace(/\r/g, '');
+    if (TODO_ITEM.test(line)) items += 1;
+    else if (line.trim()) break;
+    start -= 1;
+  }
+  return items === 0 ? lines : [...lines.slice(0, start), ...lines.slice(rule)];
 }
 
 const VOICE_RULE = /^── Voice input \(alt\(option\)\+v to start\) ─+$/u;

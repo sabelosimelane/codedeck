@@ -1,0 +1,22 @@
+
+
+
+
+
+
+◆ Edited src/greeting.js (+2 −1)
+  12 -  return 'hi';
+  12 +  return `hello ${name}`;
+
+◆ Ran command · Run unit tests · ✓ · 1.2s · ctrl+o
+
+  ✓ Read todo file, session notes and spec
+  ✓ Build Phase 2 greeting task 1/2 with failing test first then pass, tick when done
+  ✓ Build Phase 2 greeting task 2/2 with failing test first then pass, tick when done
+  ◆ Run final suite once, update todo session notes, write run note
+
+── Voice input (alt(option)+v to start) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-spark-1.3 · medium · ~/work/demo · YOLO
+
