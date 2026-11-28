@@ -151,6 +151,9 @@ export function createTerminalWorkflow({ write, notify, resetTimeoutMs, handoffI
   let handoffTimer;
   // The last unrecognised signal identifier seen in this pass, so a failure can name it.
   let unrecognisedIdentifier = null;
+  // Unknown identifiers on screen before this pass's prompt was submitted: left there by an
+  // earlier pass that a restarted backend no longer knows of, so never this pass's answer.
+  let leftoverIdentifiers = new Set();
   let audit = null;
   function armHandoffDeadline() {
     clearTimeout(handoffTimer);
@@ -255,6 +258,7 @@ export function createTerminalWorkflow({ write, notify, resetTimeoutMs, handoffI
     handoffDeadline = null;
     badIdentifierRetries = 0;
     unrecognisedIdentifier = null;
+    leftoverIdentifiers = new Set();
     identifier = issueIdentifier();
     passIdentifiers = new Set([identifier]);
     pendingIdentifier = null;
@@ -578,11 +582,18 @@ export function createTerminalWorkflow({ write, notify, resetTimeoutMs, handoffI
       // an invalid result, not a reason to wait forever or accept a near match.
       const match = [...text.matchAll(/\[\[?CDW:([\w-]+):(CONTINUE|COMPLETE|NEEDS_INPUT)\]\]?/g)]
         .filter(candidate => !(status === 'needs_input' && candidate[1] === identifier && candidate[2] === 'NEEDS_INPUT'))
+        .filter(candidate => !leftoverIdentifiers.has(candidate[1]))
         // A request for input counts only under the current identifier: under an earlier one of
         // this pass it is the answered request, redrawn. The end of the pass counts under any of them.
         .find(candidate => (candidate[2] === 'NEEDS_INPUT' ? candidate[1] === identifier : passIdentifiers.has(candidate[1])) || !issuedIdentifiers.has(candidate[1]));
       if (!match) return;
       if (!issuedIdentifiers.has(match[1])) {
+        if (status === 'running' && !promptSubmitted && !workObserved) {
+          // The agent cannot have answered a prompt it has neither been given nor started on.
+          leftoverIdentifiers.add(match[1]);
+          rawOutput = '';
+          return;
+        }
         const repeated = match[1] === unrecognisedIdentifier;
         unrecognisedIdentifier = match[1];
         if (status === 'running' && identifier !== null && badIdentifierRetries < MAX_BAD_IDENTIFIER_RETRIES) {
