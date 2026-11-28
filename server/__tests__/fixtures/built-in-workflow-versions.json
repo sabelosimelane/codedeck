@@ -12,8 +12,8 @@
     "hash": "4535ab456c445f1369f5abed0bebabed1dc903c47375bc44422e0773e1041152"
   },
   "feature-build-from-spec": {
-    "version": 1,
-    "hash": "c7fcc5efea7ef8f55804fc46f3962cf3f7108ffcbc0e4050945aea5c1186b13c"
+    "version": 2,
+    "hash": "792abd833b5abb4253c91e39499e78f8c65dbb0afefd1041bdf7624acbda0c6b"
   },
   "feature-from-requirements": {
     "version": 1,

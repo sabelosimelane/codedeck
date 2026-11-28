@@ -1,0 +1,14 @@
+{
+  "previous": [
+    {
+      "template": "feature-build-from-spec",
+      "node": "Develop",
+      "previous": "Read the todo file docs/{input}, its session notes and the specification it names. Build the first phase in it with unticked tasks, and only that phase. Write failing tests first, make them pass, tick each task when done, add to the todo's session notes what the next round needs to know, leave changes uncommitted for Review and Test (do not run git commit), and record what changed."
+    },
+    {
+      "template": "feature-build-from-spec",
+      "node": "Test",
+      "previous": "Test the phase just built in the todo file docs/{input} against the acceptance checks of the specification it names. Untick any task that does not hold. While a phase in the todo still has unticked tasks, run only the tests for that phase. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. If an unticked task turns out to need what no agent here can have (a physical device, a real account or recipient, production), use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether the owner will check it themselves; when the owner says so, tick it, mark it \"owner check\" in the todo and list it in your note with what the owner should do and expect. Do not repeat passing tests on an unchanged diff. When no phase has unticked tasks, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in the todo has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    }
+  ]
+}
