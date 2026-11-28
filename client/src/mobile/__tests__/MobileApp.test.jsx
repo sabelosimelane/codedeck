@@ -6,7 +6,7 @@ vi.mock('../../components/Terminal',()=>({default:React.forwardRef((props,ref)=>
 vi.mock('../native',()=>({isPushConfigured:()=>mocks.pushConfigured,restoreNotifications:mocks.restore,watchNative:async handlers=>{mocks.native=handlers;return ()=>{}},enableNotifications:mocks.enable,hideKeyboard:async()=>{},showKeyboard:async()=>{}}));
 import MobileApp from '../MobileApp';
 import { setThemeMode } from '../../theme';
-import { run,askingRun,approvalRun,completeRun,task,RUN_ID } from './runFixtures';
+import { run,askingRun,approvalRun,completeRun,task,RUN_ID,TASK_ID,WORKTREE_ID,landing,committedLanding } from './runFixtures';
 const MIN=60_000,HOUR=60*MIN;
 function reply(body){return Promise.resolve({ok:true,json:async()=>body});}
 const page=data=>({data,page:{currentPage:0,size:20,totalElements:data.length,totalPages:1,hasNextPage:false}});
@@ -15,8 +15,9 @@ const proj=(id,name,state='active',stateChangedAt=null)=>({id,name,state,stateCh
 const session=(id,projectId,title,status,live=true,extra={})=>({id,incarnationId:`inc-${id}`,projectId,title,status,live,cwd:'/tmp',host:'local',runtimeType:'tmux',finished:false,muted:false,waiting:false,needsInput:false,lastActivityAt:Date.now()-MIN,...extra});
 // A small backend: lists projects and sessions, and applies state changes the way the server does.
 // Runs and tasks come from the endpoints the desktop uses. `onRun` answers an owner action on a run.
-let work={runs:[],tasks:[],notes:[],onRun:null};
+let work={runs:[],tasks:[],notes:[],onRun:null,landings:[],onLand:null};
 function workReply(url,options){
+ if(url.includes('/worktrees'))return options.method==='POST'?Promise.resolve(work.onLand(url,options)):reply(page(work.landings));
  if(url.includes('/api/tasks'))return reply(page(work.tasks));
  if(!url.includes('/api/pipelines/runs'))return undefined;
  if(url.includes('/notes'))return reply(page(work.notes));
@@ -44,7 +45,7 @@ const calls=method=>global.fetch.mock.calls.filter(([,options])=>options?.method
 const rowTitles=()=>within(screen.getByRole('list',{name:'Sessions'})).getAllByRole('listitem').map(item=>item.querySelector('.m-row-title').textContent);
 async function connected(){localStorage.setItem('codedeck-mobile-instance','https://host');render(<MobileApp/>);}
 afterEach(()=>{cleanup();vi.useRealTimers();});
-beforeEach(()=>{work={runs:[],tasks:[],notes:[],onRun:null};localStorage.clear();setThemeMode('dark');mocks.pushConfigured=false;mocks.send.mockReturnValue(true);mocks.composer.mockReturnValue(true);mocks.restore.mockClear();mocks.enable.mockClear();
+beforeEach(()=>{work={runs:[],tasks:[],notes:[],onRun:null,landings:[],onLand:null};localStorage.clear();setThemeMode('dark');mocks.pushConfigured=false;mocks.send.mockReturnValue(true);mocks.composer.mockReturnValue(true);mocks.restore.mockClear();mocks.enable.mockClear();
  serve([proj('p','Project')],[session('s','p','Agent','idle',true,{incarnationId:'inc'})]);
 });
 describe('mobile companion',()=>{
@@ -381,8 +382,77 @@ describe('workflow runs on the phone',()=>{
   const interrupted=run({status:'interrupted',actions:{...run().actions,stop:false,resume:true},steps:[run().steps[0],{...run().steps[1],status:'interrupted'},run().steps[2]]});
   await withRun(interrupted);await openTask();
   fireEvent.click(screen.getByRole('button',{name:'Resume'}));
+  fireEvent.click(within(screen.getByRole('dialog',{name:'Confirm'})).getByRole('button',{name:'Resume'}));
   expect(await screen.findByText('Bug fix resumed')).toBeTruthy();
   expect(work.onRun.mock.calls[0][0]).toBe(`https://host/api/pipelines/runs/${RUN_ID}/resume`);
+ });
+ it('closes a finished run, says how many terminals went with it, and goes back to the list',async()=>{
+  const finished=completeRun({updatedAt:new Date().toISOString(),finishedAt:new Date().toISOString()});
+  work.onRun=vi.fn(()=>okRun({...finished,worktree:{...finished.worktree,state:'released'},terminalsClosed:['p-1','p-2'],terminalsNotClosed:['p-3']}));
+  await withRun(finished);await openTask();
+  fireEvent.click(within(screen.getByRole('toolbar',{name:'Run controls'})).getByRole('button',{name:'Close run'}));
+  fireEvent.click(within(screen.getByRole('dialog',{name:'Confirm'})).getByRole('button',{name:'Close run'}));
+  expect(await screen.findByText('Bug fix run closed; its work is left in place. 2 terminals closed.')).toBeTruthy();
+  expect(screen.getByText('1 terminal could not be closed: p-3. Close it from its tab.')).toBeTruthy();
+  expect(work.onRun.mock.calls[0][0]).toBe(`https://host/api/pipelines/runs/${RUN_ID}/cleanup`);
+  await waitFor(()=>expect(screen.queryByRole('list',{name:'Steps'})).toBeNull());
+ });
+ it('stops a working run once the owner confirms',async()=>{
+  work.onRun=vi.fn(()=>okRun(run({status:'stopped',stopReason:'user',finishedAt:run().createdAt,actions:{...run().actions,stop:false,resume:true}})));
+  await withRun(run());await openTask();
+  fireEvent.click(within(screen.getByRole('toolbar',{name:'Run controls'})).getByRole('button',{name:'Stop'}));
+  fireEvent.click(within(screen.getByRole('dialog',{name:'Confirm'})).getByRole('button',{name:'Stop'}));
+  expect(await screen.findByText('Bug fix stopped')).toBeTruthy();
+  expect(work.onRun.mock.calls[0][0]).toBe(`https://host/api/pipelines/runs/${RUN_ID}/stop`);
+ });
+ it('commits a finished task from its screen, then reads Git again',async()=>{
+  const finished=completeRun({updatedAt:new Date().toISOString()});
+  work.landings=[landing()];work.onLand=vi.fn(()=>{work.landings=[committedLanding()];return okRun(committedLanding());});
+  await withRun(finished);await openTask();
+  fireEvent.click(await within(screen.getByRole('region',{name:'In Git'})).findByRole('button',{name:'Commit changes'}));
+  fireEvent.change(screen.getByLabelText('Commit message'),{target:{value:'Use the first name'}});
+  fireEvent.click(within(screen.getByRole('dialog',{name:'Commit changes'})).getByRole('button',{name:'Commit'}));
+  expect(await screen.findByText('Changes committed in p')).toBeTruthy();
+  const [url,options]=work.onLand.mock.calls[0];
+  expect(url).toBe(`https://host/api/tasks/${TASK_ID}/worktrees/${WORKTREE_ID}/commit`);
+  expect(JSON.parse(options.body)).toEqual({message:'Use the first name'});
+  expect(await screen.findByText('3 commits ready for main')).toBeTruthy();
+ });
+ it('says why a merge was refused, with the conflicting files',async()=>{
+  work.landings=[committedLanding()];work.onLand=vi.fn(()=>({ok:false,status:409,json:async()=>({message:'The merge conflicts and was aborted.',conflicts:['src/call.js']})}));
+  await withRun(completeRun({updatedAt:new Date().toISOString()}));await openTask();
+  fireEvent.click(await within(screen.getByRole('region',{name:'In Git'})).findByRole('button',{name:'Merge into main'}));
+  fireEvent.click(within(screen.getByRole('dialog',{name:'Confirm'})).getByRole('button',{name:'Merge'}));
+  expect(await screen.findByText('The merge conflicts and was aborted. Conflicts: src/call.js')).toBeTruthy();
+ });
+ it('stops a run from a long press on its row, once the owner confirms',async()=>{
+  work.onRun=vi.fn(()=>okRun(run({status:'stopped',stopReason:'user',finishedAt:run().createdAt,actions:{...run().actions,stop:false,resume:true}})));
+  await withRun(run());
+  fireEvent.contextMenu(taskList().getByRole('button',{name:/First name only on the call/}));
+  const sheet=within(screen.getByRole('dialog',{name:'First name only on the call'}));
+  expect(sheet.getByRole('button',{name:'Open task'})).toBeTruthy();
+  fireEvent.click(sheet.getByRole('button',{name:'Stop'}));
+  fireEvent.click(within(screen.getByRole('dialog',{name:'Confirm'})).getByRole('button',{name:'Stop'}));
+  expect(await screen.findByText('Bug fix stopped')).toBeTruthy();
+  expect(work.onRun.mock.calls[0][0]).toBe(`https://host/api/pipelines/runs/${RUN_ID}/stop`);
+  expect(screen.queryByRole('dialog',{name:'First name only on the call'})).toBeNull();
+ });
+ it('approves a step from a long press, with what the step concluded in view',async()=>{
+  work.onRun=vi.fn(()=>okRun(run()));
+  await withRun(approvalRun());
+  fireEvent.contextMenu(taskList().getByRole('button',{name:/First name only on the call/}));
+  const sheet=within(screen.getByRole('dialog',{name:'First name only on the call'}));
+  fireEvent.click(sheet.getByRole('button',{name:'Approve Fix'}));
+  const asked=within(screen.getByRole('dialog',{name:'Confirm'}));
+  expect(asked.getByText('Approve Fix and continue Bug fix? Fix concluded: The call now uses the first name')).toBeTruthy();
+  fireEvent.click(asked.getByRole('button',{name:'Approve'}));
+  expect(await screen.findByText('Bug fix approved')).toBeTruthy();
+ });
+ it('opens the task from its actions, and a tap still opens it',async()=>{
+  await withRun(askingRun());
+  fireEvent.contextMenu(taskList().getByRole('button',{name:/First name only on the call/}));
+  fireEvent.click(within(screen.getByRole('dialog',{name:'First name only on the call'})).getByRole('button',{name:'Open task'}));
+  expect(await screen.findByRole('list',{name:'Steps'})).toBeTruthy();
  });
  it('returns to the list when the run it shows is closed',async()=>{
   vi.useFakeTimers({shouldAdvanceTime:true});

@@ -54,10 +54,11 @@ export function validateEvent(event){
  if(!['active','ended','obsolete'].includes(event.status)||!Number.isSafeInteger(event.createdAt)||event.createdAt<0)throw new Error('Invalid notification event state.');return event;
 }
 /** Sends one request to the instance, with a time limit. `path` starts at the origin. */
-export function sendToInstance(request,origin,path,options={}){
+export function sendToInstance(request,origin,path,{timeoutMs=15000,...options}={}){
+ if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1)throw new Error('timeoutMs must be a positive whole number of milliseconds');
  // A request that gets no answer the app may read (no route to the host, or a
  // refusal that carries no cross-origin permission) rejects with a TypeError.
- return request(`${origin}${path}`,{...options,signal:AbortSignal.timeout(15000)}).catch(error=>{
+ return request(`${origin}${path}`,{...options,signal:AbortSignal.timeout(timeoutMs)}).catch(error=>{
   if(error instanceof TypeError)throw new Error(`Could not reach ${origin}. Check that Tailscale is connected on this phone and that CodeDeck on the host allows phone access.`,{cause:error});
   throw error;
  });

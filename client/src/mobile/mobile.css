@@ -211,6 +211,7 @@
 .m-action-text{flex:1;display:flex;flex-direction:column;gap:2px}
 .m-action-text small{font-size:13px;font-weight:500;color:var(--text-secondary)}
 .m-action[aria-pressed="true"] .m-action-icon{color:var(--accent)}
+.m-action-text.is-danger{color:var(--danger)}
 .m-actions-foot{margin:10px 8px 0;font-size:12px;color:var(--text-secondary)}
 @keyframes m-finish{0%,100%{opacity:1}50%{opacity:.35}}
 
@@ -261,6 +262,52 @@
 .m-task .task-note{font-size:14px}
 .m-task .ui-button{min-height:44px;padding:0 16px;border-radius:22px;font-size:15px}
 .m-task .ui-input{font-size:16px}
+
+/* Run controls: fixed under the task, the next step highlighted */
+.m-task-screen{display:flex;flex-direction:column}
+.m-run-dock{flex:none;display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px calc(env(safe-area-inset-bottom) + 10px);border-top:1px solid var(--border);background:var(--bg-base)}
+.m-run-dock>button{flex:1 1 120px}
+.m-run-dock .m-primary{min-height:48px;border-radius:24px}
+.m-run-dock-button{min-height:48px;padding:0 16px;border-radius:24px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:15px;font-weight:600}
+.m-run-dock-button.is-danger{color:var(--danger)}
+.m-primary.is-danger{background:var(--danger);color:var(--bg-base)}
+.m-run-dock button:disabled,.m-confirm button:disabled{opacity:.5}
+.m-task-warning{margin:0;padding:12px 14px;border-radius:14px;border:1px solid var(--warning);color:var(--text-primary);font-size:14px;line-height:1.5}
+.m-confirm{padding-top:4px}
+.m-confirm-text{margin:12px 8px 16px;font-size:16px;line-height:1.5;overflow-wrap:anywhere}
+.m-confirm-actions{display:flex;flex-direction:column;gap:8px}
+
+/* An open step: what it left to read */
+.m-step-toggle{flex:1;min-width:0;min-height:36px;padding:0;border:0;background:transparent;color:inherit;text-align:left;display:flex;align-items:center}
+.m-step-detail{display:flex;flex-direction:column;gap:10px;margin-top:6px}
+.m-chips-row{display:flex;flex-wrap:wrap;gap:6px}
+.m-chips-row .m-chip{min-height:34px;padding:0 12px;border-radius:17px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);font-size:13px}
+.m-chips-row .m-chip[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.m-records{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+.m-records>li{padding:10px 12px;border-radius:12px;background:var(--bg-surface);display:flex;flex-direction:column;gap:6px;overflow-wrap:anywhere}
+.m-record-head{margin:0;font-size:12px;color:var(--text-secondary)}
+.m-record-asked{margin:0;white-space:pre-wrap;font-family:var(--font-mono);font-size:12px;color:var(--text-secondary)}
+.m-record-answer{margin:0;font-size:14px;line-height:1.5}
+
+/* Landing: how the task stands in Git, and its commit, merge, pull request and close */
+.m-landing{display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:16px;border:1px solid var(--border);background:var(--bg-surface)}
+.m-landing-head{display:flex;align-items:center;gap:10px}
+.m-landing-head h2{flex:1;margin:0;font-size:16px;font-weight:600}
+.m-chip-button{min-height:34px;padding:0 12px;border-radius:17px;border:1px solid var(--border);background:var(--bg-base);color:var(--text-primary);font-size:13px}
+.m-landing-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px}
+.m-landing-list>li{display:flex;flex-direction:column;gap:6px}
+.m-landing-repository{margin:0;font-size:12px;color:var(--text-secondary)}
+.m-landing-status{margin:0;font-size:15px;font-weight:500}
+.m-landing-status.is-warning{color:var(--warning)}
+.m-landing-status.is-ready{color:var(--accent)}
+.m-landing-status.is-danger{color:var(--danger)}
+.m-landing-status.is-muted{color:var(--text-secondary)}
+.m-landing-link{font-size:14px;color:var(--accent)}
+.m-landing-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.m-landing-actions>button{flex:1 1 140px}
+.m-landing-actions .m-primary{min-height:48px;border-radius:24px}
+.m-field{display:flex;flex-direction:column;gap:6px;margin:0 8px 14px;font-size:13px;color:var(--text-secondary)}
+.m-field textarea,.m-field select{font:inherit;font-size:16px;color:var(--text-primary);background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px}
 
 /* Small and landscape phones */
 @media (max-width:360px){.m-heading h1{font-size:32px}.m-results,.m-chips{padding-left:14px;padding-right:14px}.mobile-sessions>.m-tabs{margin-left:14px;margin-right:14px}.m-toggle{gap:4px;font-size:13px}}

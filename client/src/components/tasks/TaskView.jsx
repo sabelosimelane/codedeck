@@ -4,6 +4,7 @@ import ChangeRunAgent from '../pipelines/ChangeRunAgent';
 import ChangeRunTeam from '../pipelines/ChangeRunTeam';
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, CheckCircle2, CircleDot, Circle, Repeat, TriangleAlert, Square, Plus } from 'lucide-react';
+import { cleanupConfirmation, resumeConfirmation } from '../../utils/runConfirmations';
 import { NO_PROGRESS_ROUNDS } from '../../../../shared/pipeline-definitions.mjs';
 import { describeAuditIntervals, describeLimitPause, describeRunCompletion, describeRunDuration, describeRunStatus, describeStepDuration, describeStepProgress, describeStepState } from '../../utils/pipelineRunStatus';
 import { describeBlockedCleanup } from '../../utils/pipelineWorktreeCleanup';
@@ -14,19 +15,6 @@ import './task-view.css';
 import { formatPhasePosition } from '../../utils/phaseLabel';
 
 const STATE_ICON = { done: Check, current: CircleDot, failed: TriangleAlert, stopped: Square, pending: Circle };
-
-function resumeConfirmation(run, step) {
-  if (!step?.sessionId) return `Resume ${run.workflowName}? ${step.name} starts in a new terminal.`;
-  return `Resume ${run.workflowName}? The agent in ${step.sessionId} is cleared and ${step.name} starts again there. `
-    + 'If its agent has exited, it is started again there. A new terminal is opened only if that one was closed.';
-}
-
-function cleanupConfirmation(run) {
-  if (run.worktree?.state === 'external') {
-    return `Close ${run.workflowName}? Its terminals are closed and the run leaves the screen. The task and its files remain available.`;
-  }
-  return `Clean up the worktree for ${run.workflowName}? This removes the run's worktree and closes its terminals.`;
-}
 
 function progressLine(progress) {
   if (progress === null || progress === undefined) return null;

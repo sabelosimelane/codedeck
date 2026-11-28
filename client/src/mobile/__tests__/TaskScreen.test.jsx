@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import TaskScreen from '../TaskScreen';
 import { buildNowView } from '../nowView';
-import { run, askingRun, approvalRun, completeRun, task, RUN_ID } from './runFixtures';
+import { run, askingRun, approvalRun, completeRun, task, RUN_ID, TASK_ID, WORKTREE_ID, landing, committedLanding } from './runFixtures';
 
 const NOW = Date.parse('2026-11-10T18:00:00.000Z');
 const projects = [{ id: 'p', name: 'p', state: 'active' }];
@@ -14,7 +14,8 @@ const NOTE = { id: 7, stepIndex: 1, stepName: 'Fix', status: 'written', summary:
 function show(record, overrides = {}, sessions) {
   const handlers = {
     onBack: vi.fn(), onOpenSession: vi.fn(), onAnswer: vi.fn(async () => record), onApprove: vi.fn(async () => record),
-    onSendBack: vi.fn(async () => record), onLoadNotes: vi.fn(async () => ({ notes: [NOTE], hasNextPage: false, total: 1 })), onAction: vi.fn(async () => record), ...overrides,
+    onSendBack: vi.fn(async () => record), onLoadNotes: vi.fn(async () => ({ notes: [NOTE], hasNextPage: false, total: 1 })), onAction: vi.fn(async () => record),
+    onLoadRecords: vi.fn(async () => ({ items: [], total: 0 })), onLoadLanding: vi.fn(async () => [landing()]), onLand: vi.fn(async () => ({})), ...overrides,
   };
   render(<TaskScreen row={rowOf(record, sessions)} busy={false} {...handlers} />);
   return handlers;
@@ -24,7 +25,7 @@ afterEach(cleanup);
 
 describe('a task on the phone', () => {
   it('lists the repositories of a task with several and where the run works', () => {
-    const handlers = { onBack: vi.fn(), onOpenSession: vi.fn(), onAnswer: vi.fn(), onApprove: vi.fn(), onSendBack: vi.fn(), onLoadNotes: vi.fn(), onAction: vi.fn() };
+    const handlers = { onBack: vi.fn(), onOpenSession: vi.fn(), onAnswer: vi.fn(), onApprove: vi.fn(), onSendBack: vi.fn(), onLoadNotes: vi.fn(), onAction: vi.fn(), onLoadRecords: vi.fn(), onLoadLanding: vi.fn(async () => []), onLand: vi.fn() };
     const row = { ...rowOf(run()), repositories: [{ name: 'mobile-app', state: 'active', current: true }, { name: 'backend', state: 'active', current: false }, { name: 'frontend', state: 'merged', current: false }] };
     render(<TaskScreen row={row} busy={false} {...handlers} />);
     const items = within(screen.getByRole('list', { name: 'Repositories' })).getAllByRole('listitem').map(item => item.textContent);
@@ -131,6 +132,7 @@ describe('a run that cannot go on by itself', () => {
   it('offers Resume for an interrupted run', async () => {
     const { onAction } = show(interrupted);
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Confirm' })).getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(onAction).toHaveBeenCalledWith('resume', RUN_ID));
   });
   it('offers one more pass at a capped limit', () => {
@@ -140,7 +142,7 @@ describe('a run that cannot go on by itself', () => {
     expect(steps()[1].querySelector('.m-step-meta').textContent).toBe('Paused at its limit · pass 3 of 3 · Fable Medium');
   });
   it('disables the action while another is being sent', () => {
-    render(<TaskScreen row={rowOf(interrupted)} busy onBack={vi.fn()} onOpenSession={vi.fn()} onAnswer={vi.fn()} onApprove={vi.fn()} onSendBack={vi.fn()} onLoadNotes={vi.fn()} onAction={vi.fn()} />);
+    render(<TaskScreen row={rowOf(interrupted)} busy onBack={vi.fn()} onOpenSession={vi.fn()} onAnswer={vi.fn()} onApprove={vi.fn()} onSendBack={vi.fn()} onLoadNotes={vi.fn()} onAction={vi.fn()} onLoadRecords={vi.fn()} onLoadLanding={vi.fn(async () => [])} onLand={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Resume' }).disabled).toBe(true);
   });
   it('says why a run failed', () => {
@@ -156,15 +158,15 @@ describe('a run that cannot go on by itself', () => {
 });
 
 describe('what the task screen requires', () => {
-  it.each(['onBack', 'onOpenSession', 'onAnswer', 'onApprove', 'onSendBack', 'onLoadNotes', 'onAction'])('requires %s', name => {
+  it.each(['onBack', 'onOpenSession', 'onAnswer', 'onApprove', 'onSendBack', 'onLoadNotes', 'onAction', 'onLoadRecords', 'onLoadLanding', 'onLand'])('requires %s', name => {
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const handlers = { onBack: vi.fn(), onOpenSession: vi.fn(), onAnswer: vi.fn(), onApprove: vi.fn(), onSendBack: vi.fn(), onLoadNotes: vi.fn(), onAction: vi.fn(), [name]: undefined };
+    const handlers = { onBack: vi.fn(), onOpenSession: vi.fn(), onAnswer: vi.fn(), onApprove: vi.fn(), onSendBack: vi.fn(), onLoadNotes: vi.fn(), onAction: vi.fn(), onLoadRecords: vi.fn(), onLoadLanding: vi.fn(async () => []), onLand: vi.fn(), [name]: undefined };
     expect(() => render(<TaskScreen row={rowOf(run())} busy={false} {...handlers} />)).toThrow(`task screen: ${name} must be a function`);
     quiet.mockRestore();
   });
   it('requires a task row', () => {
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
-    expect(() => render(<TaskScreen row={null} busy={false} onBack={vi.fn()} onOpenSession={vi.fn()} onAnswer={vi.fn()} onApprove={vi.fn()} onSendBack={vi.fn()} onLoadNotes={vi.fn()} onAction={vi.fn()} />)).toThrow('task screen: row is required');
+    expect(() => render(<TaskScreen row={null} busy={false} onBack={vi.fn()} onOpenSession={vi.fn()} onAnswer={vi.fn()} onApprove={vi.fn()} onSendBack={vi.fn()} onLoadNotes={vi.fn()} onAction={vi.fn()} onLoadRecords={vi.fn()} onLoadLanding={vi.fn(async () => [])} onLand={vi.fn()} />)).toThrow('task screen: row is required');
     quiet.mockRestore();
   });
 });
@@ -239,7 +241,7 @@ describe('limit recovery on the phone', () => {
     let latest = [round8];
     const handlers = {
       onBack: vi.fn(), onOpenSession: vi.fn(), onAnswer: vi.fn(), onApprove: vi.fn(), onSendBack: vi.fn(),
-      onLoadNotes: vi.fn(async () => ({ notes: latest, hasNextPage: false, total: 1 })), onAction: vi.fn(),
+      onLoadNotes: vi.fn(async () => ({ notes: latest, hasNextPage: false, total: 1 })), onAction: vi.fn(), onLoadRecords: vi.fn(), onLoadLanding: vi.fn(async () => []), onLand: vi.fn(),
     };
     const { rerender } = render(<TaskScreen row={rowOf(pause1)} busy={false} {...handlers} />);
     fireEvent.click(screen.getByRole('button', { name: 'Read full note' }));
@@ -247,5 +249,247 @@ describe('limit recovery on the phone', () => {
     latest = [round9];
     rerender(<TaskScreen row={rowOf(pause2)} busy={false} {...handlers} />);
     expect(screen.queryByText(/# Round 8 Test note REPAIR 8 PH1/)).toBeNull();
+  });
+});
+
+describe('run controls on the phone', () => {
+  const dock = () => within(screen.getByRole('toolbar', { name: 'Run controls' }));
+  const confirmation = () => within(screen.getByRole('dialog', { name: 'Confirm' }));
+  const interrupted = run({ status: 'interrupted', actions: { ...run().actions, stop: false, resume: true }, steps: [run().steps[0], { ...run().steps[1], status: 'interrupted' }, run().steps[2]] });
+
+  it('offers Stop while the run works, and stops only once the owner confirms', async () => {
+    const { onAction } = show(run());
+    fireEvent.click(dock().getByRole('button', { name: 'Stop' }));
+    expect(onAction).not.toHaveBeenCalled();
+    expect(confirmation().getByText('Stop Bug fix? Automation stops; the agent in its terminal may still be working.')).toBeTruthy();
+    fireEvent.click(confirmation().getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(onAction).toHaveBeenCalledWith('stop', RUN_ID));
+    expect(screen.queryByRole('dialog', { name: 'Confirm' })).toBeNull();
+  });
+  it('does nothing when the owner cancels', () => {
+    const { onAction } = show(run());
+    fireEvent.click(dock().getByRole('button', { name: 'Stop' }));
+    fireEvent.click(confirmation().getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Confirm' })).toBeNull();
+    expect(onAction).not.toHaveBeenCalled();
+  });
+  it('offers Stop while the run waits for an answer or an approval', () => {
+    show(askingRun());
+    expect(dock().getByRole('button', { name: 'Stop' })).toBeTruthy();
+    cleanup();
+    show(approvalRun());
+    expect(dock().getByRole('button', { name: 'Stop' })).toBeTruthy();
+  });
+  it('offers no Stop for a run that is not working', () => {
+    show(interrupted);
+    expect(dock().queryByRole('button', { name: 'Stop' })).toBeNull();
+  });
+  it('asks before Resume, in the words of the desktop', async () => {
+    const { onAction } = show(interrupted);
+    fireEvent.click(dock().getByRole('button', { name: 'Resume' }));
+    expect(confirmation().getByText(/^Resume Bug fix\? The agent in p-2 is cleared and Fix starts again there\./)).toBeTruthy();
+    fireEvent.click(confirmation().getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(onAction).toHaveBeenCalledWith('resume', RUN_ID));
+  });
+  it('highlights the next action', () => {
+    show(interrupted);
+    expect(dock().getByRole('button', { name: 'Resume' }).className).toContain('m-primary');
+  });
+  it('offers Close run for a finished run in a task, not highlighted, and asks first', async () => {
+    const { onAction } = show(completeRun());
+    const close = dock().getByRole('button', { name: 'Close run' });
+    expect(close.className).not.toContain('m-primary');
+    fireEvent.click(close);
+    expect(confirmation().getByText('Close Bug fix? Its terminals are closed and the run leaves the screen. The task and its files remain available.')).toBeTruthy();
+    fireEvent.click(confirmation().getByRole('button', { name: 'Close run' }));
+    await waitFor(() => expect(onAction).toHaveBeenCalledWith('cleanup', RUN_ID));
+  });
+  it('offers Close run for a stopped run', () => {
+    show(run({ status: 'stopped', stopReason: 'user', actions: { ...run().actions, stop: false, resume: true, cleanup: true }, steps: [run().steps[0], { ...run().steps[1], status: 'stopped' }, run().steps[2]] }));
+    expect(dock().getByRole('button', { name: 'Resume' })).toBeTruthy();
+    expect(dock().getByRole('button', { name: 'Close run' })).toBeTruthy();
+  });
+  it('opens the terminal of the step the run is in', () => {
+    const { onOpenSession } = show(run());
+    fireEvent.click(dock().getByRole('button', { name: 'Open terminal' }));
+    expect(onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'p-2' }));
+  });
+  it('leaves the controls of a capped pause to its panel', () => {
+    show(run({ status: 'limit_paused', actions: { ...run().actions, continue: true, stop: true },
+      steps: [run().steps[0], { ...run().steps[1], status: 'limit_reached', repeat: { mode: 'until_complete', max: 3 }, iteration: 3 }, run().steps[2]] }));
+    expect(dock().queryByRole('button', { name: 'Stop' })).toBeNull();
+    expect(dock().queryByRole('button', { name: /Continue/ })).toBeNull();
+  });
+  it('disables the controls while an action is being sent', () => {
+    render(<TaskScreen row={rowOf(run())} busy onBack={vi.fn()} onOpenSession={vi.fn()} onAnswer={vi.fn()} onApprove={vi.fn()} onSendBack={vi.fn()} onLoadNotes={vi.fn()} onAction={vi.fn()} onLoadRecords={vi.fn()} onLoadLanding={vi.fn(async () => [])} onLand={vi.fn()} />);
+    expect(dock().getByRole('button', { name: 'Stop' }).disabled).toBe(true);
+  });
+  it('shows how long the run has taken', () => {
+    show(run());
+    expect(screen.getByLabelText(/^Run time so far: /)).toBeTruthy();
+    cleanup();
+    show(completeRun());
+    expect(screen.getByLabelText('Run time: under 1s').textContent).toBe('took under 1s');
+  });
+  it('says what to do when a loop stopped for lack of progress', () => {
+    show(run({ status: 'stopped', stopReason: 'no_progress', actions: { ...run().actions, stop: false, resume: true }, steps: [run().steps[0], { ...run().steps[1], status: 'stopped' }, run().steps[2]] }));
+    expect(screen.getByText('This loop ran 2 rounds without finishing. Check what the steps reported, then Resume to try again.')).toBeTruthy();
+  });
+});
+
+describe('steps that open on the phone', () => {
+  const toggle = name => screen.getByRole('button', { name: `Step ${name}` });
+  const DECISION = { id: 3, stepIndex: 1, stepName: 'Fix', pass: 1, questions: '1. Keep the surname?', truncated: false, answer: 'Proceed with your recommendations.', createdAt: '2026-11-10T17:50:00.000Z' };
+  it('opens the step the run is in, and opens another when tapped', () => {
+    show(run());
+    expect(toggle('Fix').getAttribute('aria-expanded')).toBe('true');
+    expect(toggle('Clarify').getAttribute('aria-expanded')).toBe('false');
+    expect(within(steps()[0]).queryByRole('button', { name: 'Notes' })).toBeNull();
+    fireEvent.click(toggle('Clarify'));
+    expect(toggle('Clarify').getAttribute('aria-expanded')).toBe('true');
+    expect(within(steps()[0]).getByRole('button', { name: 'Notes' })).toBeTruthy();
+    fireEvent.click(toggle('Clarify'));
+    expect(toggle('Clarify').getAttribute('aria-expanded')).toBe('false');
+  });
+  it('offers nothing to read on a step that has not started', () => {
+    show(run());
+    fireEvent.click(toggle('Verify'));
+    expect(within(steps()[2]).queryByRole('button', { name: 'Notes' })).toBeNull();
+    expect(within(steps()[2]).getByText('Nothing to read until this step starts.')).toBeTruthy();
+  });
+  it('reads the notes of a step when asked', async () => {
+    const { onLoadNotes } = show(run());
+    fireEvent.click(within(steps()[1]).getByRole('button', { name: 'Notes' }));
+    await waitFor(() => expect(within(steps()[1]).getByText('The greeting reads the first name.')).toBeTruthy());
+    expect(within(steps()[1]).getByText('Pass 1 · The call now uses the first name')).toBeTruthy();
+    expect(onLoadNotes).toHaveBeenCalledWith(RUN_ID, 0, 1);
+    expect(within(steps()[1]).getByRole('button', { name: 'Notes' }).getAttribute('aria-pressed')).toBe('true');
+  });
+  it('says when a step wrote no notes, and when they could not be read', async () => {
+    show(run(), { onLoadNotes: vi.fn(async () => ({ notes: [], hasNextPage: false, total: 0 })) });
+    fireEvent.click(within(steps()[1]).getByRole('button', { name: 'Notes' }));
+    expect(await within(steps()[1]).findByText('No notes yet.')).toBeTruthy();
+    cleanup();
+    show(run(), { onLoadNotes: vi.fn(async () => null) });
+    fireEvent.click(within(steps()[1]).getByRole('button', { name: 'Notes' }));
+    expect(await within(steps()[1]).findByText('These could not be loaded.')).toBeTruthy();
+  });
+  it('reads the decisions agents made, in a run that lets them decide', async () => {
+    const { onLoadRecords } = show(run({ agentsDecide: true, decisionCount: 1 }), { onLoadRecords: vi.fn(async () => ({ items: [DECISION], total: 1 })) });
+    fireEvent.click(within(steps()[1]).getByRole('button', { name: 'Decisions' }));
+    expect(await within(steps()[1]).findByText('1. Keep the surname?')).toBeTruthy();
+    expect(within(steps()[1]).getByText('Proceed with your recommendations.')).toBeTruthy();
+    expect(onLoadRecords).toHaveBeenCalledWith('decisions', RUN_ID, 1);
+    cleanup();
+    show(run());
+    expect(within(steps()[1]).queryByRole('button', { name: 'Decisions' })).toBeNull();
+  });
+  it('reads what the owner answered on a step', async () => {
+    show(run(), { onLoadRecords: vi.fn(async () => ({ items: [{ id: 1, stepIndex: 1, stepName: 'Fix', pass: 1, questions: null, answer: 'Use the first name', createdAt: DECISION.createdAt }], total: 1 })) });
+    fireEvent.click(within(steps()[1]).getByRole('button', { name: 'Your answers' }));
+    expect(await within(steps()[1]).findByText('Use the first name')).toBeTruthy();
+  });
+  it('reads the reviews of a step that waits for approval', async () => {
+    const { onLoadRecords } = show(approvalRun(), { onLoadRecords: vi.fn(async () => ({ items: [
+      { id: 1, stepIndex: 1, stepName: 'Fix', attempt: 1, verdict: 'sent_back', comment: 'Keep the surname.', createdAt: DECISION.createdAt },
+      { id: 2, stepIndex: 1, stepName: 'Fix', attempt: 2, verdict: 'approved', comment: null, createdAt: DECISION.createdAt }], total: 2 })) });
+    fireEvent.click(within(steps()[1]).getByRole('button', { name: 'Your reviews' }));
+    expect(await within(steps()[1]).findByText('Attempt 1 · Sent back: Keep the surname.')).toBeTruthy();
+    expect(within(steps()[1]).getByText('Attempt 2 · Approved')).toBeTruthy();
+    expect(onLoadRecords).toHaveBeenCalledWith('reviews', RUN_ID, 1);
+  });
+});
+
+describe('landing a task on the phone', () => {
+  const git = () => within(screen.getByRole('region', { name: 'In Git' }));
+  const confirmation = () => within(screen.getByRole('dialog', { name: 'Confirm' }));
+  const NO = { commit: [], merge: [], pullRequest: [], close: [] };
+  it('says how the task stands in Git and highlights its next step', async () => {
+    const { onLoadLanding } = show(completeRun());
+    expect(await git().findByText('2 uncommitted files')).toBeTruthy();
+    expect(onLoadLanding).toHaveBeenCalledWith(TASK_ID);
+    expect(git().getByRole('button', { name: 'Commit changes' }).className).toContain('m-primary');
+    expect(git().queryByRole('button', { name: 'Merge into main' })).toBeNull();
+  });
+  it('commits with the message the owner gives, starting from the task title', async () => {
+    const { onLand, onLoadLanding } = show(completeRun(), { onLand: vi.fn(async () => committedLanding()) });
+    fireEvent.click(await git().findByRole('button', { name: 'Commit changes' }));
+    const form = within(screen.getByRole('dialog', { name: 'Commit changes' }));
+    expect(form.getByLabelText('Commit message').value).toBe('First name only on the call');
+    fireEvent.change(form.getByLabelText('Commit message'), { target: { value: 'Use the first name' } });
+    fireEvent.click(form.getByRole('button', { name: 'Commit' }));
+    await waitFor(() => expect(onLand).toHaveBeenCalledWith('commit', TASK_ID, WORKTREE_ID, { message: 'Use the first name' }));
+    await waitFor(() => expect(onLoadLanding).toHaveBeenCalledTimes(2));
+  });
+  it('does not commit without a message', async () => {
+    const { onLand } = show(completeRun());
+    fireEvent.click(await git().findByRole('button', { name: 'Commit changes' }));
+    const form = within(screen.getByRole('dialog', { name: 'Commit changes' }));
+    fireEvent.change(form.getByLabelText('Commit message'), { target: { value: '   ' } });
+    expect(form.getByRole('button', { name: 'Commit' }).disabled).toBe(true);
+    expect(onLand).not.toHaveBeenCalled();
+  });
+  it('merges committed work once the owner confirms', async () => {
+    const { onLand } = show(completeRun(), { onLoadLanding: vi.fn(async () => [committedLanding()]) });
+    expect(await git().findByText('3 commits ready for main')).toBeTruthy();
+    fireEvent.click(git().getByRole('button', { name: 'Merge into main' }));
+    expect(confirmation().getByText('The task is merged into main in Main. Its copy is removed afterwards, its terminals are closed and the task is finished.')).toBeTruthy();
+    fireEvent.click(confirmation().getByRole('button', { name: 'Merge' }));
+    await waitFor(() => expect(onLand).toHaveBeenCalledWith('merge', TASK_ID, WORKTREE_ID, {}));
+  });
+  it('says what keeps committed work from merging', async () => {
+    show(completeRun(), { onLoadLanding: vi.fn(async () => [committedLanding({ blockers: { ...NO, commit: [{ code: 'nothing_to_commit', message: 'Nothing to commit' }], merge: [{ code: 'main_dirty', message: 'Main has uncommitted changes' }] } })]) });
+    expect(await git().findByText('Main has uncommitted changes')).toBeTruthy();
+    expect(git().queryByRole('button', { name: 'Merge into main' })).toBeNull();
+  });
+  it('opens a pull request on the remote the owner picks, saying it publishes the branch', async () => {
+    const remotes = [{ name: 'origin', host: 'github.com', tool: 'gh' }, { name: 'lab', host: 'gitlab.com', tool: 'glab' }];
+    const { onLand } = show(completeRun(), { onLoadLanding: vi.fn(async () => [committedLanding({ remotes })]) });
+    fireEvent.click(await git().findByRole('button', { name: 'Open a pull request' }));
+    expect(confirmation().getByText(/Pushing publishes the branch\./)).toBeTruthy();
+    fireEvent.change(confirmation().getByLabelText('Remote'), { target: { value: 'lab' } });
+    fireEvent.click(confirmation().getByRole('button', { name: 'Push and open' }));
+    await waitFor(() => expect(onLand).toHaveBeenCalledWith('pullRequest', TASK_ID, WORKTREE_ID, { remote: 'lab' }));
+  });
+  it('closes a task whose work is already in its base', async () => {
+    const done = landing({ uncommitted: [], uncommittedCount: 0, commitsAhead: 0, alreadyInBase: true, blockers: { ...NO, commit: [{ code: 'nothing_to_commit', message: 'Nothing to commit' }], merge: [{ code: 'already_in_base', message: 'Already in main' }] } });
+    const { onLand } = show(completeRun(), { onLoadLanding: vi.fn(async () => [done]) });
+    const close = await git().findByRole('button', { name: 'Close task' });
+    expect(close.className).toContain('m-primary');
+    fireEvent.click(close);
+    expect(confirmation().getByText('The task is closed: its copy is removed and its terminals are closed.')).toBeTruthy();
+    fireEvent.click(confirmation().getByRole('button', { name: 'Close task' }));
+    await waitFor(() => expect(onLand).toHaveBeenCalledWith('close', TASK_ID, WORKTREE_ID, {}));
+  });
+  it('leaves a close that would delete ignored files to the desktop', async () => {
+    show(completeRun(), { onLoadLanding: vi.fn(async () => [landing({ uncommitted: [], uncommittedCount: 0, alreadyInBase: true, ignoredAtRisk: ['.env.local'], ignoredAtRiskCount: 1,
+      blockers: { ...NO, close: [{ code: 'ignored_files', message: 'Ignored files exist only here' }] } })]) });
+    expect(await git().findByText('1 ignored file exists only in this copy (.env.local). Close it on the desktop.')).toBeTruthy();
+    expect(git().queryByRole('button', { name: 'Close task' })).toBeNull();
+  });
+  it('names the repository on each action of a task with several', async () => {
+    const backend = committedLanding({ worktreeId: '7b000000-0000-4000-8000-000000000002', repository: 'backend', own: false, first: false, worktreePath: '/work/t/backend' });
+    show(completeRun(), { onLoadLanding: vi.fn(async () => [landing(), backend]) });
+    expect(await git().findByRole('button', { name: 'Commit changes in p' })).toBeTruthy();
+    expect(git().getByRole('button', { name: 'Merge backend into main' })).toBeTruthy();
+    expect(git().getByRole('button', { name: 'Close backend' })).toBeTruthy();
+    fireEvent.click(git().getByRole('button', { name: 'Merge backend into main' }));
+    expect(confirmation().getByText('backend is merged into main in its own checkout. Its copy in this task is removed afterwards and the terminals in it are closed. The task stays open for its other repositories.')).toBeTruthy();
+  });
+  it('says when Git could not be read, and reads it again', async () => {
+    const onLoadLanding = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce([landing()]);
+    show(completeRun(), { onLoadLanding });
+    expect(await git().findByText('How the task stands in Git could not be read.')).toBeTruthy();
+    fireEvent.click(git().getByRole('button', { name: 'Refresh' }));
+    expect(await git().findByText('2 uncommitted files')).toBeTruthy();
+  });
+  it('offers no landing while the run works, and none for a run in Main', async () => {
+    show(run(), { onLoadLanding: vi.fn(async () => [landing({ runActive: true, blockers: { ...NO, commit: [{ code: 'run_active', message: 'A run is working' }], merge: [{ code: 'run_active', message: 'A run is working' }], pullRequest: [{ code: 'run_active', message: 'A run is working' }], close: [{ code: 'run_active', message: 'A run is working' }] } })]) });
+    expect(await git().findByText('2 uncommitted files')).toBeTruthy();
+    expect(git().queryAllByRole('button').map(button => button.textContent)).toEqual(['Refresh']);
+    cleanup();
+    const { onLoadLanding } = show(completeRun({ taskId: null }));
+    expect(screen.queryByRole('region', { name: 'In Git' })).toBeNull();
+    expect(onLoadLanding).not.toHaveBeenCalled();
   });
 });

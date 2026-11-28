@@ -70,3 +70,21 @@ export function task(extra = {}) {
 }
 
 export const pageOf = data => ({ data, page: { currentPage: 0, size: 100, totalElements: data.length, totalPages: data.length ? 1 : 0, hasNextPage: false } });
+
+export const WORKTREE_ID = '7b000000-0000-4000-8000-000000000001';
+const NO_BLOCKERS = { commit: [], merge: [], pullRequest: [], close: [] };
+/** How the task's one repository stands for landing, as `GET /api/tasks/:id/worktrees` sends it. */
+export function landing(extra = {}) {
+  return {
+    taskId: TASK_ID, worktreeId: WORKTREE_ID, repository: 'p', own: true, first: true, worktreePath: '/work/worktrees/p-the-call-3858fe63',
+    state: 'active', branch: 'task/the-call-3858fe63', baseBranch: 'main', prUrl: null, filesPresent: true, runActive: false,
+    uncommitted: ['src/call.js', 'src/text.js'], uncommittedCount: 2, commitsAhead: 0, commitsBehind: 0, alreadyInBase: false,
+    ignoredAtRisk: [], ignoredAtRiskCount: 0, main: { branch: 'main', dirty: false },
+    remotes: [{ name: 'origin', host: 'github.com', tool: 'gh' }],
+    blockers: { ...NO_BLOCKERS, merge: [{ code: 'uncommitted', message: 'Commit the changes first' }], pullRequest: [{ code: 'uncommitted', message: 'Commit the changes first' }], close: [{ code: 'uncommitted', message: 'Commit the changes first' }] }, ...extra,
+  };
+}
+/** The same repository with its work committed and ready to merge. */
+export function committedLanding(extra = {}) {
+  return landing({ uncommitted: [], uncommittedCount: 0, commitsAhead: 3, blockers: { ...NO_BLOCKERS, commit: [{ code: 'nothing_to_commit', message: 'Nothing to commit' }] }, ...extra });
+}
