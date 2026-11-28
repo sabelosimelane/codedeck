@@ -9,6 +9,26 @@
       "template": "feature-build-from-spec",
       "node": "Test",
       "previous": "Test the phase just built in the todo file docs/{input} against the acceptance checks of the specification it names. Untick any task that does not hold. While a phase in the todo still has unticked tasks, run only the tests for that phase. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. If an unticked task turns out to need what no agent here can have (a physical device, a real account or recipient, production), use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether the owner will check it themselves; when the owner says so, tick it, mark it \"owner check\" in the todo and list it in your note with what the owner should do and expect. Do not repeat passing tests on an unchanged diff. When no phase has unticked tasks, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in the todo has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    },
+    {
+      "template": "feature-build",
+      "node": "Develop",
+      "previous": "Build the first phase in plan.md with unticked tasks. Write failing tests first, make them pass, tick each task when done, leave changes uncommitted for Review and Commit (do not run git commit), and record what changed."
+    },
+    {
+      "template": "feature-build",
+      "node": "Test",
+      "previous": "Test the phase just built. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. The Owner checks in plan.md do not wait: verify what an agent can of each and repeat them in your note with what the owner should do and expect. If an unticked task turns out to need what no agent here can have, or an artifact from a later step, use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether it becomes an owner check; when the owner says so, move it to Owner checks in plan.md. Do not repeat passing tests on an unchanged diff. When none is left, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
+    },
+    {
+      "template": "feature-from-requirements",
+      "node": "Develop",
+      "previous": "Build the first phase in plan.md with unticked tasks, following the specification named in the Specify note. Write failing tests first, make them pass, tick each task when done, leave changes uncommitted for Review and Commit (do not run git commit), and record what changed."
+    },
+    {
+      "template": "feature-from-requirements",
+      "node": "Test",
+      "previous": "Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. The Owner checks in plan.md do not wait: verify what an agent can of each and repeat them in your note with what the owner should do and expect. If an unticked task turns out to need what no agent here can have, or an artifact from a later step, use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether it becomes an owner check; when the owner says so, move it to Owner checks in plan.md. Do not repeat passing tests on an unchanged diff. When none is left, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes."
     }
   ]
 }

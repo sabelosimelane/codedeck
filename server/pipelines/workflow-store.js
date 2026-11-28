@@ -337,7 +337,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
     [PREVIOUS_VERIFICATION_PROMPTS.unphasedBugFix, PREVIOUS_BUG_FIX_PROMPTS.Test],
   ]);
 
-  const fromSpecPrompt = name => WORKFLOW_TEMPLATES.find(template => template.id === 'feature-build-from-spec').nodes.find(item => item.name === name).prompt;
+  const builtInPrompt = (templateId, name) => WORKFLOW_TEMPLATES.find(template => template.id === templateId).nodes.find(item => item.name === name).prompt;
   const STOCK_PROMPT_UPGRADES = new Map([
     [
       'Read {input} and restate the problem in your own words. Change nothing. Check that you know what happens, what was expected, where and when it happens, how to reproduce it, and what changed recently. First look for each of these yourself in the code, the logs and the history. For anything you could not find and cannot safely assume, ask the owner: use NEEDS_INPUT with one short question per item, each with the assumption you would otherwise make as its recommendation. Ask nothing you could find out yourself, and when nothing is missing ask nothing. In your run note record the problem as you now understand it, what you found yourself, what the owner told you, and what is still unknown.',
@@ -456,16 +456,42 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
       'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check and any owner-approved deferrals, followed by each repository, branch and HEAD.',
       'Before committing, update CHANGELOG.md with the date and a full description of the changes, and write the same entry to its own file under docs/releases/ (creating docs/releases/ if it does not exist) named YYYY-MM-DD-HHmmss-<short-slug>.md using the current date and time so release files sort chronologically. Commit all work in the worktree to the current branch with a message naming the cause of {input} and the fix. Include untracked files. Do not push. Finish only when git status shows a clean tree. In your final note carry forward the verified outcome, evidence for each agreed check, any owner-approved deferrals and, under the heading Owner checks, every check the owner still has to carry out with what to do and expect, followed by each repository, branch and HEAD.',
     ],
-    // Feature Build from Spec from before Test repaired a test-only or evidence-only gap itself instead of sending it back for a round.
+    // The three build workflows from before Test repaired a test-only or evidence-only gap itself instead of sending it back for a round.
     [
       'Read the todo file docs/{input}, its session notes and the specification it names. Build the first phase in it with unticked tasks, and only that phase. Write failing tests first, make them pass, tick each task when done, add to the todo\'s session notes what the next round needs to know, leave changes uncommitted for Review and Test (do not run git commit), and record what changed.',
-      fromSpecPrompt('Develop'),
+      builtInPrompt('feature-build-from-spec', 'Develop'),
     ],
     [
       'Test the phase just built in the todo file docs/{input} against the acceptance checks of the specification it names. Untick any task that does not hold. While a phase in the todo still has unticked tasks, run only the tests for that phase. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. If an unticked task turns out to need what no agent here can have (a physical device, a real account or recipient, production), use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether the owner will check it themselves; when the owner says so, tick it, mark it "owner check" in the todo and list it in your note with what the owner should do and expect. Do not repeat passing tests on an unchanged diff. When no phase has unticked tasks, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in the todo has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.',
-      fromSpecPrompt('Test'),
+      builtInPrompt('feature-build-from-spec', 'Test'),
+    ],
+    [
+      'Build the first phase in plan.md with unticked tasks. Write failing tests first, make them pass, tick each task when done, leave changes uncommitted for Review and Commit (do not run git commit), and record what changed.',
+      builtInPrompt('feature-build', 'Develop'),
+    ],
+    [
+      'Test the phase just built. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. The Owner checks in plan.md do not wait: verify what an agent can of each and repeat them in your note with what the owner should do and expect. If an unticked task turns out to need what no agent here can have, or an artifact from a later step, use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether it becomes an owner check; when the owner says so, move it to Owner checks in plan.md. Do not repeat passing tests on an unchanged diff. When none is left, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.',
+      builtInPrompt('feature-build', 'Test'),
+    ],
+    [
+      'Build the first phase in plan.md with unticked tasks, following the specification named in the Specify note. Write failing tests first, make them pass, tick each task when done, leave changes uncommitted for Review and Commit (do not run git commit), and record what changed.',
+      builtInPrompt('feature-from-requirements', 'Develop'),
+    ],
+    [
+      'Test the phase just built against the acceptance checks in the specification named in the Specify note. Untick any task that does not hold. While a phase in plan.md still has unticked tasks, run only the tests for that phase. Set up what a check needs yourself (the app run from the worktree, test data, a test sign-in, an emulator or simulator); do not ask the owner for an environment or for evidence you can produce. The Owner checks in plan.md do not wait: verify what an agent can of each and repeat them in your note with what the owner should do and expect. If an unticked task turns out to need what no agent here can have, or an artifact from a later step, use NEEDS_INPUT once with what you tried and the evidence collected so far, and ask whether it becomes an owner check; when the owner says so, move it to Owner checks in plan.md. Do not repeat passing tests on an unchanged diff. When none is left, run the full test suite once for each repository with code changes, one suite at a time and never in parallel. Report CONTINUE while any phase in plan.md has unticked tasks. Report COMPLETE only when every task is ticked and the full test suite passes.',
+      builtInPrompt('feature-from-requirements', 'Test'),
     ],
   ]);
+
+  // An older stock prompt maps to the one after it; follow the chain so it reaches the newest in one start.
+  function upgradedStockPrompt(prompt) {
+    let current = STOCK_PROMPT_UPGRADES.get(prompt);
+    for (let hops = 0; current !== undefined && STOCK_PROMPT_UPGRADES.has(current); hops += 1) {
+      if (hops >= STOCK_PROMPT_UPGRADES.size) throw new Error('stock prompt upgrades form a cycle');
+      current = STOCK_PROMPT_UPGRADES.get(current);
+    }
+    return current;
+  }
 
   const STOCK_FEATURE_FROM_REQ_PLAN_PROMPT = 'Read the specification named in the Specify note and the code it touches. Change no code. Write plan.md in the run notes folder named by its README. Size the plan to the change: work one developer can build and test in a single sitting is one phase. Add a phase only for a further piece of working behaviour that builds on the one before it, never a phase that only checks or adds tests, and use at most 4 phases. Put each acceptance check as a task in the phase that builds what it checks. Use ## Phase N: <title> sections with - [ ] tasks. The phases together must cover every acceptance check. In your run note summarise the plan and say why it has as many phases as it has.';
 
@@ -497,7 +523,7 @@ export function createWorkflowStore(db, { now = () => new Date().toISOString() }
         const emptyRole = typeof node.role !== 'string' || !node.role.trim();
         const missingProps = !Object.hasOwn(node, 'readOnly') || !Object.hasOwn(node, 'approval') || emptyRole || !Object.hasOwn(node, 'askOwner');
         const localVerificationPrompt = isLocal ? LOCAL_VERIFICATION_PROMPT_UPGRADES.get(node.prompt) : undefined;
-        const nextPrompt = STOCK_PROMPT_UPGRADES.get(node.prompt) ?? localVerificationPrompt;
+        const nextPrompt = upgradedStockPrompt(node.prompt) ?? localVerificationPrompt;
         const capUntrackedLoop = ['bugfix', 'troubleshoot'].includes(row.kind)
           && ['Test', 'Verify'].includes(node.name)
           && node.repeat?.mode === 'loop_back'

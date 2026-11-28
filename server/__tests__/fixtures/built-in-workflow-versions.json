@@ -8,16 +8,16 @@
     "hash": "7532af6b2d6bf65ec1f689701dcff6c0b278684123e0154e1335f6768f1d5588"
   },
   "feature-build": {
-    "version": 1,
-    "hash": "4535ab456c445f1369f5abed0bebabed1dc903c47375bc44422e0773e1041152"
+    "version": 2,
+    "hash": "6754d49c74ff71fc93d9d4e3dfecc45e97d56182142c045adf6aa709fc8aaaf6"
   },
   "feature-build-from-spec": {
     "version": 2,
     "hash": "792abd833b5abb4253c91e39499e78f8c65dbb0afefd1041bdf7624acbda0c6b"
   },
   "feature-from-requirements": {
-    "version": 1,
-    "hash": "3b685f09be9f940dc272ea97420239db02ab50fc21117ad071f8356aa7ac9776"
+    "version": 2,
+    "hash": "98b42bfc38b9545a6571e5f8bc93131c126848ce1f397c65830e563453e333b6"
   },
   "troubleshoot": {
     "version": 2,
