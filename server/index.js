@@ -128,6 +128,7 @@ import { createTaskTerminalCloser } from './tasks/task-terminals.js';
 import { createTerminalDeleteHandler, createTerminalSessionDeleter } from './routes/terminal-delete.js';
 import { createSessionAttention } from './session-attention.js';
 import { createSessionStateService } from './session-state-service.js';
+import { isLiveRunStepSession } from './pipelines/run-terminal-muting.js';
 import { createSessionAttentionRouter } from './routes/session-attention.js';
 import { fileURLToPath } from 'node:url';
 import { createPrivateAccess } from './mobile-access.js';
@@ -917,10 +918,16 @@ const terminalWaitingStore = createTerminalWaitingStore(db);
 const terminalSessionWorktreeStore = createTerminalSessionWorktreeStore(db);
 // Finished, muted and last-activity state shared by the desktop and the phone.
 // Parked work that lands clears its own waiting mark here, with no browser open.
+let pipelineRunStoreForMobile = null;
 const sessionAttention = createSessionAttention({ db, now: Date.now, onLanded: sessionId => terminalWaitingStore.clear(sessionId) });
 const sessionStateService = createSessionStateService({
   attention: sessionAttention, waitingStore: terminalWaitingStore, now: Date.now,
   sessionExists: id => !deletedSessionIds.has(id) && (sessions.has(id) || reservedSessionIds.has(id) || sessionAttention.knows(id)),
+  // The run store is created further down, before the server listens; a read before then is a wiring bug.
+  isLiveRunStep: id => {
+    if (!pipelineRunStoreForMobile) throw new Error('session state: pipeline run store is not ready');
+    return isLiveRunStepSession(pipelineRunStoreForMobile.list(), id);
+  },
 });
 app.use(createSessionAttentionRouter({ service: sessionStateService }));
 app.use(createTerminalWaitingRouter({
@@ -959,7 +966,6 @@ deleteProject = createProjectDeletionService({
   },
 });
 terminalStatusCache.refreshSessionList();
-let pipelineRunStoreForMobile = null;
 const mobileDiscovery = createMobileDiscovery({
   store: mobileStore, sessions, deletedSessionIds, statusCache: terminalStatusCache,
   loadProjects, resolveHostRuntime, getReachability: hostReachability.getReachability, namingStore,

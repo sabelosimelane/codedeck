@@ -10,11 +10,11 @@ import { createSessionAttentionRouter } from '../routes/session-attention.js';
 
 const opened = [];
 const BASE = '/api/session-attention';
-function setup({ exists = id => id.startsWith('p-') } = {}) {
+function setup({ exists = id => id.startsWith('p-'), liveRunSteps = new Set() } = {}) {
   const db = new Database(':memory:'); opened.push(db);
   const waitingStore = createTerminalWaitingStore(db);
   const attention = createSessionAttention({ db, now: () => 1_000_000, onLanded: id => waitingStore.clear(id) });
-  const service = createSessionStateService({ attention, waitingStore, sessionExists: exists, now: () => Date.parse('2026-11-10T17:00:00.000Z') });
+  const service = createSessionStateService({ attention, waitingStore, sessionExists: exists, isLiveRunStep: id => liveRunSteps.has(id), now: () => Date.parse('2026-11-10T17:00:00.000Z') });
   return { attention, waitingStore, service };
 }
 const observed = (attention, id = 'p-1') => { attention.observe({ sessionId: id, status: 'running', activityHint: 10 }); attention.observe({ sessionId: id, status: 'idle', activityHint: 10 }); };
@@ -73,9 +73,20 @@ describe('session state service', () => {
     expect(() => service.apply('p-7', { muted: true })).toThrow(expect.objectContaining({ status: 409 }));
     expect(service.apply('p-7', { waiting: true }).waiting).toBe(true);
   });
-  it.each(['attention', 'waitingStore', 'sessionExists', 'now'])('requires %s', field => {
+  // The run owns the signal while its current step works: an agent pausing between turns, or
+  // waiting for the run to confirm its handoff, is not work waiting for the owner.
+  it('does not report the current step terminal of a working run as finished', () => {
+    const liveRunSteps = new Set(['p-1']);
+    const { attention, service } = setup({ liveRunSteps });
+    observed(attention);
+    expect(service.describe('p-1').finished).toBe(false);
+    expect(service.annotate({ sessionId: 'p-1', alive: true, executionStatus: 'idle' }).finished).toBe(false);
+    liveRunSteps.delete('p-1');
+    expect(service.describe('p-1').finished).toBe(true);
+  });
+  it.each(['attention', 'waitingStore', 'sessionExists', 'isLiveRunStep', 'now'])('requires %s', field => {
     const { attention, waitingStore } = setup();
-    const deps = { attention, waitingStore, sessionExists: () => true, now: () => 1 };
+    const deps = { attention, waitingStore, sessionExists: () => true, isLiveRunStep: () => false, now: () => 1 };
     expect(() => createSessionStateService({ ...deps, [field]: undefined })).toThrow(new RegExp(field));
   });
 });
