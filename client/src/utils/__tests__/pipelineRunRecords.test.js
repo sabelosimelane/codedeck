@@ -86,12 +86,14 @@ it.each([
   expect(() => parseNotePage({ data: [{ ...note, [field]: bad }], page: { currentPage: 0, size: 20, totalElements: 1, totalPages: 1, hasNextPage: false } })).toThrow(field);
 });
 it('validates every progress field and status combination', () => {
-  const phase = { number: 3, title: 'Review', tasksDone: 0, tasksTotal: 11 };
+  const phase = { number: 3, position: 3, title: 'Review', tasksDone: 0, tasksTotal: 11 };
   const good = { file: 'docs/todo.md', status: 'in_progress', phaseCount: 9, phase };
   expect(parseRun({ ...validRun(), progress: good }).progress).toEqual(good);
   for (const [field, bad] of [
     ['file', { ...good, file: '' }], ['status', { ...good, status: 'bad' }],
     ['phaseCount', { ...good, phaseCount: 0 }], ['phase.number', { ...good, phase: { ...phase, number: -1 } }],
+    ['phase.position', { ...good, phase: { ...phase, position: undefined } }], ['phase.position', { ...good, phase: { ...phase, position: 0 } }],
+    ['phase.position', { ...good, phase: { ...phase, position: 10 } }],
     ['phase.title', { ...good, phase: { ...phase, title: 1 } }],
     ['phase.tasksDone', { ...good, phase: { ...phase, tasksDone: 12 } }],
     ['phase.tasksTotal', { ...good, phase: { ...phase, tasksTotal: -1 } }],

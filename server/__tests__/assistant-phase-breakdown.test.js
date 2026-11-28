@@ -8,7 +8,7 @@ describe('parsePhaseBreakdown', () => {
       { number: 1, title: 'Setup', done: 1, total: 1 },
       { number: 2, title: 'Build', done: 1, total: 2 },
     ]);
-    expect(parsePhaseProgress(markdown)).toEqual({ phaseCount: 2, phase: { number: 2, title: 'Build', tasksDone: 1, tasksTotal: 2 }, tasksDone: 2, tasksTotal: 3 });
+    expect(parsePhaseProgress(markdown)).toEqual({ phaseCount: 2, phase: { number: 2, position: 2, title: 'Build', tasksDone: 1, tasksTotal: 2 }, tasksDone: 2, tasksTotal: 3 });
   });
   it('rejects a non-string markdown value', () => expect(() => parsePhaseBreakdown(null)).toThrow('markdown'));
 });

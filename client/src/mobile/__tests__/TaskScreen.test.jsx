@@ -74,7 +74,7 @@ describe('a task on the phone', () => {
   });
 
   it('shows the phase the run is in', () => {
-    show(run({ progress: { file: 'docs/todos/fix.md', status: 'in_progress', phaseCount: 3, phase: { number: 2, title: 'Greeting', tasksTotal: 5, tasksDone: 2 } } }));
+    show(run({ progress: { file: 'docs/todos/fix.md', status: 'in_progress', phaseCount: 3, phase: { number: 2, position: 2, title: 'Greeting', tasksTotal: 5, tasksDone: 2 } } }));
     expect(screen.getByText('Phase 2 of 3: Greeting · 2 of 5 tasks done')).toBeTruthy();
   });
 });
@@ -171,7 +171,7 @@ describe('what the task screen requires', () => {
 
 describe('limit recovery on the phone', () => {
   const capped = run({ status: 'limit_paused', currentStepIndex: 1,
-    progress: { file: 'docs/todos/fix.md', status: 'in_progress', phaseCount: 6, phase: { number: 8, title: 'Relay', tasksTotal: 4, tasksDone: 2 } },
+    progress: { file: 'docs/todos/fix.md', status: 'in_progress', phaseCount: 6, phase: { number: 8, position: 5, title: 'Relay', tasksTotal: 4, tasksDone: 2 } },
     actions: { ...run().actions, stop: true, continue: true },
     steps: [
       run().steps[0],

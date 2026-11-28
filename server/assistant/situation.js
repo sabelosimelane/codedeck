@@ -64,7 +64,7 @@ function checkedProgress(progress, id) {
     file: text(progress.file, 'progress.file', id),
     status: text(progress.status, 'progress.status', id),
     phaseCount: count(progress.phaseCount, 'progress.phaseCount', id, true),
-    phase: phase === null ? null : { number: count(phase.number, 'progress.phase.number', id), title: text(phase.title, 'progress.phase.title', id), tasksDone: count(phase.tasksDone, 'progress.phase.tasksDone', id), tasksTotal: count(phase.tasksTotal, 'progress.phase.tasksTotal', id) },
+    phase: phase === null ? null : { number: count(phase.number, 'progress.phase.number', id), position: count(phase.position, 'progress.phase.position', id), title: text(phase.title, 'progress.phase.title', id), tasksDone: count(phase.tasksDone, 'progress.phase.tasksDone', id), tasksTotal: count(phase.tasksTotal, 'progress.phase.tasksTotal', id) },
     tasksDone: count(progress.tasksDone, 'progress.tasksDone', id, true),
     tasksTotal: count(progress.tasksTotal, 'progress.tasksTotal', id, true),
   };

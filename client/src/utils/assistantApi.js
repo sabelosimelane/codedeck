@@ -70,6 +70,7 @@ export function parseSituation(value) {
         if (run.progress.phase !== null) {
           object(run.progress.phase, `${field}.progress.phase`);
           number(run.progress.phase.number, `${field}.progress.phase.number`);
+          number(run.progress.phase.position, `${field}.progress.phase.position`);
           text(run.progress.phase.title, `${field}.progress.phase.title`);
           number(run.progress.phase.tasksDone, `${field}.progress.phase.tasksDone`);
           number(run.progress.phase.tasksTotal, `${field}.progress.phase.tasksTotal`);

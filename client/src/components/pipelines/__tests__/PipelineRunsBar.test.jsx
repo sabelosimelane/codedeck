@@ -182,8 +182,8 @@ describe('PipelineRunsBar', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
   it.each([
-    [{ file: 'docs/todo.md', status: 'in_progress', phaseCount: 9, phase: { number: 3, title: 'Room review', tasksDone: 0, tasksTotal: 11 } }, 'Phase 3 of 9: Room review', '0/11 tasks'],
-    [{ file: 'docs/todo.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, title: '', tasksDone: 1, tasksTotal: 2 } }, 'Phase 1 of 1', '1/2 tasks'],
+    [{ file: 'docs/todo.md', status: 'in_progress', phaseCount: 9, phase: { number: 3, position: 3, title: 'Room review', tasksDone: 0, tasksTotal: 11 } }, 'Phase 3 of 9: Room review', '0/11 tasks'],
+    [{ file: 'docs/todo.md', status: 'in_progress', phaseCount: 1, phase: { number: 1, position: 1, title: '', tasksDone: 1, tasksTotal: 2 } }, 'Phase 1 of 1', '1/2 tasks'],
     [{ file: 'docs/todo.md', status: 'all_done', phaseCount: 2, phase: null }, 'All 2 phases ticked', null],
     [{ file: 'docs/todo.md', status: 'all_done', phaseCount: 1, phase: null }, 'All 1 phase ticked', null],
     [{ file: 'docs/todo.md', status: 'no_phases', phaseCount: null, phase: null }, 'No "## Phase N" sections in docs/todo.md', null],

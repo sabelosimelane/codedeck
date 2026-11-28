@@ -2,6 +2,7 @@ import React from 'react';
 import { Check } from 'lucide-react';
 import { describeWorktreeGroup } from '../utils/worktreeGroups';
 import { describeRunStatus } from '../utils/pipelineRunStatus';
+import { formatPhasePosition } from '../utils/phaseLabel';
 
 export default function WorktreeGroupHeader({ group, selected, onClick }) {
   const run = group.run;
@@ -11,7 +12,7 @@ export default function WorktreeGroupHeader({ group, selected, onClick }) {
   const note = run?.steps?.findLast(step => step.note?.summary)?.note?.summary;
   const currentStep = run?.steps?.find(step => ['running', 'launching', 'needs_input', 'awaiting_approval', 'limit_reached'].includes(step.status));
   const detail = phase && Number.isInteger(phase.number) && Number.isInteger(run.progress.phaseCount)
-    ? `Phase ${phase.number} of ${run.progress.phaseCount}`
+    ? formatPhasePosition(phase, run.progress.phaseCount)
     : note ?? currentStep?.name ?? null;
   return (
     <button type="button" onClick={event => { event.stopPropagation(); onClick(); }}

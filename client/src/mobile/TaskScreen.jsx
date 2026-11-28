@@ -4,6 +4,7 @@ import QuestionsPanel from '../components/tasks/QuestionsPanel.jsx';
 import ApprovalReview from '../components/tasks/ApprovalReview.jsx';
 import { describeLimitPause, describeRunCompletion, describeRunStatus, describeStepProgress, describeStepState } from '../utils/pipelineRunStatus';
 import '../components/tasks/task-view.css';
+import { formatPhasePosition } from '../utils/phaseLabel';
 
 // What the highlighted button says for the actions the phone offers.
 const ACTION_LABEL = { resume: 'Resume', continue: 'Continue past the limit' };
@@ -44,8 +45,8 @@ function LimitNote({ runId, stepIndex, onLoadNotes }) {
 
 function progressLine(progress) {
   if (progress === null || progress.status !== 'in_progress') return null;
-  const { number, title, tasksDone, tasksTotal } = progress.phase;
-  return `Phase ${number} of ${progress.phaseCount}${title ? `: ${title}` : ''} · ${tasksDone} of ${tasksTotal} tasks done`;
+  const { title, tasksDone, tasksTotal } = progress.phase;
+  return `${formatPhasePosition(progress.phase, progress.phaseCount)}${title ? `: ${title}` : ''} · ${tasksDone} of ${tasksTotal} tasks done`;
 }
 
 /**

@@ -11,6 +11,7 @@ import ApprovalReview from './ApprovalReview.jsx';
 import QuestionsPanel from './QuestionsPanel.jsx';
 import '../pipelines/pipeline-runs.css';
 import './task-view.css';
+import { formatPhasePosition } from '../../utils/phaseLabel';
 
 const STATE_ICON = { done: Check, current: CircleDot, failed: TriangleAlert, stopped: Square, pending: Circle };
 
@@ -30,7 +31,7 @@ function cleanupConfirmation(run) {
 function progressLine(progress) {
   if (progress === null || progress === undefined) return null;
   if (progress.status === 'in_progress') {
-    return { tone: 'plain', text: `Phase ${progress.phase.number} of ${progress.phaseCount}${progress.phase.title ? `: ${progress.phase.title}` : ''}`,
+    return { tone: 'plain', text: `${formatPhasePosition(progress.phase, progress.phaseCount)}${progress.phase.title ? `: ${progress.phase.title}` : ''}`,
       detail: `${progress.phase.tasksDone}/${progress.phase.tasksTotal} tasks in this phase` };
   }
   if (progress.status === 'all_done') return { tone: 'accent', text: `All ${progress.phaseCount} ${progress.phaseCount === 1 ? 'phase' : 'phases'} ticked`, detail: null };
