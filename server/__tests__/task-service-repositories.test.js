@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, promises as fsPromises, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createTaskStore } from '../tasks/task-store.js';
 import { createTaskService } from '../tasks/task-service.js';
 import { planTaskFolder } from '../pipelines/run-worktree.js';
+import { createHostRuntimeResolver } from '../host-runtime-resolver.js';
+import { createMobileSessionStarter } from '../mobile-session-start.js';
+import { getProjectLocation, normalizeHostName, normalizeProject } from '../project-config.js';
+import { createTerminalSessionHostStore } from '../terminal-session-host-store.js';
+import { createWorktreeSessionStarter } from '../terminal-session-worktree-start.js';
+import { createTerminalSessionWorktreeStore } from '../terminal-session-worktree-store.js';
 import { git, groupFixture } from './helpers/group-fixture.js';
 import { setTaskState } from './helpers/task-state.js';
 
@@ -180,9 +186,9 @@ describe('a task across the repositories of a project', { timeout: 30_000 }, () 
       const { tasks, start, folder } = await setup();
       const task = await tasks.create({ project: 'Demo', title: 'WhatsApp replies', repositories: ['mobile-app', 'backend'] });
       expect(await tasks.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo', host: 'local', worktreeId: task.worktrees[0].id });
-      expect(start).toHaveBeenLastCalledWith('Demo', { cwd: path.join(folder, 'mobile-app') });
+      expect(start).toHaveBeenLastCalledWith('Demo', { cwd: path.join(folder, 'mobile-app'), host: 'local', skipSync: true });
       expect(await tasks.openTerminal(ID, { worktreeId: task.worktrees[1].id })).toMatchObject({ worktreeId: task.worktrees[1].id });
-      expect(start).toHaveBeenLastCalledWith('Demo', { cwd: path.join(folder, 'backend') });
+      expect(start).toHaveBeenLastCalledWith('Demo', { cwd: path.join(folder, 'backend'), host: 'local', skipSync: true });
     });
 
     it('opens in the oldest open worktree once the first is finished, and refuses a finished or unknown one', async () => {
@@ -190,7 +196,7 @@ describe('a task across the repositories of a project', { timeout: 30_000 }, () 
       const task = await tasks.create({ project: 'Demo', title: 'WhatsApp replies', repositories: ['mobile-app', 'backend'] });
       setTaskState(taskStore, ID, { state: 'closed' });
       expect(await tasks.openTerminal(ID)).toMatchObject({ worktreeId: task.worktrees[1].id });
-      expect(start).toHaveBeenLastCalledWith('Demo', { cwd: path.join(folder, 'backend') });
+      expect(start).toHaveBeenLastCalledWith('Demo', { cwd: path.join(folder, 'backend'), host: 'local', skipSync: true });
       expect(await rejection(tasks.openTerminal(ID, { worktreeId: task.worktrees[0].id }))).toMatchObject({ status: 409, message: 'This repository of the task is finished.' });
       expect(await rejection(tasks.openTerminal(ID, { worktreeId: '7b000000-0000-4000-8000-000000000099' })))
         .toMatchObject({ status: 400, errors: [{ field: 'worktreeId', message: 'Use the id of one of this task\'s worktrees' }] });
@@ -415,6 +421,237 @@ describe('a task across the repositories of a project', { timeout: 30_000 }, () 
       expect(taskStore.get(ID).worktrees).toHaveLength(1);
       await tasks.addRepository(ID, { worktreePath: made });
       expect(await rejection(tasks.addRepository(ID, { worktreePath: handMade(tools, 'tools-again') }))).toMatchObject({ status: 409, message: 'tools is already part of this task.' });
+    });
+  });
+
+  describe('cross-host task terminals', () => {
+    const INCARNATION = '8d7f3a7e-8a54-4d5b-9d5e-7f4b6a0c2e11';
+    const REMOTE_HOST = 'media-server';
+    const REMOTE_ROOT = '/home/sabside/git/demo';
+
+    function setupCrossHost({ defaultHost = REMOTE_HOST } = {}) {
+      const ctx = groupFixture();
+      let projects = [
+        normalizeProject({
+          name: 'Demo',
+          defaultHost,
+          autoSync: false,
+          locations: [
+            {
+              host: 'local',
+              path: ctx.backend,
+              repositories: [
+                { name: 'mobile-app', path: ctx.mobile },
+                { name: 'frontend', path: ctx.frontendMain },
+              ],
+            },
+            {
+              host: REMOTE_HOST,
+              path: `${REMOTE_ROOT}/backend`,
+              repositories: [
+                { name: 'mobile-app', path: `${REMOTE_ROOT}/mobile-app` },
+                { name: 'frontend', path: `${REMOTE_ROOT}/frontend` },
+              ],
+            },
+          ],
+        }),
+      ];
+
+      const db = new Database(':memory:');
+      databases.push(db);
+      const taskStore = createTaskStore(db);
+      const sessionHostStore = createTerminalSessionHostStore(db);
+      const worktreeStore = createTerminalSessionWorktreeStore(db);
+
+      const localRuntime = {
+        createDetachedSession: vi.fn(),
+        getSessionIncarnationAsync: vi.fn(async () => INCARNATION),
+      };
+      const remoteRuntime = {
+        createDetachedSessionAsync: vi.fn(async () => {}),
+        getSessionIncarnationAsync: vi.fn(async () => INCARNATION),
+      };
+
+      const hostRuntimeResolver = createHostRuntimeResolver({
+        loadProjects: () => projects,
+        loadHosts: () => [{ name: REMOTE_HOST, sshTarget: REMOTE_HOST }],
+        sessionHostStore,
+        createRuntime: () => remoteRuntime,
+      });
+
+      let nextSessionNumber = 1;
+      const reserveSessionId = vi.fn(async (projectName, opts) => {
+        const project = projects.find(candidate => candidate.name === projectName);
+        const targetHost = normalizeHostName(opts?.host || project.defaultHost);
+        const location = getProjectLocation(project, targetHost);
+        const sessionId = `${projectName}-${nextSessionNumber++}`;
+        worktreeStore.clear(sessionId);
+        sessionHostStore.set({ sessionId, project: projectName, host: location.host });
+        return { sessionId, host: location.host, path: location.path };
+      });
+
+      const mobileStarter = createMobileSessionStarter({
+        loadProjects: () => projects,
+        saveProjects: next => { projects = next; },
+        reserveSessionId,
+        releaseReservation: vi.fn(),
+        resolveHostRuntime: hostRuntimeResolver.resolveHostRuntime,
+        localRuntime,
+        store: { adoptIncarnation: (_id, value) => value },
+        now: () => 5000,
+      });
+
+      const startSessionWithWorktree = createWorktreeSessionStarter({
+        start: (project, options) => mobileStarter.start(project, options),
+        loadProjects: () => projects,
+        store: worktreeStore,
+        now: () => '2026-11-28T06:57:19.000Z',
+      });
+
+      const resolveHostTools = host => (host === REMOTE_HOST
+        ? {
+          host: REMOTE_HOST,
+          runner: null,
+          execFile: () => { throw new Error('unexpected remote execFile'); },
+          pathExists: async target => target.startsWith(`${REMOTE_ROOT}/`),
+          realpath: async target => target,
+          mkdir: async () => {},
+          rmdir: async () => {},
+        }
+        : {
+          host: 'local',
+          runner: null,
+          execFile,
+          pathExists: async target => existsSync(target),
+          realpath: target => fsPromises.realpath(target),
+          mkdir: (dir, opts) => fsPromises.mkdir(dir, opts),
+          rmdir: target => fsPromises.rmdir(target),
+        });
+
+      const ids = [ID, '7a000000-0000-4000-8000-000000000002'];
+      const tasks = createTaskService({
+        isRunWorking: () => false,
+        taskStore,
+        findProject: name => projects.find(candidate => candidate.name === name) ?? null,
+        execFile,
+        resolveHostTools,
+        startSession: startSessionWithWorktree,
+        pathExists: async target => existsSync(target),
+        newId: () => ids.shift(),
+      });
+
+      return { ...ctx, taskStore, sessionHostStore, worktreeStore, localRuntime, remoteRuntime, reserveSessionId, tasks };
+    }
+
+    it('reserves and starts local task terminals on local with the selected worktree even when the project default host is remote', async () => {
+      const { tasks, sessionHostStore, worktreeStore, localRuntime, remoteRuntime, reserveSessionId } = setupCrossHost({ defaultHost: REMOTE_HOST });
+      const task = await tasks.create({
+        project: 'Demo',
+        title: 'Wake up with many calls',
+        host: 'local',
+        repositories: ['backend', 'mobile-app'],
+      });
+      expect(task.host).toBe('local');
+
+      const [backendWorktree, mobileWorktree] = task.worktrees;
+      const first = await tasks.openTerminal(task.id);
+      const selected = await tasks.openTerminal(task.id, { worktreeId: mobileWorktree.id });
+
+      expect(first).toEqual({
+        sessionId: 'Demo-1',
+        taskId: task.id,
+        project: 'Demo',
+        host: 'local',
+        worktreeId: backendWorktree.id,
+      });
+      expect(selected).toEqual({
+        sessionId: 'Demo-2',
+        taskId: task.id,
+        project: 'Demo',
+        host: 'local',
+        worktreeId: mobileWorktree.id,
+      });
+
+      expect({
+        reservedHosts: [
+          sessionHostStore.get(first.sessionId)?.host,
+          sessionHostStore.get(selected.sessionId)?.host,
+        ],
+        recordedWorktrees: [
+          worktreeStore.get(first.sessionId)?.worktreePath,
+          worktreeStore.get(selected.sessionId)?.worktreePath,
+        ],
+        localRuntimeCalls: localRuntime.createDetachedSession.mock.calls.map(([arg]) => arg),
+        remoteRuntimeCalls: remoteRuntime.createDetachedSessionAsync.mock.calls.map(([arg]) => arg),
+      }).toEqual({
+        reservedHosts: ['local', 'local'],
+        recordedWorktrees: [backendWorktree.worktreePath, mobileWorktree.worktreePath],
+        localRuntimeCalls: [
+          { sessionId: 'Demo-1', cwd: backendWorktree.worktreePath, cols: 120, rows: 32 },
+          { sessionId: 'Demo-2', cwd: mobileWorktree.worktreePath, cols: 120, rows: 32 },
+        ],
+        remoteRuntimeCalls: [],
+      });
+      expect(reserveSessionId).toHaveBeenNthCalledWith(1, 'Demo', expect.objectContaining({ host: 'local' }));
+      expect(reserveSessionId).toHaveBeenNthCalledWith(2, 'Demo', expect.objectContaining({ host: 'local' }));
+    });
+
+    it('starts an explicitly remote task terminal on its remote host with the remote worktree when the project default host is local', async () => {
+      const { tasks, taskStore, sessionHostStore, worktreeStore, localRuntime, remoteRuntime, reserveSessionId } = setupCrossHost({ defaultHost: 'local' });
+      const remoteFolder = `${REMOTE_ROOT}/worktrees/remote-task-7a000000`;
+      const remoteBackend = `${remoteFolder}/backend`;
+      const remoteMobile = `${remoteFolder}/mobile-app`;
+      const commit = '0123456789abcdef0123456789abcdef01234567';
+      const task = taskStore.create({
+        id: ID,
+        project: 'Demo',
+        host: REMOTE_HOST,
+        title: 'Remote task',
+        titleSource: 'owner',
+        folder: remoteFolder,
+        repository: 'backend',
+        repositoryPath: null,
+        worktreePath: remoteBackend,
+        branch: 'task/remote-task-7a000000',
+        baseBranch: 'main',
+        baseCommit: commit,
+        others: [
+          {
+            repository: 'mobile-app',
+            repositoryPath: `${REMOTE_ROOT}/mobile-app`,
+            worktreePath: remoteMobile,
+            branch: 'task/remote-task-7a000000',
+            baseBranch: 'main',
+            baseCommit: commit,
+          },
+        ],
+      });
+
+      const first = await tasks.openTerminal(task.id);
+      const selected = await tasks.openTerminal(task.id, { worktreeId: task.worktrees[1].id });
+
+      expect(first.host).toBe(REMOTE_HOST);
+      expect(selected.host).toBe(REMOTE_HOST);
+      expect(reserveSessionId).toHaveBeenNthCalledWith(1, 'Demo', expect.objectContaining({ host: REMOTE_HOST }));
+      expect(reserveSessionId).toHaveBeenNthCalledWith(2, 'Demo', expect.objectContaining({ host: REMOTE_HOST }));
+      expect(sessionHostStore.get(first.sessionId)?.host).toBe(REMOTE_HOST);
+      expect(sessionHostStore.get(selected.sessionId)?.host).toBe(REMOTE_HOST);
+      expect(worktreeStore.get(first.sessionId)?.worktreePath).toBe(remoteBackend);
+      expect(worktreeStore.get(selected.sessionId)?.worktreePath).toBe(remoteMobile);
+
+      expect(remoteRuntime.createDetachedSessionAsync).toHaveBeenNthCalledWith(1, {
+        sessionId: 'Demo-1',
+        cwd: remoteBackend,
+        cols: 120,
+        rows: 32,
+      });
+      expect(remoteRuntime.createDetachedSessionAsync).toHaveBeenNthCalledWith(2, {
+        sessionId: 'Demo-2',
+        cwd: remoteMobile,
+        cols: 120,
+        rows: 32,
+      });
+      expect(localRuntime.createDetachedSession).not.toHaveBeenCalled();
     });
   });
 });

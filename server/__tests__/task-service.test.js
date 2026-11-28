@@ -204,7 +204,7 @@ describe('task service', () => {
     const { service, start } = setup();
     const task = await service.create({ project: 'Demo', title: 'Terminal' });
     expect(await service.openTerminal(ID)).toEqual({ sessionId: 'Demo-3', taskId: ID, project: 'Demo', host: 'local', worktreeId: task.worktrees[0].id });
-    expect(start).toHaveBeenCalledWith('Demo', { cwd: task.worktreePath });
+    expect(start).toHaveBeenCalledWith('Demo', { cwd: task.worktreePath, host: 'local', skipSync: true });
   });
 
   it('refuses a terminal for a missing, finished or vanished task', async () => {
