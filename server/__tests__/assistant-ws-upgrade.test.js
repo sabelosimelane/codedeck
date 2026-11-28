@@ -31,16 +31,48 @@ describe('assistant WebSocket routing', () => {
       const ws = new Socket(); handler(ws, { url }); expect(ws.code).toBe(code);
     }
   });
-  it('a second socket takes over one project and ends the old bridge', () => {
-    const close = vi.fn(); const bridge = vi.fn(() => ({ close }));
-    const notice = { id: 7, conversationId: 'c', role: 'notice', content: 'The assistant was opened elsewhere.', toolName: null, proposalId: null, createdAt: '2026-11-25T20:00:00.000Z' };
+  const notice = { id: 7, conversationId: 'c', role: 'notice', content: 'The assistant was opened elsewhere.', toolName: null, proposalId: null, createdAt: '2026-11-25T20:00:00.000Z' };
+  const demo = () => ({ name: 'Demo', defaultHost: 'local', path: '/tmp' });
+  it('a second socket for the same conversation and settings takes over the running agent', () => {
+    const live = { close: vi.fn(), attach: vi.fn(), sameSettings: vi.fn(() => true) }; const bridge = vi.fn(() => live);
     const append = vi.fn(() => notice);
-    const handler = createAssistantSocketHandler({ findProject: () => ({ name: 'Demo', defaultHost: 'local', path: '/tmp' }), store: { current: () => ({ id: 'c', project: 'Demo', state: 'current' }), append }, bridge });
+    const handler = createAssistantSocketHandler({ findProject: demo, store: { current: () => ({ id: 'c', project: 'Demo', state: 'current' }), append }, bridge });
     const first = new Socket(); const second = new Socket();
     handler(first, { url: '/ws/assistant?project=Demo' }); handler(second, { url: '/ws/assistant?project=Demo' });
+    expect(bridge).toHaveBeenCalledTimes(1);
+    expect(live.attach).toHaveBeenCalledWith(second); expect(live.close).not.toHaveBeenCalled();
     expect(first.sent).toContainEqual({ type: 'message', message: notice });
     expect(append).toHaveBeenCalledWith('c', { role: 'notice', content: 'The assistant was opened elsewhere.' });
-    expect(first.readyState).toBe(3); expect(close).toHaveBeenCalled(); expect(bridge).toHaveBeenCalledTimes(2);
+  });
+  it('a reload whose old socket already closed takes over the agent without a notice', () => {
+    const live = { close: vi.fn(), attach: vi.fn(), sameSettings: () => true }; const bridge = vi.fn(() => live);
+    const append = vi.fn(() => notice);
+    const handler = createAssistantSocketHandler({ findProject: demo, store: { current: () => ({ id: 'c', project: 'Demo', state: 'current' }), append }, bridge });
+    const first = new Socket(); handler(first, { url: '/ws/assistant?project=Demo' }); first.close();
+    const second = new Socket(); handler(second, { url: '/ws/assistant?project=Demo' });
+    expect(bridge).toHaveBeenCalledTimes(1); expect(live.attach).toHaveBeenCalledWith(second); expect(append).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['the assistant settings changed', { id: 'c' }, false],
+    ['a new conversation started', { id: 'd' }, true],
+  ])('starts a fresh agent when %s, ending the old one', (_case, next, same) => {
+    const old = { close: vi.fn(), attach: vi.fn(), sameSettings: () => same }; const fresh = { close: vi.fn(), attach: vi.fn(), sameSettings: () => true };
+    const bridge = vi.fn().mockReturnValueOnce(old).mockReturnValueOnce(fresh);
+    let conversation = { id: 'c', project: 'Demo', state: 'current' };
+    const handler = createAssistantSocketHandler({ findProject: demo, store: { current: () => conversation, append: vi.fn(() => notice) }, bridge });
+    const first = new Socket(); handler(first, { url: '/ws/assistant?project=Demo' });
+    conversation = { ...conversation, ...next };
+    const second = new Socket(); handler(second, { url: '/ws/assistant?project=Demo' });
+    expect(old.close).toHaveBeenCalled(); expect(old.attach).not.toHaveBeenCalled(); expect(first.readyState).toBe(3);
+    expect(bridge).toHaveBeenCalledTimes(2); expect(bridge.mock.calls[1][0]).toBe(second);
+  });
+  it('starts a fresh agent once the old one has ended by itself', () => {
+    const bridge = vi.fn((ws, { onClosed }) => ({ close: vi.fn(), attach: vi.fn(), sameSettings: () => true, end: onClosed }));
+    const handler = createAssistantSocketHandler({ findProject: demo, store: { current: () => ({ id: 'c', project: 'Demo', state: 'current' }), append: vi.fn(() => notice) }, bridge });
+    handler(new Socket(), { url: '/ws/assistant?project=Demo' });
+    bridge.mock.results[0].value.end();
+    handler(new Socket(), { url: '/ws/assistant?project=Demo' });
+    expect(bridge).toHaveBeenCalledTimes(2); expect(bridge.mock.results[0].value.attach).not.toHaveBeenCalled();
   });
   it('reports bridge start errors to the browser before closing with 1011', () => {
     const error = new Error('adapter unavailable'); const log = vi.spyOn(console, 'error').mockImplementation(() => {});

@@ -193,7 +193,7 @@ export default function AssistantChat({ projectName, onDecision, onSituationFlag
           let frame;
           try { frame = parseAssistantFrame(event.data); }
           catch (failure) { setChatError(`Invalid assistant socket message: ${failure.message}`); setStatus(previous => previous === 'running' ? 'ready' : previous); return; }
-          if (frame.type === 'ready') { agentNameRef.current = frame.agentName; setActiveConfig({ agentName: frame.agentName, provider: frame.provider, model: frame.model, effort: frame.effort, mode: frame.mode }); setStatus('ready'); return; }
+          if (frame.type === 'ready') { agentNameRef.current = frame.agentName; setActiveConfig({ agentName: frame.agentName, provider: frame.provider, model: frame.model, effort: frame.effort, mode: frame.mode }); setStatus(frame.turnRunning ? 'running' : 'ready'); return; }
           if (frame.type === 'auth') { setAuth(frame); return; }
           if (frame.type === 'proposal') { noteStamp(frame.proposal.createdAt); upsertProposal(frame.proposal); return; }
           if (frame.type === 'situation') { onSituationFlagsRef.current?.(frame.flags); return; }

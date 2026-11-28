@@ -201,6 +201,43 @@ describe('ACP bridge with fake stdio agent', () => {
     ws.receive({ type: 'prompt', text });
     expect(await waitFor(ws, 'permission_request')).toMatchObject({ requestId: 90 });
   });
+  it('keeps the agent and its turn when the socket drops, and lets a new socket carry on with it', async () => {
+    const { store, ws, conversation, connect } = setup({ detachGraceMs: 5000 }); const bridge = connect(); await waitFor(ws, 'ready');
+    ws.receive({ type: 'prompt', text: 'permission' });
+    await waitFor(ws, 'permission_request');
+    ws.close();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(bridge.child.exitCode).toBeNull(); expect(bridge.child.killed).toBe(false);
+    const second = new Socket(); sockets.push(second); bridge.attach(second);
+    expect(await waitFor(second, 'ready')).toMatchObject({ conversationId: conversation.id, restarted: false, turnRunning: true, agentName: 'claude agent' });
+    expect(await waitFor(second, 'permission_request')).toMatchObject({ requestId: 90, toolCall: { title: 'Edit file' } });
+    second.receive({ type: 'permission_response', requestId: 90, outcome: { outcome: 'selected', optionId: 'allow' } });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(second.sent.some(frame => frame.update?.content?.text === '{"outcome":"selected","optionId":"allow"}')).toBe(true);
+    // A third socket gets what the turn has said so far, and nothing it has already been answered.
+    second.close();
+    const third = new Socket(); sockets.push(third); bridge.attach(third);
+    expect(await waitFor(third, 'ready')).toMatchObject({ turnRunning: true });
+    expect(third.sent).toContainEqual({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"outcome":"selected","optionId":"allow"}' } } });
+    expect(third.sent.some(frame => frame.type === 'permission_request')).toBe(false);
+    expect(store.messages(conversation.id).data.filter(message => message.role === 'notice')).toEqual([]);
+  });
+  it('sends nothing more to a socket another one replaced, and ignores what it sends', async () => {
+    const { ws, connect } = setup({ detachGraceMs: 5000 }); const bridge = connect(); await waitFor(ws, 'ready');
+    const second = new Socket(); sockets.push(second); bridge.attach(second);
+    await waitFor(second, 'ready');
+    expect(ws.readyState).toBe(3);
+    const before = ws.sent.length;
+    ws.emit('message', JSON.stringify({ type: 'prompt', text: 'hello' }));
+    second.receive({ type: 'prompt', text: 'hello' });
+    await waitFor(second, 'turn_end');
+    expect(ws.sent.length).toBe(before);
+    expect(bridge.child.exitCode).toBeNull();
+  });
+  it('refuses a bridge without a valid grace period', () => {
+    const { connect } = setup({ detachGraceMs: 0 });
+    expect(() => connect()).toThrow(/detachGraceMs/);
+  });
   it('announces a restart when the transcript exists', async () => {
     const { store, ws, conversation, connect } = setup(); store.append(conversation.id, { role: 'owner', content: 'old' }); connect();
     expect(await waitFor(ws, 'ready')).toMatchObject({ restarted: true });
@@ -489,13 +526,14 @@ describe('ACP bridge process lifecycle', () => {
   const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const exited = child => new Promise(resolve => { if (child.exitCode !== null || child.signalCode !== null) resolve({ code: child.exitCode, signal: child.signalCode }); else child.once('exit', (code, signal) => resolve({ code, signal })); });
 
-  it('ends the adapter process when the socket closes', async () => {
+  it('ends the adapter process when the socket closes and no panel comes back in time', async () => {
     let child;
-    const { ws, connect } = setup({ spawnFn: (command, args, options) => (child = spawn(command, args, options)) });
+    const { ws, connect } = setup({ detachGraceMs: 50, spawnFn: (command, args, options) => (child = spawn(command, args, options)) });
     connect();
     await waitFor(ws, 'ready');
     expect(alive(child.pid)).toBe(true);
     ws.close();
+    expect(alive(child.pid)).toBe(true);
     const result = await exited(child);
     expect(result.signal).toBe('SIGTERM');
     expect(alive(child.pid)).toBe(false);
@@ -504,11 +542,11 @@ describe('ACP bridge process lifecycle', () => {
   it('kills an adapter that ignores SIGTERM after three seconds', async () => {
     let child;
     const stubborn = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
-    const { ws, connect } = setup({ command: process.execPath, args: ['-e', stubborn], spawnFn: (command, args, options) => (child = spawn(command, args, options)) });
-    connect();
+    const { connect } = setup({ command: process.execPath, args: ['-e', stubborn], spawnFn: (command, args, options) => (child = spawn(command, args, options)) });
+    const bridge = connect();
     await new Promise(resolve => setTimeout(resolve, 300));
     const started = Date.now();
-    ws.close();
+    bridge.close();
     const result = await exited(child);
     expect(result.signal).toBe('SIGKILL');
     expect(Date.now() - started).toBeGreaterThanOrEqual(2900);

@@ -206,7 +206,7 @@ export function parseAssistantFrame(raw) {
   const integer = (value, field) => valid(Number.isSafeInteger(value) && value > 0, field);
   const requestId = (value, field) => valid((Number.isSafeInteger(value) && value >= 0) || (typeof value === 'string' && value.length > 0), field);
   switch (frame.type) {
-    case 'ready': valid(uuid(frame.conversationId), 'conversationId'); boolean(frame.restarted, 'restarted'); text(frame.agentId, 'agentId'); text(frame.agentName, 'agentName'); text(frame.provider, 'provider'); nullableText(frame.model, 'model'); nullableText(frame.effort, 'effort'); text(frame.mode, 'mode'); break;
+    case 'ready': valid(uuid(frame.conversationId), 'conversationId'); boolean(frame.restarted, 'restarted'); text(frame.agentId, 'agentId'); text(frame.agentName, 'agentName'); text(frame.provider, 'provider'); nullableText(frame.model, 'model'); nullableText(frame.effort, 'effort'); text(frame.mode, 'mode'); boolean(frame.turnRunning, 'turnRunning'); break;
     case 'notice': text(frame.message, 'message'); integer(frame.messageId, 'messageId'); break;
     case 'message': parseMessage(frame.message); break;
     case 'update': {

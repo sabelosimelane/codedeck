@@ -19,8 +19,20 @@ beforeEach(() => { vi.stubGlobal('WebSocket', FakeWebSocket); mock.fetchCurrentC
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); sockets.length = 0; });
 const situation = flags => ({ flags });
 
-const READY = { type: 'ready', restarted: false, agentId: '00000000-0000-4000-8000-0000000000a1', agentName: 'Claude Opus', provider: 'claude', model: 'opus', effort: 'high', mode: 'default' };
+const READY = { type: 'ready', restarted: false, agentId: '00000000-0000-4000-8000-0000000000a1', agentName: 'Claude Opus', provider: 'claude', model: 'opus', effort: 'high', mode: 'default', turnRunning: false };
 describe('AssistantChat chat', () => {
+  it('reconnecting during a turn shows it working, with what it has said so far, until the turn ends', async () => {
+    render(<AssistantChat projectName="Demo" />);
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].receive({ ...READY, conversationId: conversation.id, turnRunning: true });
+    sockets[0].receive({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Checking V70 so far.' } } });
+    expect(await screen.findByText('Claude Opus is working…')).toBeTruthy();
+    expect(screen.getByText('Checking V70 so far.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    sockets[0].receive({ type: 'turn_end', messageId: 12 });
+    expect(await screen.findByText('Ready')).toBeTruthy();
+    expect(screen.getByText('Checking V70 so far.')).toBeTruthy();
+  });
   it('shows the active Claude account and unauthenticated state, ignoring command updates', async () => {
     render(<AssistantChat projectName="Demo" />);
     await waitFor(() => expect(sockets.length).toBe(1));

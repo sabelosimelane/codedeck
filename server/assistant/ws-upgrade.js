@@ -27,21 +27,38 @@ export function createAssistantSocketHandler({ findProject, store, proposalStore
     if (!project) { ws.close(4404, 'Project not found'); return; }
     if (!isLocalProject(project)) { ws.close(4409, 'Only local projects are supported'); return; }
     if (typeof project.path !== 'string' || !project.path) { ws.close(4404, 'Project path is missing'); return; }
+    const failStart = error => { console.error('[assistant] bridge start failed', error); if (live.get(projectName)?.ws === ws) live.delete(projectName); if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'spawn_error', message: error.message })); ws.close(1011, 'Assistant could not start'); };
+    let conversation;
+    try { conversation = store.current(projectName); } catch (error) { failStart(error); return; }
     const previous = live.get(projectName);
+    // A panel still open elsewhere is told it was replaced; one that reloaded is already gone.
+    const tellReplaced = () => {
+      if (previous.ws === ws || previous.ws.readyState !== 1) return;
+      try {
+        const notice = store.append(previous.conversationId, { role: 'notice', content: 'The assistant was opened elsewhere.' });
+        previous.ws.send(JSON.stringify({ type: 'message', message: notice }));
+      } catch (error) { console.error('[assistant] takeover notice failed', error); previous.ws.send(JSON.stringify({ type: 'error', message: error.message })); }
+    };
+    // The same conversation with the same settings keeps its agent, and a running turn with it.
+    if (previous?.bridge && previous.conversationId === conversation.id && previous.bridge.sameSettings()) {
+      tellReplaced();
+      previous.ws = ws;
+      try { previous.bridge.attach(ws); } catch (error) { failStart(error); }
+      return;
+    }
     if (previous) {
-      if (previous.ws.readyState === 1) {
-        try {
-          const notice = store.append(previous.conversationId, { role: 'notice', content: 'The assistant was opened elsewhere.' });
-          previous.ws.send(JSON.stringify({ type: 'message', message: notice }));
-        } catch (error) { console.error('[assistant] takeover notice failed', error); previous.ws.send(JSON.stringify({ type: 'error', message: error.message })); }
-      }
+      tellReplaced();
+      live.delete(projectName);
       previous.bridge?.close();
       previous.ws.close();
     }
-    const entry = { ws, bridge: null }; live.set(projectName, entry);
-    ws.on('close', () => { if (live.get(projectName) === entry) live.delete(projectName); });
-    try { const conversation = store.current(projectName); entry.conversationId = conversation.id; entry.bridge = bridge(ws, { project: projectName, cwd: project.path, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings, agentStore }); }
-    catch (error) { console.error('[assistant] bridge start failed', error); live.delete(projectName); if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'spawn_error', message: error.message })); ws.close(1011, 'Assistant could not start'); }
+    const entry = { ws, bridge: null, conversationId: conversation.id }; live.set(projectName, entry);
+    // The entry lasts as long as its agent, not its socket: a panel that comes back takes it over.
+    const onClosed = () => { if (live.get(projectName) === entry) live.delete(projectName); };
+    try {
+      entry.bridge = bridge(ws, { project: projectName, cwd: project.path, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings, agentStore, onClosed });
+      if (!entry.bridge) onClosed();
+    } catch (error) { failStart(error); }
   };
   handler.pushProposal = (projectName, proposal) => { live.get(projectName)?.bridge?.pushProposal?.(proposal); };
   handler.pushSituation = (projectName, flags) => { live.get(projectName)?.bridge?.pushSituation?.(flags); };

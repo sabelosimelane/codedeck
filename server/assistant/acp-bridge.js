@@ -13,6 +13,10 @@ const DEFAULT_MCP_SERVER_PATH = fileURLToPath(new URL('./mcp-server.js', import.
 const NOTICE = 'The assistant restarted and does not remember the earlier messages.';
 const RESTARTED_BRIEF_NOTICE = 'The assistant restarted and does not remember the earlier messages; it has been briefed again on the current situation.';
 const BRIEFED_NOTICE = 'Assistant briefed on the current situation.';
+// How long the agent outlives a panel that went away (a reload, a hot update, a dropped
+// connection) waiting for it to come back. A panel that comes back in time carries on the
+// same agent and its running turn.
+const DETACH_GRACE_MS = 120_000;
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const idValid = value => (typeof value === 'string' && value.length > 0) || (Number.isSafeInteger(value) && value >= 0);
 const fields = (value, allowed) => plain(value) && Object.keys(value).every(key => allowed.includes(key));
@@ -54,10 +58,14 @@ export function describeProposalDecision(proposal) {
   return 'completed';
 }
 
-export function handleAssistantConnection(ws, { project, cwd, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings, agentStore, mcpServerPath = DEFAULT_MCP_SERVER_PATH, command, args, spawnFn = spawn } = {}) {
+export function handleAssistantConnection(firstWs, { project, cwd, conversation, store, proposalStore, compose, sessionTokens, assistantUrl, settings, agentStore, mcpServerPath = DEFAULT_MCP_SERVER_PATH, command, args, spawnFn = spawn, detachGraceMs = DETACH_GRACE_MS, onClosed } = {}) {
   if (typeof project !== 'string' || !project || typeof cwd !== 'string' || !path.isAbsolute(cwd) || conversation?.project !== project || conversation?.state !== 'current' || !store) throw new TypeError('Invalid assistant connection');
   if (compose !== undefined && typeof compose !== 'function') throw new TypeError('Invalid assistant compose function');
   if (typeof settings !== 'function') throw new TypeError('Invalid assistant settings function');
+  if (!Number.isSafeInteger(detachGraceMs) || detachGraceMs <= 0) throw new TypeError(`Invalid assistant detachGraceMs: ${String(detachGraceMs)}`);
+  if (onClosed !== undefined && typeof onClosed !== 'function') throw new TypeError('Invalid assistant onClosed callback');
+  // The panel's socket. A panel that reconnects replaces it (attach), and the agent carries on.
+  let ws = firstWs;
   // An error frame says whether a turn is still running, so the panel keeps a streaming answer
   // through errors raised in the middle of a turn and re-enables Send only after one that ended it.
   let activeTurn = false;
@@ -79,6 +87,10 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
   catch (error) { send({ type: 'spawn_error', message: error.message }); ws.close(); return null; }
   let closed = false; let stderrTail = ''; let buffer = ''; let nextId = 1; let sessionId = null; let turnText = ''; let modeReady = false; let authState = null; let firstPromptBrief = null; let setHeldMode; let started = false; let modeLost = false;
   let issuedToken = null;
+  // What a panel that reconnects is told again: the ready frame, the last auth state and the
+  // permission requests still waiting for an answer.
+  let readyFrame = null; let authFrame = null; let detachTimer = null;
+  const permissionRequests = new Map();
   const reportedDecisions = new Set((proposalStore?.listDecided?.(conversation.id) ?? []).map(item => item.id));
   const pending = new Map(); const permissions = new Map(); const toolCalls = new Map();
   const oneLine = value => value.replace(/\s+/g, ' ').trim();
@@ -100,12 +112,13 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
   const shutdown = () => {
     if (closed) return;
     closed = true;
+    clearTimeout(detachTimer); detachTimer = null;
     if (issuedToken && sessionTokens) {
       sessionTokens.end(issuedToken.token);
       issuedToken = null;
     }
     for (const entry of pending.values()) entry.reject(new Error('ACP process closed'));
-    pending.clear(); permissions.clear();
+    pending.clear(); permissions.clear(); permissionRequests.clear();
     if (child.exitCode === null && !child.killed) {
       child.kill('SIGTERM');
       const timer = setTimeout(() => { if (child.exitCode === null) child.kill('SIGKILL'); }, 3000);
@@ -113,9 +126,20 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
       child.once('exit', () => clearTimeout(timer));
     }
     if (ws.readyState === 1) ws.close();
+    onClosed?.();
   };
   const streamError = error => { if (closed) return; send(errorFrame(`ACP stream failed: ${error.message}`)); shutdown(); };
-  ws.on('close', shutdown);
+  // Only the current socket is heard. When it closes the agent waits for a panel to come back.
+  const listen = socket => {
+    socket.on('message', raw => { if (socket === ws) onBrowserFrame(raw); });
+    socket.on('close', () => {
+      if (socket !== ws || closed) return;
+      clearTimeout(detachTimer);
+      detachTimer = setTimeout(shutdown, detachGraceMs);
+      detachTimer.unref?.();
+    });
+  };
+  listen(ws);
   child.on('error', error => { send({ type: 'spawn_error', message: error.message }); shutdown(); });
   child.on('exit', (code, signal) => { if (!closed) { send({ type: 'agent_exit', code, signal, stderrTail }); shutdown(); } });
   child.stdin.on('error', streamError);
@@ -143,7 +167,9 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
       const once = isCodedeckAssistantTool(params.toolCall) ? params.options.find(option => option.kind === 'allow_once') : undefined;
       if (once) { write({ id: frame.id, result: { outcome: { outcome: 'selected', optionId: once.optionId } } }); return; }
       permissions.set(frame.id, new Set(params.options.map(option => option.optionId)));
-      send({ type: 'permission_request', requestId: frame.id, toolCall: params.toolCall, options: params.options });
+      const asked = { type: 'permission_request', requestId: frame.id, toolCall: params.toolCall, options: params.options };
+      permissionRequests.set(frame.id, asked);
+      send(asked);
       return;
     }
     if (frame.id === undefined && frame.method === 'session/update') {
@@ -176,7 +202,8 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
       if (!plain(params) || !['authenticated', 'unauthenticated'].includes(params.state) || (params.accounts !== undefined && (!Array.isArray(params.accounts) || !params.accounts.every(account => plain(account) && typeof account.label === 'string' && typeof account.active === 'boolean')))) throw new Error('Invalid ACP auth status update.');
       authState = params.state;
       const label = params.state === 'authenticated' ? (params.accounts?.find(account => account.active)?.label ?? null) : null;
-      send({ type: 'auth', state: authState, label });
+      authFrame = { type: 'auth', state: authState, label };
+      send(authFrame);
       return;
     }
     if (frame.id === undefined && typeof frame.method === 'string' && frame.method.startsWith('_')) return;
@@ -281,7 +308,8 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
       modeReady = true;
       failurePrefix = `The assistant could not start ${profile.label}`;
       const restarted = store.hasMessages(conversation.id);
-      send({ type: 'ready', conversationId: conversation.id, restarted, agentId: agent.id, agentName: agent.name, provider: profile.id, model: active(profile.modelOption)?.currentValue ?? null, effort: profile.effortOption ? active(profile.effortOption)?.currentValue ?? null : null, mode: profile.heldMode.id });
+      readyFrame = { type: 'ready', conversationId: conversation.id, restarted, agentId: agent.id, agentName: agent.name, provider: profile.id, model: active(profile.modelOption)?.currentValue ?? null, effort: profile.effortOption ? active(profile.effortOption)?.currentValue ?? null : null, mode: profile.heldMode.id };
+      send({ ...readyFrame, turnRunning: activeTurn });
       if (restarted) {
         const notice = store.append(conversation.id, { role: 'notice', content: briefed ? RESTARTED_BRIEF_NOTICE : NOTICE });
         send({ type: 'message', message: notice });
@@ -291,7 +319,7 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
       }
     } catch (error) { if (!closed) { send({ type: 'spawn_error', message: `${failurePrefix}: ${error.message}` }); shutdown(); } }
   })();
-  ws.on('message', raw => {
+  function onBrowserFrame(raw) {
     if (closed) return;
     let frame; try { frame = JSON.parse(raw.toString()); } catch { send({ type: 'error', message: 'Invalid JSON message.' }); return; }
     if (!plain(frame) || typeof frame.type !== 'string') { send(errorFrame('Invalid browser frame.')); return; }
@@ -318,23 +346,46 @@ export function handleAssistantConnection(ws, { project, cwd, conversation, stor
         if (typeof result?.stopReason !== 'string') throw new Error('ACP turn ended without stopReason');
         flushTools();
         const saved = turnText ? store.append(conversation.id, { role: 'agent', content: turnText }) : null;
-        activeTurn = false; turnText = '';
+        activeTurn = false; turnText = ''; permissionRequests.clear();
         send({ type: 'turn_end', messageId: saved?.id ?? null });
-      }).catch(error => { if (closed) return; try { flushTools(); } catch (failure) { send(errorFrame(failure.message)); shutdown(); return; } activeTurn = false; turnText = ''; send({ type: 'turn_end', messageId: null }); send({ type: 'error', message: authState === 'unauthenticated' || error.message === 'Authentication required' ? `${profile.label} is not signed in on this machine. Sign in, then send again.` : error.message }); });
+      }).catch(error => { if (closed) return; try { flushTools(); } catch (failure) { send(errorFrame(failure.message)); shutdown(); return; } activeTurn = false; turnText = ''; permissionRequests.clear(); send({ type: 'turn_end', messageId: null }); send({ type: 'error', message: authState === 'unauthenticated' || error.message === 'Authentication required' ? `${profile.label} is not signed in on this machine. Sign in, then send again.` : error.message }); });
     } else if (frame.type === 'cancel') {
       if (!activeTurn) { send(errorFrame('No turn is running.')); return; }
       write({ method: 'session/cancel', params: { sessionId } });
       // ACP: a cancelled turn's open permission requests are answered with the cancelled outcome.
       for (const requestId of permissions.keys()) write({ id: requestId, result: { outcome: { outcome: 'cancelled' } } });
-      permissions.clear();
+      permissions.clear(); permissionRequests.clear();
     } else if (frame.type === 'permission_response') {
       if (!idValid(frame.requestId) || !permissions.has(frame.requestId)) { send({ type: 'error', message: 'Unknown permission requestId.' }); return; }
       if (!fields(frame.outcome, frame.outcome?.outcome === 'selected' ? ['outcome', 'optionId'] : ['outcome']) || !['selected', 'cancelled'].includes(frame.outcome.outcome) || (frame.outcome.outcome === 'selected' && !permissions.get(frame.requestId).has(frame.outcome.optionId))) { send({ type: 'error', message: 'Invalid permission outcome.' }); return; }
-      permissions.delete(frame.requestId); write({ id: frame.requestId, result: { outcome: frame.outcome } });
+      permissions.delete(frame.requestId); permissionRequests.delete(frame.requestId); write({ id: frame.requestId, result: { outcome: frame.outcome } });
     } else send({ type: 'error', message: 'Unknown message type.' });
-  });
+  }
+  /** A panel that reconnected carries on this agent: it replaces the socket and is told where things are. */
+  const attach = socket => {
+    if (closed) throw new Error('The assistant has ended; start a new one.');
+    clearTimeout(detachTimer); detachTimer = null;
+    const previous = ws;
+    ws = socket;
+    listen(socket);
+    if (previous !== socket && previous.readyState === 1) previous.close();
+    if (readyFrame === null) return;
+    send({ ...readyFrame, restarted: false, turnRunning: activeTurn });
+    if (authFrame) send(authFrame);
+    if (activeTurn && turnText) send({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: turnText } } });
+    for (const asked of permissionRequests.values()) send(asked);
+  };
+  /** Whether the saved assistant choice is still the one this agent was started with. */
+  const sameSettings = () => {
+    let now;
+    // A choice that no longer validates is not this agent's; the fresh start reports why.
+    try { now = validateAssistantSettings(settings(), agentStore); } catch (error) { console.error('[assistant] settings no longer valid; starting a fresh agent', error); return false; }
+    return now.agentId === selected.agentId && now.effort === selected.effort && JSON.stringify(agentStore.get(now.agentId)) === JSON.stringify(agent);
+  };
   return {
     child,
+    attach,
+    sameSettings,
     close: shutdown,
     pushProposal: proposal => { if (!closed) send({ type: 'proposal', proposal }); },
     pushSituation: flags => { if (!closed) send({ type: 'situation', flags }); },

@@ -7,7 +7,7 @@ describe('assistant socket frames', () => {
   const id = '00000000-0000-4000-8000-000000000001';
   const message = { id: 1, conversationId: id, role: 'owner', content: 'hello', toolName: null, proposalId: null, createdAt: '2026-11-25T20:00:00.000Z' };
   const frames = [
-    { type: 'ready', conversationId: id, restarted: false, agentId: id, agentName: 'Claude', provider: 'claude', model: 'opus', effort: 'high', mode: 'default' },
+    { type: 'ready', conversationId: id, restarted: false, agentId: id, agentName: 'Claude', provider: 'claude', model: 'opus', effort: 'high', mode: 'default', turnRunning: false },
     { type: 'notice', message: 'hello', messageId: 2 },
     { type: 'message', message },
     { type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } } },
