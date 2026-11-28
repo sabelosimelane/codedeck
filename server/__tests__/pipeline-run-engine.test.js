@@ -3027,7 +3027,7 @@ describe('createRunEngine — a loop of steps', () => {
   const looping = (max = 3) => definition({
     steps: [defStep('Develop'), defStep('Test', { mode: 'loop_back', toStepIndex: 0, max }), defStep('Review')],
   });
-  const LOOP_GUIDANCE = 'This step closes a loop: CodeDeck repeats the steps from "Develop" to "Test" in order, round after round. Use COMPLETE only when the whole task is finished and no step of the loop has work left; use CONTINUE when another round is needed.';
+  const LOOP_GUIDANCE = 'This step closes a loop: CodeDeck repeats the steps from "Develop" to "Test" in order, round after round. Use COMPLETE when no step of the loop has work left, even when work remains for "Review" or a later step: those steps run only after you report COMPLETE. Use CONTINUE only when a step of the loop has work left.';
 
   beforeEach(() => {
     vi.useFakeTimers();

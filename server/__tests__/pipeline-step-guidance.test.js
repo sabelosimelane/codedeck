@@ -8,7 +8,12 @@ const definition = (agentsDecide, ...steps) => ({
 });
 const loop = toStepIndex => ({ mode: 'loop_back', toStepIndex, max: 20 });
 
-const LOOP = 'This step closes a loop: CodeDeck repeats the steps from "Develop" to "Test" in order, round after round. Use COMPLETE only when the whole task is finished and no step of the loop has work left; use CONTINUE when another round is needed.';
+const LOOP_HEAD = 'This step closes a loop: CodeDeck repeats the steps from "Develop" to "Test" in order, round after round.';
+const LOOP_CONTINUE = 'Use CONTINUE only when a step of the loop has work left.';
+// A loop followed by more steps: their work (a commit, say) is no reason for another round.
+const loopThen = next => `${LOOP_HEAD} Use COMPLETE when no step of the loop has work left, even when work remains for "${next}" or a later step: those steps run only after you report COMPLETE. ${LOOP_CONTINUE}`;
+// A loop that ends the workflow.
+const LOOP = `${LOOP_HEAD} Use COMPLETE when no step of the loop has work left; the run then ends. ${LOOP_CONTINUE}`;
 const DECIDE = 'The owner is not available during this run. Do not stop for a decision you can make yourself: choose the option you would recommend, write down the decision and your reason where this project keeps such notes, and continue. Use NEEDS_INPUT only when you cannot continue at all.';
 const OPTIONS = { worktreePath: '/tmp/worktrees/run' };
 const OWN = 'You own the test environment: whatever a check needs that this machine can give (the app running from this worktree on ports nothing else uses, test data, a test sign-in, an emulator or simulator, a browser), set it up yourself and stop what you started. Do not ask the owner for an environment, a test harness or evidence you can produce yourself: use NEEDS_INPUT for one only after you tried, and say what you tried and what failed.';
@@ -69,7 +74,7 @@ describe('buildStepGuidance', () => {
 
   it('tells the step that closes a loop what COMPLETE and CONTINUE mean for the loop', () => {
     const def = definition(false, step('Setup', { mode: 'until_complete', max: 3 }, 'setup'), step('Develop'), step('Test', loop(1)), step('Review'));
-    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} ${OWN} ${LOOP}`);
+    expect(buildStepGuidance(def, 2, OPTIONS)).toBe(`${BOUNDARY} ${OWN} ${loopThen('Review')}`);
     // The steps inside and after the loop get nothing.
     expect(buildStepGuidance(def, 1, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
     expect(buildStepGuidance(def, 3, OPTIONS)).toBe(`${BOUNDARY} ${OWN}`);
@@ -103,11 +108,11 @@ describe('buildStepGuidance', () => {
 
   it('stays on one line and within what the loop engine accepts, whatever the step names', () => {
     const long = 'N'.repeat(64);
-    const def = definition(true, step(long), step(`${long}2`.slice(0, 64), loop(0)));
+    const def = definition(true, step(long), step(`${long}2`.slice(0, 64), loop(0)), step(`${long}3`.slice(0, 64)));
     const guidance = buildStepGuidance(def, 1, OPTIONS);
     expect(guidance.length).toBeLessThanOrEqual(2000);
     const fixedLength = guidance.length - OPTIONS.worktreePath.length;
-    expect(fixedLength).toBe(1000 + OWN.length + 1);
+    expect(fixedLength).toBe(1137 + OWN.length + 1);
     expect(guidance).not.toMatch(/[\x00-\x1f\x7f]/);
   });
   it('includes read-only and feedback text in the worst-case guidance budget', () => {
