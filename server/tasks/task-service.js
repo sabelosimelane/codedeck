@@ -710,9 +710,7 @@ export function createTaskService({
       if (!exists) throw new TaskError("This task's files are no longer on disk.", 409);
       let started;
       try {
-        const startOpts = task.host && task.host !== LOCAL_HOST
-          ? { cwd: worktree.worktreePath, host: task.host, skipSync: true }
-          : { cwd: worktree.worktreePath };
+        const startOpts = { cwd: worktree.worktreePath, host: task.host ?? LOCAL_HOST, skipSync: true };
         started = await startSession(task.project, startOpts);
         if (typeof started?.id !== 'string' || started.id.length === 0) throw new Error('Terminal session ID is invalid');
       } catch (error) {
