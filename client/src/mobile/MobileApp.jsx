@@ -5,6 +5,9 @@ import { createCompanionApi, normalizeInstanceUrl, validateCapabilities, validat
 import { buildNowView } from './nowView';
 import { createRunsApi } from './runsApi';
 import TaskScreen from './TaskScreen';
+import ConfirmSheet from './ConfirmSheet';
+import { describeRunControls } from './runControls';
+import { describeLimitPause } from '../utils/pipelineRunStatus';
 import { watchNative, enableNotifications, hideKeyboard, showKeyboard, isPushConfigured, restoreNotifications } from './native';
 import { getThemeMode, setThemeMode, getResolvedTheme, THEME_CHANGE_EVENT } from '../theme';
 import './mobile.css';
@@ -38,19 +41,26 @@ const Glyph=({d,label,size=14})=><svg role={label?'img':undefined} aria-label={l
 const REFRESH_MS=5000;
 const LONG_PRESS_MS=500;
 
-/** One session in the Now list. A tap opens it; a long press (or context menu) offers its actions. */
-function SessionRow({row,index,onOpen,onActions}){
+/** A tap, or a long press (or context menu) that offers actions instead. */
+function useLongPress(onLong,onTap){
  const timer=useRef(null),pressed=useRef(false),origin=useRef(null);
  const cancel=()=>{if(timer.current){clearTimeout(timer.current);timer.current=null;}};
  useEffect(()=>cancel,[]);
- const actions=()=>{pressed.current=true;onActions(row);};
+ const long=()=>{pressed.current=true;onLong();};
+ return {
+  onPointerDown:event=>{pressed.current=false;origin.current={x:event.clientX,y:event.clientY};cancel();timer.current=setTimeout(long,LONG_PRESS_MS);},
+  onPointerMove:event=>{if(origin.current&&(Math.abs(event.clientX-origin.current.x)>10||Math.abs(event.clientY-origin.current.y)>10))cancel();},
+  onPointerUp:cancel,onPointerLeave:cancel,onPointerCancel:cancel,
+  onContextMenu:event=>{event.preventDefault();cancel();if(!pressed.current)long();},
+  onClick:()=>{if(pressed.current){pressed.current=false;return;}onTap();},
+ };
+}
+
+/** One session in the Now list. A tap opens it; a long press (or context menu) offers its actions. */
+function SessionRow({row,index,onOpen,onActions}){
+ const press=useLongPress(()=>onActions(row),()=>onOpen(row.session));
  return <li className="m-rise" style={{'--i':index}}>
-  <button className={`m-row m-press is-age-${row.age}`}
-   onPointerDown={event=>{pressed.current=false;origin.current={x:event.clientX,y:event.clientY};cancel();timer.current=setTimeout(actions,LONG_PRESS_MS);}}
-   onPointerMove={event=>{if(origin.current&&(Math.abs(event.clientX-origin.current.x)>10||Math.abs(event.clientY-origin.current.y)>10))cancel();}}
-   onPointerUp={cancel} onPointerLeave={cancel} onPointerCancel={cancel}
-   onContextMenu={event=>{event.preventDefault();cancel();if(!pressed.current)actions();}}
-   onClick={()=>{if(pressed.current){pressed.current=false;return;}onOpen(row.session);}}>
+  <button className={`m-row m-press is-age-${row.age}`} {...press}>
    <span className={`m-dot is-${row.tone}`}/>
    <span className="m-row-body">
     <span className="m-row-title">{row.title}</span>
@@ -63,10 +73,11 @@ function SessionRow({row,index,onOpen,onActions}){
  </li>;
 }
 
-/** One workflow run in the Now list, shown as its task. A tap opens the task. */
-function TaskRow({row,index,onOpen}){
+/** One workflow run in the Now list, shown as its task. A tap opens the task; a long press offers its run's actions. */
+function TaskRow({row,index,onOpen,onActions}){
+ const press=useLongPress(()=>onActions(row),()=>onOpen(row));
  return <li className="m-rise" style={{'--i':index}}>
-  <button className="m-row m-press" onClick={()=>onOpen(row)}>
+  <button className="m-row m-press" {...press}>
    <span className={`m-dot is-${row.tone}`}/>
    <span className="m-row-body">
     <span className="m-row-title">{row.title}</span>
@@ -79,6 +90,38 @@ function TaskRow({row,index,onOpen}){
  </li>;
 }
 
+/**
+ * What you can do to a run without opening its task: approve the step that waits, run one more
+ * round at a limit, resume, close or stop it, each asked first as on the task screen. Answers
+ * need the task screen, which Open task reaches.
+ */
+function RunActionsSheet({row,busy,onOpen,onAct,onApprove,onClose}){
+ const {run}=row;
+ const [asking,setAsking]=useState(null);
+ const pause=describeLimitPause(run);
+ const waiting=run.approvalRequest&&run.actions?.approve?run.approvalRequest:null;
+ const items=[
+  ...(waiting?[{key:'approve',label:`Approve ${waiting.stepName}`,confirm:`Approve ${waiting.stepName} and continue ${run.workflowName}?${waiting.note?.summary?` ${waiting.stepName} concluded: ${waiting.note.summary}`:''}`,confirmLabel:'Approve',send:()=>onApprove(run.id)}]:[]),
+  ...(pause&&run.actions?.continue?[{key:'continue',label:pause.actionLabel,confirm:null,send:()=>onAct('continue',run.id,{stepIndex:pause.stepIndex,roundsCompleted:pause.roundsCompleted,extraRounds:pause.extraRounds})}]:[]),
+  ...describeRunControls(run).actions.map(item=>({key:item.action,label:item.label,confirm:item.confirm,confirmLabel:item.label,danger:item.action==='stop',send:()=>onAct(item.action,run.id)})),
+ ];
+ const send=async item=>{setAsking(null);const done=await item.send();if(done)onClose();};
+ return <div className="m-sheet-layer">
+  <div className="m-backdrop" aria-hidden="true" onClick={onClose}/>
+  <div className="m-sheet m-sheet-auto" role="dialog" aria-modal="true" aria-labelledby="m-run-actions">
+   <span className="m-grabber" aria-hidden="true"/>
+   <div className="m-actions-head">
+    <h2 id="m-run-actions">{row.title}</h2>
+    <p><span className={`m-dot is-${row.tone}`}/><span className={`m-state is-${row.tone}`}>{row.label}</span><span> · {row.workflowName}</span></p>
+   </div>
+   <div className="m-actions">
+    <button className="m-action m-press" onClick={()=>onOpen(row)}><span className="m-action-text">Open task</span></button>
+    {items.map(item=><button key={item.key} className="m-action m-press" disabled={busy} onClick={()=>item.confirm===null?send(item):setAsking(item)}><span className={`m-action-text${item.danger?' is-danger':''}`}>{item.label}</span></button>)}
+   </div>
+  </div>
+  {asking&&<ConfirmSheet message={asking.confirm} confirmLabel={asking.confirmLabel} danger={asking.danger} busy={busy} onCancel={()=>setAsking(null)} onConfirm={()=>send(asking)}/>}
+ </div>;
+}
 /** What you can do to a session without opening it. Every change is shared with the desktop. */
 function SessionActionsSheet({row,busy,showOpen,onOpen,onApply,onClose}){
  const {session}=row;
@@ -159,7 +202,7 @@ function Companion(){
  const [projects,setProjects]=useState([]),[sessions,setSessions]=useState([]),[selected,setSelected]=useState(null);
  const [permission,setPermission]=useState('prompt'),[composer,setComposer]=useState(false),[draft,setDraft]=useState(''),[ctrl,setCtrl]=useState(false);
  const [search,setSearch]=useState(''),[scope,setScope]=useState('active'),[now,setNow]=useState(()=>Date.now());
- const [actionsFor,setActionsFor]=useState(null),[stateBusy,setStateBusy]=useState(false);
+ const [actionsFor,setActionsFor]=useState(null),[stateBusy,setStateBusy]=useState(false),[runActionsFor,setRunActionsFor]=useState(null);
  const refreshing=useRef(false),stateBusyRef=useRef(false),refresh=useRef(null);
  const [alerts,setAlerts]=useState(false);
  const [sheetOpen,setSheetOpen]=useState(false),[starting,setStarting]=useState(null);
@@ -200,13 +243,67 @@ function Companion(){
  const answerRun=(runId,answer)=>runAction(run=>`Answer sent to ${run.workflowName}`,()=>runsApi.current.answer(runId,answer));
  const approveRun=runId=>runAction(run=>`${run.workflowName} approved`,()=>runsApi.current.approve(runId));
  const sendBackRun=(runId,comment)=>runAction(run=>`${run.workflowName} sent back`,()=>runsApi.current.sendBack(runId,comment));
- const actOnRun=(action,runId,grant)=>action==='resume'
+ // Close run: the run leaves the open list, and the screen goes back to it.
+ async function closeRun(runId){
+  if(runBusyRef.current)return null;
+  runBusyRef.current=true;setRunBusy(true);
+  try{
+   const {run:next,terminalsClosed,terminalsNotClosed}=await runsApi.current.cleanup(runId);
+   if(terminalsNotClosed.length)showToast({type:'error',message:`${plural(terminalsNotClosed.length,'terminal')} could not be closed: ${terminalsNotClosed.join(', ')}. Close ${terminalsNotClosed.length===1?'it from its tab':'them from their tabs'}.`});
+   if(next.worktree?.state==='removal_blocked'){
+    setRuns(rows=>rows.map(row=>row.id===next.id?next:row));
+    showToast({type:'error',message:`${next.workflowName} worktree cleanup was blocked`});return next;
+   }
+   const closed=terminalsClosed.length?` ${plural(terminalsClosed.length,'terminal')} closed.`:'';
+   showToast({type:'success',message:next.worktree?.state==='released'?`${next.workflowName} run closed; its work is left in place.${closed}`:`${next.workflowName} cleaned up.${closed}`});
+   setRuns(rows=>rows.filter(row=>row.id!==next.id));
+   if(current.current.screen==='task'){setScreen('sessions');setOpenRun(null);}
+   return next;
+  }catch(err){showToast({type:'error',message:err.message});return null;}
+  finally{runBusyRef.current=false;setRunBusy(false);}
+ }
+ const actOnRun=(action,runId,grant)=>action==='cleanup'?closeRun(runId):action==='resume'
   ?runAction(run=>`${run.workflowName} resumed`,()=>runsApi.current.resume(runId))
   :action==='stop'
   ?runAction(run=>`${run.workflowName} stopped`,()=>runsApi.current.stop(runId))
   :runAction(run=>`${run.workflowName} started one more ${run.steps?.find?.(step=>(step.extraRounds??0)>0)?.repeat?.mode==='until_complete'?'pass':'round'}`,()=>runsApi.current.continuePast(runId,grant));
  async function loadRunNotes(runId,page,stepIndex){
   try{return await runsApi.current.listNotes(runId,page,stepIndex);}
+  catch(err){showToast({type:'error',message:err.message});return null;}
+ }
+ async function loadLanding(taskId){
+  try{return await runsApi.current.listLandings(taskId);}
+  catch(err){showToast({type:'error',message:err.message});return null;}
+ }
+ // A landing action, in the desktop's words. A refusal says why: its reasons and any conflicting files.
+ async function land(kind,taskId,worktreeId,extra){
+  const withClosed=(words,result)=>result.terminalsClosed?.length?`${words} ${plural(result.terminalsClosed.length,'terminal')} closed.`:words;
+  const actions={
+   commit:()=>runsApi.current.commit(taskId,worktreeId,extra.message),
+   merge:()=>runsApi.current.merge(taskId,worktreeId),
+   pullRequest:()=>runsApi.current.pullRequest(taskId,worktreeId,extra.remote),
+   close:()=>runsApi.current.closeWorktree(taskId,worktreeId),
+  };
+  const words={
+   commit:result=>`Changes committed in ${result.repository}`,
+   merge:result=>withClosed(`Merged ${result.repository} into ${result.mergedInto}${result.filesRemoved?'':', but its copy in this task could not be removed'}.${result.taskFinished?' The task is finished.':''}`,result),
+   pullRequest:result=>`Pull request opened for ${result.repository}: ${result.prUrl}`,
+   close:result=>withClosed(`Closed ${result.repository} in this task. Branch ${result.branchKept} was kept.${result.taskFinished?' The task is closed.':''}`,result),
+  };
+  if(!Object.hasOwn(actions,kind))throw new Error(`Unknown landing action ${kind}`);
+  try{
+   const result=await actions[kind]();
+   showToast({type:'success',message:words[kind](result)});
+   if(result.terminalsNotClosed?.length)showToast({type:'error',message:`${plural(result.terminalsNotClosed.length,'terminal')} could not be closed: ${result.terminalsNotClosed.join(', ')}.`});
+   if(result.taskFinished)loadWork().catch(fail);
+   return result;
+  }catch(err){
+   const detail=[...(err.reasons??[]),...(err.conflicts?.length?[`Conflicts: ${err.conflicts.join(', ')}`]:[])];
+   showToast({type:'error',message:detail.length?`${err.message} ${detail.join('. ')}`:err.message});return null;
+  }
+ }
+ async function loadRunRecords(kind,runId,stepIndex){
+  try{return await runsApi.current.listRecords(kind,runId,stepIndex);}
   catch(err){showToast({type:'error',message:err.message});return null;}
  }
  // Waiting, muted and reviewed are shared state: the list only changes once the backend confirms.
@@ -290,6 +387,7 @@ function Companion(){
  async function back(){
   if(keyboard.current){await hideKeyboard();return;}
   if(actionsFor){setActionsFor(null);return;}
+  if(runActionsFor){setRunActionsFor(null);return;}
   if(sheetOpen){setSheetOpen(false);return;}
   if(screen==='terminal'){setScreen(returnTo.current);returnTo.current='sessions';setSelected(null);}
   else if(screen==='task'){setScreen('sessions');setOpenRun(null);}
@@ -297,14 +395,15 @@ function Companion(){
   else setScreen('settings');
  }
  function chooseTheme(mode){setThemeMode(mode);setThemeModeState(mode);setResolvedTheme(getResolvedTheme());}
- current.current={route,register,back,fail,answerRun,approveRun,sendBackRun,actOnRun,loadRunNotes,openTaskSession};
+ current.current={route,register,back,fail,answerRun,approveRun,sendBackRun,actOnRun,loadRunNotes,loadRunRecords,loadLanding,land,openTaskSession,screen};
  // The task screen keeps what it is given: these never change identity, and always call the latest.
  const taskHandlers=useRef(null);
  if(!taskHandlers.current)taskHandlers.current={
   onBack:()=>current.current.back().catch(current.current.fail),onOpenSession:session=>current.current.openTaskSession(session),
   onAnswer:(...args)=>current.current.answerRun(...args),onApprove:(...args)=>current.current.approveRun(...args),
   onSendBack:(...args)=>current.current.sendBackRun(...args),onLoadNotes:(...args)=>current.current.loadRunNotes(...args),
-  onAction:(...args)=>current.current.actOnRun(...args),
+  onAction:(...args)=>current.current.actOnRun(...args),onLoadRecords:(...args)=>current.current.loadRunRecords(...args),
+  onLoadLanding:(...args)=>current.current.loadLanding(...args),onLand:(...args)=>current.current.land(...args),
  };
  useEffect(()=>{
   let dispose=null,cancelled=false;
@@ -352,6 +451,9 @@ function Companion(){
   if(!taskGone)return;
   setScreen('sessions');setOpenRun(null);showToast({type:'warning',message:'That run is no longer open'});
  },[taskGone,showToast]);
+ const runActionsRow=runActionsFor===null?null:buildNowView({sessions,projects,now,scope:'all',query:'',runs,tasks}).tasks.find(row=>row.key===runActionsFor)??null;
+ const runActionsSheet=runActionsRow&&<RunActionsSheet row={runActionsRow} busy={runBusy} onOpen={target=>{setRunActionsFor(null);setOpenRun(target.key);setScreen('task');}}
+  onAct={(...args)=>current.current.actOnRun(...args)} onApprove={runId=>current.current.approveRun(runId)} onClose={()=>setRunActionsFor(null)}/>;
  const actionsRow=actionsFor&&everyRow.find(row=>row.key===actionsFor);
  const actionsSheet=actionsRow&&<SessionActionsSheet row={actionsRow} busy={stateBusy} showOpen={screen!=='terminal'} onOpen={openSession} onApply={applyState} onClose={()=>setActionsFor(null)}/>;
 
@@ -401,7 +503,7 @@ function Companion(){
    <div className="m-results" aria-live="polite">
     {view.tasks.length>0&&<section className="m-now-group" aria-label="Tasks">
      <h2 className="m-mono">Tasks</h2>
-     <ul aria-label="Tasks">{view.tasks.map(row=><TaskRow key={row.key} row={row} index={position++} onOpen={target=>{setOpenRun(target.key);setScreen('task');}}/>)}</ul>
+     <ul aria-label="Tasks">{view.tasks.map(row=><TaskRow key={row.key} row={row} index={position++} onOpen={target=>{setOpenRun(target.key);setScreen('task');}} onActions={target=>setRunActionsFor(target.key)}/>)}</ul>
     </section>}
     {view.groups.map((group,groupIndex)=><section key={group.label} className="m-now-group" aria-label={group.label}>
      {(group.showLabel||view.tasks.length>0)&&<h2 className="m-mono">{group.showLabel?group.label:'Sessions'}</h2>}
@@ -418,6 +520,7 @@ function Companion(){
   </section>
   {sheetOpen&&<NewSessionSheet projects={projects} sessions={sessions} starting={starting} onStart={startSession} onClose={()=>setSheetOpen(false)}/>}
   {actionsSheet}
+  {runActionsSheet}
  </main>;
  }
 

@@ -2,12 +2,26 @@ import React from 'react';
 import { ChevronLeft, Terminal as TerminalGlyph } from 'lucide-react';
 import QuestionsPanel from '../components/tasks/QuestionsPanel.jsx';
 import ApprovalReview from '../components/tasks/ApprovalReview.jsx';
-import { describeLimitPause, describeRunCompletion, describeRunStatus, describeStepProgress, describeStepState } from '../utils/pipelineRunStatus';
+import { describeLimitPause, describeRunCompletion, describeRunDuration, describeStepProgress, describeStepState } from '../utils/pipelineRunStatus';
+import { NO_PROGRESS_ROUNDS } from '../../../shared/pipeline-definitions.mjs';
+import { describeRunControls } from './runControls';
+import ConfirmSheet from './ConfirmSheet';
+import StepDetail from './StepDetail';
+import LandingSection from './LandingSection';
 import '../components/tasks/task-view.css';
 import { formatPhasePosition } from '../utils/phaseLabel';
 
-// What the highlighted button says for the actions the phone offers.
-const ACTION_LABEL = { resume: 'Resume', continue: 'Continue past the limit' };
+/** The run's time, counted on this device once a second while it is going. */
+function RunTime({ run }) {
+  const [now, setNow] = React.useState(() => Date.now());
+  const duration = describeRunDuration(run, now);
+  React.useEffect(() => {
+    if (!duration.live) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [duration.live, run.id]);
+  return <span aria-label={`${duration.live ? 'Run time so far' : 'Run time'}: ${duration.words}`}>{duration.live ? duration.words : `took ${duration.words}`}</span>;
+}
 
 /** The latest note for a step that reached its limit. */
 function LimitNote({ runId, stepIndex, onLoadNotes }) {
@@ -55,13 +69,22 @@ function progressLine(progress) {
  * panels; the handlers report success and failure themselves and resolve to null when an
  * action did not go through.
  */
-export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSession, onAnswer, onApprove, onSendBack, onLoadNotes, onAction }) {
+export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSession, onAnswer, onApprove, onSendBack, onLoadNotes, onAction, onLoadRecords, onLoadLanding, onLand }) {
   if (!row || typeof row !== 'object' || !row.run) throw new Error('task screen: row is required');
-  for (const [name, value] of Object.entries({ onBack, onOpenSession, onAnswer, onApprove, onSendBack, onLoadNotes, onAction })) {
+  for (const [name, value] of Object.entries({ onBack, onOpenSession, onAnswer, onApprove, onSendBack, onLoadNotes, onAction, onLoadRecords, onLoadLanding, onLand })) {
     if (typeof value !== 'function') throw new Error(`task screen: ${name} must be a function`);
   }
   const { run } = row;
-  const action = describeRunStatus(run).primaryAction;
+  const controls = describeRunControls(run);
+  const [asking, setAsking] = React.useState(null);
+  // The step the run is in is open to begin with; the owner opens and closes the others.
+  const [opened, setOpened] = React.useState(() => new Set([run.currentStepIndex]));
+  // A run in a task lands from here; a finished run puts it above its steps, as the next thing to do.
+  const landingSection = run.taskId === null ? null
+    : <LandingSection taskId={run.taskId} title={row.title} runKey={`${run.status}:${run.updatedAt}`} onLoadLanding={onLoadLanding} onLand={onLand} />;
+  const toggleStep = index => setOpened(current => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next; });
+  const currentSession = controls.current?.sessionId ? row.sessions.find(session => session.id === controls.current.sessionId) : undefined;
+  const choose = item => { if (item.confirm === null) onAction(item.action, run.id); else setAsking(item); };
   const phase = progressLine(run.progress);
   const completion = run.status === 'complete' ? describeRunCompletion(run) : null;
   // The capped pause the next Continue grants one more round for, if the run is capped.
@@ -83,7 +106,7 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
         <button className="m-icon m-press" onClick={onBack} aria-label="Back to sessions"><ChevronLeft size={22} aria-hidden="true" /></button>
         <div className="m-term-title m-rise">
           <h1>{row.title}</h1>
-          <p className="m-mono"><span className={`m-dot is-${row.tone}`} /><span className={`m-state is-${row.tone}`}>{row.label}</span> · {row.workflowName} · {row.projectName}</p>
+          <p className="m-mono"><span className={`m-dot is-${row.tone}`} /><span className={`m-state is-${row.tone}`}>{row.label}</span> · {row.workflowName} · {row.projectName} · <RunTime run={run} /></p>
         </div>
       </header>
       {banner}
@@ -106,9 +129,13 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
             <button className="m-primary m-press" disabled={busy} onClick={() => onAction('continue', run.id, { stepIndex: pause.stepIndex, roundsCompleted: pause.roundsCompleted, extraRounds: pause.extraRounds })}>{pause.actionLabel}</button>
             {run.actions?.stop && <button className="m-press" disabled={busy} onClick={() => onAction('stop', run.id)}>Stop with work remaining</button>}
           </div>
-        ) : (Object.hasOwn(ACTION_LABEL, action ?? '') && (
-          <button className="m-primary m-press" disabled={busy} onClick={() => onAction(action, run.id)}>{ACTION_LABEL[action]}</button>
-        ))}
+        ) : null}
+        {run.status === 'stopped' && run.stopReason === 'no_progress' && (
+          <p className="m-task-warning" role="status">{run.progress
+            ? `No task was ticked in the last ${NO_PROGRESS_ROUNDS} rounds. Check what the steps reported, then Resume to try again.`
+            : `This loop ran ${NO_PROGRESS_ROUNDS} rounds without finishing. Check what the steps reported, then Resume to try again.`}</p>
+        )}
+        {run.taskId !== null && run.status === 'complete' && landingSection}
         <ol className="m-steps" aria-label="Steps">
           {run.steps.map(step => {
             const isCurrent = step.index === run.currentStepIndex;
@@ -120,7 +147,9 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
                 <span className="m-step-mark" aria-hidden="true" />
                 <div className="m-step-body">
                   <div className="m-step-head">
-                    <span className="m-step-name">{step.name}</span>
+                    <button type="button" className="m-step-toggle" aria-expanded={opened.has(step.index)} aria-label={`Step ${step.name}`} onClick={() => toggleStep(step.index)}>
+                      <span className="m-step-name">{step.name}</span>
+                    </button>
                     {session && (
                       <button className="m-step-terminal m-press" aria-label={`Open terminal of ${step.name}`} onClick={() => onOpenSession(session)}>
                         <TerminalGlyph size={16} aria-hidden="true" />Terminal
@@ -128,6 +157,7 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
                     )}
                   </div>
                   <span className="m-step-meta">{[label, detail, step.agentName].filter(Boolean).join(' · ')}</span>
+                  {opened.has(step.index) && <StepDetail run={run} step={step} onLoadNotes={onLoadNotes} onLoadRecords={onLoadRecords} />}
                   {completion?.endedAtLimit && step.status === 'limit_accepted' && step.note && (
                     <LimitNote key={`${run.id}:${step.index}:${step.note.createdAt}`} runId={run.id} stepIndex={step.index} onLoadNotes={onLoadNotes} />
                   )}
@@ -143,7 +173,25 @@ export default function TaskScreen({ row, busy, banner = null, onBack, onOpenSes
             );
           })}
         </ol>
+        {run.taskId !== null && run.status !== 'complete' && landingSection}
       </section>
+      {(controls.actions.length > 0 || currentSession) && (
+        <div className="m-run-dock" role="toolbar" aria-label="Run controls">
+          {controls.actions.map(item => (
+            <button key={item.action} type="button" disabled={busy} onClick={() => choose(item)}
+              className={`m-press ${item.primary ? 'm-primary' : 'm-run-dock-button'}${item.action === 'stop' ? ' is-danger' : ''}`}>{item.label}</button>
+          ))}
+          {currentSession && (
+            <button type="button" className="m-press m-run-dock-button" onClick={() => onOpenSession(currentSession)}>
+              <TerminalGlyph size={16} aria-hidden="true" />Open terminal
+            </button>
+          )}
+        </div>
+      )}
+      {asking && (
+        <ConfirmSheet message={asking.confirm} confirmLabel={asking.label} danger={asking.action === 'stop'} busy={busy}
+          onCancel={() => setAsking(null)} onConfirm={() => { setAsking(null); onAction(asking.action, run.id); }} />
+      )}
     </main>
   );
 }
