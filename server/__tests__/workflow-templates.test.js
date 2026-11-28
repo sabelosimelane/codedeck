@@ -334,9 +334,14 @@ describe('workflow templates', () => {
     expect(byName.Test).toMatch(/use NEEDS_INPUT once/);
     expect(byName.Test).toMatch(/full test suite once/);
     expect(byName.Test).toMatch(/Report COMPLETE only when every task is ticked and the full test suite passes/);
-    // A gap in a test or in recorded evidence must not cost a whole Develop, Review and Test round.
+  });
+
+  // A gap in a test or in recorded evidence must not cost a whole Develop, Review and Test round.
+  it.each(['feature-build', 'feature-from-requirements', 'feature-build-from-spec'])('%s: Test closes a test-only gap itself and Develop checks a test against its task', (id) => {
+    const byName = Object.fromEntries(WORKFLOW_TEMPLATES.find(item => item.id === id).nodes.map(node => [node.name, node.prompt]));
     expect(byName.Develop).toMatch(/Before ticking a task that names a test, read its wording again and check that the test asserts every condition it names/);
     expect(byName.Develop).toMatch(/When the Test note lists repairs, make each one hold exactly as it is worded before anything else/);
+    expect(byName.Develop).toMatch(/tick each task when done/);
     expect(byName.Test).toMatch(/whose only gap is a test that does not assert what the task names, or evidence you can produce that is not recorded/);
     expect(byName.Test).toMatch(/correct or add the test, or produce and record the evidence, yourself/);
     expect(byName.Test).toMatch(/leave the task ticked/);
@@ -344,6 +349,7 @@ describe('workflow templates', () => {
     expect(byName.Test).toMatch(/never edit a test the project marks as locked/);
     // A fault in the behaviour itself still goes back to Develop.
     expect(byName.Test).toMatch(/Untick any task whose behaviour does not hold/);
+    expect(byName.Test).not.toMatch(/Untick any task that does not hold/);
   });
 
   it('ships no workflow that needs a skill: every built-in step carries its whole prompt', () => {
