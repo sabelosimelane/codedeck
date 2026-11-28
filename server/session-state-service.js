@@ -10,10 +10,11 @@ export class SessionStateError extends Error {
 const FIELDS = ['waiting', 'muted', 'acknowledged'];
 const validSessionId = value => typeof value === 'string' && value.trim().length > 0 && value.length <= 256 && !/[\x00-\x1f]/.test(value);
 
-export function createSessionStateService({ attention, waitingStore, sessionExists, now }) {
+export function createSessionStateService({ attention, waitingStore, sessionExists, isLiveRunStep, now }) {
   if (typeof attention?.state !== 'function' || typeof attention?.setMuted !== 'function') throw new Error('session state: attention tracker is required');
   if (typeof waitingStore?.mark !== 'function' || typeof waitingStore?.clear !== 'function') throw new Error('session state: waitingStore is required');
   if (typeof sessionExists !== 'function') throw new Error('session state: sessionExists must be a function');
+  if (typeof isLiveRunStep !== 'function') throw new Error('session state: isLiveRunStep must be a function');
   if (typeof now !== 'function') throw new Error('session state: now must be a clock function');
 
   function requireId(sessionId) {
@@ -24,7 +25,8 @@ export function createSessionStateService({ attention, waitingStore, sessionExis
     const state = attention.state(sessionId);
     return {
       sessionId,
-      finished: state?.finished ?? false,
+      // The current step of a working run is the run's to report: an idle pause there is not done work.
+      finished: (state?.finished ?? false) && !isLiveRunStep(sessionId),
       muted: state?.muted ?? false,
       waiting: waitingStore.get(sessionId) !== null,
       // null until a status reading exists: nothing is known about its activity yet.

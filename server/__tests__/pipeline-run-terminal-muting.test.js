@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planRunTerminalMuting } from '../pipelines/run-terminal-muting.js';
+import { isLiveRunStepSession, planRunTerminalMuting } from '../pipelines/run-terminal-muting.js';
 import { setObservedTerminalMuted } from '../pipelines/terminal-muting-adapter.js';
 
 const run = (patch = {}) => ({
@@ -60,5 +60,37 @@ describe('setObservedTerminalMuted', () => {
     [{ knows() {}, setMuted() {} }, 'muted', 'one', null],
   ])('rejects an invalid adapter argument', (attention, message, sessionId = 'one', muted = true) => {
     expect(() => setObservedTerminalMuted(attention, sessionId, muted)).toThrow(message);
+  });
+});
+
+describe('isLiveRunStepSession', () => {
+  it.each(['pending', 'running'])('holds the current step terminal of a %s run', status => {
+    expect(isLiveRunStepSession([run({ status })], 'one')).toBe(true);
+    expect(isLiveRunStepSession([run({ status, currentStepIndex: 1 })], 'two')).toBe(true);
+  });
+  it('does not hold a terminal of a step the run has moved past', () => {
+    expect(isLiveRunStepSession([run({ currentStepIndex: 1 })], 'one')).toBe(false);
+  });
+  // A run that is waiting on the owner hands the attention signal back to its terminal.
+  it.each(['needs_input', 'awaiting_approval', 'limit_paused', 'interrupted', 'stopped', 'error', 'complete'])(
+    'does not hold the current terminal of a %s run', status => {
+      expect(isLiveRunStepSession([run({ status })], 'one')).toBe(false);
+    },
+  );
+  it.each(['removed', 'released'])('does not hold terminals after the worktree is %s', worktreeState => {
+    expect(isLiveRunStepSession([run({ worktreeState })], 'one')).toBe(false);
+  });
+  it('does not hold terminals no run uses', () => {
+    expect(isLiveRunStepSession([], 'one')).toBe(false);
+    expect(isLiveRunStepSession([run()], 'stranger')).toBe(false);
+  });
+  it('rejects a runs value that is not a list', () => {
+    expect(() => isLiveRunStepSession(null, 'one')).toThrow(/runs must be an array/);
+  });
+  it.each([undefined, '', '  ', 7])('rejects sessionId %p', sessionId => {
+    expect(() => isLiveRunStepSession([run()], sessionId)).toThrow(/sessionId must be nonempty text/);
+  });
+  it('rejects an invalid run rather than guessing', () => {
+    expect(() => isLiveRunStepSession([run({ status: 'bogus' })], 'one')).toThrow(/status is invalid/);
   });
 });
