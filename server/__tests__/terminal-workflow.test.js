@@ -350,6 +350,7 @@ describe('terminal workflow', () => {
     const id = token(write);
     const wrongId = `${id[0] === '1' ? '7' : '1'}${id.slice(1)}`;
     const secondWrongId = `${id[0] === '2' ? '8' : '2'}${id.slice(1)}`;
+    vi.advanceTimersByTime(100);
     workflow.output(signal(wrongId, status));
     vi.advanceTimersByTime(100);
     expect(workflow.snapshot().status).toBe('running');
@@ -364,6 +365,39 @@ describe('terminal workflow', () => {
     workflow.output(signal(id, 'CONTINUE'));
     vi.advanceTimersByTime(60000);
     expect(write).toHaveBeenCalledTimes(writesAfterRetry);
+  });
+
+  it('ignores a signal left on screen by a pass it no longer knows of, and still submits its own prompt', () => {
+    // The backend restarted since that pass, so its identifier is not among those this workflow issued.
+    const { workflow, write } = setup();
+    workflow.start(request);
+    const id = token(write);
+    const leftover = signal('dd7af735-1', 'CONTINUE');
+    // The agent's screen is redrawn with the earlier pass's signal before Enter is pressed.
+    workflow.output(leftover);
+    vi.advanceTimersByTime(100);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(write.mock.calls[1][0]).toBe('\r');
+    expect(workflow.snapshot()).toMatchObject({ status: 'running', error: null });
+    // Redrawn again while the agent works: still a leftover, not a mistyped identifier.
+    workflow.output(leftover);
+    vi.advanceTimersByTime(60000);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(workflow.snapshot()).toMatchObject({ status: 'running', error: null });
+    workflow.output(signal(id, 'COMPLETE'));
+    expect(workflow.snapshot()).toMatchObject({ status: 'complete', active: false });
+  });
+
+  it('still asks for a correction when an unknown identifier first appears after the prompt was submitted', () => {
+    const { workflow, write } = setup();
+    workflow.start(request);
+    const id = token(write);
+    workflow.output(signal('dd7af735-1', 'CONTINUE'));
+    vi.advanceTimersByTime(100);
+    workflow.output(signal('0bad0bad-1', 'CONTINUE'));
+    vi.advanceTimersByTime(100);
+    expect(write).toHaveBeenCalledTimes(4);
+    expect(write.mock.calls[2][0]).toContain(`emit your final signal again using the exact iteration identifier ${id}`);
   });
 
   it('ignores known older signals after Stop and a new Start', () => {
